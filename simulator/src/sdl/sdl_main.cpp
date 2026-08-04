@@ -19,8 +19,8 @@
 
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_pet_screen.h"
+#include "../lua/kf_lua_demo_creature_script.h"
 #include "../lua/kf_lua_port.h"
-#include "../lua/kf_lua_proof_script.h"
 #include "../pet/kf_pet_session.h"
 
 #include <SDL3/SDL.h>
@@ -126,13 +126,19 @@ int main(int argc, char *argv[]) {
     /* Lua comes up last of the four, same "after everything it depends
      * on" ordering: its allocator's one big block comes from KF_ARENA_LUA,
      * carved out by kf_app_init()'s kf_arena_init_all(), and its pet.*
-     * binding needs the pet session ready. See ADR 0014 -- this is a
-     * proof script, not a real cartridge; it does not touch pet.* itself,
-     * so nothing about this session's decay is visible yet, only running
-     * for real underneath. A script that fails to load is not fatal to
-     * the rest of the simulator; it just runs with no Lua this session,
-     * logged loudly by kf_lua_port_init(). */
-    kf_lua_port_init(kKfLuaProofScriptSource, kKfLuaProofScriptChunkName);
+     * binding needs the pet session ready. See ADR 0014. This is the demo
+     * creature (ADR 0018), not the ADR 0014 proof script any earlier
+     * version of this file loaded -- that script still exists and is still
+     * exactly right for what it proves (kamiframe-headless --verify-lua,
+     * an exact arithmetic invariant unrelated to any pet), it is just not
+     * what a person running kamiframe-sim should be looking at. This is a
+     * real cartridge: it reads pet.hunger()/happiness()/energy() and logs
+     * in-character lines when a need crosses a band, entirely from Lua, no
+     * C required. A script that fails to load is not fatal to the rest of
+     * the simulator; it just runs with no Lua this session, logged loudly
+     * by kf_lua_port_init(). */
+    kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                      kKfLuaDemoCreatureScriptChunkName);
 
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 

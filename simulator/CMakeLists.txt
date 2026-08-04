@@ -276,4 +276,18 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_screen_check
              COMMAND kamiframe-headless --verify-pet-screen
                      --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
+
+    # Proves the demo creature script (ADR 0018) -- the actual cartridge
+    # sdl_main.cpp loads, not a proof script -- survives a full lifecycle
+    # (fresh and full, decayed all the way down through every band to
+    # empty, cared back up to full) without ever raising a Lua runtime
+    # error. Not a checksum: this script has no rendering surface of its
+    # own, it only logs, and kf.log has no capture hook (see
+    # headless_main.cpp's run_lua_creature_check()) -- an exact-arithmetic-
+    # style check on frame counts and the live C++ pet state instead, the
+    # same category of check as lua_pet_binding_check above and for the
+    # same reason: this is a logic/robustness question, not a rendering
+    # one.
+    add_test(NAME lua_creature_check
+             COMMAND kamiframe-headless --verify-lua-creature)
 endif()

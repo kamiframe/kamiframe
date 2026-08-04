@@ -16,6 +16,7 @@
  *     kamiframe-headless --verify-pet
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
+ *     kamiframe-headless --verify-lua-creature
  *
  * Exit codes:
  *     0  everything asserted held
@@ -36,6 +37,7 @@
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
 #include "../lvgl/kf_pet_screen.h"
+#include "../lua/kf_lua_demo_creature_script.h"
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_port.h"
 #include "../lua/kf_lua_proof_script.h"
@@ -677,6 +679,114 @@ int run_lua_pet_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves the demo creature (ADR 0018) -- the actual script sdl_main.cpp
+ * loads for a person to look at, not a proof script -- survives a full,
+ * realistic lifecycle without ever raising a Lua runtime error: fresh and
+ * full, decaying all the way down through every band to critical/empty,
+ * cared back up to full again. Not a check on the exact log text: kf_log
+ * (kf_lua_port.cpp's lua_kf_log) writes straight to kf_log/stderr with no
+ * capture hook, so what this proves is narrower but still real -- the
+ * script's own band-crossing logic (kf_lua_demo_creature_script.h's
+ * `announce()`) runs correctly, in both directions, without an unhandled
+ * Lua error ever disabling it (kf_lua_port_frame()'s own "disable further
+ * calls" fallback on a script error, see kf_lua_port.cpp). If a future
+ * edit to the script's threshold table introduced a bug -- a typo in a
+ * message key, say -- this is what would catch it. */
+int run_lua_creature_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-lua-creature-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_pet_session_init();
+
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "demo creature script loaded");
+
+    /* Stage 1: decay from full to empty. A day of elapsed pet-time per
+     * call, applied in one kf_pet_advance() call each (kf_pet_session_
+     * frame() batches whatever it's handed, see its own header comment --
+     * a single huge dt is not a special case for it). 10 days comfortably
+     * exhausts even the slowest of the three configured decay rates (see
+     * kf_pet_default_config(), ADR 0015): every need should be clamped at
+     * exactly zero by the end, which the check below confirms directly
+     * against the live C++ state -- not because the demo creature script
+     * needs that number, but so stage 2's "recovered to full" transition
+     * below is known to start from genuine rock bottom, not merely "low". */
+    constexpr uint32_t kOneDayMs = 24u * 60u * 60u * 1000u;
+    constexpr long kStage1Frames = 10;
+    for (long i = 0; i < kStage1Frames; ++i) {
+        kf_pet_session_frame(kOneDayMs);
+        kf_lua_port_frame(kOneDayMs);
+    }
+    check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage1Frames),
+          "stage 1 (decay through every band) ran the full frame count "
+          "without a script error");
+    const kf_pet_state *after_decay = kf_pet_session_state();
+    check(after_decay->hunger_mp == 0u && after_decay->happiness_mp == 0u &&
+              after_decay->energy_mp == 0u,
+          "10 days of elapsed time clamps every need to exactly zero -- "
+          "confirms stage 2 below starts from genuine rock bottom");
+
+    /* Stage 2: care back up to full, directly in C++ (not via the script --
+     * this demo creature only reads, see kf_lua_demo_creature_script.h),
+     * then a few more frames so on_frame() observes and announces the
+     * "full" transition too, in the other direction from stage 1. Each
+     * care action only boosts its need by kCareBoostMp (25000, a quarter
+     * of the full range, see kf/pet.cpp) -- calibrated in ADR 0015 to
+     * exceed a single hour's decay, not to refill from zero in one call.
+     * Coming from stage 1's genuine rock bottom, that takes 4 calls per
+     * need to exactly reach max (4 * 25000 == KF_PET_MILLIPERCENT_MAX);
+     * kf_pet_feed()/play()/rest() clamp at max regardless, so a few extra
+     * calls past that is a harmless margin, not a source of drift. */
+    for (int i = 0; i < 5; ++i) {
+        kf_pet_session_feed();
+        kf_pet_session_play();
+        kf_pet_session_rest();
+    }
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    constexpr long kStage2Frames = 3;
+    for (long i = 0; i < kStage2Frames; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_lua_port_frame(kFixedDtMs);
+    }
+    constexpr long kTotalFrames = kStage1Frames + kStage2Frames;
+    check(kf_lua_port_frame_count() == static_cast<uint32_t>(kTotalFrames),
+          "stage 2 (recovery to full) ran without a script error either -- "
+          "the whole round trip, both directions, raised nothing");
+    const kf_pet_state *after_care = kf_pet_session_state();
+    check(after_care->hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+              after_care->happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+              after_care->energy_mp == KF_PET_MILLIPERCENT_MAX,
+          "feed()/play()/rest() brought every need back to exactly max");
+
+    kf_lua_port_shutdown();
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -691,6 +801,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
+    bool verify_lua_creature = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -719,6 +830,8 @@ int main(int argc, char *argv[]) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
             verify_pet_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-lua-creature") == 0) {
+            verify_lua_creature = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -728,7 +841,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
-                        "[--expect-checksum HEX]\n");
+                        "[--expect-checksum HEX]\n"
+                        "kamiframe-headless --verify-lua-creature\n");
             return 0;
         }
     }
@@ -764,6 +878,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_screen) {
         return run_pet_screen_check(expect_checksum, have_expect);
+    }
+
+    if (verify_lua_creature) {
+        return run_lua_creature_check();
     }
 
     kf_app_init(mode);
