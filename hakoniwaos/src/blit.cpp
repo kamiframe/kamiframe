@@ -50,6 +50,14 @@ void kf_draw_counters_reset(void) {
 
 kf_draw_counters kf_draw_counters_get(void) { return g_counters; }
 
+void kf_draw_count_pixels(bool keyed, uint32_t count) {
+    if (keyed) {
+        g_counters.keyed_pixels += count;
+    } else {
+        g_counters.opaque_pixels += count;
+    }
+}
+
 kf_rect kf_rect_intersect(kf_rect a, kf_rect b) {
     kf_rect out;
     out.x0 = a.x0 > b.x0 ? a.x0 : b.x0;

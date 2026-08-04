@@ -12,6 +12,7 @@
 #include "kf/arena.h"
 #include "kf/blit.h"
 #include "kf/budget.h"
+#include "kf/font.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/display.h"
 #include "kf/hal/entropy.h"
@@ -58,6 +59,13 @@ struct AppState {
     uint32_t buttons_candidate = 0;
     uint64_t candidate_since_us = 0;
     uint32_t buttons_pressed_edge = 0;
+
+    /* The constraint HUD from ADR 0006's "Later" section. Off by default:
+     * it is a development affordance, not something the device shows a
+     * user, and keeping it off keeps the golden-frame and dirty-area tests
+     * (which never press MENU) exercising the demo alone. Toggle with
+     * KF_BTN_MENU. */
+    bool hud_visible = false;
 };
 
 AppState g;
@@ -146,6 +154,113 @@ uint32_t percentile(int pct) {
     return sorted[index];
 }
 
+/* --------------------------------------------------------------------------
+ * Constraint HUD -- ADR 0006's "Later" section, now.
+ *
+ * Hand-rolled string building rather than snprintf: core has no heap, this
+ * is a handful of digits, and a target that is not glibc is not somewhere
+ * to trust a general formatter blindly. kf/poison.h would not even let this
+ * file pull in <cstdio> for it.
+ * -------------------------------------------------------------------------- */
+
+char *append_str(char *dst, const char *end, const char *s) {
+    while (*s != '\0' && dst < end) {
+        *dst++ = *s++;
+    }
+    return dst;
+}
+
+char *append_uint(char *dst, const char *end, uint32_t v) {
+    char digits[10];
+    int n = 0;
+    if (v == 0u) {
+        digits[n++] = '0';
+    }
+    while (v > 0u && n < static_cast<int>(sizeof(digits))) {
+        digits[n++] = static_cast<char>('0' + (v % 10u));
+        v /= 10u;
+    }
+    while (n > 0 && dst < end) {
+        *dst++ = digits[--n];
+    }
+    return dst;
+}
+
+/* `tenths` is already scaled by 10, e.g. pass fps*10 to print one decimal. */
+char *append_fixed1(char *dst, const char *end, uint32_t tenths) {
+    dst = append_uint(dst, end, tenths / 10u);
+    if (dst < end) {
+        *dst++ = '.';
+    }
+    if (dst < end) {
+        *dst++ = static_cast<char>('0' + (tenths % 10u));
+    }
+    return dst;
+}
+
+/* Drawn between the demo's draw call and this frame's own accounting, using
+ * LAST frame's stats -- this frame cannot know its own total cost until
+ * after it finishes, the same way a runner cannot time their own race
+ * before crossing the line. One frame of lag on a HUD redrawn 30 times a
+ * second is not something a human notices. */
+void draw_hud(void) {
+    constexpr kf_color kHudFg = KF_RGB(230, 235, 245);
+    constexpr kf_color kHudBg = KF_RGB(20, 22, 32);
+
+    /* Zero-initialised, not just declared: an uninitialised char[48] is fine
+     * in practice (only the bytes up to the final NUL are ever read), but
+     * GCC's -Wmaybe-uninitialized cannot see that from the pointer
+     * arithmetic alone and flags `end` as possibly-uninitialized without
+     * this. Cheap, and it settles the analysis instead of arguing with it. */
+    char line[48] = {};
+    const char *end = line + sizeof(line) - 1;
+    char *w;
+
+    w = line;
+    w = append_str(w, end, "F");
+    w = append_fixed1(w, end,
+                       g.last.total_us > 0u
+                           ? static_cast<uint32_t>(10000000ull / g.last.total_us)
+                           : 0u);
+    w = append_str(w, end, "FPS ");
+    w = append_uint(w, end, g.last.total_us);
+    w = append_str(w, end, "US D");
+    w = append_uint(w, end, g.last.dirty_percent);
+    w = append_str(w, end, "%");
+    if (g.last.over_budget) {
+        w = append_str(w, end, " OVER");
+    }
+    *w = '\0';
+    kf_text_draw(0, 0, line, kHudFg, kHudBg);
+
+    /* One line per arena. Names are lowercase in kf/arena.cpp; the font is
+     * uppercase-only (see kf/font.h), so upper-case them here rather than
+     * widen the font for one call site. */
+    constexpr kf_arena_id kArenas[] = {KF_ARENA_FRAMEBUFFER, KF_ARENA_SCRATCH,
+                                       KF_ARENA_LUA, KF_ARENA_ASSETS};
+    for (size_t i = 0; i < sizeof(kArenas) / sizeof(kArenas[0]); ++i) {
+        const kf_arena_stats *s = kf_arena_get_stats(kArenas[i]);
+        w = line;
+        for (const char *n = s->name; *n != '\0' && w < end; ++n) {
+            *w++ = static_cast<char>((*n >= 'a' && *n <= 'z')
+                                          ? (*n - 'a' + 'A')
+                                          : *n);
+        }
+        w = append_str(w, end, " ");
+        w = append_uint(w, end,
+                        static_cast<uint32_t>(s->high_water_bytes / 1024u));
+        w = append_str(w, end, "/");
+        w = append_uint(w, end,
+                        static_cast<uint32_t>(s->capacity_bytes / 1024u));
+        w = append_str(w, end, "K");
+        *w = '\0';
+        kf_text_draw(0,
+                     static_cast<int16_t>(KF_FONT_CELL_H *
+                                           (1 + static_cast<int>(i))),
+                     line, kHudFg, kHudBg);
+    }
+}
+
 } // namespace
 
 void kf_app_init(kf_demo_mode mode) {
@@ -191,6 +306,7 @@ void kf_app_init(kf_demo_mode mode) {
     KF_LOGI(TAG, "budget: %d fps, %u us per frame, link %u bytes/s",
             KF_TARGET_FPS, static_cast<unsigned>(KF_FRAME_BUDGET_US),
             caps->link_bytes_per_second);
+    KF_LOGI(TAG, "press MENU to toggle the on-screen constraint HUD");
 
     g.last_report_us = kf_time_mono_us();
     g.initialised = true;
@@ -214,8 +330,21 @@ bool kf_app_frame(void) {
         debounce(raw);
     }
 
+    if (g.buttons_pressed_edge & KF_BTN_MENU) {
+        g.hud_visible = !g.hud_visible;
+        /* Whichever way it just toggled, something on screen needs a
+         * clean repaint: turning the HUD off leaves its last frame's
+         * pixels sitting in the framebuffer with nothing left to redraw
+         * them, and only the demo knows its own background colour. */
+        kf_demo_request_full_repaint();
+    }
+
     kf_demo_update(g.buttons_stable, g.buttons_pressed_edge);
     kf_demo_draw();
+
+    if (g.hud_visible) {
+        draw_hud();
+    }
 
     const kf_rect dirty = kf_fb_dirty_rect();
     const size_t dirty_bytes = kf_fb_dirty_bytes();

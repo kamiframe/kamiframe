@@ -47,6 +47,17 @@ void kf_demo_draw(void);
 
 void kf_demo_shutdown(void);
 
+/* Force the next kf_demo_draw() to repaint the whole background instead of
+ * just the sprite's dirty patch. KF_DEMO_SPRITE only has any effect;
+ * KF_DEMO_FULLSCREEN already repaints everything every frame.
+ *
+ * Exists for kf/app.h: something drawn OUTSIDE the demo (the budget HUD)
+ * can leave stale pixels behind when it stops drawing, and the demo is the
+ * only thing that knows its own background colour well enough to clear
+ * them. This is the one crack the demo's placeholder status is allowed to
+ * show through kf/app.h; it goes away with kf/demo.h itself. */
+void kf_demo_request_full_repaint(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

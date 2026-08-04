@@ -45,6 +45,9 @@ else()
     #   XSCRNSAVER  inhibits the screensaver during fullscreen playback
     #   XTEST       synthesises fake input events, for automation tools
     #   XDBE        double buffering, unused since we render through a texture
+    #   XCURSOR     custom cursor images; the sim never changes the cursor
+    #   XINPUT      raw relative mouse motion and multi-touch (XInput2);
+    #               input here is SDL_GetKeyboardState, never the mouse
     #
     # Anyone who wants them back can pass -DSDL_X11_XTEST=ON.
     # Audio backends (ALSA, PulseAudio, JACK, PipeWire) are left alone: SDL
@@ -54,6 +57,8 @@ else()
         set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)
         set(SDL_X11_XTEST      OFF CACHE BOOL "" FORCE)
         set(SDL_X11_XDBE       OFF CACHE BOOL "" FORCE)
+        set(SDL_X11_XCURSOR    OFF CACHE BOOL "" FORCE)
+        set(SDL_X11_XINPUT     OFF CACHE BOOL "" FORCE)
     endif()
 
     FetchContent_Declare(SDL3

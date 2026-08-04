@@ -299,3 +299,5 @@ void kf_demo_draw(void) {
 }
 
 void kf_demo_shutdown(void) {}
+
+void kf_demo_request_full_repaint(void) { d.needs_full_repaint = true; }

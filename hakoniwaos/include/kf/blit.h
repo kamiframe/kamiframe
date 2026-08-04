@@ -66,6 +66,13 @@ typedef struct {
 void kf_draw_counters_reset(void);
 kf_draw_counters kf_draw_counters_get(void);
 
+/* Let a drawing module that lives outside kf/blit.cpp -- today only
+ * kf/font.h -- contribute to the same per-frame counters, so nothing drawn
+ * on screen goes missing from the budget report. `keyed` picks the bucket
+ * by cost shape, not by whether an actual colour key is involved: rows
+ * copied whole are opaque, anything plotted pixel by pixel is keyed. */
+void kf_draw_count_pixels(bool keyed, uint32_t count);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
