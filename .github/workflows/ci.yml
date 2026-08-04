@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# Why a Linux GCC job exists when development happens on Windows:
+#
+# The ESP32 toolchain is GCC. MSVC accepts things GCC rejects, and #pragma GCC
+# poison (the mechanism that keeps the heap out of core) is a no-op under MSVC.
+# So the Windows job proves the code builds where it is written, and the Linux
+# job proves it will build where it eventually has to run.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-gcc:
+    name: linux / gcc / headless
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL3 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libxfixes-dev libxss-dev libxtst-dev libxxf86vm-dev \
+            libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev \
+            libudev-dev libdbus-1-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DKAMIFRAME_WARNINGS_AS_ERRORS=ON
+
+      # Builds hakoniwaos, both backends, and hakoniwaos_hal_c_check, which
+      # compiles every kf/hal/*.h as plain C17. That check is the mechanical
+      # test that the HAL boundary is still narrow: a header C accepts cannot
+      # have grown templates, overloads or classes with behaviour.
+      - name: Build
+        run: cmake --build build --parallel
+
+      # Runs the real firmware with a different bottom layer. Same arenas,
+      # same blitter, same frame loop. Asserts the output is deterministic and
+      # that nothing has started redrawing the whole screen every frame.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Core is heap-free
+        run: python3 tools/check_no_heap.py .
+
+  windows-msvc:
+    name: windows / msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DKAMIFRAME_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
