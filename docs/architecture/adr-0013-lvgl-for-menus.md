@@ -259,33 +259,66 @@ down from the log for that reason, and a simulated CRLF-line-ending
 checkout, the leading suspect, was tested directly and ruled out (`git
 apply --ignore-whitespace` still succeeded against it, just messily).
 
-**What shipped instead:** `cmake/patches/lvgl_msvc_c2099_fix.cmake`, run via
-`PATCH_COMMAND ${CMAKE_COMMAND} -P ...` -- the same four insertions, done
-with CMake's own `string(FIND)` / `string(REPLACE)` / `file()` commands
-instead of `git apply` against a `.patch` file. No external `git` process
-invoked mid-patch, no diff-context matching, nothing line-ending-sensitive
--- removing the entire category `git apply` sits in, rather than continuing
-to guess at what exactly went wrong with it. Self-verifying by construction:
-idempotent (checks for its own marker before touching a file, so re-running
-configure against an already-patched tree is a no-op, not a double-patch),
-and fails the configure with a specific `FATAL_ERROR` if an expected file
-or anchor line isn't found (almost certainly meaning `KAMIFRAME_LVGL_TAG`
-moved to a new release and this script needs updating for it) rather than
-silently no-op-ing into another unpatched, MSVC-broken build.
+**Second attempt, also not what shipped.** Rewrote the fix as
+`cmake/patches/lvgl_msvc_c2099_fix.cmake`, run via `PATCH_COMMAND
+${CMAKE_COMMAND} -P ...` -- the same four insertions, done with CMake's own
+`string(FIND)` / `string(REPLACE)` / `file()` commands instead of `git
+apply` against a `.patch` file. No external `git` process invoked
+mid-patch, no diff-context matching, nothing line-ending-sensitive.
+Unit-tested directly (fresh clone, confirmed the insertion, confirmed a
+second run is a safe no-op, confirmed a `FATAL_ERROR` path triggers on a
+deliberately wrong anchor), then verified through the real path -- a fresh
+`FetchContent` clone via `cmake -B`, confirmed by inspecting the populated
+source that the patch actually applied, full rebuild clean, all 5 tests
+passing. Pushed to Windows CI, and it failed exactly the same way as the
+first attempt: same four `C2099`s, same lines, as if nothing had run.
 
-Verified: unit-tested directly (`cmake -P` against a fresh clone, confirming
-the insertion, confirming a second run is a no-op, confirming the
-`FATAL_ERROR` path triggers on a deliberately wrong anchor), then verified
-through the real path -- a fresh `FetchContent` clone via `cmake -B`,
-confirming by inspecting the populated source that the patch actually
-applied (not inferring it from log messages, per the finding above), full
-rebuild clean `-Werror`, all 5 `ctest` targets passing with
-`lvgl_determinism_check`'s checksum unchanged, `check_no_heap.py` clean.
-**Still not verified: an actual MSVC compile**, for the same reason as
-before -- this sandbox has no Windows toolchain. That gap is exactly what
-made the first attempt's failure invisible until real CI caught it, so this
-one gets the same treatment: pushed, and confirmed green by CI, not assumed
-fixed because the reasoning is sound.
+That result is the actually useful one: two unrelated patch *mechanisms* --
+an external `git` process, and CMake's own `-P` script mode, sharing no code
+-- both failed identically on the real Windows runner while both passed
+repeatedly here, including retested against a from-scratch CMake 4.4.2
+install specifically to rule out a version difference from this sandbox's
+older CMake. The one thing both attempts had in common was wiring the fix
+up as `PATCH_COMMAND`, which only ever executes inside `FetchContent`'s
+separate populate "subbuild" -- a mechanism CMake's own changelog describes
+as gaining a materially different code path in 3.30 (policy `CMP0168`,
+switching between an `ExternalProject`-style subbuild and a direct
+in-process implementation for Git downloads) and that could not be run
+against an actual Windows + Visual Studio generator combination in this
+sandbox to observe directly. That's the honest limit of what could be
+pinned down: not a confirmed root cause, but strong enough converging
+evidence -- two independent implementations failing the same way, on the
+one thing they shared -- to stop trying a third variant of the same
+mechanism.
+
+**What shipped instead:** the same `cmake/patches/lvgl_msvc_c2099_fix.cmake`
+script content, but no longer wired up as a `PATCH_COMMAND` at all.
+`fetch_lvgl.cmake` now calls `kf_lvgl_apply_msvc_fix("${lvgl_SOURCE_DIR}")`
+directly, as ordinary CMake script code, immediately after
+`FetchContent_MakeAvailable(lvgl)` -- in the same configure pass as
+everything else in that file, operating on the `lvgl_SOURCE_DIR` variable
+`FetchContent_MakeAvailable` already sets. No subbuild, no separate step
+execution, nothing generator- or CMake-version-dependent left in the loop.
+Still idempotent (checks its own marker before touching a file) and still
+fails loudly via `FATAL_ERROR` on an unexpected anchor -- unchanged from the
+second attempt, just invoked differently. Since it's no longer gated behind
+a one-time population step, it now runs on *every* configure, including
+reconfigures against an already-populated tree -- strictly more robust, not
+less: correctness gets re-checked every time instead of assumed after the
+first run.
+
+Verified the same way as the second attempt, plus the one thing the first
+two couldn't show: `message(STATUS "LVGL MSVC fix: patched ...")` for each
+of the four files now appears directly in the `cmake -B` Configure log,
+on the first configure, and `"...already patched, skipping"` on a
+reconfigure -- proof the fix is actually running, not just reasoning that
+it should be. Full rebuild clean `-Werror`, all 5 `ctest` targets passing
+with `lvgl_determinism_check`'s checksum unchanged, `check_no_heap.py`
+clean. **Still not verified: an actual MSVC compile.** This sandbox has no
+Windows toolchain, and that gap is exactly what let the first two attempts'
+failures go unnoticed until real CI caught them -- so this one gets the
+same treatment: pushed, and confirmed green by CI, not assumed fixed
+because the reasoning is sound and it passed everywhere it could be tested.
 
 ## Later
 

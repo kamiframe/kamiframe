@@ -36,30 +36,29 @@ set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
 
-# MSVC-only fix, see cmake/patches/lvgl_msvc_c2099_fix.cmake for the full
-# explanation. Applied unconditionally rather than gated on
-# CMAKE_C_COMPILER_ID -- CMAKE_C_COMPILER_ID isn't reliably set this early in
-# configure (the exact trap LVGL's own CMakeLists.txt hit in
-# https://github.com/lvgl/lvgl/pull/7401) -- and the patch is a semantic
-# no-op under GCC/Clang (it only adds explicit zero-value bitfield
-# initializers that were already zero by default), so there is no cost to
-# applying it on every platform. A CMake script rather than `git apply`
-# against a .patch file -- an earlier version of this fix used git apply and
-# it silently didn't take effect on the real Windows CI runner, for a
-# reason that couldn't be pinned down; the CMake-script version matches on
-# file content directly (immune to whatever that was) and is loud in the
-# Configure log about what it did either way. See the comment at the top of
-# that script for the full reasoning, including why it's safe to re-run
-# against an already-patched tree.
 FetchContent_Declare(lvgl
     GIT_REPOSITORY https://github.com/lvgl/lvgl.git
     GIT_TAG        ${KAMIFRAME_LVGL_TAG}
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE
-    PATCH_COMMAND  ${CMAKE_COMMAND} -P
-                   "${CMAKE_CURRENT_LIST_DIR}/patches/lvgl_msvc_c2099_fix.cmake"
 )
 FetchContent_MakeAvailable(lvgl)
+
+# MSVC-only fix, see cmake/patches/lvgl_msvc_c2099_fix.cmake for the full
+# explanation. Applied unconditionally rather than gated on the compiler ID
+# -- the fix is a semantic no-op under GCC/Clang (it only adds explicit
+# zero-value bitfield initializers that were already zero by default), so
+# there is no cost to applying it everywhere, and it's simpler than gating.
+# Deliberately called here as plain CMake code, operating on lvgl_SOURCE_DIR
+# (set by FetchContent_MakeAvailable above), NOT wired up as a
+# FetchContent_Declare PATCH_COMMAND -- two earlier versions of this fix
+# used PATCH_COMMAND (first `git apply`, then an equivalent `cmake -P`) and
+# both silently didn't take effect on the real Windows CI runner, for
+# reasons that pointed at PATCH_COMMAND's own execution inside
+# FetchContent's populate step, not at either patch mechanism. See the
+# comment at the top of that script for the full reasoning.
+include("${CMAKE_CURRENT_LIST_DIR}/patches/lvgl_msvc_c2099_fix.cmake")
+kf_lvgl_apply_msvc_fix("${lvgl_SOURCE_DIR}")
 
 # lv_conf.h pulls in kf/budget.h (see the comment in that file) so
 # KF_ARENA_LVGL_BYTES can never drift from LV_MEM_SIZE. LVGL's own source is
