@@ -60,8 +60,19 @@ jobs:
       - name: Configure
         run: cmake -B build -DKAMIFRAME_WARNINGS_AS_ERRORS=ON
 
+      # TEMPORARY: /verbosity:detailed makes MSBuild echo the full cl.exe
+      # command line for every file, not just the filename. This is here
+      # solely to see the actual flags reaching lv_bar.c while diagnosing
+      # the LVGL MSVC C2099 build break (see
+      # docs/architecture/adr-0013-lvgl-for-menus.md) -- the default log
+      # only ever shows source filenames, never the real invocation, which
+      # is exactly what made the last few fix attempts impossible to
+      # confirm or rule out from CI logs alone. Revert to the plain
+      # `cmake --build build --config RelWithDebInfo --parallel` once this
+      # is resolved; detailed verbosity is far too noisy to keep on
+      # permanently.
       - name: Build
-        run: cmake --build build --config RelWithDebInfo --parallel
+        run: cmake --build build --config RelWithDebInfo --parallel -- /verbosity:detailed
 
       - name: Test
         run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
