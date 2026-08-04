@@ -155,7 +155,7 @@ commands it wraps, if you want to run them separately:
 ctest --test-dir build --output-on-failure
 ```
 
-Four tests, all running the real firmware against the headless backend:
+Five tests, all running the real firmware against the headless backend:
 
 - **headless_determinism** hashes every rendered frame and compares against a
   known value. If rendering changed, this fails. When the change was
@@ -169,6 +169,9 @@ Four tests, all running the real firmware against the headless backend:
 - **storage_power_check** proves save state survives and offline pet ageing
   actually works, deterministically, without waiting real days for it. See
   `docs/architecture/adr-0012-storage-and-power.md`.
+- **lvgl_determinism_check** proves the LVGL port glue renders
+  deterministically, the same property headless_determinism proves for the
+  custom engine. See `docs/architecture/adr-0013-lvgl-for-menus.md`.
 
 Plus one check that is not a ctest:
 

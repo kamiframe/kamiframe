@@ -20,12 +20,10 @@ future us in month eight asking the same question with less patience.
 | [0010](adr-0010-bitmap-text.md) | Bitmap text and the constraint HUD | Accepted |
 | [0011](adr-0011-dirty-rect-list.md) | A dirty-rectangle list, not a single box | Accepted |
 | [0012](adr-0012-storage-and-power.md) | Save state and deep sleep | Accepted |
+| [0013](adr-0013-lvgl-for-menus.md) | LVGL for menus, the custom engine for the pet | Accepted |
 
 Open evaluations, deliberately not decided:
 
-- **LVGL versus a custom sprite engine.** A week each, later. Nothing in
-  slice one prejudges it: everything drawing-related sits above
-  `kf/framebuffer.h`, on the core side of the HAL.
 - **Lua version and number type.** LuaJIT is already ruled out (it does not
   target Xtensa or RISC-V, so using it on desktop would create exactly the
   two-codebase failure this architecture exists to prevent). Lua 5.4 versus

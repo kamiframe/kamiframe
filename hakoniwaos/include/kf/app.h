@@ -124,6 +124,17 @@ typedef struct {
     uint32_t worst_us;
 } kf_frame_summary;
 
+/* The debounced button state as of the most recently completed frame --
+ * exactly what kf_demo_update() was called with. core's debounce is the only
+ * one that exists (see kf/hal/input.h: backends report raw state, never
+ * smoothed state), so anything else that wants "is this button down" reads
+ * it from here rather than re-deriving it from raw HAL polls. Currently
+ * used by the LVGL input port (simulator/src/lvgl) to drive a keypad-style
+ * lv_indev_t off the same buttons the game sees, not a second, independently
+ * debounced set. */
+uint32_t kf_app_buttons_held(void);
+uint32_t kf_app_buttons_pressed(void);
+
 const kf_frame_stats *kf_app_last_frame(void);
 
 /* Rolling summary over the most recent window of frames (256). */

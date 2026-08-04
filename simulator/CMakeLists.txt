@@ -38,6 +38,36 @@ target_link_libraries(kamiframe_host_common
     PUBLIC hakoniwaos kamiframe_options)
 
 # ---------------------------------------------------------------------------
+# LVGL port glue -- menus and stat displays, see ADR 0013.
+#
+# Built unconditionally, same as kamiframe_host_common above: both desktop
+# backends link it. Deliberately lives here, not in hakoniwaos/, because this
+# slice does not claim LVGL works on the ESP32 build -- see the ADR's "what
+# this slice actually builds".
+# ---------------------------------------------------------------------------
+include(fetch_lvgl)
+
+add_library(kamiframe_lvgl_port STATIC
+    src/lvgl/kf_lvgl_pool.cpp
+    src/lvgl/kf_lvgl_tick.cpp
+    src/lvgl/kf_lvgl_display.cpp
+    src/lvgl/kf_lvgl_input.cpp
+    src/lvgl/kf_lvgl_port.cpp
+    src/lvgl/kf_lvgl_proof_screen.cpp
+)
+target_include_directories(kamiframe_lvgl_port
+    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
+target_link_libraries(kamiframe_lvgl_port
+    PUBLIC hakoniwaos lvgl kamiframe_options)
+
+# Genuinely circular at the symbol level, not a layering mistake: LVGL calls
+# kf_lvgl_mem_pool_alloc() (defined in kamiframe_lvgl_port, wired in via
+# LV_MEM_POOL_ALLOC in lv_conf.h) once, at lv_init() time, and everything
+# else in kamiframe_lvgl_port calls into LVGL. CMake resolves the cycle by
+# repeating both archives on the final link line.
+target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
+
+# ---------------------------------------------------------------------------
 # SDL3 simulator
 # ---------------------------------------------------------------------------
 if(KAMIFRAME_BUILD_SIMULATOR)
@@ -49,8 +79,8 @@ if(KAMIFRAME_BUILD_SIMULATOR)
         src/sdl/sdl_main.cpp
     )
     target_link_libraries(kamiframe-sim
-        PRIVATE hakoniwaos kamiframe_host_common kamiframe_options
-                SDL3::SDL3)
+        PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
+                kamiframe_options SDL3::SDL3)
     set_target_properties(kamiframe-sim PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
@@ -67,7 +97,8 @@ if(KAMIFRAME_BUILD_HEADLESS)
     target_include_directories(kamiframe-headless
         PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/headless)
     target_link_libraries(kamiframe-headless
-        PRIVATE hakoniwaos kamiframe_host_common kamiframe_options)
+        PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
+                kamiframe_options)
     set_target_properties(kamiframe-headless PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -119,4 +150,22 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # loop entirely -- this is a storage/power check, not a rendering one.
     add_test(NAME storage_power_check
              COMMAND kamiframe-headless --verify-storage-power)
+
+    # Proves the LVGL port glue renders deterministically frame to frame,
+    # the same property headless_determinism proves for the custom engine.
+    # See ADR 0013. Bypasses kf_app_frame() entirely -- this exercises LVGL
+    # directly, not the placeholder demo, and does not touch the golden
+    # checksums above.
+    #
+    # KAMIFRAME_LVGL_GOLDEN_CHECKSUM: an FNV-1a hash of the framebuffer after
+    # the proof screen has rendered, using headless's synthetic per-frame
+    # clock so it is host-speed-independent (the same reasoning as ADR 0011).
+    # If this fails because the proof screen deliberately changed, run
+    # `kamiframe-headless --verify-lvgl`, take the checksum it prints, and
+    # update the value here in the same commit.
+    set(KAMIFRAME_LVGL_GOLDEN_CHECKSUM "70c00d13cdfb6d97")
+
+    add_test(NAME lvgl_determinism_check
+             COMMAND kamiframe-headless --verify-lvgl
+                     --expect-checksum ${KAMIFRAME_LVGL_GOLDEN_CHECKSUM})
 endif()

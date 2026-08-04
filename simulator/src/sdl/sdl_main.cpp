@@ -17,6 +17,9 @@
 #include "kf/hal/log.h"
 #include "sdl_shared.h"
 
+#include "../lvgl/kf_lvgl_port.h"
+#include "../lvgl/kf_lvgl_proof_screen.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -80,10 +83,23 @@ int main(int argc, char *argv[]) {
     kf_sdl_state().scale = scale;
 
     kf_app_init(mode);
+
+    /* LVGL comes up after core (its memory pool comes from KF_ARENA_LVGL,
+     * carved out by kf_app_init()'s kf_arena_init_all(); its display bridge
+     * writes into the framebuffer kf_app_init()'s kf_fb_init() creates).
+     * See ADR 0013 -- this is a proof screen, not a real menu; nothing to
+     * put in one yet. */
+    kf_lvgl_port_init();
+    kf_lvgl_proof_screen_init();
+
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 
     long frames = 0;
     while (kf_app_frame()) {
+        /* 0 => real elapsed time, not a synthetic step: this is the
+         * interactive build, actually watching the clock. See
+         * kf_lvgl_tick.h. */
+        kf_lvgl_port_pump(0);
         update_title(static_cast<uint64_t>(frames));
         frames++;
         if (max_frames > 0 && frames >= max_frames) {
@@ -91,6 +107,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    kf_lvgl_port_shutdown();
     kf_app_shutdown();
     return 0;
 }

@@ -30,6 +30,7 @@ constexpr ArenaDesc kDescs[KF_ARENA_COUNT] = {
     {"scratch", KF_POOL_INTERNAL_DMA, KF_ARENA_SCRATCH_BYTES, true},
     {"lua", KF_POOL_EXTERNAL, KF_ARENA_LUA_BYTES, false},
     {"assets", KF_POOL_EXTERNAL, KF_ARENA_ASSETS_BYTES, false},
+    {"lvgl", KF_POOL_EXTERNAL, KF_ARENA_LVGL_BYTES, false},
 };
 
 struct ArenaState {

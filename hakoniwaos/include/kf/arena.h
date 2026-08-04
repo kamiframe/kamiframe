@@ -48,7 +48,12 @@ typedef enum {
     /* Decoded sprites and game data. PSRAM. Permanent. */
     KF_ARENA_ASSETS = 3,
 
-    KF_ARENA_COUNT = 4
+    /* LVGL's object/style pool, handed to it via LV_MEM_POOL_ALLOC. PSRAM.
+     * Permanent. Unused until the menu slice; see ADR 0013 and
+     * KF_ARENA_LVGL_BYTES in budget.h. */
+    KF_ARENA_LVGL = 4,
+
+    KF_ARENA_COUNT = 5
 } kf_arena_id;
 
 typedef struct {

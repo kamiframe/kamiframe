@@ -450,6 +450,9 @@ void kf_app_shutdown(void) {
     g.running = false;
 }
 
+uint32_t kf_app_buttons_held(void) { return g.buttons_stable; }
+uint32_t kf_app_buttons_pressed(void) { return g.buttons_pressed_edge; }
+
 const kf_frame_stats *kf_app_last_frame(void) { return &g.last; }
 
 kf_frame_summary kf_app_frame_summary(void) {

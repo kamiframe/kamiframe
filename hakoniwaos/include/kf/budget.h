@@ -149,6 +149,14 @@
 /* Decoded sprites and other game assets held in RAM. */
 #define KF_ARENA_ASSETS_BYTES       (2u * 1024u * 1024u)
 
+/* LVGL's own object/style heap -- see ADR 0013. Real-world LVGL deployments
+ * report needing 80-140KB; this is sized generously against that figure,
+ * same "measure honestly, don't cut it close" reasoning every other arena
+ * here follows, not the bare 64KB minimum LVGL itself defaults to. Not used
+ * until the menu slice; declared now for the same reason KF_ARENA_LUA is:
+ * so the budget arithmetic below stays honest about what has to fit. */
+#define KF_ARENA_LVGL_BYTES         (256u * 1024u)
+
 /* -------------------------------------------------------------------------
  * Flash
  * ------------------------------------------------------------------------- */
@@ -198,8 +206,9 @@ KF_STATIC_ASSERT(KF_ARENA_FRAMEBUFFER_BYTES + KF_ARENA_SCRATCH_BYTES
                  "Internal SRAM arenas exceed the internal pool budget. "
                  "You cannot fit this on the device. See kf/budget.h.");
 
-KF_STATIC_ASSERT(KF_ARENA_LUA_BYTES + KF_ARENA_ASSETS_BYTES
-                     <= KF_POOL_PSRAM_BYTES,
+KF_STATIC_ASSERT(KF_ARENA_LUA_BYTES + KF_ARENA_ASSETS_BYTES +
+                          KF_ARENA_LVGL_BYTES <=
+                      KF_POOL_PSRAM_BYTES,
                  "PSRAM arenas exceed 8MB. See kf/budget.h.");
 
 KF_STATIC_ASSERT(KF_FLASH_ASSET_BUDGET_BYTES < KF_FLASH_TOTAL_BYTES,

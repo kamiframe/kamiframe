@@ -11,6 +11,7 @@
  *     kamiframe-headless [--frames N] [--seed N] [--expect-checksum HEX]
  *                        [--max-dirty-percent N]
  *     kamiframe-headless --verify-storage-power
+ *     kamiframe-headless --verify-lvgl [--expect-checksum HEX]
  *
  * Exit codes:
  *     0  everything asserted held
@@ -18,13 +19,17 @@
  */
 
 #include "kf/app.h"
+#include "kf/arena.h"
 #include "kf/budget.h"
+#include "kf/framebuffer.h"
 #include "kf/hal/log.h"
 #include "kf/hal/power.h"
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
+#include "../lvgl/kf_lvgl_port.h"
+#include "../lvgl/kf_lvgl_proof_screen.h"
 #include "headless_probe.h"
 
 #include <cstdio>
@@ -156,6 +161,63 @@ int run_storage_power_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves the LVGL port glue -- not the custom engine -- renders
+ * deterministically. See ADR 0013. Bypasses kf_app_init()/kf_app_frame()
+ * entirely: this exercises LVGL directly, the same way
+ * run_storage_power_check() exercises storage/power directly, and never
+ * touches the golden checksums the frame-loop tests guard. */
+int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
+    /* Arenas and the framebuffer are core's, not LVGL's -- LVGL only ever
+     * gets memory through kf_lvgl_mem_pool_alloc(), which calls
+     * kf_arena_alloc(KF_ARENA_LVGL, ...). Both must exist first. */
+    kf_arena_init_all();
+    kf_fb_init();
+
+    kf_lvgl_port_init();
+    kf_lvgl_proof_screen_init();
+
+    /* A synthetic per-frame clock, never real elapsed host time -- see
+     * kf_lvgl_tick.h. This loop runs flat out (kf_host_time_set_realtime
+     * (false), set in main() below), so real time between iterations would
+     * be scheduler noise, not frame count, the exact bug ADR 0011 fixed for
+     * button debounce. 30 ticks at a nominal 30fps frame period is enough
+     * for LVGL to have laid out and flushed the proof screen at least once,
+     * with headroom to spare. */
+    for (int i = 0; i < 30; ++i) {
+        kf_lvgl_port_pump(static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u));
+    }
+
+    /* FNV-1a over the framebuffer LVGL's flush callback wrote into, the
+     * same algorithm headless_display.cpp uses for the golden-frame tests,
+     * computed independently here since this path never calls
+     * kf_display_present(). */
+    uint64_t checksum = 1469598103934665603ull;
+    const uint8_t *bytes =
+        reinterpret_cast<const uint8_t *>(kf_fb_pixels());
+    for (size_t i = 0; i < KF_FRAMEBUFFER_BYTES; ++i) {
+        checksum ^= bytes[i];
+        checksum *= 1099511628211ull;
+    }
+
+    kf_lvgl_port_shutdown();
+
+    std::printf("checksum %016llx\n",
+                static_cast<unsigned long long>(checksum));
+
+    bool ok = true;
+    if (have_expect && checksum != expect_checksum) {
+        KF_LOGE(TAG,
+                "checksum mismatch: got %016llx, expected %016llx. The "
+                "proof screen changed. If that was deliberate, update "
+                "KAMIFRAME_LVGL_GOLDEN_CHECKSUM in simulator/CMakeLists.txt.",
+                static_cast<unsigned long long>(checksum), expect_checksum);
+        ok = false;
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -165,6 +227,7 @@ int main(int argc, char *argv[]) {
     bool have_expect = false;
     long max_dirty_percent = -1;
     bool verify_storage_power = false;
+    bool verify_lvgl = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -183,10 +246,13 @@ int main(int argc, char *argv[]) {
             mode = KF_DEMO_FULLSCREEN;
         } else if (std::strcmp(argv[i], "--verify-storage-power") == 0) {
             verify_storage_power = true;
+        } else if (std::strcmp(argv[i], "--verify-lvgl") == 0) {
+            verify_lvgl = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
-                        "kamiframe-headless --verify-storage-power\n");
+                        "kamiframe-headless --verify-storage-power\n"
+                        "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n");
             return 0;
         }
     }
@@ -202,6 +268,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_storage_power) {
         return run_storage_power_check();
+    }
+
+    if (verify_lvgl) {
+        return run_lvgl_check(expect_checksum, have_expect);
     }
 
     kf_app_init(mode);
