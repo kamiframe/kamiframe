@@ -1,0 +1,36 @@
+# Architecture decision records
+
+Short notes explaining why HakoniwaOS is built the way it is. Each one names
+the decision, what else was considered, and what it would cost to change.
+
+They exist for two readers: a contributor asking "why is it like this," and
+future us in month eight asking the same question with less patience.
+
+| # | Decision | Status |
+|---|---|---|
+| [0001](adr-0001-language.md) | C++17, no exceptions, no RTTI, C-compatible HAL headers | Accepted |
+| [0002](adr-0002-build-system.md) | One source tree, two build systems, via `ESP_PLATFORM` | Accepted |
+| [0003](adr-0003-sdl3.md) | SDL3 for the desktop backend | Accepted |
+| [0004](adr-0004-hal-surface.md) | What belongs in the HAL and what does not | Accepted |
+| [0005](adr-0005-hal-dispatch.md) | Compile-time backend selection, runtime capabilities | Accepted |
+| [0006](adr-0006-constraint-enforcement.md) | Where the device's limits are enforced | Accepted |
+| [0007](adr-0007-frame-loop-ownership.md) | The backend owns the loop, not the core | Accepted |
+| [0008](adr-0008-memory-model.md) | Fixed arenas, no heap in core | Accepted |
+| [0009](adr-0009-transfer-cost.md) | Modelling display transfer cost on desktop | Accepted |
+
+Open evaluations, deliberately not decided:
+
+- **LVGL versus a custom sprite engine.** A week each, later. Nothing in
+  slice one prejudges it: everything drawing-related sits above
+  `kf/framebuffer.h`, on the core side of the HAL.
+- **Lua version and number type.** LuaJIT is already ruled out (it does not
+  target Xtensa or RISC-V, so using it on desktop would create exactly the
+  two-codebase failure this architecture exists to prevent). Lua 5.4 versus
+  5.3, and 32-bit floats versus doubles, are open.
+- **The creature class name.** Deferred by the naming decision record.
+
+See also `../frame-budget.md`, which works through what the display bandwidth
+means for full-screen animation and what the options are for 60fps.
+
+The full option space behind these, including what was rejected, is in
+`08-phase1-slice1-decisions.md` in the planning folder.
