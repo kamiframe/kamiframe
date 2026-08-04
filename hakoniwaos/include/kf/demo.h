@@ -9,7 +9,10 @@
  * file is deleted and kf_app_frame() drives a loaded application instead. Do
  * not build anything on top of it.
  *
- * Two modes, and the second one exists to answer a specific question.
+ * Three modes now, not two -- see KF_DEMO_NONE below for why a third one
+ * became necessary rather than optional, the same way ADR 0013 found a
+ * theme necessary rather than optional once there was something real on
+ * screen to look at.
  */
 
 #ifndef KF_DEMO_H
@@ -34,7 +37,21 @@ typedef enum {
      * empirically rather than by argument. Run it and read the budget report:
      * the drawing is cheap and the transfer is not, which is the shape of
      * this hardware. See docs/frame-budget.md. */
-    KF_DEMO_FULLSCREEN = 1
+    KF_DEMO_FULLSCREEN = 1,
+
+    /* Draws and moves nothing at all -- kf_demo_update()/kf_demo_draw()
+     * become no-ops. For a real LVGL screen (ADR 0017's pet screen and
+     * whatever follows it): KF_DEMO_SPRITE's bouncing sprite continuously
+     * erases the small patch it moved off of, and LVGL's partial-render
+     * mode only re-flushes pixels where ITS OWN object tree changed, so
+     * every erased patch that overlapped a static widget stayed erased
+     * permanently -- visible as a black trail slowly consuming the whole
+     * screen. See docs/architecture/adr-0017-pet-screen.md's "Found after
+     * delivery" section for the diagnosis. Golden-checksum tests
+     * (headless_determinism, headless_dirty_area, headless_fullscreen)
+     * keep using KF_DEMO_SPRITE/KF_DEMO_FULLSCREEN unchanged -- they are
+     * about the demo mechanism itself, not about anything LVGL owns. */
+    KF_DEMO_NONE = 2
 } kf_demo_mode;
 
 void kf_demo_init(uint32_t seed, kf_demo_mode mode);

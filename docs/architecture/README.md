@@ -24,6 +24,7 @@ future us in month eight asking the same question with less patience.
 | [0014](adr-0014-lua-embedding.md) | Embedding Lua: version, sandboxing, the arena-backed allocator | Accepted |
 | [0015](adr-0015-pet-simulation-framework.md) | The pet simulation framework: needs, decay, offline fast-forward | Accepted |
 | [0016](adr-0016-lua-pet-binding.md) | The `pet.*` Lua binding, and a pet session to bind it to | Accepted |
+| [0017](adr-0017-pet-screen.md) | The pet screen | Accepted |
 
 Open evaluations, deliberately not decided:
 

@@ -157,6 +157,18 @@ void kf_demo_init(uint32_t seed, kf_demo_mode mode) {
     kf_rng_seed(seed);
     d.mode = mode;
 
+    if (mode == KF_DEMO_NONE) {
+        /* Nothing to set up: no sprite moves, no tileset gets built, no
+         * pixel of the framebuffer is ever touched by this file again --
+         * see kf_demo_update()/kf_demo_draw()'s own early returns below.
+         * Whatever owns the screen (LVGL, as of ADR 0017) owns all of it,
+         * uncontested -- see kf/demo.h's own comment on KF_DEMO_NONE for
+         * why that turned out to matter. */
+        KF_LOGI(TAG, "NONE mode: demo draws nothing, LVGL (or whatever "
+                     "else is running) owns every pixel");
+        return;
+    }
+
     d.sprite.pixels = kf_test_sprite_pixels;
     d.sprite.width = KF_TEST_SPRITE_WIDTH;
     d.sprite.height = KF_TEST_SPRITE_HEIGHT;
@@ -204,6 +216,10 @@ void kf_demo_init(uint32_t seed, kf_demo_mode mode) {
 }
 
 void kf_demo_update(uint32_t held, uint32_t pressed) {
+    if (d.mode == KF_DEMO_NONE) {
+        return;
+    }
+
     const int32_t nudge = 8;
     Mover &lead = d.movers[0];
 
@@ -269,6 +285,10 @@ void kf_demo_update(uint32_t held, uint32_t pressed) {
 }
 
 void kf_demo_draw(void) {
+    if (d.mode == KF_DEMO_NONE) {
+        return;
+    }
+
     if (d.mode == KF_DEMO_FULLSCREEN) {
         /* No cleverness at all. Repaint the world, then everything on it.
          * The dirty rectangle ends up covering the screen, and the budget

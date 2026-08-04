@@ -38,7 +38,26 @@ target_link_libraries(kamiframe_host_common
     PUBLIC hakoniwaos kamiframe_options)
 
 # ---------------------------------------------------------------------------
-# LVGL port glue -- menus and stat displays, see ADR 0013.
+# Pet session -- owns the live kf_pet_state instance and drives its two
+# "ages" (offline fast-forward at boot, live decay per frame). See ADR
+# 0016. Lives here, not in hakoniwaos/, for the same reason
+# kamiframe_lvgl_port and kamiframe_lua_port do: this is simulator-only
+# orchestration around a Core mechanism, not a claim that the ESP32 build
+# has it wired up. Built before both the LVGL and Lua port glue below,
+# because kamiframe_lvgl_port's pet screen (ADR 0017) and
+# kamiframe_lua_port's pet.* binding (ADR 0016) both link against it.
+# ---------------------------------------------------------------------------
+add_library(kamiframe_pet_port STATIC
+    src/pet/kf_pet_session.cpp
+)
+target_include_directories(kamiframe_pet_port
+    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)
+target_link_libraries(kamiframe_pet_port
+    PUBLIC hakoniwaos kamiframe_host_common kamiframe_options)
+
+# ---------------------------------------------------------------------------
+# LVGL port glue -- menus and stat displays, see ADR 0013. Its pet screen
+# (ADR 0017) is what ties it to kamiframe_pet_port above.
 #
 # Built unconditionally, same as kamiframe_host_common above: both desktop
 # backends link it. Deliberately lives here, not in hakoniwaos/, because this
@@ -54,11 +73,12 @@ add_library(kamiframe_lvgl_port STATIC
     src/lvgl/kf_lvgl_input.cpp
     src/lvgl/kf_lvgl_port.cpp
     src/lvgl/kf_lvgl_proof_screen.cpp
+    src/lvgl/kf_pet_screen.cpp
 )
 target_include_directories(kamiframe_lvgl_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
 target_link_libraries(kamiframe_lvgl_port
-    PUBLIC hakoniwaos lvgl kamiframe_options)
+    PUBLIC hakoniwaos lvgl kamiframe_pet_port kamiframe_options)
 
 # Genuinely circular at the symbol level, not a layering mistake: LVGL calls
 # kf_lvgl_mem_pool_alloc() (defined in kamiframe_lvgl_port, wired in via
@@ -66,23 +86,6 @@ target_link_libraries(kamiframe_lvgl_port
 # else in kamiframe_lvgl_port calls into LVGL. CMake resolves the cycle by
 # repeating both archives on the final link line.
 target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
-
-# ---------------------------------------------------------------------------
-# Pet session -- owns the live kf_pet_state instance and drives its two
-# "ages" (offline fast-forward at boot, live decay per frame). See ADR
-# 0016. Lives here, not in hakoniwaos/, for the same reason
-# kamiframe_lvgl_port and kamiframe_lua_port do: this is simulator-only
-# orchestration around a Core mechanism, not a claim that the ESP32 build
-# has it wired up. Built before the Lua port glue below because
-# kamiframe_lua_port's pet.* binding links against it.
-# ---------------------------------------------------------------------------
-add_library(kamiframe_pet_port STATIC
-    src/pet/kf_pet_session.cpp
-)
-target_include_directories(kamiframe_pet_port
-    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)
-target_link_libraries(kamiframe_pet_port
-    PUBLIC hakoniwaos kamiframe_host_common kamiframe_options)
 
 # ---------------------------------------------------------------------------
 # Lua port glue -- the SDK language, see ADR 0014. Its pet.* binding (ADR
@@ -242,4 +245,35 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # headless_main.cpp's run_lua_pet_check().
     add_test(NAME lua_pet_binding_check
              COMMAND kamiframe-headless --verify-lua-pet)
+
+    # Proves the pet screen (ADR 0017) renders deterministically, the same
+    # property lvgl_determinism_check proves for the (still separate, still
+    # in place) proof screen. See headless_main.cpp's run_pet_screen_check()
+    # and kf_pet_screen.cpp.
+    #
+    # KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM: an FNV-1a hash of the framebuffer
+    # after the pet screen has rendered a fresh pet's starting values, using
+    # headless's synthetic per-frame clock so it is host-speed-independent
+    # (same reasoning as ADR 0011). If this fails because the screen
+    # deliberately changed, run `kamiframe-headless --verify-pet-screen`,
+    # take the checksum it prints, and update the value here in the same
+    # commit as the change that caused it.
+    #
+    # Updated twice on 2026-08-04, same day as the initial value -- see
+    # docs/architecture/adr-0017-pet-screen.md's "Found after delivery"
+    # section for the full story. First update: added a focused-button
+    # style (kf_pet_screen.cpp's g_focus_style, LV_STATE_FOCUSED), which
+    # changes whichever button is focused at start's rendered pixels.
+    # Second update (this one): removed the explicit lv_group_add_obj()
+    # calls that were corrupting which button ends up focused in the first
+    # place (lv_button auto-joins the default group at creation -- the
+    # explicit calls were redundant re-adds that could kick focus onto the
+    # wrong member), so Feed, not Play, is now correctly the one rendered
+    # focused. Deterministic across 6 repeated runs before being locked in,
+    # same discipline as every earlier value here.
+    set(KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM "5cc5b283817de3e6")
+
+    add_test(NAME pet_screen_check
+             COMMAND kamiframe-headless --verify-pet-screen
+                     --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
 endif()

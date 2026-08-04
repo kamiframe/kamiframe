@@ -15,6 +15,7 @@
  *     kamiframe-headless --verify-lua [--frames N]
  *     kamiframe-headless --verify-pet
  *     kamiframe-headless --verify-lua-pet
+ *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *
  * Exit codes:
  *     0  everything asserted held
@@ -34,6 +35,7 @@
 #include "../host/host_time.h"
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
+#include "../lvgl/kf_pet_screen.h"
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_port.h"
 #include "../lua/kf_lua_proof_script.h"
@@ -412,6 +414,98 @@ int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
     return ok ? 0 : 1;
 }
 
+/* Proves the pet screen (ADR 0017) renders deterministically, the same
+ * property run_lvgl_check() above proves for the (separate, still in
+ * place) proof screen. Bypasses kf_app_init()/kf_app_frame() entirely, the
+ * same way run_lvgl_check() does -- this exercises the pet screen
+ * directly, not the placeholder demo, and does not touch
+ * KAMIFRAME_LVGL_GOLDEN_CHECKSUM.
+ *
+ * Needs more brought up first than run_lvgl_check() does: the pet screen
+ * reads kf_pet_session_state(), which needs the storage/power HAL and
+ * kf_pet_session_init() -- the same isolated-per-PID storage directory
+ * trick run_pet_check() and run_lua_pet_check() already use. */
+int run_pet_screen_check(unsigned long long expect_checksum,
+                          bool have_expect) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-pet-screen-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    /* Arenas and the framebuffer are core's, not LVGL's -- see
+     * run_lvgl_check()'s identical comment above. */
+    kf_arena_init_all();
+    kf_fb_init();
+
+    kf_pet_session_init();
+
+    kf_lvgl_port_init();
+    kf_pet_screen_init();
+
+    /* Same synthetic, fixed per-frame clock and frame count as
+     * run_lvgl_check(), for the same reason: this loop runs flat out, so
+     * real time between iterations would be scheduler noise, not frame
+     * count. kf_pet_session_frame() runs first each iteration so the
+     * screen update that follows draws THIS frame's state, matching the
+     * ordering sdl_main.cpp uses for the interactive build. */
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    for (int i = 0; i < 30; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_pet_screen_update();
+        kf_lvgl_port_pump(kFixedDtMs);
+    }
+
+    /* Same FNV-1a-over-the-framebuffer approach as run_lvgl_check(), for
+     * the same reason: this is fundamentally a rendering determinism
+     * check, and every other rendering check in this codebase already
+     * uses a checksum rather than an exact arithmetic invariant (contrast
+     * run_lua_check()/run_lua_pet_check(), which are logic checks, not
+     * rendering ones). */
+    uint64_t checksum = 1469598103934665603ull;
+    const uint8_t *bytes =
+        reinterpret_cast<const uint8_t *>(kf_fb_pixels());
+    for (size_t i = 0; i < KF_FRAMEBUFFER_BYTES; ++i) {
+        checksum ^= bytes[i];
+        checksum *= 1099511628211ull;
+    }
+
+    kf_lvgl_port_shutdown();
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("checksum %016llx\n",
+                static_cast<unsigned long long>(checksum));
+
+    if (have_expect && checksum != expect_checksum) {
+        KF_LOGE(TAG,
+                "checksum mismatch: got %016llx, expected %016llx. The "
+                "pet screen changed. If that was deliberate, update "
+                "KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM in "
+                "simulator/CMakeLists.txt.",
+                static_cast<unsigned long long>(checksum), expect_checksum);
+        ok = false;
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves the Lua port glue -- the sandboxed VM, kf_lua_alloc's free/realloc
  * path under real churn, and both directions of the kf.* binding -- behave
  * identically frame to frame. See ADR 0014. Bypasses kf_app_init()/
@@ -596,6 +690,7 @@ int main(int argc, char *argv[]) {
     bool verify_lua = false;
     bool verify_pet = false;
     bool verify_lua_pet = false;
+    bool verify_pet_screen = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -622,6 +717,8 @@ int main(int argc, char *argv[]) {
             verify_pet = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
+            verify_pet_screen = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -629,7 +726,9 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua [--frames N]\n"
                         "kamiframe-headless --verify-pet\n"
-                        "kamiframe-headless --verify-lua-pet\n");
+                        "kamiframe-headless --verify-lua-pet\n"
+                        "kamiframe-headless --verify-pet-screen "
+                        "[--expect-checksum HEX]\n");
             return 0;
         }
     }
@@ -661,6 +760,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_lua_pet) {
         return run_lua_pet_check();
+    }
+
+    if (verify_pet_screen) {
+        return run_pet_screen_check(expect_checksum, have_expect);
     }
 
     kf_app_init(mode);
