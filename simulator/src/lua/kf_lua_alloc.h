@@ -31,8 +31,24 @@
 
 /* Acquires KF_ARENA_LUA_BYTES from KF_ARENA_LUA (kf/arena.h) and initialises
  * the free list kf_lua_alloc() below suballocates from. Call once, before
- * lua_newstate(). */
+ * lua_newstate(). Safe to call again after kf_lua_alloc_shutdown() --
+ * kf_lua_port.h's own contract promises a caller can retry
+ * kf_lua_port_init() with different source after a
+ * kf_lua_port_shutdown(), and this is what makes that true for the
+ * allocator specifically: the underlying arena block is acquired from
+ * kf_arena_alloc() (a bump allocator, no free -- see kf/arena.h) only
+ * once, ever; every later re-init reuses that SAME block and just resets
+ * its free list, rather than trying to carve a second
+ * KF_ARENA_LUA_BYTES-sized block out of an arena sized for exactly one. */
 void kf_lua_alloc_init();
+
+/* Marks the allocator inactive so kf_lua_alloc_init() can be called again.
+ * Does NOT release the underlying arena block back to KF_ARENA_LUA -- see
+ * kf_lua_alloc_init()'s comment for why that would not even be possible. A
+ * script that leaked memory the GC never reclaimed is simply gone along
+ * with the rest of that Lua VM's state; the next kf_lua_alloc_init() starts
+ * the free list over from one whole block regardless. */
+void kf_lua_alloc_shutdown();
 
 /* Matches lua_Alloc's signature exactly (see lua.h's typedef) without this
  * header depending on Lua -- kf_lua_port.cpp is the only caller, and it

@@ -13,6 +13,8 @@
  *     kamiframe-headless --verify-storage-power
  *     kamiframe-headless --verify-lvgl [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua [--frames N]
+ *     kamiframe-headless --verify-pet
+ *     kamiframe-headless --verify-lua-pet
  *
  * Exit codes:
  *     0  everything asserted held
@@ -27,12 +29,15 @@
 #include "kf/hal/power.h"
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
+#include "kf/pet.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
+#include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_port.h"
 #include "../lua/kf_lua_proof_script.h"
+#include "../pet/kf_pet_session.h"
 #include "headless_probe.h"
 
 #include <cstdio>
@@ -164,6 +169,192 @@ int run_storage_power_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves the pet simulation framework's offline fast-forward mechanism --
+ * not just the decay maths in isolation, but the actual save/sleep/reload
+ * path a real device goes through -- behaves identically to a single direct
+ * kf_pet_advance() call. See docs/architecture/adr-0015-pet-simulation-
+ * framework.md.
+ *
+ * Uses the same isolated-per-PID storage directory trick as
+ * run_storage_power_check(), and the same kf_power_deep_sleep_until()
+ * instant-fast-forward as that check's offline-ageing half -- this is that
+ * same mechanism, one layer up, proving core's pet.* sits correctly on top
+ * of it rather than re-proving the HAL underneath it. */
+int run_pet_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-pet-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. Decay math: a fresh pet is full; advancing by exactly one hour
+     * must drop each need by exactly its configured mp_per_hour rate --
+     * the point of computing decay as one closed-form step rather than
+     * simulating it second by second. */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.energy_mp == KF_PET_MILLIPERCENT_MAX,
+              "a fresh pet starts at full needs");
+
+        kf_pet_advance(&state, &config, 3600u);
+        check(state.hunger_mp ==
+                  KF_PET_MILLIPERCENT_MAX - config.hunger_decay_mp_per_hour,
+              "hunger decays by exactly the configured rate over one hour");
+        check(state.happiness_mp == KF_PET_MILLIPERCENT_MAX -
+                                         config.happiness_decay_mp_per_hour,
+              "happiness decays by exactly the configured rate over one "
+              "hour");
+        check(state.energy_mp ==
+                  KF_PET_MILLIPERCENT_MAX - config.energy_decay_mp_per_hour,
+              "energy decays by exactly the configured rate over one hour");
+    }
+
+    /* 2. Clamp at zero: a huge elapsed time must not underflow past empty.
+     * A year is nowhere near kf_pet_advance()'s real ceiling (see its
+     * uint64_t intermediate math), just comfortably past every configured
+     * decay rate's own "empty" point. */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        kf_pet_advance(&state, &config, 365u * 24u * 3600u);
+        check(state.hunger_mp == 0u && state.happiness_mp == 0u &&
+                  state.energy_mp == 0u,
+              "needs clamp at zero rather than underflowing over a very "
+              "long elapsed time");
+    }
+
+    /* 3. Care actions raise a need and clamp at MAX rather than banking
+     * overfeeding against future decay. */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        kf_pet_feed(&state);
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX,
+              "feeding an already-full pet does not overflow past max");
+
+        kf_pet_advance(&state, &config, 3600u);
+        kf_pet_feed(&state);
+        kf_pet_play(&state);
+        kf_pet_rest(&state);
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.energy_mp == KF_PET_MILLIPERCENT_MAX,
+              "care actions top a decayed need back up to max (the boost "
+              "exceeds one hour's decay for every configured rate)");
+    }
+
+    /* 4. The offline fast-forward equivalence -- the strongest proof of
+     * the whole mechanism, and the actual hardware-purchase trigger:
+     * save state, fast-forward the wall clock by 3 simulated days via
+     * kf_power_deep_sleep_until() (exactly as run_storage_power_check()'s
+     * offline-ageing half does), reload via kf_pet_load_and_advance(), and
+     * confirm the result is byte-for-byte identical to calling
+     * kf_pet_advance() directly on a snapshot of the pre-sleep state with
+     * the same elapsed seconds. If save/sleep/reload ever drifted from
+     * direct advance, this is what would catch it. */
+    {
+        kf_pet_state state{};
+        check(kf_pet_load_and_advance(&state, &config) == KF_OK,
+              "load_and_advance with no prior save succeeds");
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX,
+              "a missing save initialises a fresh pet rather than erroring");
+        check(state.last_advanced.valid,
+              "last_advanced becomes valid after the first "
+              "load_and_advance");
+
+        /* Some care and a bit of "live" elapsed time first, so the
+         * pre-sleep snapshot below is not just a fresh pet -- proving the
+         * equivalence holds from an arbitrary state, not only from zero. */
+        kf_pet_advance(&state, &config, 2u * 3600u);
+        kf_pet_feed(&state);
+        check(kf_pet_save(&state) == KF_OK, "save after some care actions");
+
+        const kf_pet_state pre_sleep = state;
+
+        const kf_wall_time before = kf_time_wall();
+        check(before.valid, "wall clock valid before the simulated sleep");
+        constexpr int64_t kThreeDaysSeconds = 3 * 24 * 60 * 60;
+        kf_wall_time wake_at = before;
+        wake_at.epoch_seconds += kThreeDaysSeconds;
+        check(kf_power_deep_sleep_until(wake_at) == KF_OK,
+              "deep sleep call (simulated 3 days offline)");
+
+        kf_pet_state loaded{};
+        check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
+              "load_and_advance after the simulated offline sleep");
+
+        kf_pet_state expected = pre_sleep;
+        kf_pet_advance(&expected, &config,
+                        static_cast<uint32_t>(kThreeDaysSeconds));
+
+        check(loaded.hunger_mp == expected.hunger_mp &&
+                  loaded.happiness_mp == expected.happiness_mp &&
+                  loaded.energy_mp == expected.energy_mp,
+              "offline fast-forward (save, sleep, load_and_advance) "
+              "produces needs identical to one direct kf_pet_advance() "
+              "call with the same elapsed seconds");
+        check(loaded.last_advanced.valid &&
+                  loaded.last_advanced.epoch_seconds == wake_at.epoch_seconds,
+              "last_advanced adopts the new wall-clock reading after "
+              "fast-forwarding");
+    }
+
+    /* 5. Backwards clock: an RTC reset must not age the pet negatively.
+     * kf_power_deep_sleep_until() itself refuses to move time backwards (a
+     * past wake_at is a no-op, see kf/hal/power.h), so this uses
+     * kf_time_set_wall() directly to simulate the clock actually jumping
+     * back -- the case kf_pet_load_and_advance()'s own header comment
+     * documents. */
+    {
+        kf_pet_state state{};
+        check(kf_pet_load_and_advance(&state, &config) == KF_OK,
+              "load_and_advance to establish a baseline before the "
+              "backwards jump");
+        check(kf_pet_save(&state) == KF_OK, "save the baseline state");
+        const kf_pet_state before_backwards = state;
+
+        const kf_wall_time now = kf_time_wall();
+        check(kf_time_set_wall(now.epoch_seconds - 1000) == KF_OK,
+              "set the wall clock backwards by 1000s (simulated RTC "
+              "reset)");
+
+        kf_pet_state after_backwards{};
+        check(kf_pet_load_and_advance(&after_backwards, &config) == KF_OK,
+              "load_and_advance survives a backwards clock jump rather "
+              "than erroring");
+        check(after_backwards.hunger_mp == before_backwards.hunger_mp &&
+                  after_backwards.happiness_mp ==
+                      before_backwards.happiness_mp &&
+                  after_backwards.energy_mp == before_backwards.energy_mp,
+              "a backwards clock jump does not age the pet negatively -- "
+              "elapsed clamps to zero rather than underflowing");
+    }
+
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves the LVGL port glue -- not the custom engine -- renders
  * deterministically. See ADR 0013. Bypasses kf_app_init()/kf_app_frame()
  * entirely: this exercises LVGL directly, the same way
@@ -286,6 +477,112 @@ int run_lua_check(long frames) {
     return ok ? 0 : 1;
 }
 
+/* Proves the pet.* Lua binding (ADR 0016) -- not the pet decay maths
+ * itself, already proved by run_pet_check() above, but the FFI wiring
+ * between a Lua script and the live kf_pet_session state. Two proof
+ * scripts run back to back against the SAME continuing session (see
+ * kf_lua_pet_proof_script.h for why two, not one): a decay-and-read phase,
+ * then a care-and-mutate phase. */
+int run_lua_pet_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-lua-pet-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_pet_session_init();
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    /* kf_pet_session_frame() only applies decay once
+     * KF_PET_SESSION_FLUSH_SECONDS of live time has accumulated (see its
+     * header comment) -- at kFixedDtMs per frame, that first flush lands
+     * around frame ceil(30000/kFixedDtMs). 1200 frames clears that with
+     * comfortable margin (guarantees exactly one flush, not zero) while
+     * staying nowhere near a second one, so the expected direction of the
+     * check below (strictly less than max, not equal to some exact
+     * value) does not depend on hitting the boundary exactly. */
+    constexpr long kStage1Frames = 1200;
+    constexpr long kStage2Frames = 30;
+
+    /* Stage 1: decay-and-read. No care calls at all -- just enough live
+     * frames for hunger to visibly move (a fresh pet at
+     * kf_pet_default_config()'s ~1042 mp/hour decays a handful of mp once
+     * the flush threshold is crossed, comfortably nonzero and comfortably
+     * short of exhausting the need entirely). */
+    check(kf_lua_port_init(kKfLuaPetDecayProofScriptSource,
+                            kKfLuaPetDecayProofScriptChunkName),
+          "stage 1 (decay) proof script loaded");
+    for (long i = 0; i < kStage1Frames; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_lua_port_frame(kFixedDtMs);
+    }
+    check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage1Frames),
+          "stage 1 ran the full frame count without a script error");
+    const int64_t reported_after_decay = kf_lua_port_last_report();
+    const kf_pet_millipercent live_after_decay =
+        kf_pet_session_state()->hunger_mp;
+    kf_lua_port_shutdown();
+
+    check(reported_after_decay == static_cast<int64_t>(live_after_decay),
+          "pet.hunger() read via Lua matches kf_pet_session_state() read "
+          "directly from C++ -- the FFI marshaling is exact, not just "
+          "close");
+    check(live_after_decay < KF_PET_MILLIPERCENT_MAX,
+          "hunger visibly decayed over stage 1's live elapsed time -- "
+          "proves the binding reads a genuinely live, ticking state, not "
+          "a frozen snapshot taken once at registration");
+
+    /* Stage 2: care-and-mutate, continuing the SAME kf_pet_session (it is
+     * process-global, independent of the Lua VM's own lifetime -- shutting
+     * down and re-initialising Lua between stages does not touch it). Care
+     * every frame should keep every need pinned at max, since the boost
+     * vastly exceeds one frame's decay. */
+    check(kf_lua_port_init(kKfLuaPetCareProofScriptSource,
+                            kKfLuaPetCareProofScriptChunkName),
+          "stage 2 (care) proof script loaded");
+    for (long i = 0; i < kStage2Frames; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_lua_port_frame(kFixedDtMs);
+    }
+    check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage2Frames),
+          "stage 2 ran the full frame count without a script error");
+    check(kf_lua_port_last_report() ==
+              static_cast<int64_t>(KF_PET_MILLIPERCENT_MAX),
+          "pet.feed() called from Lua brought hunger back to exactly max, "
+          "reported back through pet.hunger()");
+    const kf_pet_state *live_after_care = kf_pet_session_state();
+    check(live_after_care->hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+              live_after_care->happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+              live_after_care->energy_mp == KF_PET_MILLIPERCENT_MAX,
+          "pet.play() and pet.rest(), not just pet.feed(), are correctly "
+          "wired -- happiness and energy are also back at max, checked "
+          "directly against the live C++ session state, independent of "
+          "what the script itself reported");
+    kf_lua_port_shutdown();
+
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -297,6 +594,8 @@ int main(int argc, char *argv[]) {
     bool verify_storage_power = false;
     bool verify_lvgl = false;
     bool verify_lua = false;
+    bool verify_pet = false;
+    bool verify_lua_pet = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -319,12 +618,18 @@ int main(int argc, char *argv[]) {
             verify_lvgl = true;
         } else if (std::strcmp(argv[i], "--verify-lua") == 0) {
             verify_lua = true;
+        } else if (std::strcmp(argv[i], "--verify-pet") == 0) {
+            verify_pet = true;
+        } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
+            verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
                         "kamiframe-headless --verify-storage-power\n"
                         "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n"
-                        "kamiframe-headless --verify-lua [--frames N]\n");
+                        "kamiframe-headless --verify-lua [--frames N]\n"
+                        "kamiframe-headless --verify-pet\n"
+                        "kamiframe-headless --verify-lua-pet\n");
             return 0;
         }
     }
@@ -348,6 +653,14 @@ int main(int argc, char *argv[]) {
 
     if (verify_lua) {
         return run_lua_check(frames);
+    }
+
+    if (verify_pet) {
+        return run_pet_check();
+    }
+
+    if (verify_lua_pet) {
+        return run_lua_pet_check();
     }
 
     kf_app_init(mode);

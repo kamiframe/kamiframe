@@ -6,6 +6,8 @@
 
 #include "kf_lua_alloc.h"
 
+#include "../pet/kf_pet_session.h"
+
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
@@ -68,6 +70,69 @@ void register_bindings(lua_State *L) {
     lua_setglobal(L, "kf");
 }
 
+/* pet.* -- read the live pet (kf_pet_session.h, ADR 0016) and act on it.
+ * Registered unconditionally, the same as kf.* above, whether or not a
+ * given script uses it: the cost of an unused binding is nothing, and it
+ * keeps this file the single place every global a script can see gets
+ * wired up. Requires kf_pet_session_init() to already have run before any
+ * script calls one of these -- a host wiring order this codebase treats
+ * the same as "arenas before LVGL" or "arenas before Lua": a caller
+ * mistake, not a script mistake, so it asserts rather than degrading (see
+ * kf_pet_session.cpp). */
+int lua_pet_hunger(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->hunger_mp));
+    return 1;
+}
+
+int lua_pet_happiness(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->happiness_mp));
+    return 1;
+}
+
+int lua_pet_energy(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->energy_mp));
+    return 1;
+}
+
+int lua_pet_feed(lua_State *L) {
+    (void)L;
+    kf_pet_session_feed();
+    return 0;
+}
+
+int lua_pet_play(lua_State *L) {
+    (void)L;
+    kf_pet_session_play();
+    return 0;
+}
+
+int lua_pet_rest(lua_State *L) {
+    (void)L;
+    kf_pet_session_rest();
+    return 0;
+}
+
+int lua_pet_save(lua_State *L) {
+    (void)L;
+    kf_pet_session_save();
+    return 0;
+}
+
+const luaL_Reg kKfPetFuncs[] = {
+    {"hunger", lua_pet_hunger},       {"happiness", lua_pet_happiness},
+    {"energy", lua_pet_energy},       {"feed", lua_pet_feed},
+    {"play", lua_pet_play},           {"rest", lua_pet_rest},
+    {"save", lua_pet_save},           {nullptr, nullptr},
+};
+
+void register_pet_bindings(lua_State *L) {
+    luaL_newlib(L, kKfPetFuncs);
+    lua_setglobal(L, "pet");
+}
+
 } // namespace
 
 bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
@@ -123,6 +188,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
                           /*preload=*/0);
 
     register_bindings(g.L);
+    register_pet_bindings(g.L);
 
     g.disabled_after_error = false;
     g.last_call_us = 0;
@@ -134,6 +200,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
         KF_LOGE(TAG, "script failed to load: %s", lua_tostring(g.L, -1));
         lua_close(g.L);
         g.L = nullptr;
+        kf_lua_alloc_shutdown();
         return false;
     }
 
@@ -142,6 +209,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
                 lua_tostring(g.L, -1));
         lua_close(g.L);
         g.L = nullptr;
+        kf_lua_alloc_shutdown();
         return false;
     }
 
@@ -201,6 +269,7 @@ void kf_lua_port_shutdown() {
     lua_close(g.L);
     g.L = nullptr;
     g.ready = false;
+    kf_lua_alloc_shutdown();
 }
 
 int64_t kf_lua_port_last_report() { return g.last_report; }

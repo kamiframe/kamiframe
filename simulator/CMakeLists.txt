@@ -68,7 +68,25 @@ target_link_libraries(kamiframe_lvgl_port
 target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
 
 # ---------------------------------------------------------------------------
-# Lua port glue -- the SDK language, see ADR 0014.
+# Pet session -- owns the live kf_pet_state instance and drives its two
+# "ages" (offline fast-forward at boot, live decay per frame). See ADR
+# 0016. Lives here, not in hakoniwaos/, for the same reason
+# kamiframe_lvgl_port and kamiframe_lua_port do: this is simulator-only
+# orchestration around a Core mechanism, not a claim that the ESP32 build
+# has it wired up. Built before the Lua port glue below because
+# kamiframe_lua_port's pet.* binding links against it.
+# ---------------------------------------------------------------------------
+add_library(kamiframe_pet_port STATIC
+    src/pet/kf_pet_session.cpp
+)
+target_include_directories(kamiframe_pet_port
+    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)
+target_link_libraries(kamiframe_pet_port
+    PUBLIC hakoniwaos kamiframe_host_common kamiframe_options)
+
+# ---------------------------------------------------------------------------
+# Lua port glue -- the SDK language, see ADR 0014. Its pet.* binding (ADR
+# 0016) is what ties it to kamiframe_pet_port above.
 #
 # Built unconditionally, same as kamiframe_host_common and
 # kamiframe_lvgl_port above: both desktop backends link it. Lives here, not
@@ -84,7 +102,7 @@ add_library(kamiframe_lua_port STATIC
 target_include_directories(kamiframe_lua_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lua)
 target_link_libraries(kamiframe_lua_port
-    PUBLIC hakoniwaos lua_core kamiframe_options)
+    PUBLIC hakoniwaos lua_core kamiframe_pet_port kamiframe_options)
 
 # ---------------------------------------------------------------------------
 # SDL3 simulator
@@ -99,7 +117,8 @@ if(KAMIFRAME_BUILD_SIMULATOR)
     )
     target_link_libraries(kamiframe-sim
         PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
-                kamiframe_lua_port kamiframe_options SDL3::SDL3)
+                kamiframe_lua_port kamiframe_pet_port kamiframe_options
+                SDL3::SDL3)
     set_target_properties(kamiframe-sim PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
@@ -117,7 +136,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
         PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/headless)
     target_link_libraries(kamiframe-headless
         PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
-                kamiframe_lua_port kamiframe_options)
+                kamiframe_lua_port kamiframe_pet_port kamiframe_options)
     set_target_properties(kamiframe-headless PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -203,4 +222,24 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # wording changed. See headless_main.cpp's run_lua_check().
     add_test(NAME lua_determinism_check
              COMMAND kamiframe-headless --verify-lua --frames 300)
+
+    # Proves the pet simulation framework's decay maths and, most
+    # importantly, its offline fast-forward mechanism: save, sleep (via
+    # kf_power_deep_sleep_until(), the same instant-fast-forward
+    # storage_power_check above already proves), reload, and confirm the
+    # result is identical to one direct kf_pet_advance() call with the same
+    # elapsed seconds. See ADR 0015 and headless_main.cpp's
+    # run_pet_check().
+    add_test(NAME pet_offline_ageing_check
+             COMMAND kamiframe-headless --verify-pet)
+
+    # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
+    # the SAME live kf_pet_session state Core computes, not a disconnected
+    # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
+    # directly from C++, and pet.feed()/play()/rest() called from Lua
+    # bring all three needs back to exactly max, checked against the live
+    # C++ state independently of what the script itself reported. See
+    # headless_main.cpp's run_lua_pet_check().
+    add_test(NAME lua_pet_binding_check
+             COMMAND kamiframe-headless --verify-lua-pet)
 endif()

@@ -17,6 +17,7 @@ set(HAKONIWAOS_SRCS
     src/framebuffer.cpp
     src/font.cpp
     src/rng.cpp
+    src/pet.cpp
     src/app.cpp
     src/demo.cpp        # placeholder content, deleted when the app loader lands
 )

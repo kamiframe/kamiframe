@@ -44,8 +44,14 @@ static_assert(sizeof(Tag) == kTagBytes,
               "Tag must be exactly kTagBytes, headers and footers below "
               "assume it");
 
+/* g_base/g_end describe the one block this allocator will ever own, once
+ * acquired -- set on the FIRST kf_lua_alloc_init() and never cleared,
+ * including across a kf_lua_alloc_shutdown(). g_active is the thing that
+ * actually toggles between init and shutdown; see kf_lua_alloc_init()'s
+ * header comment for why the two are deliberately not the same variable. */
 uint8_t *g_base = nullptr;
 uint8_t *g_end = nullptr; /* one past the last byte of the arena block */
+bool g_active = false;
 
 size_t round_up(size_t n, size_t align) {
     return (n + (align - 1)) & ~(align - 1);
@@ -197,24 +203,39 @@ bool try_grow_in_place(Tag *header, uint32_t want) {
 } // namespace
 
 void kf_lua_alloc_init() {
-    KF_ASSERT(g_base == nullptr, "kf_lua_alloc_init called twice");
+    KF_ASSERT(!g_active, "kf_lua_alloc_init called twice without an "
+                         "intervening kf_lua_alloc_shutdown()");
     KF_ASSERT(KF_ARENA_LUA_BYTES > 2u * kTagBytes,
               "KF_ARENA_LUA_BYTES (kf/budget.h) is too small to hold even "
               "one Lua allocator block header+footer");
 
-    void *block = kf_arena_alloc(KF_ARENA_LUA, KF_ARENA_LUA_BYTES, kAlign);
-    g_base = static_cast<uint8_t *>(block);
-    g_end = g_base + KF_ARENA_LUA_BYTES;
+    if (g_base == nullptr) {
+        /* First call ever: acquire the one block this allocator will ever
+         * own. See this function's header comment in kf_lua_alloc.h for
+         * why every later re-init reuses this same block instead of
+         * calling kf_arena_alloc() again. */
+        void *block = kf_arena_alloc(KF_ARENA_LUA, KF_ARENA_LUA_BYTES, kAlign);
+        g_base = static_cast<uint8_t *>(block);
+        g_end = g_base + KF_ARENA_LUA_BYTES;
+    }
 
+    /* Reset the free list to one whole free block spanning the arena,
+     * whether this block is fresh or being reused -- a second (or third...)
+     * Lua VM lifetime starts with a clean heap, not whatever the previous
+     * VM's GC happened to leave behind. */
     const uint32_t payload =
         static_cast<uint32_t>(KF_ARENA_LUA_BYTES - 2u * kTagBytes);
     write_tags(reinterpret_cast<Tag *>(g_base), payload, /*free=*/true);
+
+    g_active = true;
 
     KF_LOGI(TAG, "ready: %u bytes usable for Lua's heap (KF_ARENA_LUA_BYTES "
                  "%u, %zu bytes of that is this allocator's own bookkeeping)",
             payload, static_cast<unsigned>(KF_ARENA_LUA_BYTES),
             2u * kTagBytes);
 }
+
+void kf_lua_alloc_shutdown() { g_active = false; }
 
 void *kf_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     (void)ud;
