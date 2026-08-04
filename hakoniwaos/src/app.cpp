@@ -1,0 +1,349 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright the Kamiframe contributors.
+ *
+ * One frame, and the accounting that goes with it.
+ *
+ * Note what is absent: there is no loop here. kf_app_frame() runs exactly one
+ * frame and returns. Whichever backend is linked owns the loop. See kf/app.h.
+ */
+
+#include "kf/app.h"
+
+#include "kf/arena.h"
+#include "kf/blit.h"
+#include "kf/budget.h"
+#include "kf/framebuffer.h"
+#include "kf/hal/display.h"
+#include "kf/hal/entropy.h"
+#include "kf/hal/input.h"
+#include "kf/hal/log.h"
+#include "kf/hal/time.h"
+#include "kf/demo.h"
+
+#include <cstdint>
+#include <cstring>
+
+#include "kf/poison.h"
+
+namespace {
+
+constexpr const char *TAG = "app";
+
+/* Rolling window for the frame-time summary. 256 frames is a few seconds at
+ * 30fps: long enough for p99 to mean something, short enough to react. */
+constexpr int kWindow = 256;
+
+struct AppState {
+    bool initialised = false;
+    bool running = false;
+
+    uint64_t frame_index = 0;
+    uint64_t frame_start_us = 0;
+
+    kf_frame_stats last{};
+
+    uint32_t window[kWindow] = {};
+    int window_count = 0;
+    int window_next = 0;
+
+    uint64_t total_frames = 0;
+    uint64_t over_budget_frames = 0;
+    uint32_t worst_us = 0;
+
+    uint64_t last_report_us = 0;
+
+    /* Debounced button state, computed in core so the device and the
+     * simulator feel the same. */
+    uint32_t buttons_stable = 0;
+    uint32_t buttons_candidate = 0;
+    uint64_t candidate_since_us = 0;
+    uint32_t buttons_pressed_edge = 0;
+};
+
+AppState g;
+
+/* Physical switches bounce for a few milliseconds when pressed. 8ms is the
+ * usual safe figure. Doing this in core rather than per-backend means the
+ * simulator has the same input latency as the hardware, which matters because
+ * input latency is something you tune by feel. */
+constexpr uint64_t kDebounceUs = 8000;
+
+void debounce(const kf_input_raw &raw) {
+    if (raw.buttons != g.buttons_candidate) {
+        g.buttons_candidate = raw.buttons;
+        g.candidate_since_us = raw.sampled_at_us;
+        return;
+    }
+    if (g.buttons_candidate != g.buttons_stable &&
+        raw.sampled_at_us - g.candidate_since_us >= kDebounceUs) {
+        const uint32_t previous = g.buttons_stable;
+        g.buttons_stable = g.buttons_candidate;
+        g.buttons_pressed_edge = g.buttons_stable & ~previous;
+    } else {
+        g.buttons_pressed_edge = 0;
+    }
+}
+
+/* Device draw time from the pixel count, not from the host clock. See the
+ * KF_DRAW_* rates in budget.h and the comment above them. */
+uint32_t estimate_draw_us(const kf_draw_counters &c) {
+    const uint32_t opaque = c.opaque_pixels / KF_DRAW_OPAQUE_PX_PER_US;
+    const uint32_t keyed = c.keyed_pixels / KF_DRAW_KEYED_PX_PER_US;
+    return opaque + keyed;
+}
+
+/* What the panel link would cost for `bytes`, in microseconds.
+ *
+ * This is the number your desktop reports as zero and the device cannot
+ * escape. See KF_DISPLAY_SPI_HZ in budget.h for the arithmetic. */
+uint32_t estimate_transfer_us(size_t bytes, uint32_t link_bytes_per_second) {
+    if (link_bytes_per_second == 0u || bytes == 0u) {
+        return 0u;
+    }
+    const uint64_t us =
+        (static_cast<uint64_t>(bytes) * 1000000ull) / link_bytes_per_second;
+    return static_cast<uint32_t>(us);
+}
+
+void record(uint32_t total_us) {
+    g.window[g.window_next] = total_us;
+    g.window_next = (g.window_next + 1) % kWindow;
+    if (g.window_count < kWindow) {
+        g.window_count++;
+    }
+    g.total_frames++;
+    if (total_us > g.worst_us) {
+        g.worst_us = total_us;
+    }
+}
+
+/* Insertion sort over at most 256 entries, into the per-frame scratch arena.
+ * Called once a second for the report, never in the hot path. */
+uint32_t percentile(int pct) {
+    if (g.window_count == 0) {
+        return 0u;
+    }
+    const int n = g.window_count;
+    uint32_t *sorted = static_cast<uint32_t *>(
+        kf_arena_alloc(KF_ARENA_SCRATCH, sizeof(uint32_t) * static_cast<size_t>(n),
+                       alignof(uint32_t)));
+    memcpy(sorted, g.window, sizeof(uint32_t) * static_cast<size_t>(n));
+
+    for (int i = 1; i < n; ++i) {
+        const uint32_t key = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > key) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = key;
+    }
+
+    int index = (n * pct) / 100;
+    if (index >= n) {
+        index = n - 1;
+    }
+    return sorted[index];
+}
+
+} // namespace
+
+void kf_app_init(kf_demo_mode mode) {
+    KF_ASSERT(!g.initialised, "kf_app_init called twice");
+
+    KF_LOGI(TAG, "HakoniwaOS starting");
+
+    /* Arenas first: everything else allocates from them. */
+    kf_arena_init_all();
+
+    KF_ASSERT(kf_time_init() == KF_OK, "time HAL failed to start");
+    KF_ASSERT(kf_display_init() == KF_OK, "display HAL failed to start");
+    KF_ASSERT(kf_input_init() == KF_OK, "input HAL failed to start");
+
+    const kf_display_caps *caps = kf_display_get_caps();
+    KF_ASSERT(caps != nullptr, "display backend returned no capabilities");
+
+    /* budget.h describes the panel core allocates for; caps describes the
+     * panel that is actually attached. A future e-ink or mono variant makes
+     * these diverge legitimately, and that is the day this check becomes a
+     * real branch rather than an assert. */
+    KF_ASSERT(caps->width == KF_DISPLAY_WIDTH &&
+                  caps->height == KF_DISPLAY_HEIGHT,
+              "Display backend reports %ux%u but kf/budget.h is built for "
+              "%dx%d. A backend for a different panel needs core to handle "
+              "capability-driven sizing, which it does not do yet.",
+              caps->width, caps->height, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT);
+    KF_ASSERT(caps->format == KF_PIXFMT_RGB565,
+              "Display backend is not RGB565. Core only speaks RGB565 today.");
+
+    kf_fb_init();
+
+    uint32_t seed = 0;
+    KF_ASSERT(kf_entropy(&seed, sizeof(seed)) == KF_OK,
+              "entropy HAL failed to start");
+
+    kf_demo_init(seed, mode);
+
+    const kf_wall_time now = kf_time_wall();
+    KF_LOGI(TAG, "wall clock %s (epoch %lld)",
+            now.valid ? "valid" : "UNSET",
+            static_cast<long long>(now.epoch_seconds));
+    KF_LOGI(TAG, "budget: %d fps, %u us per frame, link %u bytes/s",
+            KF_TARGET_FPS, static_cast<unsigned>(KF_FRAME_BUDGET_US),
+            caps->link_bytes_per_second);
+
+    g.last_report_us = kf_time_mono_us();
+    g.initialised = true;
+    g.running = true;
+}
+
+bool kf_app_frame(void) {
+    KF_ASSERT(g.initialised, "kf_app_frame before kf_app_init");
+
+    g.frame_start_us = kf_time_mono_us();
+
+    /* Everything allocated last frame is gone. Nothing may survive here. */
+    kf_arena_reset(KF_ARENA_SCRATCH);
+    kf_draw_counters_reset();
+
+    kf_input_raw raw{};
+    if (kf_input_poll(&raw) == KF_OK) {
+        if (raw.quit_requested) {
+            g.running = false;
+        }
+        debounce(raw);
+    }
+
+    kf_demo_update(g.buttons_stable, g.buttons_pressed_edge);
+    kf_demo_draw();
+
+    const kf_rect dirty = kf_fb_dirty_rect();
+    const size_t dirty_bytes = kf_fb_dirty_bytes();
+
+    kf_display_present(kf_fb_pixels(), dirty);
+    kf_fb_clear_dirty();
+
+    const uint64_t end_us = kf_time_mono_us();
+    const uint32_t cpu_us = static_cast<uint32_t>(end_us - g.frame_start_us);
+
+    const kf_display_caps *caps = kf_display_get_caps();
+    const uint32_t transfer_us =
+        estimate_transfer_us(dirty_bytes, caps->link_bytes_per_second);
+
+    const kf_draw_counters counters = kf_draw_counters_get();
+    const uint32_t draw_us = estimate_draw_us(counters);
+
+    g.last.frame_index = g.frame_index;
+    g.last.cpu_us = cpu_us;
+    g.last.draw_us = draw_us;
+    g.last.opaque_pixels = counters.opaque_pixels;
+    g.last.keyed_pixels = counters.keyed_pixels;
+    g.last.transfer_us = transfer_us;
+    g.last.serial_us = draw_us + transfer_us;
+    g.last.overlapped_us = draw_us > transfer_us ? draw_us : transfer_us;
+    g.last.total_us =
+        KF_DISPLAY_DOUBLE_BUFFERED ? g.last.overlapped_us : g.last.serial_us;
+    g.last.over_budget = g.last.total_us > KF_FRAME_BUDGET_US;
+    g.last.dirty_percent = static_cast<uint8_t>(
+        (static_cast<uint64_t>(kf_rect_area(dirty)) * 100ull) /
+        static_cast<uint64_t>(KF_FRAMEBUFFER_PIXELS));
+
+    record(g.last.total_us);
+    if (g.last.over_budget) {
+        g.over_budget_frames++;
+    }
+    g.frame_index++;
+
+    /* Report roughly once a second. Cheap, and it means the numbers are in
+     * front of you constantly rather than only when you go looking. */
+    if (end_us - g.last_report_us >= 1000000ull) {
+        kf_app_log_budget_report();
+        g.last_report_us = end_us;
+    }
+
+    /* Pace the simulator against the HOST clock, using real elapsed time
+     * rather than the modelled device time. Otherwise the window would run at
+     * a speed unrelated to anything. The device will replace this with a
+     * light sleep, which is where the battery life comes from. */
+    if (cpu_us < KF_FRAME_BUDGET_US) {
+        kf_time_delay_us(KF_FRAME_BUDGET_US - cpu_us);
+    }
+
+    return g.running;
+}
+
+void kf_app_shutdown(void) {
+    if (!g.initialised) {
+        return;
+    }
+    KF_LOGI(TAG, "shutting down after %llu frames",
+            static_cast<unsigned long long>(g.total_frames));
+    kf_app_log_budget_report();
+
+    kf_demo_shutdown();
+    kf_input_shutdown();
+    kf_display_shutdown();
+    g.initialised = false;
+    g.running = false;
+}
+
+const kf_frame_stats *kf_app_last_frame(void) { return &g.last; }
+
+kf_frame_summary kf_app_frame_summary(void) {
+    kf_frame_summary s{};
+    s.frames = g.total_frames;
+    s.over_budget_frames = g.over_budget_frames;
+    s.last_us = g.last.total_us;
+    s.worst_us = g.worst_us;
+
+    if (g.window_count > 0) {
+        uint64_t sum = 0;
+        for (int i = 0; i < g.window_count; ++i) {
+            sum += g.window[i];
+        }
+        s.mean_us = static_cast<uint32_t>(sum / static_cast<uint64_t>(g.window_count));
+        s.p99_us = percentile(99);
+    }
+    return s;
+}
+
+void kf_app_log_budget_report(void) {
+    const kf_frame_summary s = kf_app_frame_summary();
+    const kf_display_caps *caps = kf_display_get_caps();
+
+    KF_LOGI(TAG, "---- frame budget (%d fps target, %u us) ----", KF_TARGET_FPS,
+            static_cast<unsigned>(KF_FRAME_BUDGET_US));
+    KF_LOGI(TAG, "  device estimate: draw %5u us + transfer %5u us",
+            g.last.draw_us, g.last.transfer_us);
+    KF_LOGI(TAG,
+            "     serial (today)      %5u us  ->  %5.1f fps%s",
+            g.last.serial_us,
+            g.last.serial_us ? 1000000.0 / g.last.serial_us : 0.0,
+            (!KF_DISPLAY_DOUBLE_BUFFERED && g.last.over_budget)
+                ? "   OVER BUDGET"
+                : "");
+    KF_LOGI(TAG, "     overlapped (DMA+2buf) %5u us  ->  %5.1f fps",
+            g.last.overlapped_us,
+            g.last.overlapped_us ? 1000000.0 / g.last.overlapped_us : 0.0);
+    KF_LOGI(TAG, "  pixels drawn: %6u opaque + %6u keyed   dirty %3u%%",
+            g.last.opaque_pixels, g.last.keyed_pixels, g.last.dirty_percent);
+    KF_LOGI(TAG, "  host cpu %5u us (your PC, not the device)", g.last.cpu_us);
+    KF_LOGI(TAG, "  mean %5u us   p99 %5u us   worst %5u us", s.mean_us,
+            s.p99_us, s.worst_us);
+    KF_LOGI(TAG, "  frames %llu, over budget %llu (%llu%%)",
+            static_cast<unsigned long long>(s.frames),
+            static_cast<unsigned long long>(s.over_budget_frames),
+            s.frames ? static_cast<unsigned long long>(
+                           (s.over_budget_frames * 100ull) / s.frames)
+                     : 0ull);
+
+    /* The number that most often explains a bad p99: a full-screen redraw at
+     * 40MHz costs about 30ms of wire time all by itself. */
+    const uint32_t full_frame_us =
+        estimate_transfer_us(KF_FRAMEBUFFER_BYTES, caps->link_bytes_per_second);
+    KF_LOGI(TAG, "  a FULL frame would cost %u us of transfer alone",
+            full_frame_us);
+
+    KF_LOGI(TAG, "---- arenas ----");
+    kf_arena_log_all();
+}
