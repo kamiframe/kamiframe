@@ -385,6 +385,99 @@ Ninja generator (same MSVC compiler underneath, but produces
 combination) -- either would turn this from reasoning about what *should*
 be happening into reading what actually is.
 
+**Fourth attempt, also not what shipped, and how the real cause was finally
+found.** The `C_STANDARD 17` reinforcement above was pushed to Windows CI and
+failed exactly the same way as every attempt before it: same four `C2099`s,
+same lines. At that point continuing to reason from source alone had stopped
+being productive -- three different theories, three clean local
+verifications, three identical real-CI failures. The actual blocker named in
+the previous section was picked up: added `-- /verbosity:detailed` to the
+Windows job's `cmake --build` step (temporarily; it is noisy and the
+`.github/workflows/ci.yml` comment marking it as such is the reminder to
+revert it), which makes MSBuild echo the complete `cl.exe` command line for
+every file instead of just its name.
+
+That log was the first real evidence in this whole investigation. The actual
+invocation for `lv_bar.c` had `LV_ATTRIBUTE_EXTERN_DATA` defined **twice**:
+once as `__declspec(dllexport)`, once as `__declspec(dllimport)`, with the
+`dllimport` one appearing *after* the `dllexport` one on the same command
+line. `cl.exe` applies repeated `/D` flags left-to-right with the later one
+winning -- so despite LVGL's own `CMakeLists.txt` clearly intending
+`dllexport` for its own sources, `lv_obj_class` (declared
+`LV_ATTRIBUTE_EXTERN_DATA extern const lv_obj_class_t lv_obj_class;` in
+`lv_obj.h`) was actually compiling as `__declspec(dllimport)`. A
+`dllimport`-declared symbol's address is resolved through the Import Address
+Table at load time, not baked in at compile time -- so `&lv_obj_class` is
+genuinely not a compile-time constant under that definition. `.base_class =
+&lv_obj_class` is present in all four failing widgets' class initializers
+(`lv_bar_class`, `lv_button_class`, `lv_image_class`, `lv_label_class`) and
+absent from the one that doesn't fail (`lv_obj_class` itself sets
+`.base_class = NULL`). This was the real cause all along -- not a bit-field
+constant-folding gap, not a C standard mode gap. Both earlier theories were
+plausible, evidence-consistent, and wrong; only seeing the actual compiler
+invocation settled it.
+
+Tracing where the stray `dllimport` came from led to LVGL's own
+`CMakeLists.txt`:
+
+```cmake
+if (MSVC)
+  target_compile_definitions(lvgl
+    INTERFACE LV_ATTRIBUTE_EXTERN_DATA=__declspec(dllimport)
+    PRIVATE   LV_ATTRIBUTE_EXTERN_DATA=__declspec(dllexport)
+  )
+endif()
+```
+
+This is correct for a target that is only ever a dependency: `PRIVATE`
+(`dllexport`) compiles `lvgl`'s own sources, `INTERFACE` (`dllimport`)
+applies only to whatever links against `lvgl`, never to `lvgl` itself --
+under ordinary, non-circular linkage. But `simulator/CMakeLists.txt` links
+`kamiframe_lvgl_port` and `lvgl` in a genuine cycle (`kamiframe_lvgl_port`
+links `lvgl` `PUBLIC`; `lvgl` links `kamiframe_lvgl_port` back `PRIVATE`, to
+resolve LVGL calling `kf_lvgl_mem_pool_alloc()` once at `lv_init()` time --
+see the comment there). That second link means `lvgl`'s own compilation
+consumes `kamiframe_lvgl_port`'s `INTERFACE` usage requirements -- and
+because `kamiframe_lvgl_port` links `lvgl` `PUBLIC`, those requirements
+include `lvgl`'s own `INTERFACE LV_ATTRIBUTE_EXTERN_DATA=dllimport`,
+reflected straight back at it through the cycle. `lvgl` ends up compiling
+itself against both its own direct `dllexport` and a `dllimport` handed back
+to it by its own dependent, with the reflected one landing last on the
+command line.
+
+**What shipped:** `fetch_lvgl.cmake` now strips `LV_ATTRIBUTE_EXTERN_DATA`
+from both `lvgl`'s `COMPILE_DEFINITIONS` and `INTERFACE_COMPILE_DEFINITIONS`
+properties immediately after `FetchContent_MakeAvailable(lvgl)`, via
+`get_target_property()` / `list(FILTER ... EXCLUDE REGEX ...)` /
+`set_property()`. This doesn't touch the circular link (load-bearing) or
+LVGL's own `CMakeLists.txt` (vendored). With nothing left for the cycle to
+reflect, `lvgl` falls back to LVGL's own built-in default for the macro -- a
+plain, empty definition (`src/lv_conf_internal.h`), the same one GCC/Clang
+already got here, since this project never builds LVGL as a DLL and the
+`dllimport`/`dllexport` split this macro exists for doesn't apply to a
+static build regardless of which side of the link cycle it lands on. The
+now-superseded bit-field patch (`cmake/patches/lvgl_msvc_c2099_fix.cmake`)
+is disabled -- its `include()`/call left commented out in `fetch_lvgl.cmake`
+rather than deleted, so the earlier (wrong, but genuinely evidence-based)
+reasoning stays visible in git history. The `C_STANDARD 17` reinforcement
+from the fourth attempt is harmless and unrelated to this bug, so it stays.
+
+Verified locally the same way as every attempt before it, plus one new
+check specific to this fix: a standalone CMake script reproducing the exact
+`target_compile_definitions(... INTERFACE ... PRIVATE ...)` shape and
+confirming `list(FILTER EXCLUDE REGEX ...)` removes only the
+`LV_ATTRIBUTE_EXTERN_DATA` entry and leaves other definitions on the target
+untouched. Full rebuild clean `-Werror`, all 5 `ctest` targets passing,
+`lvgl_determinism_check`'s checksum unchanged, `check_no_heap.py` clean.
+**Still not verified: an actual MSVC compile** -- this sandbox has never had
+one, which is exactly why the first four attempts each looked solid here and
+still failed on real CI. Unlike those, though, this fix is not a theory
+fitted to symptoms after the fact -- it's built directly from the literal
+`cl.exe` command line that was failing, which is as much confidence as this
+sandbox can produce without the toolchain itself. Once CI confirms it green,
+the `-- /verbosity:detailed` addition to `.github/workflows/ci.yml` should be
+reverted; it served its purpose and is too noisy to keep permanently.
+
 ## Later
 
 - Extending the enabled widget set as real menu screens get designed.

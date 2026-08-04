@@ -44,21 +44,78 @@ FetchContent_Declare(lvgl
 )
 FetchContent_MakeAvailable(lvgl)
 
-# MSVC-only fix, see cmake/patches/lvgl_msvc_c2099_fix.cmake for the full
-# explanation. Applied unconditionally rather than gated on the compiler ID
-# -- the fix is a semantic no-op under GCC/Clang (it only adds explicit
-# zero-value bitfield initializers that were already zero by default), so
-# there is no cost to applying it everywhere, and it's simpler than gating.
-# Deliberately called here as plain CMake code, operating on lvgl_SOURCE_DIR
-# (set by FetchContent_MakeAvailable above), NOT wired up as a
-# FetchContent_Declare PATCH_COMMAND -- two earlier versions of this fix
-# used PATCH_COMMAND (first `git apply`, then an equivalent `cmake -P`) and
-# both silently didn't take effect on the real Windows CI runner, for
-# reasons that pointed at PATCH_COMMAND's own execution inside
-# FetchContent's populate step, not at either patch mechanism. See the
-# comment at the top of that script for the full reasoning.
-include("${CMAKE_CURRENT_LIST_DIR}/patches/lvgl_msvc_c2099_fix.cmake")
-kf_lvgl_apply_msvc_fix("${lvgl_SOURCE_DIR}")
+# MSVC C2099 fix -- the ACTUAL root cause, confirmed by capturing the real
+# cl.exe command line for lv_bar.c via a /verbosity:detailed CI build (see
+# "Attempt 5" in docs/architecture/adr-0013-lvgl-for-menus.md). This is not
+# a guess: LVGL's own CMakeLists.txt does, unconditionally under MSVC --
+#
+#     target_compile_definitions(lvgl
+#         INTERFACE LV_ATTRIBUTE_EXTERN_DATA=__declspec(dllimport)
+#         PRIVATE   LV_ATTRIBUTE_EXTERN_DATA=__declspec(dllexport))
+#
+# -- intending PRIVATE (dllexport) for lvgl's own sources and INTERFACE
+# (dllimport) for whatever links against it, which is correct for a target
+# that is only ever a dependency, never a dependent. But simulator/
+# CMakeLists.txt's kamiframe_lvgl_port <-> lvgl link is genuinely circular
+# (see the comment there): kamiframe_lvgl_port links lvgl PUBLIC, and lvgl
+# links kamiframe_lvgl_port PRIVATE right back, to resolve LVGL calling
+# kf_lvgl_mem_pool_alloc() at lv_init() time. That second link makes lvgl
+# consume kamiframe_lvgl_port's INTERFACE usage requirements for its OWN
+# compilation -- and kamiframe_lvgl_port's PUBLIC link to lvgl means those
+# requirements include lvgl's own INTERFACE LV_ATTRIBUTE_EXTERN_DATA
+# definition, reflected straight back at it. So lvgl ends up compiling
+# itself with BOTH definitions on the same command line: its own direct
+# PRIVATE dllexport, and a dllimport reflected back through the cycle.
+# MSVC's cl.exe applies repeated /D flags left-to-right, later wins -- and
+# the reflected one lands last, so every LV_ATTRIBUTE_EXTERN_DATA
+# declaration in LVGL's own sources -- including `lv_obj_class` in
+# lv_obj.h, referenced as `.base_class = &lv_obj_class` in lv_bar.c,
+# lv_button.c, lv_image.c and lv_label.c -- compiles as
+# __declspec(dllimport). An imported symbol's address is resolved through
+# the Import Address Table at load time, not at compile time, so MSVC
+# correctly refuses to treat `&lv_obj_class` as a constant initializer:
+# error C2099.
+#
+# The fix doesn't touch the circular link (it's load-bearing -- see
+# simulator/CMakeLists.txt) or LVGL's own CMakeLists.txt (vendored, not
+# ours to maintain). It strips LV_ATTRIBUTE_EXTERN_DATA from both of
+# lvgl's own compile-definition properties right here, before anything
+# downstream links against it -- so there is nothing left for the circular
+# link to reflect back, on any platform. This project never builds LVGL as
+# a DLL, so the dllimport/dllexport distinction this macro exists for does
+# not apply here at all; falling back to LVGL's own default (a plain,
+# empty LV_ATTRIBUTE_EXTERN_DATA -- see src/lv_conf_internal.h) is exactly
+# what every non-MSVC compiler already does, and is correct on MSVC too.
+if(TARGET lvgl)
+    get_target_property(_kf_lvgl_defs lvgl COMPILE_DEFINITIONS)
+    if(_kf_lvgl_defs)
+        list(FILTER _kf_lvgl_defs EXCLUDE REGEX "^LV_ATTRIBUTE_EXTERN_DATA=")
+        set_property(TARGET lvgl PROPERTY COMPILE_DEFINITIONS ${_kf_lvgl_defs})
+    endif()
+
+    get_target_property(_kf_lvgl_iface_defs lvgl INTERFACE_COMPILE_DEFINITIONS)
+    if(_kf_lvgl_iface_defs)
+        list(FILTER _kf_lvgl_iface_defs EXCLUDE REGEX "^LV_ATTRIBUTE_EXTERN_DATA=")
+        set_property(TARGET lvgl PROPERTY INTERFACE_COMPILE_DEFINITIONS ${_kf_lvgl_iface_defs})
+    endif()
+    unset(_kf_lvgl_defs)
+    unset(_kf_lvgl_iface_defs)
+endif()
+
+# Superseded by the fix above -- left disabled, not deleted, so the earlier
+# reasoning stays visible in git history instead of vanishing with the
+# file. This used to make the four widgets' bit-field initializers
+# explicit, on the theory that MSVC couldn't constant-fold a packed
+# bit-field word left partially implicit. That theory was wrong: it
+# correlated with the C2099 line number (MSVC always reports C2099 at the
+# aggregate's own declaration line, never the specific member), but a
+# confirmed-applied version of this exact patch (see "Attempt 3" in the
+# ADR) produced an identical failure -- which the LV_ATTRIBUTE_EXTERN_DATA
+# fix above actually explains: `.base_class = &lv_obj_class` was always
+# the real non-constant member, and no bit-field rewrite could ever have
+# touched that.
+# include("${CMAKE_CURRENT_LIST_DIR}/patches/lvgl_msvc_c2099_fix.cmake")
+# kf_lvgl_apply_msvc_fix("${lvgl_SOURCE_DIR}")
 
 # lv_conf.h pulls in kf/budget.h (see the comment in that file) so
 # KF_ARENA_LVGL_BYTES can never drift from LV_MEM_SIZE. LVGL's own source is
