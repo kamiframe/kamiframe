@@ -224,34 +224,68 @@ GCC has no trouble with it. (LVGL's own `lv_bar.c` etc. are unmodified
 project source from upstream, not something this project wrote --
 this is a real MSVC front-end limitation running into ordinary, valid C.)
 
-The fix: `cmake/patches/lvgl-v9.2.2-msvc-c2099-explicit-bitfields.patch`,
-applied automatically via `PATCH_COMMAND` in `cmake/fetch_lvgl.cmake` right
-after `FetchContent` clones LVGL. It adds explicit initializers for the
-three previously-implicit bit-fields on all four widget classes (the exact
-same named-constant zero values -- `LV_OBJ_CLASS_EDITABLE_INHERIT`,
-`LV_OBJ_CLASS_GROUP_DEF_INHERIT`, `LV_OBJ_CLASS_THEME_INHERITABLE_FALSE` --
-they already defaulted to), matching the pattern LVGL's own `lv_obj_class`
-already uses without issue. A semantic no-op on every platform: the actual
-field values are identical before and after, on every compiler, so nothing
-about LVGL's runtime behavior changes -- this patch exists purely to give
-MSVC's constant-folder a fully-specified bit-field word to work with.
-Applied unconditionally (not gated on the compiler), both because
-`CMAKE_C_COMPILER_ID` isn't reliably readable this early in `FetchContent`
-configure (LVGL's own build hit exactly this trap, fixed in
+The fix adds explicit initializers for the three previously-implicit
+bit-fields on all four widget classes (the exact same named-constant zero
+values -- `LV_OBJ_CLASS_EDITABLE_INHERIT`, `LV_OBJ_CLASS_GROUP_DEF_INHERIT`,
+`LV_OBJ_CLASS_THEME_INHERITABLE_FALSE` -- they already defaulted to),
+matching the pattern LVGL's own `lv_obj_class` already uses without issue.
+A semantic no-op on every platform: the actual field values are identical
+before and after, on every compiler, so nothing about LVGL's runtime
+behavior changes -- this exists purely to give MSVC's constant-folder a
+fully-specified bit-field word to work with. Applied unconditionally (not
+gated on the compiler), both because `CMAKE_C_COMPILER_ID` isn't reliably
+readable this early in `FetchContent` configure (LVGL's own build hit
+exactly this trap, fixed in
 [lvgl/lvgl#7401](https://github.com/lvgl/lvgl/pull/7401)) and because
-there's no cost to applying a no-op patch on GCC/Clang too.
+there's no cost to applying a no-op change on GCC/Clang too.
 
-Verified: the patch applies cleanly with `git apply` against a genuinely
-fresh `v9.2.2` clone (not just the already-edited working copy it was
-authored against), and a full rebuild against that freshly-patched source
--- clean `-Werror`, all 5 `ctest` targets including
-`lvgl_determinism_check` with its checksum unchanged (expected: the patch
-doesn't change any value, just makes existing zero-defaults explicit),
-`check_no_heap.py` clean. **Not verified: an actual MSVC compile.** This
-sandbox has no Windows/MSVC toolchain, so the fix is confirmed correct by
-reading LVGL's struct layout and both the passing and failing initializers
-side by side, not by reproducing the error and watching it disappear.
-Needs a real CI run to confirm green.
+**First attempt, and why it's not what shipped.** The first version of this
+fix was a `.patch` file applied via `git apply` in `PATCH_COMMAND`, verified
+the same way described above -- applied cleanly against a genuinely fresh
+`v9.2.2` clone, full rebuild clean, all 5 tests passing. It was real CI, not
+this sandbox, that caught the problem: pushed to Windows CI, the build
+failed with the exact same four `C2099` errors at the exact same lines, as
+if the patch had never run at all. The patched files, committed to the
+repo, were confirmed present and correct in that exact commit (checked
+directly on GitHub). Investigating further found that `PATCH_COMMAND`'s
+console output does not propagate to the outer `cmake -B` Configure log by
+default -- confirmed by reproducing the same silence locally, where the
+patch was independently confirmed (by inspecting the populated source
+directly) to have actually applied. That makes CI logs alone useless for
+telling a working patch step from a silently failing one, on this project
+or seemingly any FetchContent-based one; whatever specifically stopped
+`git apply` from taking effect on that Windows runner couldn't be pinned
+down from the log for that reason, and a simulated CRLF-line-ending
+checkout, the leading suspect, was tested directly and ruled out (`git
+apply --ignore-whitespace` still succeeded against it, just messily).
+
+**What shipped instead:** `cmake/patches/lvgl_msvc_c2099_fix.cmake`, run via
+`PATCH_COMMAND ${CMAKE_COMMAND} -P ...` -- the same four insertions, done
+with CMake's own `string(FIND)` / `string(REPLACE)` / `file()` commands
+instead of `git apply` against a `.patch` file. No external `git` process
+invoked mid-patch, no diff-context matching, nothing line-ending-sensitive
+-- removing the entire category `git apply` sits in, rather than continuing
+to guess at what exactly went wrong with it. Self-verifying by construction:
+idempotent (checks for its own marker before touching a file, so re-running
+configure against an already-patched tree is a no-op, not a double-patch),
+and fails the configure with a specific `FATAL_ERROR` if an expected file
+or anchor line isn't found (almost certainly meaning `KAMIFRAME_LVGL_TAG`
+moved to a new release and this script needs updating for it) rather than
+silently no-op-ing into another unpatched, MSVC-broken build.
+
+Verified: unit-tested directly (`cmake -P` against a fresh clone, confirming
+the insertion, confirming a second run is a no-op, confirming the
+`FATAL_ERROR` path triggers on a deliberately wrong anchor), then verified
+through the real path -- a fresh `FetchContent` clone via `cmake -B`,
+confirming by inspecting the populated source that the patch actually
+applied (not inferring it from log messages, per the finding above), full
+rebuild clean `-Werror`, all 5 `ctest` targets passing with
+`lvgl_determinism_check`'s checksum unchanged, `check_no_heap.py` clean.
+**Still not verified: an actual MSVC compile**, for the same reason as
+before -- this sandbox has no Windows toolchain. That gap is exactly what
+made the first attempt's failure invisible until real CI caught it, so this
+one gets the same treatment: pushed, and confirmed green by CI, not assumed
+fixed because the reasoning is sound.
 
 ## Later
 
