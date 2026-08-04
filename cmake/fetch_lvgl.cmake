@@ -69,6 +69,26 @@ if(TARGET lvgl)
         "${CMAKE_CURRENT_SOURCE_DIR}/../hakoniwaos/include")
 endif()
 
+# Belt-and-suspenders alongside the top-level CMAKE_C_STANDARD 17 /
+# C_STANDARD_REQUIRED ON in the root CMakeLists.txt: confirmed (by
+# inspecting the actual compile command for lv_bar.c via
+# CMAKE_EXPORT_COMPILE_COMMANDS) that those global settings already reach
+# the lvgl target correctly under GCC (`-std=gnu17`). Set explicitly here
+# too because MSVC only accepts designated-initializer/bit-field aggregate
+# patterns like the one cmake/patches/lvgl_msvc_c2099_fix.cmake works around
+# under its newer, more standards-conformant /std:c11 or /std:c17 front end
+# -- its default (pre-standard-flag) C mode is the older, less-invested-in
+# part of the compiler, and Microsoft's own docs on this exact C2099 error
+# suggest exactly this category of gap. Making the requirement explicit,
+# target-local, removes any dependency on how a specific toolchain resolves
+# the inherited global variable, at zero cost since it only reinforces what
+# CMAKE_C_STANDARD already requests.
+if(TARGET lvgl)
+    set_target_properties(lvgl PROPERTIES
+        C_STANDARD          17
+        C_STANDARD_REQUIRED ON)
+endif()
+
 # LVGL is a vendored C dependency, not code this project owns. Its own
 # internal allocator (lv_malloc, the TLSF pool) references the word "malloc"
 # in ways tools/check_no_heap.py's keyword scan would otherwise flag, even

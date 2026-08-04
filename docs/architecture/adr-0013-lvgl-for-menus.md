@@ -320,6 +320,71 @@ failures go unnoticed until real CI caught them -- so this one gets the
 same treatment: pushed, and confirmed green by CI, not assumed fixed
 because the reasoning is sound and it passed everywhere it could be tested.
 
+**Third attempt, and the pivot it forced.** Pushed to Windows CI, and this
+time the Configure log itself showed `LVGL MSVC fix: patched ...` for all
+four files -- direct proof, not inference, that the fix genuinely ran and
+found what it expected. The build still failed with the same four `C2099`s
+at the same lines. That result briefly looked like it disproved the whole
+bit-field theory (if the explicit initializers were really there, why is
+MSVC still unhappy?) until re-checking how MSVC reports this error: C2099
+on an aggregate initializer is anchored at the *declaration's own line*
+(confirmed earlier -- see "Reading LVGL's own source" above), which doesn't
+move no matter how many lines get added inside the braces below it. So the
+unchanged line number is not evidence the patch had no effect; it's what a
+successfully-applied patch looks like too. Genuinely inconclusive from the
+log alone.
+
+Asked to research this properly (rather than keep pattern-matching against
+LVGL's own source) turned up real, if imperfect, precedent:
+[open62541 issue #4687](https://github.com/open62541/open62541/issues/4687)
+hit the identical `C2099` for a static struct initialized with the address
+of an extern array -- structurally close to `.base_class = &lv_obj_class`,
+present in all four failing widgets and (with a `NULL` instead) in the
+`lv_obj_class` that doesn't fail. Microsoft's own documentation on
+`C2099` lists "compile the module as `.cpp` instead of `.c`" as a known
+workaround -- which points at *which* part of MSVC is at fault: the older,
+less standards-conformant path used for legacy (pre-`/std:` flag) C
+compilation, not the newer C11/C17-conformant one Microsoft has invested
+more in (their own announcement of C11/C17 support notes `/std:c11` and
+`/std:c17` additionally imply `/Zc:preprocessor`, a materially different,
+stricter preprocessor). This project already sets `CMAKE_C_STANDARD 17` /
+`CMAKE_C_STANDARD_REQUIRED ON` globally in the top-level `CMakeLists.txt`,
+and inspecting the actual compile command CMake generates for `lv_bar.c`
+(via `CMAKE_EXPORT_COMPILE_COMMANDS`) confirms that setting does reach the
+`lvgl` target correctly under GCC (`-std=gnu17` is present) -- but this
+sandbox cannot generate or inspect the equivalent MSVC command line
+(`/std:c17`), since the Visual Studio generator doesn't support
+`CMAKE_EXPORT_COMPILE_COMMANDS` and there's no MSVC here to ask directly.
+
+**What shipped:** an explicit `set_target_properties(lvgl PROPERTIES
+C_STANDARD 17 C_STANDARD_REQUIRED ON)` directly on the `lvgl` target in
+`fetch_lvgl.cmake`, alongside (not replacing) the bit-field fix from the
+third attempt. Belt-and-suspenders, not a replacement theory: makes the
+requirement target-local rather than solely relying on inherited variable
+propagation from the top-level `CMakeLists.txt` working correctly across
+whatever this specific CMake/MSVC toolchain combination does with it,
+at zero cost since it only reinforces what's already requested. Verified
+the same way as before -- clean rebuild, all 5 tests, `lvgl_determinism_check`
+checksum unchanged, `check_no_heap.py` clean -- plus confirmed via
+`compile_commands.json` that `lv_bar.c`'s actual GCC invocation is
+unaffected (still `-std=gnu17`, now also visibly requested twice, once
+globally and once target-locally, which is harmless).
+
+Being honest about confidence here, same as every attempt before it: this
+is a well-evidenced theory, not a confirmed diagnosis. **If this doesn't
+fix it, the next step isn't another guess -- it's getting real visibility
+into the actual `cl.exe` command line for `lv_bar.c`**, which the default
+build log doesn't show (MSBuild's default logger prints filenames, not full
+compiler invocations). That needs either `cmake --build build --config
+RelWithDebInfo --parallel -- /verbosity:detailed` in the CI workflow
+temporarily (passes `/verbosity:detailed` through to MSBuild, which will
+echo the full `cl.exe` line including whatever standard flag, or lack of
+one, actually reaches `lv_bar.c`), or switching the Windows job to the
+Ninja generator (same MSVC compiler underneath, but produces
+`compile_commands.json` and is generally the better-tested CMake+MSVC CI
+combination) -- either would turn this from reasoning about what *should*
+be happening into reading what actually is.
+
 ## Later
 
 - Extending the enabled widget set as real menu screens get designed.
