@@ -143,7 +143,10 @@
 #define KF_ARENA_SCRATCH_BYTES      (48u * 1024u)
 
 /* Lua heap. lua_newstate takes an allocator, so this cap is exact rather
- * than advisory. Not used until the Lua slice. */
+ * than advisory: the whole block is handed to a suballocator
+ * (simulator/src/lua/kf_lua_alloc.cpp) that does the actual per-object
+ * alloc/realloc/free lua_newstate's callback needs, the same shape
+ * KF_ARENA_LVGL below uses for LVGL's pool. See ADR 0014. */
 #define KF_ARENA_LUA_BYTES          (1024u * 1024u)
 
 /* Decoded sprites and other game assets held in RAM. */

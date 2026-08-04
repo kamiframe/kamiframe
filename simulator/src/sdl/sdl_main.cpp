@@ -19,6 +19,8 @@
 
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
+#include "../lua/kf_lua_port.h"
+#include "../lua/kf_lua_proof_script.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -92,6 +94,15 @@ int main(int argc, char *argv[]) {
     kf_lvgl_port_init();
     kf_lvgl_proof_screen_init();
 
+    /* Lua comes up after core and LVGL, same "after everything its memory
+     * pool depends on" ordering: its allocator's one big block comes from
+     * KF_ARENA_LUA, carved out by kf_app_init()'s kf_arena_init_all(). See
+     * ADR 0014 -- this is a proof script, not a real cartridge, same
+     * "nothing to put in one yet" as LVGL's proof screen. A script that
+     * fails to load is not fatal to the rest of the simulator; it just
+     * runs with no Lua this session, logged loudly by kf_lua_port_init(). */
+    kf_lua_port_init(kKfLuaProofScriptSource, kKfLuaProofScriptChunkName);
+
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 
     long frames = 0;
@@ -100,6 +111,7 @@ int main(int argc, char *argv[]) {
          * interactive build, actually watching the clock. See
          * kf_lvgl_tick.h. */
         kf_lvgl_port_pump(0);
+        kf_lua_port_frame(0);
         update_title(static_cast<uint64_t>(frames));
         frames++;
         if (max_frames > 0 && frames >= max_frames) {
@@ -107,6 +119,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    kf_lua_port_shutdown();
     kf_lvgl_port_shutdown();
     kf_app_shutdown();
     return 0;

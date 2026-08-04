@@ -21,13 +21,10 @@ future us in month eight asking the same question with less patience.
 | [0011](adr-0011-dirty-rect-list.md) | A dirty-rectangle list, not a single box | Accepted |
 | [0012](adr-0012-storage-and-power.md) | Save state and deep sleep | Accepted |
 | [0013](adr-0013-lvgl-for-menus.md) | LVGL for menus, the custom engine for the pet | Accepted |
+| [0014](adr-0014-lua-embedding.md) | Embedding Lua: version, sandboxing, the arena-backed allocator | Accepted |
 
 Open evaluations, deliberately not decided:
 
-- **Lua version and number type.** LuaJIT is already ruled out (it does not
-  target Xtensa or RISC-V, so using it on desktop would create exactly the
-  two-codebase failure this architecture exists to prevent). Lua 5.4 versus
-  5.3, and 32-bit floats versus doubles, are open.
 - **The creature class name.** Deferred by the naming decision record.
 
 See also `../frame-budget.md`, which works through what the display bandwidth

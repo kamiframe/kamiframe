@@ -12,6 +12,7 @@
  *                        [--max-dirty-percent N]
  *     kamiframe-headless --verify-storage-power
  *     kamiframe-headless --verify-lvgl [--expect-checksum HEX]
+ *     kamiframe-headless --verify-lua [--frames N]
  *
  * Exit codes:
  *     0  everything asserted held
@@ -30,6 +31,8 @@
 #include "../host/host_time.h"
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
+#include "../lua/kf_lua_port.h"
+#include "../lua/kf_lua_proof_script.h"
 #include "headless_probe.h"
 
 #include <cstdio>
@@ -218,6 +221,71 @@ int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
     return ok ? 0 : 1;
 }
 
+/* Proves the Lua port glue -- the sandboxed VM, kf_lua_alloc's free/realloc
+ * path under real churn, and both directions of the kf.* binding -- behave
+ * identically frame to frame. See ADR 0014. Bypasses kf_app_init()/
+ * kf_app_frame() entirely, the same way run_lvgl_check() bypasses them for
+ * LVGL: this exercises Lua directly, not the placeholder demo.
+ *
+ * Only kf_arena_init_all() from core is needed first: kf_lua_alloc_init()
+ * (called inside kf_lua_port_init()) gets its one big block from
+ * KF_ARENA_LUA, and nothing else Lua touches here comes from core. */
+int run_lua_check(long frames) {
+    kf_arena_init_all();
+
+    if (!kf_lua_port_init(kKfLuaProofScriptSource,
+                           kKfLuaProofScriptChunkName)) {
+        KF_LOGE(TAG, "FAILED: proof script did not load or its top-level "
+                     "code raised an error (see the log above)");
+        std::printf("FAIL\n");
+        return 1;
+    }
+
+    /* Synthetic, fixed per-frame delta, never real elapsed host time -- the
+     * same reasoning as run_lvgl_check()'s loop below and, further back,
+     * ADR 0011's debounce-timing fix: this loop runs flat out
+     * (kf_host_time_set_realtime(false), set in main() below), so real time
+     * between iterations would be scheduler noise, not frame count. */
+    for (long i = 0; i < frames; ++i) {
+        kf_lua_port_frame(static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u));
+    }
+
+    const int64_t report = kf_lua_port_last_report();
+    const uint32_t ran = kf_lua_port_frame_count();
+    /* Not a golden hash, unlike run_lvgl_check()'s checksum: the proof
+     * script's own arithmetic (kf_lua_proof_script.h) makes `total` after N
+     * calls to on_frame exactly 32*N, an invariant this can check directly
+     * rather than via a hash that would need updating every time the
+     * script's wording changed. */
+    const int64_t expected = 32LL * static_cast<int64_t>(frames);
+
+    kf_lua_port_shutdown();
+
+    std::printf("frames-ran  %u\n", ran);
+    std::printf("last-report %lld\n", static_cast<long long>(report));
+
+    bool ok = true;
+    if (ran != static_cast<uint32_t>(frames)) {
+        KF_LOGE(TAG,
+                "expected %ld on_frame calls, got %u -- the script started "
+                "erroring partway through (see the log above)",
+                frames, ran);
+        ok = false;
+    }
+    if (report != expected) {
+        KF_LOGE(TAG,
+                "last-report %lld != expected %lld (32 * frames). Either "
+                "the proof script changed on purpose (update the 32 here "
+                "and in simulator/CMakeLists.txt's comment to match) or the "
+                "allocator/VM did not behave deterministically.",
+                static_cast<long long>(report), static_cast<long long>(expected));
+        ok = false;
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -228,6 +296,7 @@ int main(int argc, char *argv[]) {
     long max_dirty_percent = -1;
     bool verify_storage_power = false;
     bool verify_lvgl = false;
+    bool verify_lua = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -248,11 +317,14 @@ int main(int argc, char *argv[]) {
             verify_storage_power = true;
         } else if (std::strcmp(argv[i], "--verify-lvgl") == 0) {
             verify_lvgl = true;
+        } else if (std::strcmp(argv[i], "--verify-lua") == 0) {
+            verify_lua = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
                         "kamiframe-headless --verify-storage-power\n"
-                        "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n");
+                        "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n"
+                        "kamiframe-headless --verify-lua [--frames N]\n");
             return 0;
         }
     }
@@ -272,6 +344,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_lvgl) {
         return run_lvgl_check(expect_checksum, have_expect);
+    }
+
+    if (verify_lua) {
+        return run_lua_check(frames);
     }
 
     kf_app_init(mode);

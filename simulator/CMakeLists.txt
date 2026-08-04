@@ -68,6 +68,25 @@ target_link_libraries(kamiframe_lvgl_port
 target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
 
 # ---------------------------------------------------------------------------
+# Lua port glue -- the SDK language, see ADR 0014.
+#
+# Built unconditionally, same as kamiframe_host_common and
+# kamiframe_lvgl_port above: both desktop backends link it. Lives here, not
+# in hakoniwaos/, for exactly the reason ADR 0013 already gives for LVGL:
+# this slice does not claim Lua works on the ESP32 build.
+# ---------------------------------------------------------------------------
+include(fetch_lua)
+
+add_library(kamiframe_lua_port STATIC
+    src/lua/kf_lua_alloc.cpp
+    src/lua/kf_lua_port.cpp
+)
+target_include_directories(kamiframe_lua_port
+    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lua)
+target_link_libraries(kamiframe_lua_port
+    PUBLIC hakoniwaos lua_core kamiframe_options)
+
+# ---------------------------------------------------------------------------
 # SDL3 simulator
 # ---------------------------------------------------------------------------
 if(KAMIFRAME_BUILD_SIMULATOR)
@@ -80,7 +99,7 @@ if(KAMIFRAME_BUILD_SIMULATOR)
     )
     target_link_libraries(kamiframe-sim
         PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
-                kamiframe_options SDL3::SDL3)
+                kamiframe_lua_port kamiframe_options SDL3::SDL3)
     set_target_properties(kamiframe-sim PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
@@ -98,7 +117,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
         PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/headless)
     target_link_libraries(kamiframe-headless
         PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
-                kamiframe_options)
+                kamiframe_lua_port kamiframe_options)
     set_target_properties(kamiframe-headless PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -168,4 +187,20 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME lvgl_determinism_check
              COMMAND kamiframe-headless --verify-lvgl
                      --expect-checksum ${KAMIFRAME_LVGL_GOLDEN_CHECKSUM})
+
+    # Proves the Lua port glue -- the sandboxed VM, the arena-backed
+    # allocator's free/realloc path under real churn (see
+    # kf_lua_alloc.h and kf_lua_proof_script.h), and both directions of
+    # the kf.* binding -- behave identically frame to frame. See
+    # ADR 0014. Bypasses kf_app_frame() entirely, the same way
+    # lvgl_determinism_check bypasses it for LVGL: this exercises Lua
+    # directly, not the placeholder demo.
+    #
+    # No golden hash here, unlike the LVGL and rendering checks above:
+    # the proof script's own arithmetic makes `total` after N frames
+    # exactly 32*N, an invariant --verify-lua checks directly rather than
+    # via a checksum that would need updating every time the script's
+    # wording changed. See headless_main.cpp's run_lua_check().
+    add_test(NAME lua_determinism_check
+             COMMAND kamiframe-headless --verify-lua --frames 300)
 endif()

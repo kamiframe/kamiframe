@@ -40,9 +40,11 @@ typedef enum {
     /* Per-frame temporaries. Internal SRAM. RESET EVERY FRAME. */
     KF_ARENA_SCRATCH = 1,
 
-    /* Lua's heap, handed to lua_newstate as an allocator. PSRAM. Permanent.
-     * Unused until the Lua slice; it is declared now so the budget arithmetic
-     * in budget.h is honest about what has to fit. */
+    /* Lua's heap: ONE block acquired here, then suballocated internally by
+     * simulator/src/lua/kf_lua_alloc.cpp and handed to lua_newstate as its
+     * allocator. PSRAM. Permanent -- this arena itself is never resized or
+     * returned; kf_lua_alloc.cpp is what actually frees and reuses space
+     * within it. See ADR 0014. */
     KF_ARENA_LUA = 2,
 
     /* Decoded sprites and game data. PSRAM. Permanent. */
