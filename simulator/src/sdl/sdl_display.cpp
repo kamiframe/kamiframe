@@ -14,9 +14,9 @@
  *    would make sprites look better here than they can ever look on a 240x320
  *    panel, which is the same category of lie as running at 400fps.
  *
- * The dirty rectangle is accepted and reported but not used to limit the
- * upload: on a GPU, uploading 153KB costs nothing worth optimising. The
- * device backend will use it, which is exactly why it is in the signature.
+ * The dirty rectangles are accepted but not used to limit the upload: on a
+ * GPU, uploading 153KB costs nothing worth optimising. The device backend
+ * will use them, which is exactly why they are in the signature.
  */
 
 #include "kf/hal/display.h"
@@ -87,8 +87,10 @@ kf_result kf_display_init(void) {
 
 const kf_display_caps *kf_display_get_caps(void) { return &g_caps; }
 
-kf_result kf_display_present(const kf_color *framebuffer, kf_rect dirty) {
-    (void)dirty;
+kf_result kf_display_present(const kf_color *framebuffer,
+                              const kf_rect *dirty_rects, int dirty_rect_count) {
+    (void)dirty_rects;
+    (void)dirty_rect_count;
 
     if (g_state.texture == nullptr) {
         return KF_ERR_UNAVAILABLE;

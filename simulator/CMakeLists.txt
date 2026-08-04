@@ -77,8 +77,18 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run the binary by hand, take the checksum it prints, and update the
     # value here in the same commit as the change that caused it, so the diff
     # says "these pixels moved on purpose".
-    set(KAMIFRAME_GOLDEN_CHECKSUM        "964b2c7426d41723")
-    set(KAMIFRAME_GOLDEN_CHECKSUM_STRESS "6b9e3d13c8b9af4f")
+    #
+    # Updated 2026-08-04 alongside headless_input.cpp's switch to a simulated
+    # per-frame clock (see ADR 0011): the old values were only ever correct
+    # by luck, produced by real elapsed host time driving core's button
+    # debounce. That made the scripted button-holds clear the 8ms debounce on
+    # a frame that depended on host speed, not on the script -- deterministic
+    # on an idle machine, and provably not otherwise (see ADR 0011). These
+    # values are what a correctly-paced 30fps run has always been meant to
+    # produce, verified deterministic across 30+ runs under artificial CPU
+    # load.
+    set(KAMIFRAME_GOLDEN_CHECKSUM        "2aceae654b21ca1b")
+    set(KAMIFRAME_GOLDEN_CHECKSUM_STRESS "3fbdcabfba49e9ef")
 
     add_test(NAME headless_determinism
              COMMAND kamiframe-headless --frames 300 --seed 0x5EEDCAFE

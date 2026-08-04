@@ -52,7 +52,8 @@ kf_result kf_display_init(void) {
 
 const kf_display_caps *kf_display_get_caps(void) { return &g_caps; }
 
-kf_result kf_display_present(const kf_color *framebuffer, kf_rect dirty) {
+kf_result kf_display_present(const kf_color *framebuffer,
+                              const kf_rect *dirty_rects, int dirty_rect_count) {
     /* FNV-1a over the whole buffer. Cheap, order-sensitive, and good enough
      * to notice a one-pixel change. */
     const uint8_t *bytes = reinterpret_cast<const uint8_t *>(framebuffer);
@@ -61,9 +62,17 @@ kf_result kf_display_present(const kf_color *framebuffer, kf_rect dirty) {
         g_checksum *= 1099511628211ull;
     }
 
-    if (dirty.x1 > dirty.x0 && dirty.y1 > dirty.y0) {
-        g_dirty_pixels_total += static_cast<uint64_t>(dirty.x1 - dirty.x0) *
-                                static_cast<uint64_t>(dirty.y1 - dirty.y0);
+    /* Sum of the actual rectangles, not a bounding box: this is what makes
+     * headless_dirty_area mean the same thing kf_fb_dirty_bytes() does in
+     * core, rather than re-inflating the exact number kf/framebuffer.h's
+     * rectangle list exists to shrink. Rectangles never overlap (core's
+     * guarantee), so a plain sum is exact, not an over-count. */
+    for (int i = 0; i < dirty_rect_count; ++i) {
+        const kf_rect r = dirty_rects[i];
+        if (r.x1 > r.x0 && r.y1 > r.y0) {
+            g_dirty_pixels_total += static_cast<uint64_t>(r.x1 - r.x0) *
+                                    static_cast<uint64_t>(r.y1 - r.y0);
+        }
     }
     g_frames++;
     return KF_OK;

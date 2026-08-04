@@ -198,6 +198,23 @@ char *append_fixed1(char *dst, const char *end, uint32_t tenths) {
     return dst;
 }
 
+/* Every HUD field (fps, us, percent, rect count, arena bytes) varies in digit
+ * width frame to frame. kf_text_draw only paints cells for the characters it
+ * is given -- that IS the "clear whatever was there" step (see its comment in
+ * kf/font.cpp) -- so a line that got shorter than last frame leaves the old
+ * tail's glyphs sitting in the framebuffer forever, uncleared, because
+ * nothing ever draws over those cells again. Padding every line out to a
+ * fixed width with spaces means this frame's draw always covers last frame's
+ * worst case, at the cost of a few extra cheap background-only cells. */
+constexpr int kHudLineWidth = 40;
+
+char *pad_to(char *dst, const char *end, const char *line_start, int width) {
+    while ((dst - line_start) < width && dst < end) {
+        *dst++ = ' ';
+    }
+    return dst;
+}
+
 /* Drawn between the demo's draw call and this frame's own accounting, using
  * LAST frame's stats -- this frame cannot know its own total cost until
  * after it finishes, the same way a runner cannot time their own race
@@ -226,10 +243,12 @@ void draw_hud(void) {
     w = append_uint(w, end, g.last.total_us);
     w = append_str(w, end, "US D");
     w = append_uint(w, end, g.last.dirty_percent);
-    w = append_str(w, end, "%");
+    w = append_str(w, end, "% R");
+    w = append_uint(w, end, g.last.dirty_rect_count);
     if (g.last.over_budget) {
         w = append_str(w, end, " OVER");
     }
+    w = pad_to(w, end, line, kHudLineWidth);
     *w = '\0';
     kf_text_draw(0, 0, line, kHudFg, kHudBg);
 
@@ -253,6 +272,7 @@ void draw_hud(void) {
         w = append_uint(w, end,
                         static_cast<uint32_t>(s->capacity_bytes / 1024u));
         w = append_str(w, end, "K");
+        w = pad_to(w, end, line, kHudLineWidth);
         *w = '\0';
         kf_text_draw(0,
                      static_cast<int16_t>(KF_FONT_CELL_H *
@@ -346,18 +366,25 @@ bool kf_app_frame(void) {
         draw_hud();
     }
 
-    const kf_rect dirty = kf_fb_dirty_rect();
+    const kf_dirty_rects dirty = kf_fb_dirty_rects();
     const size_t dirty_bytes = kf_fb_dirty_bytes();
 
-    kf_display_present(kf_fb_pixels(), dirty);
+    kf_display_present(kf_fb_pixels(), dirty.rects, dirty.count);
     kf_fb_clear_dirty();
 
     const uint64_t end_us = kf_time_mono_us();
     const uint32_t cpu_us = static_cast<uint32_t>(end_us - g.frame_start_us);
 
     const kf_display_caps *caps = kf_display_get_caps();
-    const uint32_t transfer_us =
-        estimate_transfer_us(dirty_bytes, caps->link_bytes_per_second);
+    /* Pixel bytes plus the per-rectangle addressing overhead each separate
+     * rectangle costs on real hardware -- see KF_DISPLAY_RECT_OVERHEAD_BYTES
+     * in kf/budget.h. Without this term, splitting one rectangle into many
+     * would look free, which is exactly the kind of lie this estimate exists
+     * to not tell. */
+    const size_t overhead_bytes =
+        static_cast<size_t>(dirty.count) * KF_DISPLAY_RECT_OVERHEAD_BYTES;
+    const uint32_t transfer_us = estimate_transfer_us(
+        dirty_bytes + overhead_bytes, caps->link_bytes_per_second);
 
     const kf_draw_counters counters = kf_draw_counters_get();
     const uint32_t draw_us = estimate_draw_us(counters);
@@ -374,8 +401,9 @@ bool kf_app_frame(void) {
         KF_DISPLAY_DOUBLE_BUFFERED ? g.last.overlapped_us : g.last.serial_us;
     g.last.over_budget = g.last.total_us > KF_FRAME_BUDGET_US;
     g.last.dirty_percent = static_cast<uint8_t>(
-        (static_cast<uint64_t>(kf_rect_area(dirty)) * 100ull) /
+        (static_cast<uint64_t>(dirty_bytes / sizeof(kf_color)) * 100ull) /
         static_cast<uint64_t>(KF_FRAMEBUFFER_PIXELS));
+    g.last.dirty_rect_count = static_cast<uint8_t>(dirty.count);
 
     record(g.last.total_us);
     if (g.last.over_budget) {
@@ -454,8 +482,9 @@ void kf_app_log_budget_report(void) {
     KF_LOGI(TAG, "     overlapped (DMA+2buf) %5u us  ->  %5.1f fps",
             g.last.overlapped_us,
             g.last.overlapped_us ? 1000000.0 / g.last.overlapped_us : 0.0);
-    KF_LOGI(TAG, "  pixels drawn: %6u opaque + %6u keyed   dirty %3u%%",
-            g.last.opaque_pixels, g.last.keyed_pixels, g.last.dirty_percent);
+    KF_LOGI(TAG, "  pixels drawn: %6u opaque + %6u keyed   dirty %3u%%  (%u rect%s)",
+            g.last.opaque_pixels, g.last.keyed_pixels, g.last.dirty_percent,
+            g.last.dirty_rect_count, g.last.dirty_rect_count == 1 ? "" : "s");
     KF_LOGI(TAG, "  host cpu %5u us (your PC, not the device)", g.last.cpu_us);
     KF_LOGI(TAG, "  mean %5u us   p99 %5u us   worst %5u us", s.mean_us,
             s.p99_us, s.worst_us);

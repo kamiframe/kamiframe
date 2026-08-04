@@ -18,6 +18,7 @@ future us in month eight asking the same question with less patience.
 | [0008](adr-0008-memory-model.md) | Fixed arenas, no heap in core | Accepted |
 | [0009](adr-0009-transfer-cost.md) | Modelling display transfer cost on desktop | Accepted |
 | [0010](adr-0010-bitmap-text.md) | Bitmap text and the constraint HUD | Accepted |
+| [0011](adr-0011-dirty-rect-list.md) | A dirty-rectangle list, not a single box | Accepted |
 
 Open evaluations, deliberately not decided:
 

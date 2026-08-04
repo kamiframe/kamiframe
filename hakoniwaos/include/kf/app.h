@@ -101,8 +101,18 @@ typedef struct {
     bool over_budget;
 
     /* Fraction of the screen this frame redrew, in percent. Watch this: the
-     * gap between 100% and something small is the gap between 30fps and 60. */
+     * gap between 100% and something small is the gap between 30fps and 60.
+     * Computed from the sum of this frame's dirty rectangles, so it reflects
+     * what actually gets sent, not the span between the furthest-apart two
+     * things that changed. */
     uint8_t dirty_percent;
+
+    /* How many separate rectangles this frame's dirty area was tracked as,
+     * from kf/framebuffer.h's KF_MAX_DIRTY_RECTS list. Watch this alongside
+     * dirty_percent: a low percent with a rect count pinned at
+     * KF_MAX_DIRTY_RECTS means the list just fell back to one box again, and
+     * dirty_percent is about to jump. */
+    uint8_t dirty_rect_count;
 } kf_frame_stats;
 
 typedef struct {

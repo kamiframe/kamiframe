@@ -66,10 +66,14 @@ is calculated, because it needs different hardware.
 
 **It is an optimisation, not a requirement, and it is never in your way.**
 
-`kf_display_present(framebuffer, dirty)` takes a rectangle describing what
-changed. If your game changes everything, you pass the whole screen and get
-whatever the hardware can do. Nothing refuses. The bouncing-blob demo passes a
-small rectangle because in that demo only a small rectangle changed.
+`kf_display_present(framebuffer, dirty_rects, dirty_rect_count)` takes a
+short list of rectangles (up to `KF_MAX_DIRTY_RECTS`, see ADR 0011)
+describing what changed, not just one. If your game changes everything, you
+pass the whole screen as a single rectangle and get whatever the hardware
+can do. Nothing refuses. The bouncing-blob demo passes one small rectangle
+because in that demo only a small rectangle changed; a HUD and a moving
+sprite together pass two, kept independent, rather than one box spanning
+both.
 
 Where it earns its place is that most virtual-pet screens are not scrolling
 tilemaps. A pet idling in a room, a menu, a stats page, a sleeping animation:

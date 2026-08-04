@@ -23,8 +23,12 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes shape. Third-party backends can
- * check it. */
-#define KF_HAL_DISPLAY_VERSION 1
+ * check it.
+ *
+ * 2 (2026-08-04): kf_display_present() takes a short list of dirty
+ * rectangles instead of one. See kf/framebuffer.h and
+ * docs/architecture/adr-0011-dirty-rect-list.md. */
+#define KF_HAL_DISPLAY_VERSION 2
 
 typedef enum {
     KF_PIXFMT_RGB565 = 0,
@@ -44,9 +48,9 @@ typedef struct {
     uint16_t height;
     kf_pixel_format format;
 
-    /* True if present() can be given a sub-rectangle and will only push those
-     * pixels. False means every present is a full frame regardless of the
-     * dirty rect, which is what makes e-ink slow. */
+    /* True if present() can be given a list of sub-rectangles and will only
+     * push those pixels. False means every present is a full frame
+     * regardless of the dirty rectangles, which is what makes e-ink slow. */
     bool supports_partial_update;
 
     /* True if the backend has a controllable backlight. */
@@ -70,18 +74,24 @@ const kf_display_caps *kf_display_get_caps(void);
  * `framebuffer` points at caps.width * caps.height pixels in caps.format,
  * always the full buffer, always native-endian.
  *
- * `dirty` names the sub-rectangle that changed since the last present. The
- * backend may honour it or ignore it; core must supply it honestly either
- * way. Desktop ignores it today. The device will not, and this parameter
- * exists on day one precisely so that adding partial updates later is a
- * backend change rather than an audit of every call site.
+ * `dirty_rects` names up to `dirty_rect_count` sub-rectangles that changed
+ * since the last present, in framebuffer space, never overlapping each
+ * other (core merges anything that touches -- see kf/framebuffer.h). The
+ * backend may honour them or ignore them; core must supply them honestly
+ * either way. Desktop ignores them today. The device will not, and this
+ * parameter exists on day one precisely so that adding partial updates
+ * later is a backend change rather than an audit of every call site.
  *
- * An empty dirty rect is legal and means "nothing changed", which a backend
- * may use to skip the transfer entirely.
+ * `dirty_rect_count` of zero (and `dirty_rects` possibly NULL) is legal and
+ * means "nothing changed", which a backend may use to skip the transfer
+ * entirely. A backend that would rather send one rectangle than several
+ * small ones can union them itself; that recovers the original
+ * single-rectangle behaviour and is always correct, only ever wasteful.
  *
  * Blocks until the frame is accepted. On the device that will mean waiting
  * for a DMA slot, not for the transfer to complete. */
-kf_result kf_display_present(const kf_color *framebuffer, kf_rect dirty);
+kf_result kf_display_present(const kf_color *framebuffer,
+                              const kf_rect *dirty_rects, int dirty_rect_count);
 
 /* 0 = off, 255 = full. Returns KF_ERR_UNAVAILABLE if !caps.has_backlight. */
 kf_result kf_display_set_backlight(uint8_t level);

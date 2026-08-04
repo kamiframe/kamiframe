@@ -7,15 +7,29 @@
  * produces identical output every time. Held long enough to survive core's
  * 8ms debounce, because a script that presses a button for one frame would
  * be correctly ignored and would test nothing.
- */
+ *
+ * sampled_at_us is a SIMULATED per-frame clock, one KF_FRAME_BUDGET_US tick
+ * per poll -- deliberately not kf_time_mono_us(). The headless runner turns
+ * off real-time pacing (see kf_host_time_set_realtime in headless_main.cpp)
+ * so 300 frames run in milliseconds rather than ten seconds, which means the
+ * real host clock between polls reflects nothing but scheduler noise: how
+ * many microseconds a slower CI runner, or a machine under load, happened to
+ * take on that particular frame. Core's debounce compares that gap against
+ * a fixed 8ms window, so feeding it real elapsed time made whether a scripted
+ * button-hold cleared the debounce depend on host speed rather than frame
+ * count -- the same seed could produce a different checksum from one run to
+ * the next. A synthetic clock ticking one nominal frame per poll makes the
+ * debounce see exactly what a correctly-paced 30fps run would, independent
+ * of how fast this particular machine executes the loop. */
 
 #include "kf/hal/input.h"
 
-#include "kf/hal/time.h"
+#include "kf/budget.h"
 #include "headless_probe.h"
 
 namespace {
 uint64_t g_frame = 0;
+uint64_t g_sim_us = 0;
 }
 
 uint32_t kf_headless_script(uint64_t frame) {
@@ -42,9 +56,10 @@ kf_result kf_input_poll(kf_input_raw *out) {
         return KF_ERR_INVALID;
     }
     out->buttons = kf_headless_script(g_frame);
-    out->sampled_at_us = kf_time_mono_us();
+    out->sampled_at_us = g_sim_us;
     out->quit_requested = false;
     g_frame++;
+    g_sim_us += KF_FRAME_BUDGET_US;
     return KF_OK;
 }
 

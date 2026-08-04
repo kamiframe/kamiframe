@@ -4,6 +4,33 @@ You need a C++17 compiler, CMake 3.20 or newer, and Git. Nothing else. SDL3 is
 fetched and built automatically the first time, which takes a few minutes; every
 build after that is seconds.
 
+## Quick start
+
+On Linux, macOS, or WSL2, the whole thing is one command:
+
+```
+bash dev.sh run
+```
+
+That configures, builds, and launches the simulator, in that order, every
+time — there is nothing else to remember. `bash dev.sh stress` runs the
+full-screen stress demo instead, `bash dev.sh test` runs the automated
+checks, and `bash dev.sh clean` deletes the build output if something gets
+into a state you'd rather just start over from. Run `bash dev.sh` with no
+argument for the full list. (`./dev.sh run` works the same way after a
+one-time `chmod +x dev.sh`, if you'd rather drop the `bash `.)
+
+`dev.sh` is a thin wrapper — it runs the exact CMake commands below, plus,
+on WSL2 specifically, it automatically points build output at your Linux
+home directory instead of the Windows drive the repo lives on, which is the
+single biggest speed difference a WSL2 user can make (see the WSL2 section)
+and now happens without anyone needing to know to ask for it.
+
+Native Windows (MSVC) is not yet wrapped by `dev.sh` — use the "Windows,
+natively" section below for that.
+
+## What `dev.sh` is actually running
+
 ```
 cmake -B build
 cmake --build build
@@ -67,6 +94,12 @@ cmake --build ~/kf-build -j$(nproc)
 Most of the I/O is build output, so this is usually a large improvement for a
 one-line change.
 
+If you use `dev.sh` (see Quick start, above), this happens for you: it
+detects a WSL2 repo sitting on a Windows drive and redirects build output to
+`~/.cache/kamiframe-build` automatically, printing a line saying so the
+first time. This is the same fix as the manual commands above, just applied
+without you needing to remember it exists.
+
 **2. You need a display for the window.** Windows 11's WSL2 includes WSLg, so
 a window just appears. On Windows 10 you may need an X server. If there is no
 display, `kamiframe-sim` will exit with an SDL error about no video device.
@@ -110,6 +143,13 @@ Same as the first block. On macOS, Xcode command line tools plus CMake.
 | `-DFETCHCONTENT_SOURCE_DIR_SDL3=/path/to/SDL` | unset | Use a local SDL checkout instead of downloading. Handy offline. |
 
 ## Tests
+
+```
+bash dev.sh test
+```
+
+runs both the `ctest` suite and `check_no_heap.py` together. The two
+commands it wraps, if you want to run them separately:
 
 ```
 ctest --test-dir build --output-on-failure

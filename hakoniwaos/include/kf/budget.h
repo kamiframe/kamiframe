@@ -66,6 +66,23 @@
  * See docs/frame-budget.md. */
 #define KF_DISPLAY_SPI_HZ      40000000
 
+/* ASSUMPTION, NOT MEASURED. Correct at hardware bring-up, same as
+ * KF_DISPLAY_SPI_HZ above.
+ *
+ * Every separate rectangle sent to the panel costs a small fixed overhead
+ * before its pixels: the ST7789 needs CASET (column address window, 1
+ * command byte + 4 parameter bytes), RASET (row address window, 1 + 4) and
+ * RAMWR (1 command byte, then the pixel burst) before it will accept a new
+ * region. That is 11 bytes of protocol overhead the link has to carry the
+ * same as any pixel byte, once per rectangle, not once per frame.
+ *
+ * This is why sending many small dirty rectangles instead of one big one is
+ * not free: past some count, the addressing overhead costs more than the
+ * extra pixels a slightly bigger rectangle would have sent instead. See
+ * KF_MAX_DIRTY_RECTS in kf/framebuffer.h and
+ * docs/architecture/adr-0011-dirty-rect-list.md. */
+#define KF_DISPLAY_RECT_OVERHEAD_BYTES 11u
+
 /* Whether the device overlaps drawing with transmission.
  *
  * 0: the CPU draws, then waits for the whole frame to go out. Frame cost is
