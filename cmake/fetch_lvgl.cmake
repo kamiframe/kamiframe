@@ -36,11 +36,26 @@ set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
 
+# MSVC-only fix, see cmake/patches/lvgl-v9.2.2-msvc-c2099-explicit-bitfields.patch
+# for the full explanation. Applied unconditionally rather than gated on
+# CMAKE_C_COMPILER_ID -- CMAKE_C_COMPILER_ID isn't reliably set this early in
+# configure (the exact trap LVGL's own CMakeLists.txt hit in
+# https://github.com/lvgl/lvgl/pull/7401) -- and the patch is a semantic
+# no-op under GCC/Clang (it only adds explicit zero-value bitfield
+# initializers that were already zero by default), so there is no cost to
+# applying it on every platform. PATCH_COMMAND only runs once, against the
+# fresh clone FetchContent just made, so it does not need to tolerate being
+# re-applied to an already-patched tree; a failure here should stop the
+# configure loudly rather than silently ship an unpatched, MSVC-broken LVGL
+# again (e.g. if KAMIFRAME_LVGL_TAG above is ever bumped and this patch needs
+# updating for the new tag's line numbers).
 FetchContent_Declare(lvgl
     GIT_REPOSITORY https://github.com/lvgl/lvgl.git
     GIT_TAG        ${KAMIFRAME_LVGL_TAG}
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE
+    PATCH_COMMAND  git apply --ignore-whitespace --whitespace=nowarn
+                   "${CMAKE_CURRENT_LIST_DIR}/patches/lvgl-v9.2.2-msvc-c2099-explicit-bitfields.patch"
 )
 FetchContent_MakeAvailable(lvgl)
 

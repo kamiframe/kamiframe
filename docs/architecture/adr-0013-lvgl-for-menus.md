@@ -199,6 +199,60 @@ re-flushes. Confirmed by hand in the simulator, not just reasoned about.
 No fix here for the same reason as above -- this is the coordination
 problem stated generally, not two separate bugs.
 
+## Windows/MSVC build break, found via CI
+
+The first push of this slice broke the GitHub Actions Windows/MSVC build:
+`error C2099: initializer is not a constant`, four times, all in vendored
+LVGL v9.2.2 widget source (`lv_bar.c`, `lv_button.c`, `lv_image.c`,
+`lv_label.c`) -- exactly the four widgets this slice's curated `lv_conf.h`
+enables. This was never caught locally: this project's own sandbox has no
+MSVC toolchain, only GCC (see BUILDING.md's "you do not need a GCC build
+locally... GitHub Actions... catches the differences that matter" -- this is
+the mirror image of that, an MSVC-only difference GCC can't catch either).
+
+Reading LVGL's own source at the four flagged lines found the actual cause,
+not a guess: `lv_obj_class_t` (`hakoniwaos`-adjacent, in LVGL's own
+`lv_obj_class_private.h`) ends with four bit-field members packed into one
+storage word -- `editable : 2`, `group_def : 2`, `instance_size : 16`,
+`theme_inheritable : 1`. The base `lv_obj_class` in LVGL's `lv_obj.c` sets
+`.editable` and `.group_def` explicitly in its designated initializer and
+builds fine, everywhere. All four widgets that failed set only
+`.instance_size` and leave the other three bit-fields to their implicit
+zero default -- and MSVC's C11 designated-initializer front end apparently
+cannot constant-fold a partially-specified bit-field storage word, where
+GCC has no trouble with it. (LVGL's own `lv_bar.c` etc. are unmodified
+project source from upstream, not something this project wrote --
+this is a real MSVC front-end limitation running into ordinary, valid C.)
+
+The fix: `cmake/patches/lvgl-v9.2.2-msvc-c2099-explicit-bitfields.patch`,
+applied automatically via `PATCH_COMMAND` in `cmake/fetch_lvgl.cmake` right
+after `FetchContent` clones LVGL. It adds explicit initializers for the
+three previously-implicit bit-fields on all four widget classes (the exact
+same named-constant zero values -- `LV_OBJ_CLASS_EDITABLE_INHERIT`,
+`LV_OBJ_CLASS_GROUP_DEF_INHERIT`, `LV_OBJ_CLASS_THEME_INHERITABLE_FALSE` --
+they already defaulted to), matching the pattern LVGL's own `lv_obj_class`
+already uses without issue. A semantic no-op on every platform: the actual
+field values are identical before and after, on every compiler, so nothing
+about LVGL's runtime behavior changes -- this patch exists purely to give
+MSVC's constant-folder a fully-specified bit-field word to work with.
+Applied unconditionally (not gated on the compiler), both because
+`CMAKE_C_COMPILER_ID` isn't reliably readable this early in `FetchContent`
+configure (LVGL's own build hit exactly this trap, fixed in
+[lvgl/lvgl#7401](https://github.com/lvgl/lvgl/pull/7401)) and because
+there's no cost to applying a no-op patch on GCC/Clang too.
+
+Verified: the patch applies cleanly with `git apply` against a genuinely
+fresh `v9.2.2` clone (not just the already-edited working copy it was
+authored against), and a full rebuild against that freshly-patched source
+-- clean `-Werror`, all 5 `ctest` targets including
+`lvgl_determinism_check` with its checksum unchanged (expected: the patch
+doesn't change any value, just makes existing zero-defaults explicit),
+`check_no_heap.py` clean. **Not verified: an actual MSVC compile.** This
+sandbox has no Windows/MSVC toolchain, so the fix is confirmed correct by
+reading LVGL's struct layout and both the passing and failing initializers
+side by side, not by reproducing the error and watching it disappear.
+Needs a real CI run to confirm green.
+
 ## Later
 
 - Extending the enabled widget set as real menu screens get designed.
