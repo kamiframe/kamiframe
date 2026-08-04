@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# LLVM style with a 4-space indent. Chosen because it is the default everyone
+# already has, so a contributor does not have to think about it.
+#
+# Run it:  clang-format -i $(git ls-files '*.c' '*.cpp' '*.h')
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 80
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SortIncludes: false
+SpaceAfterCStyleCast: false
+AlignConsecutiveMacros: false

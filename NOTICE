@@ -1,0 +1,20 @@
+Kamiframe
+Copyright the Kamiframe contributors.
+
+This product includes software developed as part of the Kamiframe project
+(https://github.com/kamiframe).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full
+text and LICENSING.md for a plain-English summary of what applies to what.
+
+--------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------
+
+The desktop simulator links against SDL3 (Simple DirectMedia Layer), which is
+distributed under the zlib license.
+
+    https://github.com/libsdl-org/SDL
+
+SDL3 is a build-time dependency of the simulator only. It is not part of
+HakoniwaOS and is not present in device firmware.
