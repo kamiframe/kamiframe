@@ -20,13 +20,15 @@ if(ESP_PLATFORM)
     return()
 endif()
 
-# Shared by both backends: pools, logging, entropy, clocks. Nothing here
-# touches a display or an input device.
+# Shared by both backends: pools, logging, entropy, clocks, storage, power.
+# Nothing here touches a display or an input device.
 set(KF_HOST_COMMON_SRCS
     src/host/host_memory.cpp
     src/host/host_log.cpp
     src/host/host_time.cpp
     src/host/host_entropy.cpp
+    src/host/host_storage.cpp
+    src/host/host_power.cpp
 )
 
 add_library(kamiframe_host_common STATIC ${KF_HOST_COMMON_SRCS})
@@ -110,4 +112,11 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME headless_fullscreen
              COMMAND kamiframe-headless --frames 300 --seed 0x5EEDCAFE --stress
                      --expect-checksum ${KAMIFRAME_GOLDEN_CHECKSUM_STRESS})
+
+    # Proves the actual hardware-purchase trigger: save state survives, and
+    # offline ageing works, deterministically. See
+    # docs/architecture/adr-0012-storage-and-power.md. Bypasses the frame
+    # loop entirely -- this is a storage/power check, not a rendering one.
+    add_test(NAME storage_power_check
+             COMMAND kamiframe-headless --verify-storage-power)
 endif()

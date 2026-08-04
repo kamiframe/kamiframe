@@ -29,9 +29,14 @@ later" is a place where that would happen. See ADR 0004.
 | `kf/hal/log.h` | yes | shared host | shared host | not yet |
 | `kf/hal/entropy.h` | yes | shared host | shared host | not yet |
 | `kf/hal/memory.h` | yes | shared host | shared host | not yet |
-| `kf/hal/storage.h` | **not written** | | | |
-| `kf/hal/power.h` | **not written** | | | |
+| `kf/hal/storage.h` | yes | shared host | shared host | not yet |
+| `kf/hal/power.h` | yes | shared host | shared host | not yet |
 | `kf/hal/audio.h` | **not written** | | | |
+
+`kf/hal/storage.h` and `kf/hal/power.h` are save-state and deep-sleep-until
+only -- see ADR 0012. Bulk read-only assets (`kf/hal/assets.h`, mentioned
+below) and the rest of power (light sleep, wake-on-button config, battery
+telemetry) are still not written.
 
 Headers that do not exist are not stubbed. A stub that returns success is a
 lie that will be discovered at the worst possible moment.
@@ -91,21 +96,27 @@ works before the ESP32 backend depends on it: it links the same `hakoniwaos`
 library as the SDL simulator, with a different bottom layer, and produces
 byte-identical frames.
 
-## Not yet written, and the shape they should take
+## Built, and what's still ahead of them
 
-**Storage** splits in two, because the needs are different. `kf_store_*` for
-save state: small, frequent, must be atomic and power-loss safe, backed by
-NVS on the device and a file on desktop. `kf_assets_*` for read-only bulk
-data: open, seek, read, plus a `try_map()` that returns a direct pointer where
-the platform can memory-map flash. That escape hatch matters: mapping flash
-into the address space means reading sprites with no RAM copy, and an API
-without it will leave the device RAM-starved.
+**Storage** splits in two, because the needs are different. `kf_store_*` --
+save state: small, frequent, atomic, power-loss safe -- is written; see ADR
+0012. `kf_assets_*` -- read-only bulk data: open, seek, read, plus a
+`try_map()` that returns a direct pointer where the platform can memory-map
+flash -- is not. That escape hatch matters: mapping flash into the address
+space means reading sprites with no RAM copy, and an API without it will
+leave the device RAM-starved. It waits for there to be actual bulk assets
+(a sprite pack, a save format bigger than a few key-value entries) to design
+against, rather than a guess.
 
-**Power** is the one people forget until month eight, and it is more than
-"sleep now": light sleep between frames (where the battery life comes from),
-deep sleep with RTC wake, wake-on-button GPIO configuration, battery voltage,
-and charging state. Its desktop implementation of `deep_sleep_until()` is the
-time machine described in ADR 0004.
+**Power**: `deep_sleep_until()` is written, and its desktop implementation is
+the time machine described in ADR 0004 and proven in ADR 0012 -- three days
+of offline pet ageing costs one function call in a test, not three days of
+waiting. The rest of what people forget until month eight is not written
+yet: light sleep between frames (where the battery life actually comes
+from), wake-on-button GPIO configuration, battery voltage, and charging
+state. None of them were what the save-then-offline-age proof needed.
+
+## Not yet written, and the shape it should take
 
 **Audio** should be a pull callback ("fill N frames, 16-bit mono, rate R"),
 with mixing and synthesis in core. The piezo buzzer is a separate capability,

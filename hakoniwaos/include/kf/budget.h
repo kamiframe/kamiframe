@@ -160,6 +160,30 @@
 #define KF_FLASH_ASSET_BUDGET_BYTES (10u * 1024u * 1024u)
 
 /* -------------------------------------------------------------------------
+ * Storage (save state)
+ *
+ * kf/hal/storage.h is a small key-value store, not a filesystem, because the
+ * device backend is ESP-IDF's NVS (non-volatile storage) and NVS is a
+ * key-value store: these two numbers are ITS real limits, not a design
+ * choice made here. A desktop save file that quietly accepted a longer key
+ * or a bigger value than the device ever could would be exactly the kind of
+ * lie this whole header exists to prevent -- a save file that works on your
+ * PC and fails on hardware the first time a contributor tries it there.
+ * ------------------------------------------------------------------------- */
+
+/* NVS keys are at most 15 bytes, not counting the NUL terminator. Fixed by
+ * ESP-IDF, not tunable. */
+#define KF_STORE_MAX_KEY_LEN     15u
+
+/* ASSUMPTION, NOT MEASURED, same caveat as KF_DISPLAY_SPI_HZ above. A single
+ * NVS entry fits in one 4000-byte page in the common case; larger blobs need
+ * NVS's multi-page bookkeeping, which is a real device behaviour this store
+ * deliberately does not paper over on desktop. A save format that stays
+ * under this without needing to think about it is one that will not need
+ * re-thinking at hardware bring-up. */
+#define KF_STORE_MAX_VALUE_BYTES 4000u
+
+/* -------------------------------------------------------------------------
  * Compile-time checks. These fail the build, which is the point.
  * ------------------------------------------------------------------------- */
 

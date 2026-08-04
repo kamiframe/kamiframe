@@ -18,6 +18,8 @@
 #include "kf/hal/entropy.h"
 #include "kf/hal/input.h"
 #include "kf/hal/log.h"
+#include "kf/hal/power.h"
+#include "kf/hal/storage.h"
 #include "kf/hal/time.h"
 #include "kf/demo.h"
 
@@ -294,6 +296,8 @@ void kf_app_init(kf_demo_mode mode) {
     KF_ASSERT(kf_time_init() == KF_OK, "time HAL failed to start");
     KF_ASSERT(kf_display_init() == KF_OK, "display HAL failed to start");
     KF_ASSERT(kf_input_init() == KF_OK, "input HAL failed to start");
+    KF_ASSERT(kf_store_init() == KF_OK, "storage HAL failed to start");
+    KF_ASSERT(kf_power_init() == KF_OK, "power HAL failed to start");
 
     const kf_display_caps *caps = kf_display_get_caps();
     KF_ASSERT(caps != nullptr, "display backend returned no capabilities");
@@ -440,6 +444,8 @@ void kf_app_shutdown(void) {
     kf_demo_shutdown();
     kf_input_shutdown();
     kf_display_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
     g.initialised = false;
     g.running = false;
 }

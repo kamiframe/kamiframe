@@ -10,6 +10,7 @@
  * Usage:
  *     kamiframe-headless [--frames N] [--seed N] [--expect-checksum HEX]
  *                        [--max-dirty-percent N]
+ *     kamiframe-headless --verify-storage-power
  *
  * Exit codes:
  *     0  everything asserted held
@@ -19,18 +20,143 @@
 #include "kf/app.h"
 #include "kf/budget.h"
 #include "kf/hal/log.h"
+#include "kf/hal/power.h"
+#include "kf/hal/storage.h"
+#include "kf/hal/time.h"
+#include "../host/host_storage.h"
 #include "../host/host_time.h"
 #include "headless_probe.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <string>
+
+#if defined(_WIN32)
+#include <process.h>
+#define KF_GETPID _getpid
+#else
+#include <unistd.h>
+#define KF_GETPID getpid
+#endif
 
 extern "C" void kf_host_entropy_pin(uint32_t value);
 
 namespace {
 constexpr const char *TAG = "headless";
+
+/* Proves the actual hardware-purchase trigger from the planning docs: save
+ * state survives, and offline ageing works, deterministically, in
+ * milliseconds rather than the three real days it names on the device. See
+ * docs/architecture/adr-0012-storage-and-power.md.
+ *
+ * Deliberately bypasses kf_app_init()/kf_app_frame(): this checks the
+ * storage and power HAL directly, not the placeholder demo, which has
+ * nothing to do with either. */
+int run_storage_power_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* An isolated directory per run: this must never read a leftover save
+     * from a previous run, or a real one, and must never leave one behind. */
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-store-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    /* 1. A fresh store has nothing under any key. */
+    uint8_t buf[64];
+    size_t out_bytes = 0;
+    check(kf_store_read("pet", buf, sizeof(buf), &out_bytes) ==
+              KF_ERR_UNAVAILABLE,
+          "fresh key reads as unavailable");
+
+    /* 2. Key and value validation match kf/budget.h's real NVS limits,
+     * not a design choice made here -- see kf/hal/storage.h. */
+    check(kf_store_write("way-too-long-a-key-name", "x", 1) == KF_ERR_INVALID,
+          "over-length key rejected");
+    check(kf_store_write("bad key!", "x", 1) == KF_ERR_INVALID,
+          "key with invalid characters rejected");
+    {
+        uint8_t oversized[KF_STORE_MAX_VALUE_BYTES + 1] = {};
+        check(kf_store_write("pet", oversized, sizeof(oversized)) ==
+                  KF_ERR_INVALID,
+              "oversized value rejected");
+    }
+
+    /* 3. Write, then read back byte-identical. This is the save half of the
+     * hardware trigger. */
+    const uint8_t pet_state[] = {0x50, 0x45, 0x54, 0x01, 0x2A, 0x00, 0x7F};
+    check(kf_store_write("pet", pet_state, sizeof(pet_state)) == KF_OK,
+          "write pet state");
+    uint8_t readback[sizeof(pet_state)] = {};
+    out_bytes = 0;
+    check(kf_store_read("pet", readback, sizeof(readback), &out_bytes) ==
+              KF_OK,
+          "read pet state back");
+    check(out_bytes == sizeof(pet_state) &&
+              std::memcmp(readback, pet_state, sizeof(pet_state)) == 0,
+          "pet state read back byte-identical");
+
+    /* 4. The offline-ageing half: sleep 3 real days, instantly, and prove the
+     * wall clock actually moved by exactly that much. */
+    const kf_wall_time before = kf_time_wall();
+    check(before.valid, "wall clock valid before sleep");
+    constexpr int64_t kThreeDaysSeconds = 3 * 24 * 60 * 60;
+    kf_wall_time wake_at = before;
+    wake_at.epoch_seconds += kThreeDaysSeconds;
+    check(kf_power_deep_sleep_until(wake_at) == KF_OK, "deep sleep call");
+    const kf_wall_time after = kf_time_wall();
+    check(after.valid && after.epoch_seconds - before.epoch_seconds ==
+                              kThreeDaysSeconds,
+          "wall clock advanced by exactly 3 simulated days");
+
+    /* 5. Save state survives the sleep -- the actual point of both halves
+     * existing together: the pet ages because it was saved before power
+     * was lost, not despite it. */
+    out_bytes = 0;
+    check(kf_store_read("pet", readback, sizeof(readback), &out_bytes) ==
+                  KF_OK &&
+              std::memcmp(readback, pet_state, sizeof(pet_state)) == 0,
+          "pet state survives the simulated sleep");
+
+    /* 6. Sleeping until a time already in the past is a harmless no-op, not
+     * an error -- a device whose clock drifted forward must not refuse to
+     * boot. */
+    kf_wall_time past = after;
+    past.epoch_seconds -= 10;
+    check(kf_power_deep_sleep_until(past) == KF_OK,
+          "sleeping until the past is a no-op");
+
+    /* 7. Erase removes it; reading it afterward looks exactly like it was
+     * never written. */
+    check(kf_store_erase("pet") == KF_OK, "erase pet state");
+    out_bytes = 123u; /* poison, to prove it gets reset to 0 on this path */
+    check(kf_store_read("pet", readback, sizeof(readback), &out_bytes) ==
+                  KF_ERR_UNAVAILABLE &&
+              out_bytes == 0u,
+          "erased key reads as unavailable again");
+
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
 }
+
+} // namespace
 
 int main(int argc, char *argv[]) {
     long frames = 300;
@@ -38,6 +164,7 @@ int main(int argc, char *argv[]) {
     unsigned long long expect_checksum = 0;
     bool have_expect = false;
     long max_dirty_percent = -1;
+    bool verify_storage_power = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -54,9 +181,12 @@ int main(int argc, char *argv[]) {
             max_dirty_percent = std::atol(argv[++i]);
         } else if (std::strcmp(argv[i], "--stress") == 0) {
             mode = KF_DEMO_FULLSCREEN;
+        } else if (std::strcmp(argv[i], "--verify-storage-power") == 0) {
+            verify_storage_power = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
-                        "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n");
+                        "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
+                        "kamiframe-headless --verify-storage-power\n");
             return 0;
         }
     }
@@ -69,6 +199,10 @@ int main(int argc, char *argv[]) {
     /* Do not sleep out the frame budget: a 300-frame run should take
      * milliseconds, not ten seconds. */
     kf_host_time_set_realtime(false);
+
+    if (verify_storage_power) {
+        return run_storage_power_check();
+    }
 
     kf_app_init(mode);
     for (long i = 0; i < frames; ++i) {

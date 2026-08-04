@@ -19,6 +19,7 @@ future us in month eight asking the same question with less patience.
 | [0009](adr-0009-transfer-cost.md) | Modelling display transfer cost on desktop | Accepted |
 | [0010](adr-0010-bitmap-text.md) | Bitmap text and the constraint HUD | Accepted |
 | [0011](adr-0011-dirty-rect-list.md) | A dirty-rectangle list, not a single box | Accepted |
+| [0012](adr-0012-storage-and-power.md) | Save state and deep sleep | Accepted |
 
 Open evaluations, deliberately not decided:
 

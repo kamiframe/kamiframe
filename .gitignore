@@ -27,6 +27,9 @@ dependencies.lock
 .DS_Store
 Thumbs.db
 
+# Local save data (per-machine, not source)
+kf_save/
+
 # Python
 __pycache__/
 *.pyc

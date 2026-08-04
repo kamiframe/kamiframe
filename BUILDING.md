@@ -155,7 +155,7 @@ commands it wraps, if you want to run them separately:
 ctest --test-dir build --output-on-failure
 ```
 
-Three tests, all running the real firmware against the headless backend:
+Four tests, all running the real firmware against the headless backend:
 
 - **headless_determinism** hashes every rendered frame and compares against a
   known value. If rendering changed, this fails. When the change was
@@ -166,12 +166,23 @@ Three tests, all running the real firmware against the headless backend:
   screen than it needs to. That would look perfectly fine on your PC and halve
   the frame rate on hardware.
 - **headless_fullscreen** does the same for the full-screen stress mode.
+- **storage_power_check** proves save state survives and offline pet ageing
+  actually works, deterministically, without waiting real days for it. See
+  `docs/architecture/adr-0012-storage-and-power.md`.
 
 Plus one check that is not a ctest:
 
 ```
 python3 tools/check_no_heap.py .
 ```
+
+## Save data
+
+`kamiframe-sim` creates a `kf_save/` folder next to wherever you run it from,
+the first time it runs, with no configuration needed. That is where save
+state (`kf/hal/storage.h`) lives on desktop. Add `kf_save/` to your
+`.gitignore` if it is not already covered — it is per-machine data, not
+something to commit.
 
 ## The ESP32 build
 
