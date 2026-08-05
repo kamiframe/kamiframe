@@ -29,6 +29,7 @@ future us in month eight asking the same question with less patience.
 | [0019](adr-0019-esp-idf-hello-world.md) | An ESP-IDF hello-world, and what it actually proves | Accepted |
 | [0020](adr-0020-esp32-hal-backends.md) | Real ESP32 HAL backends, compile-verified but not hardware-verified | Accepted |
 | [0021](adr-0021-life-stages-and-evolution.md) | Life stages and evolution | Accepted |
+| [0022](adr-0022-menu-screen-navigation.md) | Menu/screen navigation | Accepted |
 
 Open evaluations, deliberately not decided:
 

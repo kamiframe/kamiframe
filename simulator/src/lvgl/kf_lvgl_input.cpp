@@ -36,14 +36,22 @@ uint32_t button_to_key(uint32_t buttons) {
     if (buttons & KF_BTN_B) {
         return LV_KEY_ESC;
     }
-    if (buttons & KF_BTN_MENU) {
-        /* Cycles focus to the next widget in the group -- the closest
-         * keypad-native equivalent to a MENU button on hardware with no
-         * pointer device. Core's own HUD toggle on KF_BTN_MENU (kf/app.h)
-         * is unrelated and unaffected: this indev only ever moves LVGL's
-         * own focus. */
-        return LV_KEY_NEXT;
-    }
+    /* KF_BTN_MENU deliberately maps to nothing here as of ADR 0022:
+     * kf_screen_nav.cpp now owns MENU exclusively, for switching which
+     * LVGL screen is loaded, reading kf_app_buttons_pressed() directly
+     * rather than going through this indev's keypad protocol. Before that,
+     * MENU doubled as LV_KEY_NEXT (cycle focus) here -- redundant even
+     * then, since LV_KEY_UP/DOWN/LEFT/RIGHT above already move focus to
+     * the previous/next group member by LVGL's own default group
+     * behaviour (see lv_group_focus_next()/lv_group_focus_prev()), so the
+     * D-pad alone already covers "move to the next widget" within
+     * whichever screen is active. Removing MENU's redundant mapping here
+     * avoids it doing two different navigational things at once (cycle
+     * focus AND, now, switch screens) depending on what LVGL's group
+     * state happened to be. Core's own HUD toggle on KF_BTN_MENU
+     * (kf/app.h) is unrelated and unaffected either way -- see ADR 0017's
+     * "Found after delivery" section for why that sharing is accepted,
+     * unchanged by this file. */
     return 0u;
 }
 

@@ -20,7 +20,7 @@
 #include "sdl_shared.h"
 
 #include "../lvgl/kf_lvgl_port.h"
-#include "../lvgl/kf_pet_screen.h"
+#include "../lvgl/kf_screen_nav.h"
 #include "../lua/kf_lua_demo_creature_script.h"
 #include "../lua/kf_lua_port.h"
 #include "../pet/kf_pet_session.h"
@@ -117,13 +117,14 @@ int main(int argc, char *argv[]) {
     /* LVGL comes up next (its memory pool comes from KF_ARENA_LVGL, carved
      * out by kf_app_init()'s kf_arena_init_all(); its display bridge
      * writes into the framebuffer kf_app_init()'s kf_fb_init() creates),
-     * then the pet screen -- the first real menu screen kf_lvgl_proof_
-     * screen.h's own header comment named as the reason to delete it
-     * (still not deleted; see ADR 0017's "Decision" for why the proof
-     * screen itself stays, even though nothing here calls
-     * kf_lvgl_proof_screen_init() any more). */
+     * then every screen this build has (kf_screen_nav.cpp, ADR 0022) --
+     * Home is the first real menu screen kf_lvgl_proof_screen.h's own
+     * header comment named as the reason to delete it (still not deleted;
+     * see ADR 0017's "Decision" for why the proof screen itself stays,
+     * even though nothing here calls kf_lvgl_proof_screen_init() any
+     * more). */
     kf_lvgl_port_init();
-    kf_pet_screen_init();
+    kf_screen_nav_init();
 
     /* Lua comes up last of the four, same "after everything it depends
      * on" ordering: its allocator's one big block comes from KF_ARENA_LUA,
@@ -177,19 +178,24 @@ int main(int argc, char *argv[]) {
         last_frame_us = now_us;
         const uint32_t multiplier = kf_sdl_debug_window_time_multiplier();
 
-        /* kf_pet_session_frame() and kf_pet_screen_update() both run
+        /* kf_pet_session_frame() and kf_screen_nav_frame() both run
          * BEFORE kf_lvgl_port_pump(): the session needs to have applied
-         * this frame's elapsed time before the screen reads it, and the
-         * screen needs to have pushed that into its widgets before pump's
-         * lv_timer_handler() call redraws and flushes -- otherwise the
-         * screen would always be showing last frame's numbers, one frame
-         * behind. A button press this frame is handled INSIDE pump (LVGL
-         * processes input during lv_timer_handler()), so its effect shows
-         * up starting next frame's update -- one frame of input lag,
-         * imperceptible at this frame rate. */
+         * this frame's elapsed time before the active screen reads it,
+         * and the screen needs to have pushed that into its widgets
+         * before pump's lv_timer_handler() call redraws and flushes --
+         * otherwise the screen would always be showing last frame's
+         * numbers, one frame behind. A button press this frame is
+         * handled INSIDE pump (LVGL processes input during
+         * lv_timer_handler()), so its effect shows up starting next
+         * frame's update -- one frame of input lag, imperceptible at
+         * this frame rate. kf_screen_nav_frame() itself reads MENU/B
+         * straight from kf_app_buttons_pressed() (ADR 0022), which
+         * kf_app_frame() -- the while-condition above -- has already
+         * refreshed for this frame by the time we get here, so a screen
+         * switch this frame is NOT subject to that same one-frame lag. */
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_sdl_debug_window_frame();
-        kf_pet_screen_update();
+        kf_screen_nav_frame();
         kf_lvgl_port_pump(0);
         kf_lua_port_frame(0);
         update_title(static_cast<uint64_t>(frames));

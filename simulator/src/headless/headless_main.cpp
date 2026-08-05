@@ -17,6 +17,7 @@
  *     kamiframe-headless --verify-pet-stage
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
+ *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
  *
  * Exit codes:
@@ -38,6 +39,7 @@
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
 #include "../lvgl/kf_pet_screen.h"
+#include "../lvgl/kf_screen_nav.h"
 #include "../lua/kf_lua_demo_creature_script.h"
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_port.h"
@@ -844,6 +846,126 @@ int run_pet_screen_check(unsigned long long expect_checksum,
     return ok ? 0 : 1;
 }
 
+/* Proves the menu/screen navigation mechanism (ADR 0022): Home is active
+ * immediately after kf_screen_nav_init(), kf_screen_nav_debug_advance()
+ * (the same effect a real MENU press has) moves to Info and Info renders
+ * deterministically, and kf_screen_nav_debug_home() (the same effect a
+ * real B press has) returns to Home -- each step asserted against
+ * kf_screen_nav_debug_index() directly, not inferred from the checksum
+ * alone. Uses the debug/test entry points rather than a scripted button
+ * sequence through kf_app_frame(), because headless_input.cpp's
+ * kf_headless_script() is one fixed, frame-indexed script shared by every
+ * check that drives kf_app_frame() (headless_determinism among them);
+ * teaching it a MENU window would change what those unrelated,
+ * already-locked golden checksums see too. See kf_screen_nav.h's own
+ * header comment on why these entry points exist at all.
+ *
+ * Same isolated-per-PID storage directory trick as run_pet_screen_check()
+ * above, for the same reason: kf_pet_session_init() needs somewhere to
+ * read/write that will not collide with another test running at the same
+ * time. */
+int run_screen_nav_check(unsigned long long expect_checksum,
+                          bool have_expect) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-screen-nav-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+
+    kf_pet_session_init();
+    kf_lvgl_port_init();
+    kf_screen_nav_init();
+
+    check(kf_screen_nav_debug_index() == 0,
+          "Home is active immediately after kf_screen_nav_init()");
+
+    /* Same synthetic, fixed per-frame clock as run_pet_screen_check()
+     * above, for the same reason -- real time between iterations would be
+     * scheduler noise, not frame count. kf_screen_nav_frame() runs every
+     * iteration the same way the interactive build's loop does, even
+     * though nothing here presses a real button -- proving the per-frame
+     * "call the active screen's update()" path, not just the switch
+     * itself. */
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    for (int i = 0; i < 30; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_screen_nav_frame();
+        kf_lvgl_port_pump(kFixedDtMs);
+    }
+    check(kf_screen_nav_debug_index() == 0,
+          "still on Home after 30 quiet frames (nothing should have "
+          "switched screens on its own)");
+
+    kf_screen_nav_debug_advance();
+    check(kf_screen_nav_debug_index() == 1,
+          "kf_screen_nav_debug_advance() moved from Home to Info");
+
+    for (int i = 0; i < 30; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_screen_nav_frame();
+        kf_lvgl_port_pump(kFixedDtMs);
+    }
+
+    /* Checksummed with Info on screen -- the same FNV-1a-over-the-
+     * framebuffer approach every other rendering check in this codebase
+     * uses, for the same reason: this is fundamentally "does this set of
+     * widget calls draw the same pixels every time", not an exact-
+     * arithmetic invariant. */
+    uint64_t checksum = 1469598103934665603ull;
+    const uint8_t *bytes =
+        reinterpret_cast<const uint8_t *>(kf_fb_pixels());
+    for (size_t i = 0; i < KF_FRAMEBUFFER_BYTES; ++i) {
+        checksum ^= bytes[i];
+        checksum *= 1099511628211ull;
+    }
+
+    kf_screen_nav_debug_home();
+    check(kf_screen_nav_debug_index() == 0,
+          "kf_screen_nav_debug_home() returned from Info to Home");
+
+    kf_screen_nav_debug_home();
+    check(kf_screen_nav_debug_index() == 0,
+          "kf_screen_nav_debug_home() is a no-op when already on Home");
+
+    kf_lvgl_port_shutdown();
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("checksum %016llx\n",
+                static_cast<unsigned long long>(checksum));
+
+    if (have_expect && checksum != expect_checksum) {
+        KF_LOGE(TAG,
+                "checksum mismatch: got %016llx, expected %016llx. The "
+                "Info screen changed. If that was deliberate, update "
+                "KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM in "
+                "simulator/CMakeLists.txt.",
+                static_cast<unsigned long long>(checksum), expect_checksum);
+        ok = false;
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves the Lua port glue -- the sandboxed VM, kf_lua_alloc's free/realloc
  * path under real churn, and both directions of the kf.* binding -- behave
  * identically frame to frame. See ADR 0014. Bypasses kf_app_init()/
@@ -1183,6 +1305,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_stage = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
+    bool verify_screen_nav = false;
     bool verify_lua_creature = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
@@ -1214,6 +1337,8 @@ int main(int argc, char *argv[]) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
             verify_pet_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-screen-nav") == 0) {
+            verify_screen_nav = true;
         } else if (std::strcmp(argv[i], "--verify-lua-creature") == 0) {
             verify_lua_creature = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
@@ -1226,6 +1351,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-stage\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
+                        "[--expect-checksum HEX]\n"
+                        "kamiframe-headless --verify-screen-nav "
                         "[--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua-creature\n");
             return 0;
@@ -1267,6 +1394,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_screen) {
         return run_pet_screen_check(expect_checksum, have_expect);
+    }
+
+    if (verify_screen_nav) {
+        return run_screen_nav_check(expect_checksum, have_expect);
     }
 
     if (verify_lua_creature) {

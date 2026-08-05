@@ -6,8 +6,11 @@
 
 #include "sdl_shared.h"
 
+#include "../lvgl/kf_screen_nav.h"
 #include "../pet/kf_pet_session.h"
 
+#include "kf/app.h"
+#include "kf/arena.h"
 #include "kf/hal/log.h"
 #include "kf/pet.h"
 
@@ -19,8 +22,16 @@ namespace {
 
 constexpr const char *TAG = "debug-window";
 
-constexpr int kWindowW = 400;
+/* The original layout's own width, unchanged -- every button and the
+ * timeline below are still positioned within this, not the wider
+ * kWindowW below. Split out so widening the window for the new right-hand
+ * diagnostics column (kRightColumnW) does not silently stretch the
+ * timeline bar or anything else across the extra space along with it. */
+constexpr int kLeftColumnW = 400;
+constexpr int kRightColumnW = 260;
+constexpr int kWindowW = kLeftColumnW + kRightColumnW;
 constexpr int kWindowH = 460;
+constexpr float kRightColumnX = static_cast<float>(kLeftColumnW) + 16.0f;
 
 enum class DebugAction {
     kSkipHour,
@@ -28,6 +39,7 @@ enum class DebugAction {
     kSkipWeek,
     kReset,
     kSave,
+    kNextScreen,
     kMult1,
     kMult2,
     kMult4,
@@ -59,6 +71,10 @@ constexpr DebugButton kButtons[] = {
 
     {{16, 56, 100, 32}, "Reset Egg", DebugAction::kReset},
     {{124, 56, 100, 32}, "Save Now", DebugAction::kSave},
+    /* Fills the row's remaining width rather than starting a new row --
+     * see kf_screen_nav.h for what this actually calls and why it exists
+     * as a separate entry point from the keyboard's MENU binding. */
+    {{232, 56, 152, 32}, "Next Screen", DebugAction::kNextScreen},
 
     {{16, 96, 64, 32}, "1x", DebugAction::kMult1},
     {{88, 96, 64, 32}, "2x", DebugAction::kMult2},
@@ -91,6 +107,22 @@ const char *stage_name(kf_pet_stage stage) {
     case KF_PET_STAGE_ADULT:
     default:
         return "adult";
+    }
+}
+
+/* kf_screen_nav.h's own header comment documents index 0 = Home, 1 = Info
+ * -- a small, deliberate duplication of that contract rather than a new
+ * export, the same call this file already made for stage_name() above.
+ * "?" covers a future screen this file has not been updated to name yet,
+ * rather than showing a raw, meaningless number. */
+const char *screen_name(int index) {
+    switch (index) {
+    case 0:
+        return "Home";
+    case 1:
+        return "Info";
+    default:
+        return "?";
     }
 }
 
@@ -151,7 +183,7 @@ uint64_t timeline_axis_max_seconds(const kf_pet_config &config) {
     return timeline_tick_seconds(config, KF_PET_STAGE_ADULT);
 }
 
-constexpr SDL_FRect kTimelineBar = {16, 200, kWindowW - 32, 14};
+constexpr SDL_FRect kTimelineBar = {16, 200, kLeftColumnW - 32, 14};
 /* Grabbable beyond the bar's own drawn height -- a 14px-tall target is
  * fiddly to click precisely; this widens the hit region without widening
  * what's actually drawn. Vertical position only matters for STARTING a
@@ -212,6 +244,15 @@ void perform(DebugAction action) {
         break;
     case DebugAction::kSave:
         kf_pet_session_save();
+        break;
+    case DebugAction::kNextScreen:
+        /* Same effect a real MENU press has on which pet-window screen is
+         * loaded -- see kf_screen_nav.h -- but calling this directly
+         * means kf_app_frame() never sees a KF_BTN_MENU edge, so Core's
+         * on-device HUD toggle (kf/app.cpp) never fires either. That is
+         * the entire point of this button; see this file's own header
+         * comment. */
+        kf_screen_nav_debug_advance();
         break;
     default:
         if (is_multiplier_button(action)) {
@@ -315,6 +356,103 @@ void draw_timeline(const kf_pet_config &config, kf_pet_stage current_stage,
     SDL_RenderFillRect(g.renderer, &marker);
 
     (void)current_stage;
+}
+
+/* Mirrors what Core's on-device constraint HUD (kf/app.cpp's draw_hud(),
+ * ADR 0010) would show, in this window's own right-hand column instead of
+ * drawn over the pet screen -- see this file's own header comment for
+ * why. Reads the exact same public accessors draw_hud() itself reads
+ * (kf_app_last_frame(), kf_app_frame_summary(), kf_arena_get_stats()),
+ * not a shadow copy of Core's own accounting -- if Core's numbers change,
+ * so do these, automatically, the same as the real HUD would. A friendlier
+ * multi-line layout than the real HUD's compact 40-column format: that
+ * format exists because the real HUD has to fit a font budget and a
+ * dirty-rect cost on the actual device (see ADR 0010's "Why the HUD
+ * defaults off"), neither of which applies to a plain SDL window that
+ * clears and redraws itself unconditionally every frame regardless of
+ * position. */
+void draw_engine_diagnostics(void) {
+    SDL_SetRenderDrawColor(g.renderer, 70, 70, 78, 255);
+    SDL_RenderLine(g.renderer, static_cast<float>(kLeftColumnW),
+                    0.0f, static_cast<float>(kLeftColumnW),
+                    static_cast<float>(kWindowH));
+
+    char line[128];
+    float y = 16.0f;
+    constexpr float kLineHeight = 18.0f;
+    SDL_SetRenderDrawColor(g.renderer, 220, 220, 225, 255);
+
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, "-- engine (last frame) --");
+    y += kLineHeight * 1.5f;
+
+    const kf_frame_stats *last = kf_app_last_frame();
+    const uint32_t fps_tenths =
+        last->total_us > 0u
+            ? static_cast<uint32_t>(10000000ull / last->total_us)
+            : 0u;
+    std::snprintf(line, sizeof(line), "fps: %u.%u", fps_tenths / 10u,
+                  fps_tenths % 10u);
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "frame: %u us", last->total_us);
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "dirty: %u%%  rects: %u",
+                  static_cast<unsigned>(last->dirty_percent),
+                  static_cast<unsigned>(last->dirty_rect_count));
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight;
+
+    /* Always draws SOMETHING on this line, in-budget or not -- unlike
+     * Core's own draw_hud() (see its pad_to() comment), this window has
+     * no leftover-glyph problem at all: SDL_RenderClear() below wipes the
+     * whole window every frame, so there is nothing to accidentally leave
+     * behind by having a shorter string than last frame. This just keeps
+     * the rest of the column's y-position stable frame to frame either
+     * way. */
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y,
+                         last->over_budget ? "OVER BUDGET" : "within budget");
+    y += kLineHeight * 1.5f;
+
+    const kf_frame_summary summary = kf_app_frame_summary();
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, "-- frame summary --");
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "mean: %u us  p99: %u us",
+                  summary.mean_us, summary.p99_us);
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "worst: %u us", summary.worst_us);
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "frames: %llu  over: %llu",
+                  static_cast<unsigned long long>(summary.frames),
+                  static_cast<unsigned long long>(summary.over_budget_frames));
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+    y += kLineHeight * 1.5f;
+
+    /* All five arenas, unlike the on-device HUD's four (kf/app.cpp's
+     * draw_hud() predates KF_ARENA_LVGL -- see kf/arena.h) -- nothing
+     * about this column is squeezed for space the way the real HUD is, so
+     * there is no reason to leave one out. */
+    SDL_RenderDebugText(g.renderer, kRightColumnX, y, "-- arenas (hi/cap KB) --");
+    y += kLineHeight;
+
+    constexpr kf_arena_id kArenas[] = {KF_ARENA_FRAMEBUFFER, KF_ARENA_SCRATCH,
+                                       KF_ARENA_LUA, KF_ARENA_ASSETS,
+                                       KF_ARENA_LVGL};
+    for (kf_arena_id arena : kArenas) {
+        const kf_arena_stats *s = kf_arena_get_stats(arena);
+        std::snprintf(line, sizeof(line), "%-11s %u/%uK", s->name,
+                      static_cast<unsigned>(s->high_water_bytes / 1024u),
+                      static_cast<unsigned>(s->capacity_bytes / 1024u));
+        SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
+        y += kLineHeight;
+    }
 }
 
 } // namespace
@@ -484,6 +622,13 @@ void kf_sdl_debug_window_frame(void) {
 
     std::snprintf(line, sizeof(line), "time multiplier: %ux", g.multiplier);
     SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    std::snprintf(line, sizeof(line), "screen: %s (Next Screen above, or MENU)",
+                  screen_name(kf_screen_nav_debug_index()));
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+
+    draw_engine_diagnostics();
 
     SDL_RenderPresent(g.renderer);
 }

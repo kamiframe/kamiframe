@@ -20,6 +20,29 @@
  * even the pet screen: it will never be ported anywhere, so there is no
  * portability cost being traded away here, only genuinely unneeded
  * complexity avoided.
+ *
+ * Two columns as of the screen-nav follow-up (ADR 0022): the original
+ * controls on the left, unchanged, plus a "Next Screen" button that calls
+ * kf_screen_nav_debug_advance() directly -- the same effect a real MENU
+ * keypress has on which pet-window screen is loaded, but WITHOUT also
+ * flipping Core's on-device constraint HUD (kf/app.cpp's draw_hud(),
+ * toggled on every KF_BTN_MENU edge by design, see ADR 0010) on top of
+ * whichever screen is now showing. That collision -- switching screens by
+ * pressing MENU also toggling a HUD that draws text over the pet window --
+ * is real, reported directly by Chris after ADR 0022 shipped, and made
+ * worse by MENU now being something he presses far more often than it was
+ * in ADR 0017's single-screen build. The keyboard's Enter/Esc still does
+ * both at once, unchanged -- that IS what a real device does when its one
+ * MENU button is pressed, and this file does not get to quietly change
+ * that (ADR 0006/0010 are Core, not simulator-only, compiled identically
+ * for ESP32). The new button is a second, additive path that never
+ * touches KF_BTN_MENU at all, so it never triggers the HUD. A new
+ * right-hand column mirrors what the on-device HUD would show (frame
+ * timing, dirty area, arena high-water marks) by calling the exact same
+ * public accessors kf/app.cpp's draw_hud() itself reads
+ * (kf_app_last_frame(), kf_app_frame_summary(), kf_arena_get_stats()) --
+ * so that information is visible here, permanently, without ever needing
+ * to toggle the real overlay at all during ordinary interactive use.
  */
 
 #ifndef KF_SDL_DEBUG_WINDOW_H

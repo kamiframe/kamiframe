@@ -75,6 +75,8 @@ add_library(kamiframe_lvgl_port STATIC
     src/lvgl/kf_lvgl_port.cpp
     src/lvgl/kf_lvgl_proof_screen.cpp
     src/lvgl/kf_pet_screen.cpp
+    src/lvgl/kf_pet_info_screen.cpp
+    src/lvgl/kf_screen_nav.cpp
 )
 target_include_directories(kamiframe_lvgl_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
@@ -292,6 +294,31 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_screen_check
              COMMAND kamiframe-headless --verify-pet-screen
                      --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
+
+    # Proves the menu/screen navigation mechanism (ADR 0022): Home is
+    # active at boot, kf_screen_nav_debug_advance() (the same effect as a
+    # real MENU press) moves to Info and its rendering is deterministic,
+    # and kf_screen_nav_debug_home() (a B press) returns to Home -- all
+    # asserted against kf_screen_nav_debug_index() directly, not inferred
+    # from pixels alone. Uses the debug/test entry points rather than
+    # driving kf_app_frame()'s real button polling, because headless_
+    # input.cpp's kf_headless_script() is one fixed, frame-indexed script
+    # shared by every check that goes through kf_app_frame() (headless_
+    # determinism among them) -- adding a MENU window to it would change
+    # what those unrelated, already-locked golden checksums see too. See
+    # kf_screen_nav.h's own header comment on why these entry points exist.
+    #
+    # KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM: an FNV-1a hash of the
+    # framebuffer after Info has rendered a fresh pet's starting values,
+    # same reasoning as KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM above. If this
+    # fails because Info's screen deliberately changed, run
+    # `kamiframe-headless --verify-screen-nav`, take the checksum it
+    # prints, and update the value here in the same commit.
+    set(KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM "c0a79b4b2cc0253e")
+
+    add_test(NAME screen_nav_check
+             COMMAND kamiframe-headless --verify-screen-nav
+                     --expect-checksum ${KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM})
 
     # Proves the demo creature script (ADR 0018) -- the actual cartridge
     # sdl_main.cpp loads, not a proof script -- survives a full lifecycle
