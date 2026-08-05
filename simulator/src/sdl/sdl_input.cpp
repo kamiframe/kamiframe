@@ -52,8 +52,47 @@ void kf_sdl_pump_events(void) {
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
             kf_sdl_state().quit_requested = true;
+        } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+            /* Two windows can exist now (sdl_debug_window.cpp) -- tell
+             * their close buttons apart by SDL_WindowID rather than
+             * assuming any close means quit, the assumption that was
+             * correct back when this was the only window. */
+            KfSdlState &s = kf_sdl_state();
+            if (s.window != nullptr &&
+                event.window.windowID == SDL_GetWindowID(s.window)) {
+                s.quit_requested = true;
+            } else if (s.debug_window != nullptr &&
+                       event.window.windowID ==
+                           SDL_GetWindowID(s.debug_window)) {
+                s.debug_window_close_requested = true;
+            }
         }
     }
+}
+
+bool kf_sdl_mouse_relative_to(SDL_Window *window, int32_t *x, int32_t *y,
+                               bool *pressed) {
+    float global_x = 0.0f;
+    float global_y = 0.0f;
+    const SDL_MouseButtonFlags buttons =
+        SDL_GetGlobalMouseState(&global_x, &global_y);
+
+    int win_x = 0;
+    int win_y = 0;
+    int win_w = 0;
+    int win_h = 0;
+    SDL_GetWindowPosition(window, &win_x, &win_y);
+    SDL_GetWindowSize(window, &win_w, &win_h);
+
+    const float rel_x = global_x - static_cast<float>(win_x);
+    const float rel_y = global_y - static_cast<float>(win_y);
+    *x = static_cast<int32_t>(rel_x);
+    *y = static_cast<int32_t>(rel_y);
+
+    const bool over_window = rel_x >= 0.0f && rel_x < static_cast<float>(win_w) &&
+                              rel_y >= 0.0f && rel_y < static_cast<float>(win_h);
+    *pressed = over_window && (buttons & SDL_BUTTON_LMASK) != 0u;
+    return over_window;
 }
 
 kf_result kf_input_init(void) {
@@ -91,19 +130,23 @@ void kf_input_shutdown(void) {}
 /* kf_lvgl_pointer.cpp's other half -- see that file's header comment. Not
  * part of kf/hal/input.h: a mouse pointer is not one of the real device's
  * 5-7 physical buttons, so it does not belong in the interface that models
- * them (kf_input_raw). SDL reports window pixel coordinates; the pet
- * screen's widgets are laid out in the logical 240x320 framebuffer space
- * (KF_DISPLAY_WIDTH x KF_DISPLAY_HEIGHT), so this divides by the same
- * integer `scale` sdl_display.cpp used to size the window in the first
- * place -- the exact inverse of that multiplication, not a separate
+ * them (kf_input_raw). Uses kf_sdl_mouse_relative_to() (sdl_shared.h), not
+ * a direct SDL_GetMouseState() call, now that a second window
+ * (sdl_debug_window.cpp) can exist -- SDL_GetMouseState()'s coordinates
+ * are relative to whichever window currently has mouse focus, so a click
+ * actually landing in the debug window would otherwise be reported here
+ * too, at whatever the pet window's last coordinates happened to be. The
+ * pet screen's widgets are laid out in the logical 240x320 framebuffer
+ * space (KF_DISPLAY_WIDTH x KF_DISPLAY_HEIGHT), so this divides by the
+ * same integer `scale` sdl_display.cpp used to size the window in the
+ * first place -- the exact inverse of that multiplication, not a separate
  * assumption about window size. */
 void kf_sim_pointer_poll(int32_t *x, int32_t *y, bool *pressed) {
-    float mouse_x = 0.0f;
-    float mouse_y = 0.0f;
-    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
+    int32_t raw_x = 0;
+    int32_t raw_y = 0;
+    kf_sdl_mouse_relative_to(kf_sdl_state().window, &raw_x, &raw_y, pressed);
 
     const int scale = kf_sdl_state().scale > 0 ? kf_sdl_state().scale : 1;
-    *x = static_cast<int32_t>(mouse_x) / scale;
-    *y = static_cast<int32_t>(mouse_y) / scale;
-    *pressed = (buttons & SDL_BUTTON_LMASK) != 0u;
+    *x = raw_x / scale;
+    *y = raw_y / scale;
 }

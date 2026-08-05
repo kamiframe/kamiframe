@@ -142,8 +142,60 @@ void kf_pet_session_debug_advance(uint32_t seconds);
  * whatever is currently on disk. The next normal checkpoint (a care
  * action, or shutdown) overwrites the save with this fresh state. Lets
  * someone testing branch outcomes start over without restarting the
- * whole process or deleting a save file by hand. */
+ * whole process or deleting a save file by hand. Also clears the
+ * snapshot history kf_pet_session_debug_seek() reads (see below) -- a
+ * fresh egg starts a genuinely new timeline; the previous pet's history
+ * has nothing to do with it. */
 void kf_pet_session_debug_reset(void);
+
+/* Total elapsed pet-age in seconds since this pet's own genesis (the
+ * last kf_pet_session_init() or kf_pet_session_debug_reset()) --
+ * cumulative stage durations already lived through, plus the current
+ * stage's own state->stage_elapsed_seconds. This is the pet's own
+ * lifetime clock, not a wall-clock or session-uptime reading: two eggs
+ * hatched a real week apart, both still 10 minutes into being a baby,
+ * report the same age. The debug window's timeline (sdl_debug_window.cpp)
+ * uses this as its X axis. */
+uint64_t kf_pet_session_debug_age_seconds(void);
+
+/* Scrubs the live pet to exactly `target_age_seconds` on its own
+ * lifetime clock (see kf_pet_session_debug_age_seconds() above) --
+ * forward OR backward, for the debug window's draggable timeline.
+ *
+ * Backing this is a bounded ring buffer of full kf_pet_state snapshots,
+ * taken automatically after every state change (a live-tick flush, a
+ * debug_advance(), a care action, or a reset) -- NOT an action replay
+ * log. A seek finds the most recent snapshot at or before the target
+ * age and, if the target lands after it, calls kf_pet_advance() for the
+ * remainder -- the same closed-form call kf_pet_session_debug_advance()
+ * already uses, so hunger/happiness/energy and exactly WHEN each stage
+ * transition happens are always exactly right, not approximated, no
+ * matter how far the seek jumps.
+ *
+ * One documented inexactness, inherited rather than introduced: WHICH
+ * teen_form/adult_branch a seek lands on can occasionally differ by one
+ * band from what continuous live play would have picked for the same
+ * care history, because care_integral_mp_seconds is itself a
+ * left-Riemann approximation (see kf/pet.cpp's file header) whose error
+ * depends on how finely the elapsed time happens to get chunked -- a
+ * seek's chunking (by snapshot spacing) is not guaranteed to match
+ * whatever chunking the original live session used. This is the same
+ * category of approximation kf_pet_session_frame()'s own live-tick
+ * batching already accepts, not a new one, and it never affects hunger/
+ * happiness/energy or stage TIMING, only which sibling branch gets
+ * picked right at a stage transition.
+ *
+ * Snapshot history does not survive kf_pet_session_debug_reset() (see
+ * above) and is bounded (oldest snapshots are evicted once the ring
+ * fills) -- seeking earlier than the oldest surviving snapshot clamps
+ * to that snapshot instead of erroring. If you scrub backward and then
+ * resume different play than originally happened, the ring may end up
+ * holding snapshots from both the original and the new timeline in the
+ * same age range; a later seek into that range picks whichever
+ * happens to still be in the ring, not a real branch history -- this is
+ * a preview tool, not a save-state manager, and does not attempt to
+ * track timeline branches. */
+void kf_pet_session_debug_seek(uint64_t target_age_seconds);
 
 #ifdef __cplusplus
 } /* extern "C" */

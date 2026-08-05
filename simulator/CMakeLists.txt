@@ -115,6 +115,7 @@ if(KAMIFRAME_BUILD_SIMULATOR)
     include(fetch_sdl)
 
     add_executable(kamiframe-sim
+        src/sdl/sdl_debug_window.cpp
         src/sdl/sdl_display.cpp
         src/sdl/sdl_input.cpp
         src/sdl/sdl_main.cpp

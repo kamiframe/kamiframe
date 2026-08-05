@@ -15,6 +15,8 @@
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
+#include "kf/hal/time.h"
+#include "sdl_debug_window.h"
 #include "sdl_shared.h"
 
 #include "../lvgl/kf_lvgl_port.h"
@@ -56,85 +58,6 @@ void update_title(uint64_t frame) {
                   sum.p99_us / 1000.0, last->dirty_percent,
                   last->over_budget ? "  OVER" : "");
     SDL_SetWindowTitle(s.window, title);
-}
-
-/* Duplicated here rather than shared with kf_pet_screen.cpp's identical
- * mapping: that one lives in an anonymous namespace private to a
- * different translation unit, and this is four lines of log-message
- * formatting, not a mechanism worth a shared header over. */
-const char *stage_name(kf_pet_stage stage) {
-    switch (stage) {
-    case KF_PET_STAGE_EGG:
-        return "egg";
-    case KF_PET_STAGE_BABY:
-        return "baby";
-    case KF_PET_STAGE_CHILD:
-        return "child";
-    case KF_PET_STAGE_TEEN:
-        return "teen";
-    case KF_PET_STAGE_ADULT:
-    default:
-        return "adult";
-    }
-}
-
-/* DEBUG ONLY -- see kf_pet_session.h's own "DEBUG ONLY below this line"
- * section for why these exist and why they are safe to call directly:
- * kf_pet_advance()'s bounded-loop design (ADR 0021) makes an arbitrary
- * time jump cheap, and this is the exact same function offline
- * fast-forward already relies on, not a separate, less-tested path.
- *
- * Number keys, not letters: they read naturally as "how far" (1/2/3 ==
- * hour/day/week) and do not collide with the WASD/arrows/Z/X/J/K/Enter/
- * Escape bindings sdl_input.cpp already uses for the real d-pad/A/B/menu
- * buttons (see that file's header comment) -- these are deliberately NOT
- * added to kf_button/kf_input_raw, since a time-skip is not one of the
- * real device's physical buttons and has no business being modelled as
- * one.
- *
- * Polled with simple press-edge tracking (a static `previous` array) so
- * holding a key down skips once, not once per frame at 30fps. */
-void poll_debug_time_skip() {
-    struct DebugSkip {
-        SDL_Scancode scancode;
-        uint32_t seconds;
-        const char *label;
-    };
-    constexpr DebugSkip kSkips[] = {
-        {SDL_SCANCODE_1, 3600u, "1 hour"},
-        {SDL_SCANCODE_2, 24u * 3600u, "1 day"},
-        {SDL_SCANCODE_3, 7u * 24u * 3600u, "1 week"},
-    };
-    static bool previous[3] = {false, false, false};
-    static bool previous_reset = false;
-
-    const bool *keys = SDL_GetKeyboardState(nullptr);
-    if (keys == nullptr) {
-        return;
-    }
-
-    for (size_t i = 0; i < 3; ++i) {
-        const bool now = keys[kSkips[i].scancode];
-        if (now && !previous[i]) {
-            kf_pet_session_debug_advance(kSkips[i].seconds);
-            const kf_pet_state *s = kf_pet_session_state();
-            KF_LOGI(TAG,
-                    "[debug] skipped %s -- now %s, hunger %u.%u%% happy "
-                    "%u.%u%% energy %u.%u%%",
-                    kSkips[i].label, stage_name(s->stage),
-                    s->hunger_mp / 1000u, (s->hunger_mp / 100u) % 10u,
-                    s->happiness_mp / 1000u, (s->happiness_mp / 100u) % 10u,
-                    s->energy_mp / 1000u, (s->energy_mp / 100u) % 10u);
-        }
-        previous[i] = now;
-    }
-
-    const bool reset_now = keys[SDL_SCANCODE_0];
-    if (reset_now && !previous_reset) {
-        kf_pet_session_debug_reset();
-        KF_LOGI(TAG, "[debug] reset to a fresh egg");
-    }
-    previous_reset = reset_now;
 }
 
 } // namespace
@@ -219,17 +142,42 @@ int main(int argc, char *argv[]) {
     kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
                       kKfLuaDemoCreatureScriptChunkName);
 
-    KF_LOGI(TAG, "debug (this build only): 1/2/3 = skip 1 hour/day/week, "
-                 "0 = reset to a fresh egg -- see kf_pet_session.h");
+    /* The debug window (sdl_debug_window.h) -- after the pet window (up
+     * since kf_app_init()) and the pet session (up since kf_pet_session_
+     * init() above), its two dependencies. Everything that used to be
+     * keyboard shortcuts + KF_LOGI lines on this window now lives there
+     * instead, clickable, per Chris's call that he doesn't want debug
+     * text sitting on the game screen or the terminal. */
+    kf_sdl_debug_window_init();
+
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 
+    /* Tracked here, not left to kf_pet_session_frame()'s own internal
+     * real-time tracking, because the debug window's time multiplier
+     * (kf_sdl_debug_window_time_multiplier()) has to scale ONLY the delta
+     * fed to the pet session -- not LVGL's tick (kf_lvgl_port_pump()) or
+     * Lua's frame delta (kf_lua_port_frame()), both of which stay
+     * real-time so animation and script frame-rate semantics are
+     * unaffected. Passing a non-zero synthetic value every frame (instead
+     * of 0 = "use your own real-time tracking") also avoids a correctness
+     * trap: kf_pet_session_frame() only updates ITS internal last-call
+     * timestamp on the `dt_ms == 0` path, so interleaving 0 and non-zero
+     * calls across frames (e.g. multiplier flips between 1x and 2x) would
+     * leave that internal timestamp stale and cause a double-counted
+     * jump the next time 0 was passed. Always computing and passing the
+     * delta ourselves sidesteps that entirely. */
+    uint64_t last_frame_us = 0;
     long frames = 0;
     while (kf_app_frame()) {
-        /* 0 => real elapsed time, not a synthetic step: this is the
-         * interactive build, actually watching the clock. See
-         * kf_lvgl_tick.h.
-         *
-         * kf_pet_session_frame() and kf_pet_screen_update() both run
+        const uint64_t now_us = kf_time_mono_us();
+        const uint32_t real_dt_ms =
+            last_frame_us == 0u
+                ? 0u
+                : static_cast<uint32_t>((now_us - last_frame_us) / 1000u);
+        last_frame_us = now_us;
+        const uint32_t multiplier = kf_sdl_debug_window_time_multiplier();
+
+        /* kf_pet_session_frame() and kf_pet_screen_update() both run
          * BEFORE kf_lvgl_port_pump(): the session needs to have applied
          * this frame's elapsed time before the screen reads it, and the
          * screen needs to have pushed that into its widgets before pump's
@@ -239,8 +187,8 @@ int main(int argc, char *argv[]) {
          * processes input during lv_timer_handler()), so its effect shows
          * up starting next frame's update -- one frame of input lag,
          * imperceptible at this frame rate. */
-        kf_pet_session_frame(0);
-        poll_debug_time_skip();
+        kf_pet_session_frame(real_dt_ms * multiplier);
+        kf_sdl_debug_window_frame();
         kf_pet_screen_update();
         kf_lvgl_port_pump(0);
         kf_lua_port_frame(0);
@@ -251,6 +199,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    kf_sdl_debug_window_shutdown();
     kf_lua_port_shutdown();
     kf_lvgl_port_shutdown();
     kf_pet_session_shutdown();
