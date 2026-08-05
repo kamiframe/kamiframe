@@ -27,6 +27,18 @@
  * the pet's normal resting state, and a message every time a need drifts
  * a little either side of the low/full boundaries would drown out the
  * bands that are actually meant to prompt a person to do something.
+ *
+ * Also reacts to life-stage transitions (ADR 0021), the same "log only on
+ * the frame it actually changes" pattern as the need bands above, via
+ * pet.stage()/pet.teen_form()/pet.adult_branch(). Deliberately generic
+ * flavour text, not a real creature's actual voice or character name --
+ * this file is placeholder demo content (see this header's own first
+ * paragraph), same status as every need-band message above it; Chris's
+ * real characters are a separate, later effort with his designer, and
+ * kf/pet.h's own header comment already draws the line that teen_form/
+ * adult_branch are opaque indices, not names, so that is genuinely all
+ * this script (or any script, today) has to say about which branch a pet
+ * took -- it logs the raw index, it does not invent a name for it.
  */
 
 #ifndef KF_LUA_DEMO_CREATURE_SCRIPT_H
@@ -68,7 +80,44 @@ local function announce(name, mp, messages)
     end
 end
 
+-- Previous life-stage (ADR 0021), same "nil means first observation, stay
+-- quiet" convention as `bands` above -- a pet loaded already past the egg
+-- stage should not announce "hatched!" on frame one just because this
+-- script only just started watching it.
+local previous_stage = nil
+
+local kStageMessage = {
+    baby = "the egg cracks open -- hello, little one!",
+    child = "growing bigger every day!",
+    teen = "quite the growth spurt lately...",
+    adult = "all grown up now.",
+}
+
+local function announce_stage()
+    local current = pet.stage()
+    local previous = previous_stage
+    previous_stage = current
+    if previous == nil or previous == current then
+        return
+    end
+    local message = kStageMessage[current]
+    if message then
+        kf.log(message)
+    end
+    -- The two branch points: which teen form care during Child picked,
+    -- and which adult form care during Teen picked. Raw indices only --
+    -- see this file's header comment on why nothing here invents a name.
+    if current == "teen" then
+        kf.log("care during childhood settled into teen form " ..
+               pet.teen_form())
+    elseif current == "adult" then
+        kf.log("care during the teen years settled into adult form " ..
+               pet.teen_form() .. "-" .. pet.adult_branch())
+    end
+end
+
 function on_frame(dt_ms)
+    announce_stage()
     announce("hunger", pet.hunger(), {
         critical = "hunger is critical -- feed me!",
         low = "starting to get hungry...",

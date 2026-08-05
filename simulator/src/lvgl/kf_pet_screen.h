@@ -7,6 +7,15 @@
  * labels, and three buttons that call kf_pet_session_feed()/play()/rest()
  * when pressed.
  *
+ * Also draws a placeholder "blob" (ADR 0021): a plain LVGL circle whose
+ * size grows with life-cycle stage and whose colour is picked from
+ * kf_pet_state's stage/teen_form/adult_branch -- there is no real character
+ * art yet (Chris: "simplistic blobs for now to get the systems working"),
+ * so this proves the stage/evolution state is visibly distinguishable on
+ * screen using only existing LVGL primitives, not a guess at what his
+ * actual characters should look like. See kf_pet_screen.cpp's blob_style()
+ * for the exact, deliberately simple mapping.
+ *
  * kf_lvgl_proof_screen.h's own header comment named this exact moment:
  * "delete it once real menu screens exist." This is that real screen for
  * the interactive build (see sdl_main.cpp) -- the proof screen itself is

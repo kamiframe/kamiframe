@@ -71,6 +71,7 @@ add_library(kamiframe_lvgl_port STATIC
     src/lvgl/kf_lvgl_tick.cpp
     src/lvgl/kf_lvgl_display.cpp
     src/lvgl/kf_lvgl_input.cpp
+    src/lvgl/kf_lvgl_pointer.cpp
     src/lvgl/kf_lvgl_port.cpp
     src/lvgl/kf_lvgl_proof_screen.cpp
     src/lvgl/kf_pet_screen.cpp
@@ -236,6 +237,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_offline_ageing_check
              COMMAND kamiframe-headless --verify-pet)
 
+    # Proves the life-stages/evolution mechanic (ADR 0021): the egg's
+    # no-decay guarantee, a single kf_pet_advance() call correctly crossing
+    # all four real stage boundaries at once, the care-integral accumulator
+    # resetting cleanly at each transition, select_branch()'s equal-band
+    # mapping landing in the expected band for known care scores, Adult
+    # being terminal, the v2 save format round-tripping every new field,
+    # and the version-incompatible-save fallback bug fixed alongside this
+    # work. See headless_main.cpp's run_pet_stage_check().
+    add_test(NAME pet_stage_evolution_check
+             COMMAND kamiframe-headless --verify-pet-stage)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
@@ -259,19 +271,22 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # take the checksum it prints, and update the value here in the same
     # commit as the change that caused it.
     #
-    # Updated twice on 2026-08-04, same day as the initial value -- see
-    # docs/architecture/adr-0017-pet-screen.md's "Found after delivery"
-    # section for the full story. First update: added a focused-button
-    # style (kf_pet_screen.cpp's g_focus_style, LV_STATE_FOCUSED), which
-    # changes whichever button is focused at start's rendered pixels.
-    # Second update (this one): removed the explicit lv_group_add_obj()
-    # calls that were corrupting which button ends up focused in the first
-    # place (lv_button auto-joins the default group at creation -- the
-    # explicit calls were redundant re-adds that could kick focus onto the
-    # wrong member), so Feed, not Play, is now correctly the one rendered
-    # focused. Deterministic across 6 repeated runs before being locked in,
-    # same discipline as every earlier value here.
-    set(KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM "5cc5b283817de3e6")
+    # Updated four times now -- see docs/architecture/adr-0017-pet-screen.md
+    # 's "Found after delivery" section for the first two (2026-08-04):
+    # a focused-button style, then a lv_group_add_obj() focus-corruption
+    # fix. Third and fourth updates (2026-08-05, ADR 0021):
+    # kf_pet_screen.cpp now draws a placeholder stage/branch "blob" (a
+    # plain LVGL circle, see kf_pet_screen.h's header comment) in the
+    # screen's top-right corner -- new rendered pixels a fresh pet's
+    # screen did not have before, an intentional content change, not a
+    # regression. The fourth update fixed the blob's caption label
+    # position: an initial lv_obj_align_to() call anchored it to the
+    # blob's default ~100px LVGL size (before the first real resize had
+    # run), landing it far from the blob -- caught by an actual Xvfb
+    # screenshot, not assumed; see kf_pet_screen.cpp's own comment on the
+    # fixed-offset replacement. Deterministic across repeated runs before
+    # being locked in, same discipline as every earlier value here.
+    set(KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM "132458f0171a2c0b")
 
     add_test(NAME pet_screen_check
              COMMAND kamiframe-headless --verify-pet-screen

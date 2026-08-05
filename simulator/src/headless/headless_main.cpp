@@ -14,6 +14,7 @@
  *     kamiframe-headless --verify-lvgl [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua [--frames N]
  *     kamiframe-headless --verify-pet
+ *     kamiframe-headless --verify-pet-stage
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
@@ -208,7 +209,17 @@ int run_pet_check() {
     /* 1. Decay math: a fresh pet is full; advancing by exactly one hour
      * must drop each need by exactly its configured mp_per_hour rate --
      * the point of computing decay as one closed-form step rather than
-     * simulating it second by second. */
+     * simulating it second by second.
+     *
+     * A fresh pet starts in KF_PET_STAGE_EGG (ADR 0021), which
+     * deliberately does not decay at all -- "no care needed as an egg,"
+     * Chris's own words. This block is testing DECAY MATH, not egg
+     * behaviour (egg's own no-decay guarantee gets its own dedicated
+     * check further down), so it moves the state past the egg stage
+     * first by setting `stage` directly -- kf_pet_state's fields are
+     * plain and already poked directly elsewhere in this file (see
+     * kf_time_set_wall() in check 5 below for the identical pattern
+     * applied to the wall clock instead of the pet). */
     {
         kf_pet_state state;
         kf_pet_init(&state);
@@ -216,6 +227,7 @@ int run_pet_check() {
                   state.happiness_mp == KF_PET_MILLIPERCENT_MAX &&
                   state.energy_mp == KF_PET_MILLIPERCENT_MAX,
               "a fresh pet starts at full needs");
+        state.stage = KF_PET_STAGE_BABY;
 
         kf_pet_advance(&state, &config, 3600u);
         check(state.hunger_mp ==
@@ -349,6 +361,330 @@ int run_pet_check() {
                   after_backwards.energy_mp == before_backwards.energy_mp,
               "a backwards clock jump does not age the pet negatively -- "
               "elapsed clamps to zero rather than underflowing");
+    }
+
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Proves the life-stages/evolution mechanic (ADR 0021), on top of
+ * run_pet_check()'s existing decay/offline-ageing coverage: the egg's
+ * no-decay guarantee, a single kf_pet_advance() call correctly crossing
+ * FOUR real stage boundaries at once (the actual closed-form claim --
+ * offline for a week should cost the same handful of steps as offline for
+ * an hour), the care-integral accumulator resetting at each transition
+ * rather than leaking between stages, select_branch()'s equal-band mapping
+ * landing in the expected band for known care scores, Adult being terminal,
+ * and the v2 save format round-tripping every new field -- including the
+ * exact fallback path just fixed in kf_pet_load_and_advance() (a
+ * version-1, pre-evolution save must reset to a fresh pet, not error). */
+int run_pet_stage_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-pet-stage-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. Egg: "just a timer, no care needed" (Chris's own words) -- needs
+     * must not move at all for any elapsed time short of the full egg
+     * duration, however long that elapsed time is. */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        check(state.stage == KF_PET_STAGE_EGG, "a fresh pet starts as an egg");
+
+        kf_pet_advance(&state, &config, config.egg_duration_seconds - 1u);
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+                  state.energy_mp == KF_PET_MILLIPERCENT_MAX,
+              "needs do not decay at all while still an egg, right up to "
+              "the last second before hatching");
+        check(state.stage == KF_PET_STAGE_EGG &&
+                  state.stage_elapsed_seconds ==
+                      config.egg_duration_seconds - 1u,
+              "the egg's own timer still advances even though needs do not");
+    }
+
+    /* 2. Egg hatches into Baby, and -- proving a single call does not stop
+     * dead at the stage boundary -- leftover elapsed time in the SAME call
+     * continues on into Baby and decays needs there. */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        constexpr uint32_t kIntoBabySeconds = 1800u; /* 30 minutes */
+        kf_pet_advance(&state, &config,
+                        config.egg_duration_seconds + kIntoBabySeconds);
+
+        check(state.stage == KF_PET_STAGE_BABY,
+              "elapsed time past the egg duration hatches the pet into "
+              "Baby within the same kf_pet_advance() call");
+        check(state.stage_elapsed_seconds == kIntoBabySeconds,
+              "the leftover time after hatching is credited to the new "
+              "stage, not dropped or double-counted");
+        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX -
+                                      static_cast<kf_pet_millipercent>(
+                                          static_cast<uint64_t>(
+                                              config.hunger_decay_mp_per_hour) *
+                                          kIntoBabySeconds / 3600ull),
+              "decay resumes correctly for the leftover time once past the "
+              "egg stage, using the same closed-form rate math as ordinary "
+              "decay");
+    }
+
+    /* 3. Baby's own care does not feed a branch choice, and the care
+     * accumulator resets cleanly at the Baby->Child boundary rather than
+     * carrying over garbage from the stage before it. Poked directly at
+     * Baby, one second short of Child, with the accumulator deliberately
+     * pre-set to a nonzero sentinel -- the established direct-field-poke
+     * pattern this file already uses (see run_pet_check()'s check 1). */
+    {
+        kf_pet_state state;
+        kf_pet_init(&state);
+        state.stage = KF_PET_STAGE_BABY;
+        state.stage_elapsed_seconds = config.baby_duration_seconds - 100u;
+        state.care_integral_mp_seconds = 999999999ull; /* sentinel */
+
+        kf_pet_advance(&state, &config, 100u); /* lands exactly on the boundary */
+
+        check(state.stage == KF_PET_STAGE_CHILD,
+              "Baby transitions into Child once its configured duration is "
+              "reached");
+        check(state.stage_elapsed_seconds == 0u,
+              "the new stage's elapsed timer starts at zero");
+        check(state.care_integral_mp_seconds == 0u,
+              "the care accumulator resets at the stage boundary rather "
+              "than carrying Baby's sentinel value into Child's own "
+              "average (Baby's care does not feed a branch choice)");
+        check(state.teen_form == 0u,
+              "teen_form is not decided yet -- Child has not ended");
+    }
+
+    /* 4. select_branch()'s equal-band mapping, isolated from decay: a
+     * custom config with every decay rate set to zero holds needs
+     * perfectly constant for the whole stage, so the care average is
+     * exactly the constant value that was set going in -- no need to
+     * duplicate apply_decay()'s own arithmetic here to predict the
+     * answer. Three known care levels are checked, one per teen_form band
+     * (branch_count == KF_PET_TEEN_FORM_COUNT == 3): neglected lands on
+     * band 0, mediocre on band 1, well-cared-for on band 2. */
+    {
+        kf_pet_config zero_decay = config;
+        zero_decay.hunger_decay_mp_per_hour = 0u;
+        zero_decay.happiness_decay_mp_per_hour = 0u;
+        zero_decay.energy_decay_mp_per_hour = 0u;
+        zero_decay.child_duration_seconds = 1000u;
+
+        const kf_pet_millipercent kNeglected = 10000u;   /* 10% -> band 0 */
+        const kf_pet_millipercent kMediocre = 50000u;    /* 50% -> band 1 */
+        const kf_pet_millipercent kWellCared = 90000u;   /* 90% -> band 2 */
+        const struct {
+            kf_pet_millipercent level;
+            uint8_t expected_band;
+            const char *label;
+        } cases[] = {
+            {kNeglected, 0u, "a neglected Child (10% needs, held constant) "
+                              "lands on the worst teen_form band (0)"},
+            {kMediocre, 1u, "a mediocre Child (50% needs, held constant) "
+                             "lands on the middle teen_form band (1)"},
+            {kWellCared, 2u, "a well-cared-for Child (90% needs, held "
+                              "constant) lands on the best teen_form band "
+                              "(2)"},
+        };
+        for (const auto &c : cases) {
+            kf_pet_state state;
+            kf_pet_init(&state);
+            state.stage = KF_PET_STAGE_CHILD;
+            state.hunger_mp = c.level;
+            state.happiness_mp = c.level;
+            state.energy_mp = c.level;
+
+            kf_pet_advance(&state, &zero_decay,
+                            zero_decay.child_duration_seconds);
+
+            check(state.stage == KF_PET_STAGE_TEEN, "Child completes into Teen");
+            check(state.teen_form == c.expected_band, c.label);
+            check(state.hunger_mp == c.level && state.happiness_mp == c.level &&
+                      state.energy_mp == c.level,
+                  "zero decay rates hold needs perfectly constant across "
+                  "the stage, which is what makes the care average exactly "
+                  "predictable in this check");
+        }
+    }
+
+    /* 5. The full closed-form claim: ONE kf_pet_advance() call, from a
+     * fresh egg, spans FOUR real stage transitions (Egg->Baby->Child->
+     * Teen->Adult) plus leftover time into Adult -- exactly the "offline
+     * for a week, hatched and grew up while it was off" case ADR 0021
+     * names. Zero decay rates again isolate the care-band arithmetic from
+     * needing to duplicate apply_decay()'s own math; both branch choices
+     * (teen_form during Child, adult_branch during Teen) are checked
+     * against known bands in the same call. Also proves Adult is terminal:
+     * a second advance() call afterwards keeps accumulating time without
+     * erroring, looping, or picking another branch. */
+    {
+        kf_pet_config zero_decay = config;
+        zero_decay.hunger_decay_mp_per_hour = 0u;
+        zero_decay.happiness_decay_mp_per_hour = 0u;
+        zero_decay.energy_decay_mp_per_hour = 0u;
+        zero_decay.egg_duration_seconds = 100u;
+        zero_decay.baby_duration_seconds = 100u;
+        zero_decay.child_duration_seconds = 1000u;
+        zero_decay.teen_duration_seconds = 1000u;
+
+        kf_pet_state state;
+        kf_pet_init(&state);
+        state.hunger_mp = 80000u; /* 80%, held constant by zero decay */
+        state.happiness_mp = 80000u;
+        state.energy_mp = 80000u;
+
+        constexpr uint32_t kLeftoverInAdult = 50u;
+        const uint32_t total_elapsed = zero_decay.egg_duration_seconds +
+                                        zero_decay.baby_duration_seconds +
+                                        zero_decay.child_duration_seconds +
+                                        zero_decay.teen_duration_seconds +
+                                        kLeftoverInAdult;
+
+        kf_pet_advance(&state, &zero_decay, total_elapsed);
+
+        check(state.stage == KF_PET_STAGE_ADULT,
+              "a single kf_pet_advance() call spanning egg+baby+child+teen+"
+              "some crosses all four real stage boundaries and lands in "
+              "Adult, not just the first one");
+        check(state.stage_elapsed_seconds == kLeftoverInAdult,
+              "time left over after the last transition is credited to "
+              "Adult, the same leftover-crediting proven for Baby in check "
+              "2 above");
+        /* 80% average with 3 bands: (80000*3)/100001 = 2 (top band). */
+        check(state.teen_form == 2u,
+              "teen_form, decided from Child's 80%-constant care, lands on "
+              "the top of 3 bands");
+        /* 80% average with 2 bands: (80000*2)/100001 = 1 (top band). */
+        check(state.adult_branch == 1u,
+              "adult_branch, decided from Teen's 80%-constant care, lands "
+              "on the top of 2 bands");
+        check(state.hunger_mp == 80000u && state.happiness_mp == 80000u &&
+                  state.energy_mp == 80000u,
+              "needs are still exactly 80% -- zero decay rates held them "
+              "constant through every stage, including the leftover time "
+              "in Adult");
+
+        kf_pet_advance(&state, &zero_decay, 500u);
+        check(state.stage == KF_PET_STAGE_ADULT,
+              "Adult is terminal -- a further advance() call does not pick "
+              "another stage or branch");
+        check(state.stage_elapsed_seconds == kLeftoverInAdult + 500u,
+              "Adult's own elapsed timer keeps accumulating rather than "
+              "resetting or being ignored");
+        check(state.teen_form == 2u && state.adult_branch == 1u,
+              "the branches already decided stay exactly as they were -- "
+              "nothing re-picks them once in the terminal stage");
+    }
+
+    /* 6. The v2 save format round-trips every new field. The wall clock is
+     * pinned to the exact instant last_advanced was set (same technique as
+     * run_pet_check()'s check 5, kf_time_set_wall()) so the reload's
+     * elapsed time is deterministically zero -- otherwise Teen's own
+     * ongoing care accumulation would perturb care_integral_mp_seconds by
+     * an amount that depends on real wall-clock timing, not on whether the
+     * save format round-tripped correctly. */
+    {
+        kf_pet_state state{};
+        check(kf_pet_load_and_advance(&state, &config) == KF_OK,
+              "load_and_advance with no prior save succeeds");
+
+        state.stage = KF_PET_STAGE_TEEN;
+        state.teen_form = 1u;
+        state.adult_branch = 0u; /* not decided yet at Teen */
+        state.stage_elapsed_seconds = 12345u;
+        state.care_integral_mp_seconds = 678900000ull;
+        state.hunger_mp = 42000u;
+        state.happiness_mp = 55000u;
+        state.energy_mp = 77000u;
+
+        const kf_wall_time saved_at = state.last_advanced;
+        check(kf_pet_save(&state) == KF_OK, "save the non-trivial state");
+        check(kf_time_set_wall(saved_at.epoch_seconds) == KF_OK,
+              "pin the wall clock back to exactly the saved last_advanced, "
+              "guaranteeing the reload below sees zero elapsed time");
+
+        kf_pet_state loaded{};
+        check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
+              "load_and_advance reloads the save");
+        check(loaded.stage == KF_PET_STAGE_TEEN &&
+                  loaded.teen_form == 1u && loaded.adult_branch == 0u,
+              "stage and both branch indices round-trip through save/load");
+        check(loaded.stage_elapsed_seconds == 12345u &&
+                  loaded.care_integral_mp_seconds == 678900000ull,
+              "both new per-stage accumulators round-trip through "
+              "save/load, byte for byte, with zero elapsed time to "
+              "perturb them");
+        check(loaded.hunger_mp == 42000u && loaded.happiness_mp == 55000u &&
+                  loaded.energy_mp == 77000u,
+              "the pre-existing needs fields still round-trip correctly "
+              "alongside the new v2 fields");
+    }
+
+    /* 7. The bug fixed alongside the v2 save-format bump: a save written
+     * by an incompatible version (or simply the wrong size) must fall back
+     * to a fresh pet, not propagate an error -- kf_pet_load_and_advance()'s
+     * own documented contract, which the ORIGINAL code for this bump broke
+     * (it returned KF_ERR_INVALID directly, which would have crashed the
+     * app via kf_pet_session_init()'s KF_ASSERT on any old or corrupt
+     * save). Writes raw bytes directly via kf_store_write() -- there is no
+     * public unpack() to call from here, which is the point: this check
+     * exercises exactly what a real stale save on a real device would
+     * produce. */
+    {
+        /* A version-1 (pre-evolution) save: right size, wrong version byte
+         * at offset 0. The rest of the bytes do not matter -- unpack()
+         * must reject on the version check before ever reading them. */
+        uint8_t v1_buf[KF_PET_SAVE_BYTES] = {};
+        v1_buf[0] = 1u; /* kSaveVersion is 2; this claims version 1 */
+        check(kf_store_write(KF_PET_SAVE_KEY, v1_buf, sizeof(v1_buf)) == KF_OK,
+              "write a synthetic version-1 save directly");
+
+        kf_pet_state state{};
+        check(kf_pet_load_and_advance(&state, &config) == KF_OK,
+              "load_and_advance on a version-incompatible save returns KF_OK, "
+              "not an error -- the real bug this exact path had before "
+              "ADR 0021 fixed it");
+        check(state.stage == KF_PET_STAGE_EGG &&
+                  state.hunger_mp == KF_PET_MILLIPERCENT_MAX,
+              "a rejected version-1 save falls back to a fresh pet (a new "
+              "egg), exactly as kf_pet_load_and_advance()'s header comment "
+              "documents");
+
+        /* Wrong size entirely (e.g. a save from some other, unrelated
+         * format bump): also refused, also falls back cleanly. */
+        uint8_t wrong_size_buf[KF_PET_SAVE_BYTES - 5] = {};
+        check(kf_store_write(KF_PET_SAVE_KEY, wrong_size_buf,
+                              sizeof(wrong_size_buf)) == KF_OK,
+              "write a synthetic wrong-size save directly");
+
+        kf_pet_state state2{};
+        check(kf_pet_load_and_advance(&state2, &config) == KF_OK,
+              "load_and_advance on a wrong-size save also returns KF_OK");
+        check(state2.stage == KF_PET_STAGE_EGG &&
+                  state2.hunger_mp == KF_PET_MILLIPERCENT_MAX,
+              "a wrong-size save also falls back to a fresh pet");
     }
 
     kf_power_shutdown();
@@ -603,28 +939,36 @@ int run_lua_pet_check() {
 
     constexpr uint32_t kFixedDtMs =
         static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
-    /* kf_pet_session_frame() only applies decay once
-     * KF_PET_SESSION_FLUSH_SECONDS of live time has accumulated (see its
-     * header comment) -- at kFixedDtMs per frame, that first flush lands
-     * around frame ceil(30000/kFixedDtMs). 1200 frames clears that with
-     * comfortable margin (guarantees exactly one flush, not zero) while
-     * staying nowhere near a second one, so the expected direction of the
-     * check below (strictly less than max, not equal to some exact
-     * value) does not depend on hitting the boundary exactly. */
-    constexpr long kStage1Frames = 1200;
     constexpr long kStage2Frames = 30;
 
     /* Stage 1: decay-and-read. No care calls at all -- just enough live
-     * frames for hunger to visibly move (a fresh pet at
-     * kf_pet_default_config()'s ~1042 mp/hour decays a handful of mp once
-     * the flush threshold is crossed, comfortably nonzero and comfortably
-     * short of exhausting the need entirely). */
+     * frames for hunger to visibly move.
+     *
+     * A fresh pet session starts in KF_PET_STAGE_EGG (ADR 0021), which
+     * deliberately does not decay -- so this stage first has to clear the
+     * default config's egg_duration_seconds (3600s = 1 hour, see
+     * kf_pet_default_config()) before hunger moves at all. kStage1DtMs is
+     * a larger-than-real-frame-time synthetic dt for exactly that reason:
+     * kf_pet_session_frame() does not care whether the dt it is handed is
+     * a plausible single frame's worth or not, only that dt accumulates
+     * correctly (see that function's own header comment on why it
+     * batches at all). At kStage1DtMs=3500ms/frame, kStage1Frames=1200
+     * frames sums to 4,200,000ms = 4200 simulated seconds -- clearing the
+     * 3600s egg stage with 600s (10 minutes) left over inside the baby
+     * stage, comfortably enough for kf_pet_default_config()'s ~1042
+     * mp/hour hunger decay rate to produce a visible, comfortably nonzero
+     * drop (about 174 mp) without coming close to exhausting the need
+     * entirely. This is still a binding-correctness check, not a
+     * stage-timing one -- see this file's own header comment on what
+     * these two proof scripts exist to prove. */
+    constexpr uint32_t kStage1DtMs = 3500u;
+    constexpr long kStage1Frames = 1200;
     check(kf_lua_port_init(kKfLuaPetDecayProofScriptSource,
                             kKfLuaPetDecayProofScriptChunkName),
           "stage 1 (decay) proof script loaded");
     for (long i = 0; i < kStage1Frames; ++i) {
-        kf_pet_session_frame(kFixedDtMs);
-        kf_lua_port_frame(kFixedDtMs);
+        kf_pet_session_frame(kStage1DtMs);
+        kf_lua_port_frame(kStage1DtMs);
     }
     check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage1Frames),
           "stage 1 ran the full frame count without a script error");
@@ -668,6 +1012,43 @@ int run_lua_pet_check() {
           "wired -- happiness and energy are also back at max, checked "
           "directly against the live C++ session state, independent of "
           "what the script itself reported");
+    kf_lua_port_shutdown();
+
+    /* Stage 3: stage/evolution reads (ADR 0021), continuing the SAME
+     * session once again. Stage 1 already accumulated 4200 simulated
+     * seconds, clearing the default config's 3600s egg duration -- so by
+     * now the live session is in KF_PET_STAGE_BABY, not the egg it started
+     * as, which is what makes this a real check of pet.stage() rather than
+     * a tautological "still egg" one. teen_form/adult_branch are still 0
+     * (Baby is well before either branch point). The C++ side packs the
+     * expected value with the exact same stage*1000 + teen_form*10 +
+     * adult_branch encoding the script uses, from the live state read
+     * directly -- not from any assumption about what stage "should" be by
+     * now. */
+    check(kf_lua_port_init(kKfLuaPetStageProofScriptSource,
+                            kKfLuaPetStageProofScriptChunkName),
+          "stage 3 (stage/evolution) proof script loaded");
+    for (long i = 0; i < kStage2Frames; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_lua_port_frame(kFixedDtMs);
+    }
+    check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage2Frames),
+          "stage 3 ran the full frame count without a script error");
+    const kf_pet_state *live_after_stage = kf_pet_session_state();
+    check(live_after_stage->stage == KF_PET_STAGE_BABY,
+          "the live session has progressed past the egg stage by stage 3, "
+          "which is what makes the report comparison below a real check "
+          "rather than a trivially-true one");
+    const int64_t expected_packed =
+        static_cast<int64_t>(live_after_stage->stage) * 1000 +
+        static_cast<int64_t>(live_after_stage->teen_form) * 10 +
+        static_cast<int64_t>(live_after_stage->adult_branch);
+    check(kf_lua_port_last_report() == expected_packed,
+          "pet.stage()/pet.teen_form()/pet.adult_branch() read via Lua, "
+          "packed into one integer, match the identical packing computed "
+          "directly from kf_pet_session_state() in C++ -- proves the "
+          "string pet.stage() hands back round-trips to the correct enum "
+          "value, not just that some string comes out");
     kf_lua_port_shutdown();
 
     kf_pet_session_shutdown();
@@ -799,6 +1180,7 @@ int main(int argc, char *argv[]) {
     bool verify_lvgl = false;
     bool verify_lua = false;
     bool verify_pet = false;
+    bool verify_pet_stage = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_lua_creature = false;
@@ -826,6 +1208,8 @@ int main(int argc, char *argv[]) {
             verify_lua = true;
         } else if (std::strcmp(argv[i], "--verify-pet") == 0) {
             verify_pet = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-stage") == 0) {
+            verify_pet_stage = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
@@ -839,6 +1223,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua [--frames N]\n"
                         "kamiframe-headless --verify-pet\n"
+                        "kamiframe-headless --verify-pet-stage\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -870,6 +1255,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet) {
         return run_pet_check();
+    }
+
+    if (verify_pet_stage) {
+        return run_pet_stage_check();
     }
 
     if (verify_lua_pet) {

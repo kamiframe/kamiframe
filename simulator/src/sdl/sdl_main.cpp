@@ -58,6 +58,85 @@ void update_title(uint64_t frame) {
     SDL_SetWindowTitle(s.window, title);
 }
 
+/* Duplicated here rather than shared with kf_pet_screen.cpp's identical
+ * mapping: that one lives in an anonymous namespace private to a
+ * different translation unit, and this is four lines of log-message
+ * formatting, not a mechanism worth a shared header over. */
+const char *stage_name(kf_pet_stage stage) {
+    switch (stage) {
+    case KF_PET_STAGE_EGG:
+        return "egg";
+    case KF_PET_STAGE_BABY:
+        return "baby";
+    case KF_PET_STAGE_CHILD:
+        return "child";
+    case KF_PET_STAGE_TEEN:
+        return "teen";
+    case KF_PET_STAGE_ADULT:
+    default:
+        return "adult";
+    }
+}
+
+/* DEBUG ONLY -- see kf_pet_session.h's own "DEBUG ONLY below this line"
+ * section for why these exist and why they are safe to call directly:
+ * kf_pet_advance()'s bounded-loop design (ADR 0021) makes an arbitrary
+ * time jump cheap, and this is the exact same function offline
+ * fast-forward already relies on, not a separate, less-tested path.
+ *
+ * Number keys, not letters: they read naturally as "how far" (1/2/3 ==
+ * hour/day/week) and do not collide with the WASD/arrows/Z/X/J/K/Enter/
+ * Escape bindings sdl_input.cpp already uses for the real d-pad/A/B/menu
+ * buttons (see that file's header comment) -- these are deliberately NOT
+ * added to kf_button/kf_input_raw, since a time-skip is not one of the
+ * real device's physical buttons and has no business being modelled as
+ * one.
+ *
+ * Polled with simple press-edge tracking (a static `previous` array) so
+ * holding a key down skips once, not once per frame at 30fps. */
+void poll_debug_time_skip() {
+    struct DebugSkip {
+        SDL_Scancode scancode;
+        uint32_t seconds;
+        const char *label;
+    };
+    constexpr DebugSkip kSkips[] = {
+        {SDL_SCANCODE_1, 3600u, "1 hour"},
+        {SDL_SCANCODE_2, 24u * 3600u, "1 day"},
+        {SDL_SCANCODE_3, 7u * 24u * 3600u, "1 week"},
+    };
+    static bool previous[3] = {false, false, false};
+    static bool previous_reset = false;
+
+    const bool *keys = SDL_GetKeyboardState(nullptr);
+    if (keys == nullptr) {
+        return;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        const bool now = keys[kSkips[i].scancode];
+        if (now && !previous[i]) {
+            kf_pet_session_debug_advance(kSkips[i].seconds);
+            const kf_pet_state *s = kf_pet_session_state();
+            KF_LOGI(TAG,
+                    "[debug] skipped %s -- now %s, hunger %u.%u%% happy "
+                    "%u.%u%% energy %u.%u%%",
+                    kSkips[i].label, stage_name(s->stage),
+                    s->hunger_mp / 1000u, (s->hunger_mp / 100u) % 10u,
+                    s->happiness_mp / 1000u, (s->happiness_mp / 100u) % 10u,
+                    s->energy_mp / 1000u, (s->energy_mp / 100u) % 10u);
+        }
+        previous[i] = now;
+    }
+
+    const bool reset_now = keys[SDL_SCANCODE_0];
+    if (reset_now && !previous_reset) {
+        kf_pet_session_debug_reset();
+        KF_LOGI(TAG, "[debug] reset to a fresh egg");
+    }
+    previous_reset = reset_now;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -140,6 +219,8 @@ int main(int argc, char *argv[]) {
     kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
                       kKfLuaDemoCreatureScriptChunkName);
 
+    KF_LOGI(TAG, "debug (this build only): 1/2/3 = skip 1 hour/day/week, "
+                 "0 = reset to a fresh egg -- see kf_pet_session.h");
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 
     long frames = 0;
@@ -159,6 +240,7 @@ int main(int argc, char *argv[]) {
          * up starting next frame's update -- one frame of input lag,
          * imperceptible at this frame rate. */
         kf_pet_session_frame(0);
+        poll_debug_time_skip();
         kf_pet_screen_update();
         kf_lvgl_port_pump(0);
         kf_lua_port_frame(0);

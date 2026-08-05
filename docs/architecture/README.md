@@ -28,13 +28,16 @@ future us in month eight asking the same question with less patience.
 | [0018](adr-0018-demo-creature-script.md) | The demo creature script | Accepted |
 | [0019](adr-0019-esp-idf-hello-world.md) | An ESP-IDF hello-world, and what it actually proves | Accepted |
 | [0020](adr-0020-esp32-hal-backends.md) | Real ESP32 HAL backends, compile-verified but not hardware-verified | Accepted |
+| [0021](adr-0021-life-stages-and-evolution.md) | Life stages and evolution | Accepted |
 
 Open evaluations, deliberately not decided:
 
 - **The creature class name.** Deferred by the naming decision record.
 
 See also `../frame-budget.md`, which works through what the display bandwidth
-means for full-screen animation and what the options are for 60fps.
+means for full-screen animation and what the options are for 60fps, and
+`../sdk-style-guide.md`, which names the design principle behind `pet.*`/
+`kf.*`'s function-per-action shape for whatever Lua bindings get added next.
 
 The full option space behind these, including what was rejected, is in
 `08-phase1-slice1-decisions.md` in the planning folder.

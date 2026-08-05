@@ -117,6 +117,34 @@ void kf_pet_session_save(void);
 /* Saves, then tears the session down. */
 void kf_pet_session_shutdown(void);
 
+/* ---------------------------------------------------------------------
+ * DEBUG ONLY below this line. Not part of the gameplay surface (not
+ * exposed to Lua -- a script has no business fast-forwarding or resetting
+ * time on its own pet), not called by the ESP32 build, and not something
+ * a real device would ever expose to a player. Their only current caller
+ * is sdl_main.cpp's debug key bindings, added specifically because
+ * kf_pet_advance()'s bounded-loop design (ADR 0021) makes jumping an
+ * arbitrary amount of pet-time cheap and safe to call directly, and the
+ * default illustrative stage durations (an hour for an egg, about a week
+ * for a full grow-up) are otherwise much too slow to watch interactively.
+ * --------------------------------------------------------------------- */
+
+/* Advances the live pet by exactly `seconds`, immediately -- bypassing
+ * kf_pet_session_frame()'s live-tick batching (KF_PET_SESSION_FLUSH_
+ * SECONDS) entirely, since that batching exists to make small per-frame
+ * deltas add up correctly over real time, not to gate a deliberate,
+ * one-shot jump. Uses the exact same kf_pet_advance() offline fast-forward
+ * relies on, so this is not a separate, less-tested code path -- it is
+ * the same one, called on demand instead of at boot. */
+void kf_pet_session_debug_advance(uint32_t seconds);
+
+/* Resets the live pet to a fresh egg, in place -- without touching
+ * whatever is currently on disk. The next normal checkpoint (a care
+ * action, or shutdown) overwrites the save with this fresh state. Lets
+ * someone testing branch outcomes start over without restarting the
+ * whole process or deleting a save file by hand. */
+void kf_pet_session_debug_reset(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

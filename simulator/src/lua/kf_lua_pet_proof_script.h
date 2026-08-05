@@ -4,13 +4,14 @@
  * PLACEHOLDER CONTENT, same spirit as kf_lua_proof_script.h and
  * kf_lvgl_proof_screen.h: this proves the pet.* Lua binding surface reads
  * and mutates the real, live kf_pet_session state correctly, not that any
- * particular pet game logic is correct. See ADR 0016 and
- * headless_main.cpp's run_lua_pet_check(), which runs these two scripts
- * back to back against the SAME continuing pet session.
+ * particular pet game logic is correct. See ADR 0016 (and ADR 0021 for the
+ * stage/evolution additions) and headless_main.cpp's run_lua_pet_check(),
+ * which runs these scripts back to back against the SAME continuing pet
+ * session.
  *
- * Two scripts, not one, because they prove two different things and
- * mixing them into a single kf.report() call would need to encode
- * multiple values into one integer:
+ * Three scripts, not one, because they prove different things and mixing
+ * them into a single kf.report() call would need to encode multiple values
+ * into one integer:
  *
  *   kKfLuaPetDecayProofScriptSource   Reports pet.hunger() every frame,
  *       touching nothing else. Proves reads are wired to a genuinely live,
@@ -29,6 +30,17 @@
  *       happiness_mp/energy_mp directly from kf_pet_session_state() in
  *       C++ (proves pet.play() and pet.rest() are ALSO correctly wired,
  *       not just aliased to the same call as pet.feed()).
+ *
+ *   kKfLuaPetStageProofScriptSource   Reports pet.stage() (mapped to the
+ *       same 0..4 index kf_pet_stage uses in C++, via a local Lua table --
+ *       proves the STRING pet.stage() hands back round-trips correctly,
+ *       not just that some string comes out), pet.teen_form() and
+ *       pet.adult_branch(), packed into one integer (stage*1000 +
+ *       teen_form*10 + adult_branch, each field comfortably within its own
+ *       decimal digit range). run_lua_pet_check() computes the identical
+ *       packed value directly from kf_pet_session_state() in C++ and
+ *       compares -- the same "script report vs. live C++ state" proof the
+ *       other two scripts use, extended to the three new accessors.
  */
 
 #ifndef KF_LUA_PET_PROOF_SCRIPT_H
@@ -58,5 +70,19 @@ kf.log("pet care proof script loaded")
 
 inline constexpr const char *kKfLuaPetCareProofScriptChunkName =
     "=pet_care_proof_script";
+
+inline constexpr const char *kKfLuaPetStageProofScriptSource = R"lua(
+local kStageIndex = { egg = 0, baby = 1, child = 2, teen = 3, adult = 4 }
+
+function on_frame(dt_ms)
+    local idx = kStageIndex[pet.stage()]
+    kf.report(idx * 1000 + pet.teen_form() * 10 + pet.adult_branch())
+end
+
+kf.log("pet stage proof script loaded")
+)lua";
+
+inline constexpr const char *kKfLuaPetStageProofScriptChunkName =
+    "=pet_stage_proof_script";
 
 #endif /* KF_LUA_PET_PROOF_SCRIPT_H */

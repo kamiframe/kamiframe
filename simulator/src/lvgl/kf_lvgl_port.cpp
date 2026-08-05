@@ -6,6 +6,7 @@
 
 #include "kf_lvgl_display.h"
 #include "kf_lvgl_input.h"
+#include "kf_lvgl_pointer.h"
 #include "kf_lvgl_tick.h"
 
 #include "kf/hal/log.h"
@@ -44,6 +45,7 @@ lv_group_t *kf_lvgl_port_init(void) {
 
     kf_lvgl_display_init();
     lv_group_t *group = kf_lvgl_input_init();
+    kf_lvgl_pointer_init(group);
     kf_lvgl_tick_init();
 
     KF_LOGI(TAG, "LVGL %d.%d.%d ready (lv_obj, lv_label, lv_image, "

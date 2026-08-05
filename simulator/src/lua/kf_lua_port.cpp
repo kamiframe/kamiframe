@@ -121,11 +121,68 @@ int lua_pet_save(lua_State *L) {
     return 0;
 }
 
+/* pet.stage() -- the life-cycle position (ADR 0021), as a lowercase string:
+ * "egg", "baby", "child", "teen", or "adult". A string, not the raw
+ * kf_pet_stage integer, deliberately: kf/pet.h's own header comment draws
+ * the line that WHAT a stage means is not Core's business, and the demo
+ * creature script (kf_lua_demo_creature_script.h) already reacts to its
+ * needs via band-crossing string-style thresholds, not raw numbers -- this
+ * matches that existing convention rather than leaking Core's enum layout
+ * into the cartridge layer. */
+int lua_pet_stage(lua_State *L) {
+    const char *name = "egg";
+    switch (kf_pet_session_state()->stage) {
+    case KF_PET_STAGE_EGG:
+        name = "egg";
+        break;
+    case KF_PET_STAGE_BABY:
+        name = "baby";
+        break;
+    case KF_PET_STAGE_CHILD:
+        name = "child";
+        break;
+    case KF_PET_STAGE_TEEN:
+        name = "teen";
+        break;
+    case KF_PET_STAGE_ADULT:
+        name = "adult";
+        break;
+    }
+    lua_pushstring(L, name);
+    return 1;
+}
+
+/* pet.teen_form() / pet.adult_branch() -- WHICH branch was taken, as plain
+ * 0-based indices (0..KF_PET_TEEN_FORM_COUNT-1, 0..KF_PET_ADULT_BRANCH_
+ * COUNT-1). Raw integers, not names, on purpose: unlike the stage itself,
+ * naming these branches is real creative content that does not exist yet
+ * (Chris: "simplistic blobs for now to get the systems working... I will
+ * work with my friend who is a designer on creating actual characters,
+ * along with names/backstories"). A future cartridge script maps these
+ * indices to real names/behaviour itself once that content exists; Core
+ * and this binding only ever hand over which slot was picked. Meaningless
+ * (always 0) before the branch point that sets it -- see kf/pet.h's
+ * kf_pet_state comment -- so a script must check pet.stage() first if it
+ * needs to know whether the value is meaningful yet. */
+int lua_pet_teen_form(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->teen_form));
+    return 1;
+}
+
+int lua_pet_adult_branch(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->adult_branch));
+    return 1;
+}
+
 const luaL_Reg kKfPetFuncs[] = {
     {"hunger", lua_pet_hunger},       {"happiness", lua_pet_happiness},
     {"energy", lua_pet_energy},       {"feed", lua_pet_feed},
     {"play", lua_pet_play},           {"rest", lua_pet_rest},
-    {"save", lua_pet_save},           {nullptr, nullptr},
+    {"save", lua_pet_save},           {"stage", lua_pet_stage},
+    {"teen_form", lua_pet_teen_form}, {"adult_branch", lua_pet_adult_branch},
+    {nullptr, nullptr},
 };
 
 void register_pet_bindings(lua_State *L) {

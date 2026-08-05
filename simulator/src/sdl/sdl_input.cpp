@@ -87,3 +87,23 @@ kf_result kf_input_poll(kf_input_raw *out) {
 }
 
 void kf_input_shutdown(void) {}
+
+/* kf_lvgl_pointer.cpp's other half -- see that file's header comment. Not
+ * part of kf/hal/input.h: a mouse pointer is not one of the real device's
+ * 5-7 physical buttons, so it does not belong in the interface that models
+ * them (kf_input_raw). SDL reports window pixel coordinates; the pet
+ * screen's widgets are laid out in the logical 240x320 framebuffer space
+ * (KF_DISPLAY_WIDTH x KF_DISPLAY_HEIGHT), so this divides by the same
+ * integer `scale` sdl_display.cpp used to size the window in the first
+ * place -- the exact inverse of that multiplication, not a separate
+ * assumption about window size. */
+void kf_sim_pointer_poll(int32_t *x, int32_t *y, bool *pressed) {
+    float mouse_x = 0.0f;
+    float mouse_y = 0.0f;
+    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
+
+    const int scale = kf_sdl_state().scale > 0 ? kf_sdl_state().scale : 1;
+    *x = static_cast<int32_t>(mouse_x) / scale;
+    *y = static_cast<int32_t>(mouse_y) / scale;
+    *pressed = (buttons & SDL_BUTTON_LMASK) != 0u;
+}

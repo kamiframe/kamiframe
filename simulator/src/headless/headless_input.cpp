@@ -64,3 +64,16 @@ kf_result kf_input_poll(kf_input_raw *out) {
 }
 
 void kf_input_shutdown(void) {}
+
+/* kf_lvgl_pointer.cpp's other half for this backend -- see sdl_input.cpp's
+ * real implementation and kf_lvgl_pointer.h's header comment. Headless has
+ * no mouse and no window; reporting "never pressed" here means the
+ * pointer indev this links against is created (kf_lvgl_port_init() calls
+ * kf_lvgl_pointer_init() unconditionally, both backends) but never
+ * actually generates an event, so it has zero effect on any golden-
+ * checksum test -- deliberately, not by omission. */
+void kf_sim_pointer_poll(int32_t *x, int32_t *y, bool *pressed) {
+    *x = 0;
+    *y = 0;
+    *pressed = false;
+}

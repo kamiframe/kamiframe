@@ -119,3 +119,15 @@ void kf_pet_session_shutdown(void) {
     kf_pet_session_save();
     g.ready = false;
 }
+
+void kf_pet_session_debug_advance(uint32_t seconds) {
+    KF_ASSERT(g.ready, "kf_pet_session_debug_advance called before "
+                        "kf_pet_session_init");
+    kf_pet_advance(&g.state, &g.config, seconds);
+}
+
+void kf_pet_session_debug_reset(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_debug_reset called before kf_pet_session_init");
+    kf_pet_init(&g.state);
+}

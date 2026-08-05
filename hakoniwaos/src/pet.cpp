@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * See kf/pet.h for what this is. Two things worth knowing before reading
+ * See kf/pet.h for what this is. Three things worth knowing before reading
  * the functions below:
  *
  * All decay/care maths is integer, in millipercent (0..100000), and every
@@ -11,9 +11,28 @@
  * would overflow uint32_t; it cannot overflow uint64_t for any elapsed
  * time this project will ever see.
  *
+ * Stage progression inside kf_pet_advance() is a small loop, but bounded
+ * by the number of REMAINING LIFE STAGES (at most 4), never by
+ * elapsed_seconds -- see kf/pet.h's comment on kf_pet_advance() for why
+ * that is not the per-second simulation ADR 0015 already rejected.
+ *
+ * The care score that picks a branch (child->teen, teen->adult) is a
+ * left-Riemann-sum numerical integral, not a mathematically exact one: each
+ * segment of elapsed time is weighted by the need average AT THE START of
+ * that segment, before this segment's own decay is applied. This is a
+ * deliberate, documented approximation, not a bug -- the same category of
+ * accepted trade-off kf_pet_session.cpp's own live-tick batching already
+ * makes and documents (see that file's header comment), and for the
+ * identical reason: an exact continuous integral needs either float (which
+ * this project avoids for exactly the drift reasons kf/pet.h's own header
+ * comment gives) or many small steps (which defeats the point of a
+ * closed-form calculation). Chris asked for "an average over the whole
+ * stage, not a snapshot" -- this delivers that faithfully; it is not
+ * claiming lab-grade numerical precision beyond that.
+ *
  * The on-disk save format is packed and unpacked byte by byte
- * (put_u32/get_u32/put_i64/get_i64 below), not written as a raw
- * `kf_store_write(state, sizeof(*state))`. A C++ struct's layout --
+ * (put_u32/get_u32/put_i64/get_i64/put_u64/get_u64 below), not written as a
+ * raw `kf_store_write(state, sizeof(*state))`. A C++ struct's layout --
  * padding, member order in memory -- is not something two different
  * compilers (this project builds with both GCC and MSVC, see the CI
  * matrix) are obliged to agree on, and a save file that only round-trips
@@ -37,10 +56,11 @@ namespace {
 
 constexpr const char *TAG = "pet";
 
-/* Save format version. Bump this and kf_pet_deserialize() refuses to load
- * anything written by a different version rather than guessing at a
- * layout that changed -- see unpack() below. */
-constexpr uint8_t kSaveVersion = 1;
+/* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution) --
+ * kf_pet_deserialize() refuses to load anything written by a different
+ * version rather than guessing at a layout that changed, see unpack()
+ * below. */
+constexpr uint8_t kSaveVersion = 2;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -66,6 +86,135 @@ kf_pet_millipercent apply_decay(kf_pet_millipercent value,
 }
 
 /* -----------------------------------------------------------------------
+ * Stage progression.
+ * ----------------------------------------------------------------------- */
+
+uint32_t stage_duration_seconds(const kf_pet_config *config,
+                                 kf_pet_stage stage) {
+    switch (stage) {
+    case KF_PET_STAGE_EGG:
+        return config->egg_duration_seconds;
+    case KF_PET_STAGE_BABY:
+        return config->baby_duration_seconds;
+    case KF_PET_STAGE_CHILD:
+        return config->child_duration_seconds;
+    case KF_PET_STAGE_TEEN:
+        return config->teen_duration_seconds;
+    case KF_PET_STAGE_ADULT:
+    default:
+        /* Terminal in this slice -- never consulted, since
+         * kf_pet_advance()'s stage loop stops once stage == ADULT. */
+        return 0u;
+    }
+}
+
+/* True for exactly the two stages whose care actually feeds a branch
+ * decision at their own end, per Chris's design: care during CHILD picks
+ * the teen form, care during TEEN picks the adult branch. Egg has no
+ * needs at all yet (see apply_stage_segment()); baby's care is real (the
+ * pet still needs feeding) but does not feed a branch, since baby always
+ * leads to exactly one child, no choice to make. */
+bool stage_feeds_a_branch_choice(kf_pet_stage stage) {
+    return stage == KF_PET_STAGE_CHILD || stage == KF_PET_STAGE_TEEN;
+}
+
+/* Maps an accumulated care score to one of `branch_count` equal-width
+ * bands -- band 0 is the neediest/worst-cared-for band, band
+ * `branch_count - 1` is the best. Equal bands are the simplest defensible
+ * default and, like every other number in this file, a config surface
+ * later if equal turns out to be the wrong shape once pets are actually
+ * being raised -- see kf/pet.h's header comment on why the TREE shape
+ * (branch_count itself) is compile-time but this mapping is not exposed
+ * as config yet. */
+uint8_t select_branch(uint64_t care_integral_mp_seconds,
+                       uint64_t stage_elapsed_seconds, uint32_t branch_count) {
+    if (stage_elapsed_seconds == 0u) {
+        /* Zero-duration stage (a misconfigured kf_pet_config): nothing to
+         * average. Land on band 0 rather than dividing by zero -- a
+         * defensive default, not a real gameplay case this project
+         * expects to hit. */
+        return 0u;
+    }
+    const uint64_t average_mp = care_integral_mp_seconds / stage_elapsed_seconds;
+    uint64_t band = (average_mp * branch_count) /
+                     (static_cast<uint64_t>(KF_PET_MILLIPERCENT_MAX) + 1u);
+    if (band >= branch_count) {
+        band = branch_count - 1u; /* average_mp == MAX lands exactly on the top edge */
+    }
+    return static_cast<uint8_t>(band);
+}
+
+/* Advances `state` past its current (already-complete) stage into the
+ * next one, picking a branch and resetting the per-stage accumulators
+ * where that applies. Only ever called once kf_pet_advance()'s loop has
+ * confirmed stage_elapsed_seconds has reached the stage's full duration. */
+void advance_to_next_stage(kf_pet_state *state) {
+    switch (state->stage) {
+    case KF_PET_STAGE_EGG:
+        state->stage = KF_PET_STAGE_BABY;
+        break;
+    case KF_PET_STAGE_BABY:
+        state->stage = KF_PET_STAGE_CHILD;
+        break;
+    case KF_PET_STAGE_CHILD:
+        state->teen_form =
+            select_branch(state->care_integral_mp_seconds,
+                          state->stage_elapsed_seconds, KF_PET_TEEN_FORM_COUNT);
+        state->stage = KF_PET_STAGE_TEEN;
+        break;
+    case KF_PET_STAGE_TEEN:
+        state->adult_branch = select_branch(state->care_integral_mp_seconds,
+                                             state->stage_elapsed_seconds,
+                                             KF_PET_ADULT_BRANCH_COUNT);
+        state->stage = KF_PET_STAGE_ADULT;
+        break;
+    case KF_PET_STAGE_ADULT:
+    default:
+        /* Terminal -- kf_pet_advance()'s loop never calls this once
+         * stage == ADULT, but handle it defensively rather than falling
+         * through into resetting accumulators for a stage transition
+         * that should not happen. */
+        return;
+    }
+    state->stage_elapsed_seconds = 0u;
+    state->care_integral_mp_seconds = 0u;
+}
+
+/* Applies decay (and, on the two stages where it matters, accumulates the
+ * care integral) for exactly `segment` seconds, all still within the
+ * SAME stage -- kf_pet_advance()'s loop never lets a segment cross a
+ * stage boundary, so this never needs to know about stages other than the
+ * current one. */
+void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
+                          uint32_t segment) {
+    if (state->stage == KF_PET_STAGE_EGG) {
+        /* No care needed as an egg -- see kf/pet.h's header comment and
+         * kf_pet_init(): needs stay at whatever they were (full, for a
+         * freshly-initialised pet) until the egg hatches. */
+        return;
+    }
+
+    const bool feeds_branch = stage_feeds_a_branch_choice(state->stage);
+    uint64_t average_before_mp = 0u;
+    if (feeds_branch) {
+        average_before_mp = (static_cast<uint64_t>(state->hunger_mp) +
+                              state->happiness_mp + state->energy_mp) /
+                             3u;
+    }
+
+    state->hunger_mp =
+        apply_decay(state->hunger_mp, config->hunger_decay_mp_per_hour, segment);
+    state->happiness_mp = apply_decay(state->happiness_mp,
+                                       config->happiness_decay_mp_per_hour, segment);
+    state->energy_mp =
+        apply_decay(state->energy_mp, config->energy_decay_mp_per_hour, segment);
+
+    if (feeds_branch) {
+        state->care_integral_mp_seconds += average_before_mp * segment;
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Hand-packed serialisation. See the file header comment for why.
  * ----------------------------------------------------------------------- */
 
@@ -82,6 +231,12 @@ void put_i64(uint8_t *buf, size_t &offset, int64_t v) {
     const uint64_t u = static_cast<uint64_t>(v);
     for (int i = 0; i < 8; ++i) {
         buf[offset++] = static_cast<uint8_t>((u >> (8 * i)) & 0xFFu);
+    }
+}
+
+void put_u64(uint8_t *buf, size_t &offset, uint64_t v) {
+    for (int i = 0; i < 8; ++i) {
+        buf[offset++] = static_cast<uint8_t>((v >> (8 * i)) & 0xFFu);
     }
 }
 
@@ -105,6 +260,15 @@ int64_t get_i64(const uint8_t *buf, size_t &offset) {
     return static_cast<int64_t>(u);
 }
 
+uint64_t get_u64(const uint8_t *buf, size_t &offset) {
+    uint64_t u = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        u |= static_cast<uint64_t>(buf[offset + i]) << (8u * i);
+    }
+    offset += 8;
+    return u;
+}
+
 void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     size_t off = 0;
     put_u8(out, off, kSaveVersion);
@@ -113,6 +277,11 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u32(out, off, state->energy_mp);
     put_u8(out, off, state->last_advanced.valid ? 1u : 0u);
     put_i64(out, off, state->last_advanced.epoch_seconds);
+    put_u8(out, off, static_cast<uint8_t>(state->stage));
+    put_u8(out, off, state->teen_form);
+    put_u8(out, off, state->adult_branch);
+    put_u64(out, off, state->stage_elapsed_seconds);
+    put_u64(out, off, state->care_integral_mp_seconds);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -138,7 +307,8 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     if (version != kSaveVersion) {
         KF_LOGE(TAG,
                 "save version %u, this build understands version %u -- "
-                "refusing to load",
+                "refusing to load (a version-1 save predates life stages; "
+                "it resets to a fresh pet, see ADR 0021)",
                 version, kSaveVersion);
         return false;
     }
@@ -147,6 +317,17 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->energy_mp = get_u32(in, off);
     state->last_advanced.valid = get_u8(in, off) != 0u;
     state->last_advanced.epoch_seconds = get_i64(in, off);
+    const uint8_t stage_byte = get_u8(in, off);
+    if (stage_byte > static_cast<uint8_t>(KF_PET_STAGE_ADULT)) {
+        KF_LOGE(TAG, "save has an invalid stage byte (%u) -- refusing to load",
+                stage_byte);
+        return false;
+    }
+    state->stage = static_cast<kf_pet_stage>(stage_byte);
+    state->teen_form = get_u8(in, off);
+    state->adult_branch = get_u8(in, off);
+    state->stage_elapsed_seconds = get_u64(in, off);
+    state->care_integral_mp_seconds = get_u64(in, off);
     return true;
 }
 
@@ -157,6 +338,15 @@ kf_pet_config kf_pet_default_config(void) {
     c.hunger_decay_mp_per_hour = 1042u;    /* ~4.0 days, full to empty */
     c.happiness_decay_mp_per_hour = 694u;  /* ~6.0 days */
     c.energy_decay_mp_per_hour = 521u;     /* ~8.0 days */
+
+    /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
+     * header comment: Chris's own call is "I'll decide exact numbers
+     * later, just make it configurable," so these are a starting point
+     * to build and demo against, not a tuning recommendation. */
+    c.egg_duration_seconds = 3600u;             /* 1 hour */
+    c.baby_duration_seconds = 86400u;           /* 1 day */
+    c.child_duration_seconds = 2u * 86400u;     /* 2 days */
+    c.teen_duration_seconds = 3u * 86400u;      /* 3 days */
     return c;
 }
 
@@ -166,19 +356,56 @@ void kf_pet_init(kf_pet_state *state) {
     state->energy_mp = KF_PET_MILLIPERCENT_MAX;
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
+    state->stage = KF_PET_STAGE_EGG;
+    state->teen_form = 0u;
+    state->adult_branch = 0u;
+    state->stage_elapsed_seconds = 0u;
+    state->care_integral_mp_seconds = 0u;
 }
 
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
                      uint32_t elapsed_seconds) {
-    state->hunger_mp = apply_decay(state->hunger_mp,
-                                    config->hunger_decay_mp_per_hour,
-                                    elapsed_seconds);
-    state->happiness_mp = apply_decay(state->happiness_mp,
-                                       config->happiness_decay_mp_per_hour,
-                                       elapsed_seconds);
-    state->energy_mp = apply_decay(state->energy_mp,
-                                    config->energy_decay_mp_per_hour,
-                                    elapsed_seconds);
+    uint32_t remaining = elapsed_seconds;
+
+    /* Bounded by the number of remaining life stages (at most 4: egg,
+     * baby, child, teen -- adult is terminal and handled after the loop),
+     * never by elapsed_seconds itself. See kf/pet.h's header comment on
+     * kf_pet_advance() and this file's own header comment. */
+    while (remaining > 0u && state->stage != KF_PET_STAGE_ADULT) {
+        const uint32_t duration = stage_duration_seconds(config, state->stage);
+        const uint32_t elapsed_in_stage =
+            state->stage_elapsed_seconds > 0xFFFFFFFFull
+                ? 0xFFFFFFFFu
+                : static_cast<uint32_t>(state->stage_elapsed_seconds);
+        const uint32_t time_left_in_stage =
+            duration > elapsed_in_stage ? duration - elapsed_in_stage : 0u;
+        const uint32_t segment =
+            remaining < time_left_in_stage ? remaining : time_left_in_stage;
+
+        if (segment > 0u) {
+            apply_stage_segment(state, config, segment);
+            state->stage_elapsed_seconds += segment;
+            remaining -= segment;
+        }
+
+        if (state->stage_elapsed_seconds >= duration) {
+            advance_to_next_stage(state);
+        } else {
+            /* This segment used up all of `remaining` without finishing
+             * the stage -- nothing left to do this call. */
+            break;
+        }
+    }
+
+    /* Adult is terminal: no further stage transition, but needs keep
+     * decaying for whatever time is left. apply_stage_segment() already
+     * knows Adult does not feed a branch choice (stage_feeds_a_branch_
+     * choice() above), so this does not pointlessly grow an accumulator
+     * nothing will ever read. */
+    if (remaining > 0u) {
+        apply_stage_segment(state, config, remaining);
+        state->stage_elapsed_seconds += remaining;
+    }
 }
 
 void kf_pet_feed(kf_pet_state *state) {
@@ -212,7 +439,8 @@ kf_result kf_pet_load_and_advance(kf_pet_state *state,
     } else if (read_result != KF_OK) {
         return read_result;
     } else if (!unpack(buf, out_bytes, state)) {
-        return KF_ERR_INVALID;
+        KF_LOGI(TAG, "save could not be loaded, starting a fresh pet instead");
+        kf_pet_init(state);
     }
 
     const kf_wall_time now = kf_time_wall();

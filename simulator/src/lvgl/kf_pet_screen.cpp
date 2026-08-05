@@ -26,6 +26,8 @@ struct Screen {
     Row hunger;
     Row happiness;
     Row energy;
+    lv_obj_t *blob = nullptr;
+    lv_obj_t *blob_label = nullptr;
     bool ready = false;
 };
 Screen g;
@@ -92,6 +94,103 @@ void update_row(const Row &row, kf_pet_millipercent mp) {
                            static_cast<unsigned>((mp / 100u) % 10u));
 }
 
+/* Placeholder blob styling (ADR 0021, see kf_pet_screen.h's header
+ * comment): a real design pass with Chris's designer replaces every one of
+ * these tables later, but the SHAPE of the mapping -- size grows with
+ * stage, colour picks up the branch once one exists -- is what proves the
+ * mechanism is visibly working, not the exact palette choice below.
+ *
+ * Diameter per life-cycle stage: literally "grows up" as the pet ages,
+ * the simplest visual anyone reading the screen understands with zero
+ * explanation. Indexed by kf_pet_stage's own numeric order (egg=0 ..
+ * adult=4), matching kf/pet.h's header comment that stage order is
+ * deliberately life-cycle order. Capped at kBlobDiameterMax (see below) --
+ * this screen is only 240 logical pixels wide and the first need row
+ * starts at y=32, so the blob's whole footprint (including its caption
+ * label) has to stay well clear of that regardless of which stage is
+ * showing. */
+constexpr int32_t kBlobDiameter[] = {8, 12, 16, 20, 24};
+constexpr int32_t kBlobDiameterMax = 24; /* the largest value in the table above */
+
+/* Colour before any branch has been decided: one fixed colour per stage,
+ * for egg/baby/child (KF_PET_STAGE_EGG..KF_PET_STAGE_CHILD == indices
+ * 0..2). Teen and Adult switch to the branch-indexed tables below instead,
+ * since by then there IS a branch to show. */
+constexpr lv_palette_t kPreBranchColor[3] = {
+    LV_PALETTE_GREY,   /* egg */
+    LV_PALETTE_YELLOW, /* baby */
+    LV_PALETTE_GREEN,  /* child */
+};
+
+/* One colour per teen_form (KF_PET_TEEN_FORM_COUNT == 3), chosen once at
+ * the Child->Teen transition and read from then on -- see kf/pet.h's
+ * kf_pet_state comment. */
+constexpr lv_palette_t kTeenColor[KF_PET_TEEN_FORM_COUNT] = {
+    LV_PALETTE_BLUE,
+    LV_PALETTE_PURPLE,
+    LV_PALETTE_CYAN,
+};
+
+/* One colour per (teen_form, adult_branch) pair -- KF_PET_TEEN_FORM_COUNT x
+ * KF_PET_ADULT_BRANCH_COUNT == 6 distinct adult forms, per Chris's design
+ * (3 teen types, each branching to 2 adults). Each row stays in the same
+ * rough hue family as that teen_form's own colour above, so an adult's
+ * blob still visually "belongs" to the teen it grew from even though this
+ * table doesn't know or care what either one is actually called. */
+constexpr lv_palette_t kAdultColor[KF_PET_TEEN_FORM_COUNT]
+                                   [KF_PET_ADULT_BRANCH_COUNT] = {
+    {LV_PALETTE_BLUE, LV_PALETTE_LIGHT_BLUE},
+    {LV_PALETTE_PURPLE, LV_PALETTE_DEEP_PURPLE},
+    {LV_PALETTE_CYAN, LV_PALETTE_TEAL},
+};
+
+struct BlobStyle {
+    int32_t diameter;
+    lv_palette_t palette;
+    const char *caption;
+};
+
+/* WHAT a stage/branch index means is not this file's business either (see
+ * kf/pet.h's header comment) -- "egg", "baby", teen_form N, adult_branch N
+ * are the only labels this can honestly show without inventing names that
+ * are Chris's to pick later. */
+BlobStyle blob_style(const kf_pet_state *state) {
+    switch (state->stage) {
+    case KF_PET_STAGE_EGG:
+        return {kBlobDiameter[0], kPreBranchColor[0], "egg"};
+    case KF_PET_STAGE_BABY:
+        return {kBlobDiameter[1], kPreBranchColor[1], "baby"};
+    case KF_PET_STAGE_CHILD:
+        return {kBlobDiameter[2], kPreBranchColor[2], "child"};
+    case KF_PET_STAGE_TEEN:
+        return {kBlobDiameter[3], kTeenColor[state->teen_form], "teen"};
+    case KF_PET_STAGE_ADULT:
+    default:
+        return {kBlobDiameter[4],
+                kAdultColor[state->teen_form][state->adult_branch], "adult"};
+    }
+}
+
+void update_blob(const kf_pet_state *state) {
+    const BlobStyle style = blob_style(state);
+    lv_obj_set_size(g.blob, style.diameter, style.diameter);
+    lv_obj_set_style_bg_color(g.blob, lv_palette_main(style.palette), 0);
+
+    /* teen_form/adult_branch are opaque indices (kf/pet.h), so the caption
+     * shows them as plain numbers once they mean anything -- "teen 1",
+     * "adult 2-0" -- rather than inventing a name for either. */
+    if (state->stage == KF_PET_STAGE_TEEN) {
+        lv_label_set_text_fmt(g.blob_label, "%s %u", style.caption,
+                               static_cast<unsigned>(state->teen_form));
+    } else if (state->stage == KF_PET_STAGE_ADULT) {
+        lv_label_set_text_fmt(g.blob_label, "%s %u-%u", style.caption,
+                               static_cast<unsigned>(state->teen_form),
+                               static_cast<unsigned>(state->adult_branch));
+    } else {
+        lv_label_set_text(g.blob_label, style.caption);
+    }
+}
+
 void on_feed(lv_event_t *) { kf_pet_session_feed(); }
 void on_play(lv_event_t *) { kf_pet_session_play(); }
 void on_rest(lv_event_t *) { kf_pet_session_rest(); }
@@ -119,6 +218,37 @@ void kf_pet_screen_init(void) {
     lv_obj_t *title = lv_label_create(screen);
     lv_label_set_text(title, "Pet");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+    /* Top-right corner, above the rows (which start at y=32) and clear of
+     * the title (short text, centered): the biggest blob size
+     * (kBlobDiameterMax=24px) plus its caption label still fits entirely
+     * within y=[4,~48] there without overlapping anything else on the
+     * screen -- see the caption's own comment below for exactly how that
+     * is kept true regardless of which stage's diameter is showing.
+     * lv_obj_create with a LV_RADIUS_CIRCLE style radius is the standard
+     * LVGL way to draw a plain circle with no custom drawing code or image
+     * asset -- exactly the "existing LVGL widget primitives, no new art
+     * assets" this screen already uses for its bars and buttons. */
+    g.blob = lv_obj_create(screen);
+    lv_obj_set_style_radius(g.blob, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(g.blob, 0, 0);
+    lv_obj_align(g.blob, LV_ALIGN_TOP_RIGHT, -8, 4);
+    lv_obj_remove_flag(g.blob, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* LV_ALIGN_TOP_RIGHT keeps the blob's TOP-right corner fixed as its
+     * size changes per stage (update_blob() below calls lv_obj_set_size()
+     * every update) -- only its bottom and left edges move. That makes the
+     * worst case for the caption below it fully known at compile time from
+     * kBlobDiameterMax alone, so the caption gets a FIXED position
+     * computed once here, deliberately NOT lv_obj_align_to(..., blob, ...):
+     * that was tried first and anchored to the blob's default ~100px LVGL
+     * object size (this function runs before update_blob()'s first resize
+     * has happened), landing the caption far below the blob instead of
+     * under it -- confirmed via an actual Xvfb screenshot while building
+     * this, not assumed. A fixed offset sidesteps needing the label's
+     * position to track the blob's current size at all. */
+    g.blob_label = lv_label_create(screen);
+    lv_obj_align(g.blob_label, LV_ALIGN_TOP_RIGHT, -8, 4 + kBlobDiameterMax + 2);
 
     g.hunger = make_row(screen, "Hunger", 32);
     g.happiness = make_row(screen, "Happy", 84);
@@ -165,4 +295,5 @@ void kf_pet_screen_update(void) {
     update_row(g.hunger, state->hunger_mp);
     update_row(g.happiness, state->happiness_mp);
     update_row(g.energy, state->energy_mp);
+    update_blob(state);
 }
