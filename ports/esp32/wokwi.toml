@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# Wokwi CLI / idf.py wokwi project config for the ADR 0019 hello-world.
+# Paths match ESP-IDF's default build output layout for a project named
+# "kamiframe-firmware" (this directory's CMakeLists.txt project() call).
+#
+# Running this needs a WOKWI_CLI_TOKEN from https://wokwi.com/dashboard/ci
+# in your own Wokwi account -- this repository does not have one and cannot
+# generate one on your behalf. See ADR 0019's "Verified" section for exactly
+# what was and wasn't checked without it.
+
+[wokwi]
+version = 1
+elf = "build/kamiframe-firmware.elf"
+firmware = "build/kamiframe-firmware.bin"

@@ -1,17 +1,17 @@
 ## SPDX-License-Identifier: Apache-2.0
 ## Copyright the Kamiframe contributors.
 ##
-## ESP-IDF project entry point. NOT BUILT YET. See README.md in this directory.
+## ESP-IDF project entry point. Builds a plain hello-world (ADR 0019) --
+## Phase 1's second named hardware exit trigger, see README.md in this
+## directory. The ESP32 HAL backends kf_app_frame() needs still do not
+## exist; that is Phase 1b, which this slice's own README section explains
+## starts only after this hello-world boots.
 ##
-## This file is the documented shape of the device build, kept next to the code
-## it will build so that the repository layout stays compatible with ESP-IDF's
-## component rules from the first commit. It is not expected to work until
-## Phase 1b, and the HAL backends it needs do not exist.
-##
-## When it is time:
 ##     cd ports/esp32
 ##     idf.py set-target esp32s3
-##     idf.py build flash monitor
+##     idf.py build
+##     idf.py flash monitor         # needs real hardware
+##     idf.py wokwi                 # needs a WOKWI_CLI_TOKEN, see wokwi.toml
 
 cmake_minimum_required(VERSION 3.20)
 

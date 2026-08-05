@@ -23,6 +23,7 @@
 #include "kf/hal/time.h"
 #include "kf/demo.h"
 
+#include <cinttypes>
 #include <cstdint>
 #include <cstring>
 
@@ -327,8 +328,8 @@ void kf_app_init(kf_demo_mode mode) {
     KF_LOGI(TAG, "wall clock %s (epoch %lld)",
             now.valid ? "valid" : "UNSET",
             static_cast<long long>(now.epoch_seconds));
-    KF_LOGI(TAG, "budget: %d fps, %u us per frame, link %u bytes/s",
-            KF_TARGET_FPS, static_cast<unsigned>(KF_FRAME_BUDGET_US),
+    KF_LOGI(TAG, "budget: %d fps, %" PRIu32 " us per frame, link %" PRIu32 " bytes/s",
+            KF_TARGET_FPS, static_cast<uint32_t>(KF_FRAME_BUDGET_US),
             caps->link_bytes_per_second);
     KF_LOGI(TAG, "press MENU to toggle the on-screen constraint HUD");
 
@@ -477,25 +478,25 @@ void kf_app_log_budget_report(void) {
     const kf_frame_summary s = kf_app_frame_summary();
     const kf_display_caps *caps = kf_display_get_caps();
 
-    KF_LOGI(TAG, "---- frame budget (%d fps target, %u us) ----", KF_TARGET_FPS,
-            static_cast<unsigned>(KF_FRAME_BUDGET_US));
-    KF_LOGI(TAG, "  device estimate: draw %5u us + transfer %5u us",
+    KF_LOGI(TAG, "---- frame budget (%d fps target, %" PRIu32 " us) ----", KF_TARGET_FPS,
+            static_cast<uint32_t>(KF_FRAME_BUDGET_US));
+    KF_LOGI(TAG, "  device estimate: draw %5" PRIu32 " us + transfer %5" PRIu32 " us",
             g.last.draw_us, g.last.transfer_us);
     KF_LOGI(TAG,
-            "     serial (today)      %5u us  ->  %5.1f fps%s",
+            "     serial (today)      %5" PRIu32 " us  ->  %5.1f fps%s",
             g.last.serial_us,
             g.last.serial_us ? 1000000.0 / g.last.serial_us : 0.0,
             (!KF_DISPLAY_DOUBLE_BUFFERED && g.last.over_budget)
                 ? "   OVER BUDGET"
                 : "");
-    KF_LOGI(TAG, "     overlapped (DMA+2buf) %5u us  ->  %5.1f fps",
+    KF_LOGI(TAG, "     overlapped (DMA+2buf) %5" PRIu32 " us  ->  %5.1f fps",
             g.last.overlapped_us,
             g.last.overlapped_us ? 1000000.0 / g.last.overlapped_us : 0.0);
-    KF_LOGI(TAG, "  pixels drawn: %6u opaque + %6u keyed   dirty %3u%%  (%u rect%s)",
+    KF_LOGI(TAG, "  pixels drawn: %6" PRIu32 " opaque + %6" PRIu32 " keyed   dirty %3u%%  (%u rect%s)",
             g.last.opaque_pixels, g.last.keyed_pixels, g.last.dirty_percent,
             g.last.dirty_rect_count, g.last.dirty_rect_count == 1 ? "" : "s");
-    KF_LOGI(TAG, "  host cpu %5u us (your PC, not the device)", g.last.cpu_us);
-    KF_LOGI(TAG, "  mean %5u us   p99 %5u us   worst %5u us", s.mean_us,
+    KF_LOGI(TAG, "  host cpu %5" PRIu32 " us (your PC, not the device)", g.last.cpu_us);
+    KF_LOGI(TAG, "  mean %5" PRIu32 " us   p99 %5" PRIu32 " us   worst %5" PRIu32 " us", s.mean_us,
             s.p99_us, s.worst_us);
     KF_LOGI(TAG, "  frames %llu, over budget %llu (%llu%%)",
             static_cast<unsigned long long>(s.frames),
@@ -508,7 +509,7 @@ void kf_app_log_budget_report(void) {
      * 40MHz costs about 30ms of wire time all by itself. */
     const uint32_t full_frame_us =
         estimate_transfer_us(KF_FRAMEBUFFER_BYTES, caps->link_bytes_per_second);
-    KF_LOGI(TAG, "  a FULL frame would cost %u us of transfer alone",
+    KF_LOGI(TAG, "  a FULL frame would cost %" PRIu32 " us of transfer alone",
             full_frame_us);
 
     KF_LOGI(TAG, "---- arenas ----");

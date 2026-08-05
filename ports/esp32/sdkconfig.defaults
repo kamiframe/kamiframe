@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# Seeded for this hello-world (ADR 0019), not for real bring-up. Only the
+# settings this specific milestone needs are here: the target chip, and a
+# flash size that matches what Wokwi's board-esp32-s3-devkitc-1 expects.
+#
+# README.md's "What still has to be written" list names the rest --
+# octal-mode PSRAM, C++ exceptions/RTTI left off (already the default),
+# 240MHz CPU -- as Phase 1b work, once real HAL backends exist to need them.
+# Adding them now, unused, would be untested config drifting ahead of the
+# code that depends on it.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Matches the reference wokwi/esp-idf-hello-world project's diagram.json and
+# this port's own wokwi.toml. The real device's actual flash size is still
+# TBD -- see README.md's "The number to check first at bring-up" for the
+# same caveat applied to KF_DISPLAY_SPI_HZ; flash size gets the same
+# "assumption, not measured" treatment once real hardware is in hand.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
