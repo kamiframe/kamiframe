@@ -27,6 +27,7 @@ future us in month eight asking the same question with less patience.
 | [0017](adr-0017-pet-screen.md) | The pet screen | Accepted |
 | [0018](adr-0018-demo-creature-script.md) | The demo creature script | Accepted |
 | [0019](adr-0019-esp-idf-hello-world.md) | An ESP-IDF hello-world, and what it actually proves | Accepted |
+| [0020](adr-0020-esp32-hal-backends.md) | Real ESP32 HAL backends, compile-verified but not hardware-verified | Accepted |
 
 Open evaluations, deliberately not decided:
 

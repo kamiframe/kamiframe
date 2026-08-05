@@ -1,8 +1,12 @@
 # ports/esp32
 
-**A real ESP-IDF hello-world. Compiles clean for esp32s3 and boots in
-Wokwi, confirmed by a real run against a real `WOKWI_CLI_TOKEN`. Not yet
-run on real hardware.** See ADR 0019.
+**Real ESP32 HAL backends -- display, input, time, memory, entropy,
+logging, storage, power -- all compiling and linking clean against the real
+ESP-IDF v6.0.2 toolchain, driving the real `kf_app_init()`/`kf_app_frame()`
+loop from `kf/app.h`. Not yet run against real hardware, and not yet
+running the pet, LVGL, or Lua (see ADR 0020 for exactly why not).** See
+ADR 0019 for the hello-world this was built on top of, and ADR 0020 for
+this slice.
 
 This directory used to be a documented skeleton, never compiled. It now
 builds and boots: `idf.py build` produces a real `kamiframe-firmware.elf`/
@@ -74,27 +78,41 @@ These are already true and need to stay true:
    kept in sync by hand.** There is no mechanism for this, so keep the
    dependency graph small enough that it does not matter.
 
-## What still has to be written (Phase 1b, not this slice)
+## What Phase 1b (ADR 0020) added
 
-- `sdkconfig.defaults` currently sets only the target chip and a 16MB flash
-  size (the real hardware's spec). Wokwi's simulated
-  `board-esp32-s3-devkitc-1` reports its own flash size (4MB) at runtime
-  regardless of this setting -- see ADR 0019 -- so this value is aimed at
-  real hardware, not at matching Wokwi. Still missing: PSRAM enabled in
-  octal mode, C++ exceptions and RTTI left off (they are off by default
-  already, but not yet asserted here), CPU at 240MHz.
+- Real backends for every HAL header under `ports/esp32/hal/`: `esp_display.cpp`
+  (ST7789 over SPI+DMA via `esp_lcd`), `esp_input.cpp` (GPIO, active-low with
+  internal pull-ups), `esp_time.cpp` (`esp_timer` for mono; the chip's own
+  system clock for wall -- **not** a real RTC yet, see ADR 0020's "A real,
+  named gap"), `esp_memory.cpp` (`heap_caps_malloc` against
+  `MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` and `MALLOC_CAP_SPIRAM`),
+  `esp_entropy.cpp` (`esp_random()`), `esp_log.cpp` (`esp_log_write` plus a
+  panic-and-reboot path), `esp_storage.cpp` (ESP-IDF NVS), `esp_power.cpp`
+  (real deep sleep).
+- `sdkconfig.defaults` now also enables octal-mode PSRAM
+  (`CONFIG_SPIRAM_MODE_OCT`) and 240MHz CPU
+  (`CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`) -- both needed the moment
+  `esp_memory.cpp`'s `MALLOC_CAP_SPIRAM` pool has to actually exist. Flash
+  size unchanged from ADR 0019.
+- `main/app_main.cpp` replaces `main.c`: it calls the real
+  `kf_app_init()`/`kf_app_frame()` loop against the backends above. It does
+  **not** run the pet session, LVGL, or Lua -- that's not a missing call,
+  it's a missing component directory (`EXTRA_COMPONENT_DIRS` only points at
+  `hakoniwaos`); see ADR 0020's "What this slice does NOT reach."
+
+## What still has to be written
+
+- A real DS3231 RTC driver over I2C, to close the wall-clock gap
+  `esp_time.cpp` currently leaves open -- see ADR 0020.
 - A partition table: firmware, OTA, NVS for save state, and an asset
   partition sized to `KF_FLASH_ASSET_BUDGET_BYTES` in `kf/budget.h`. Today's
   build uses ESP-IDF's default single-app partition table, which is enough
   to boot but not what real bring-up needs.
-- HAL backends under `ports/esp32/hal/`: ST7789 over SPI with DMA, GPIO input,
-  `esp_timer` plus an external RTC, `esp_random`, and internal-SRAM versus
-  PSRAM pools via `heap_caps_malloc` with `MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA`
-  and `MALLOC_CAP_SPIRAM`.
-- `main/main.c` today is a plain hello-world (ADR 0019) -- it does not spawn
-  the FreeRTOS task that calls `kf_app_frame()` yet, deliberately: that call
-  needs the HAL backends above to exist first, or it fails to link. See
-  `kf/app.h`.
+- Porting `kf_pet_session`, then LVGL, then Lua onto ESP-IDF -- each real,
+  separate work, most likely each its own `EXTRA_COMPONENT_DIRS` entry and
+  its own ADR, once there's real hardware to debug them against.
+- The real hardware bring-up pass: flash an actual board, confirm every pin
+  in `kf_esp_pins.h`, measure the real achievable SPI clock (see below).
 
 ## The number to check first at bring-up
 

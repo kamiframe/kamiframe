@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright the Kamiframe contributors.
 #
-# Seeded for this hello-world (ADR 0019), not for real bring-up. Only the
-# settings this specific milestone needs are here: the target chip, and a
-# flash size that matches what Wokwi's board-esp32-s3-devkitc-1 expects.
-#
-# README.md's "What still has to be written" list names the rest --
-# octal-mode PSRAM, C++ exceptions/RTTI left off (already the default),
-# 240MHz CPU -- as Phase 1b work, once real HAL backends exist to need them.
-# Adding them now, unused, would be untested config drifting ahead of the
-# code that depends on it.
+# Seeded for ADR 0019's hello-world originally; extended for ADR 0020's HAL
+# backends, which is the first point this build actually needs PSRAM and a
+# non-default CPU frequency to exist. Still "assumption, not measured" the
+# same way kf_esp_pins.h and KF_DISPLAY_SPI_HZ are -- these are the settings
+# the N16R8 module and this ADR's HAL code need to be internally consistent,
+# not settings verified against a real running board yet.
 
 CONFIG_IDF_TARGET="esp32s3"
 
@@ -20,3 +17,23 @@ CONFIG_IDF_TARGET="esp32s3"
 # "assumption, not measured" treatment once real hardware is in hand.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Octal PSRAM, per the N16R8 module esp_memory.cpp's KF_POOL_EXTERNAL relies
+# on (MALLOC_CAP_SPIRAM) -- without this, kf_mem_pool_acquire() for that pool
+# returns NULL on real hardware, which kf_app_init() treats as fatal. Speed
+# is 80M, not the faster 120M option Kconfig.spiram also offers: 120M needs
+# specific board support this devkit's real capability is unconfirmed for,
+# and 80M is the documented safe default -- another bring-up number to
+# revisit once real hardware is in hand, not a performance choice made here.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# 240MHz, the fastest option Kconfig.cpu offers for this target. Nothing
+# about this ADR's HAL backends specifically requires it over the default
+# clock -- it is here because the eventual pet + LVGL + Lua workload this
+# hardware is being bought for (see ADR 0013/0014/0016/0017) will want the
+# headroom, and there is no reason to bring the device up at a slower clock
+# now only to raise it again once those land.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
