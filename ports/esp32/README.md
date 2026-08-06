@@ -1,25 +1,26 @@
 # ports/esp32
 
-**Real ESP32 HAL backends -- display, input, time, memory, entropy,
-logging, storage, power -- all compiling and linking clean against the real
-ESP-IDF v6.0.2 toolchain, driving the real `kf_app_init()`/`kf_app_frame()`
-loop from `kf/app.h`, now with a real, NVS-backed `kf_pet_session` ticking
-alongside it (ADR 0025). Not yet run against real hardware. Still not
-running LVGL or Lua -- see ADR 0025 for exactly why not, and ADR 0020 for
-why the pet session itself waited this long.** See ADR 0019 for the
-hello-world this was built on top of, ADR 0020 for the HAL backends, and
-ADR 0025 for the pet session.
+**Real ESP32 HAL backends -- display, input, time (now DS3231-backed, see
+ADR 0026), memory, entropy, logging, storage, power -- all compiling and
+linking clean against the real ESP-IDF v6.0.2 toolchain, driving the real
+`kf_app_init()`/`kf_app_frame()` loop from `kf/app.h`, with a real,
+NVS-backed `kf_pet_session` ticking alongside it (ADR 0025). Not yet run
+against real hardware -- parts arrive 2026-08-07. Still not running LVGL or
+Lua -- see ADR 0025 for exactly why not, and ADR 0020 for why the pet
+session itself waited this long.** See ADR 0019 for the hello-world this
+was built on top of, ADR 0020 for the HAL backends, ADR 0025 for the pet
+session, and ADR 0026 for the DS3231 real-time clock driver.
 
 This directory used to be a documented skeleton, never compiled. It now
 builds and boots: `idf.py build` produces a real `kamiframe-firmware.elf`/
 `.bin` for the esp32s3 target, `hakoniwaos`'s entire source list compiles
 through the real xtensa cross-compiler as part of that build, and
 `wokwi-cli .` (Chris's own machine, his own token -- this environment
-cannot generate one) ran that exact binary through Wokwi's
-`board-esp32-s3-devkitc-1` simulation and captured a clean boot: real ROM
-bootloader output, into `app_main()`, printing every line `main.c` writes.
-See ADR 0019's "Verified" section for the full log and exactly what still
-hasn't been checked (real hardware).
+cannot generate one) ran an earlier hello-world build of that same binary
+through Wokwi's `board-esp32-s3-devkitc-1` simulation and captured a clean
+boot: real ROM bootloader output, into `app_main()`, printing every line
+`main.c` wrote at the time. See ADR 0019's "Verified" section for the full
+log and exactly what still hasn't been checked (real hardware).
 
 ## Phase 1's exit trigger is now met
 
@@ -30,18 +31,20 @@ Phase 1b of `04-roadmap-diy-release.md` begins once both are true:
 - an ESP-IDF hello-world boots in [Wokwi](https://wokwi.com) (browser-based
   ESP32-S3 simulation) -- true since the Wokwi run described above.
 
-Both are now satisfied. Parts can be ordered whenever it's time to start
-Phase 1b's real HAL work.
+Both are satisfied. Parts have been ordered and arrive 2026-08-07; hardware
+bring-up (ADR 0024, on the separate `ports/esp32-bringup` project) runs
+first to confirm the wiring before this firmware ever touches a real board.
 
 **Correction to this section's own past claim:** the ST7789 parenthetical
 above used to say Wokwi simulates "an ST7789, no parts required." It
 doesn't -- Wokwi's supported-hardware list does not include the ST7789 at
-all; the closest part it has is `wokwi-ili9341` (also 240x320 SPI). This
-hello-world sidesteps the question entirely by not wiring up a display (see
-`diagram.json`), matching the official `wokwi/esp-idf-hello-world` reference
-project's own scope. Whatever panel this project eventually simulates on
-Wokwi, it will not be simulating the exact ST7789 real hardware will use --
-worth knowing before ordering parts on the strength of a Wokwi screenshot.
+all; the closest part it has is `wokwi-ili9341` (also 240x320 SPI). The
+ADR 0019 hello-world sidesteps the question entirely by not wiring up a
+display (see `diagram.json`), matching the official
+`wokwi/esp-idf-hello-world` reference project's own scope. Whatever panel
+this project eventually simulates on Wokwi, it will not be simulating the
+exact ST7789 real hardware will use -- worth knowing before ordering parts
+on the strength of a Wokwi screenshot.
 
 ## How the two builds share one source tree
 
@@ -84,13 +87,13 @@ These are already true and need to stay true:
 
 - Real backends for every HAL header under `ports/esp32/hal/`: `esp_display.cpp`
   (ST7789 over SPI+DMA via `esp_lcd`), `esp_input.cpp` (GPIO, active-low with
-  internal pull-ups), `esp_time.cpp` (`esp_timer` for mono; the chip's own
-  system clock for wall -- **not** a real RTC yet, see ADR 0020's "A real,
-  named gap"), `esp_memory.cpp` (`heap_caps_malloc` against
-  `MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` and `MALLOC_CAP_SPIRAM`),
-  `esp_entropy.cpp` (`esp_random()`), `esp_log.cpp` (`esp_log_write` plus a
-  panic-and-reboot path), `esp_storage.cpp` (ESP-IDF NVS), `esp_power.cpp`
-  (real deep sleep).
+  internal pull-ups), `esp_time.cpp` (`esp_timer` for mono; at the time, the
+  chip's own system clock for wall -- **not** a real RTC yet, see ADR 0020's
+  "A real, named gap" -- ADR 0026 below closes that gap), `esp_memory.cpp`
+  (`heap_caps_malloc` against `MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA` and
+  `MALLOC_CAP_SPIRAM`), `esp_entropy.cpp` (`esp_random()`), `esp_log.cpp`
+  (`esp_log_write` plus a panic-and-reboot path), `esp_storage.cpp`
+  (ESP-IDF NVS), `esp_power.cpp` (real deep sleep).
 - `sdkconfig.defaults` now also enables octal-mode PSRAM
   (`CONFIG_SPIRAM_MODE_OCT`) and 240MHz CPU
   (`CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`) -- both needed the moment
@@ -102,6 +105,22 @@ These are already true and need to stay true:
   missing call, it's a missing component directory (`EXTRA_COMPONENT_DIRS`
   only points at `hakoniwaos`); see ADR 0020's "What this slice does NOT
   reach." ADR 0025 below changes the pet session half of that.
+
+## What ADR 0024 added
+
+- `ports/esp32-bringup`, a **separate** ESP-IDF project, not a mode of this
+  one: a standalone diagnostic (`bringup_main.cpp`) that scans the I2C bus,
+  probes the display, and checks the DS3231/microSD/buttons one at a time,
+  each with a human-readable pass/fail line and a plain-English fix
+  suggestion -- built to be run once, by a human, while holding a
+  soldering iron, not part of this firmware's normal boot.
+- The full pinout in `ports/esp32/hal/kf_esp_pins.h` reached its current
+  shape here: display, buttons, I2C (DS3231, and whatever else eventually
+  shares the bus), microSD, and the reserved-but-unwired I2S lines all
+  documented in one file, cross-checked against `docs/hardware-bringup.md`.
+- Not yet run against real hardware -- parts arrive 2026-08-07. This ADR's
+  own pinout is reasoned from datasheets and the DevKitC-1's known-bad pins,
+  not yet proven against a real board.
 
 ## What ADR 0025 added
 
@@ -126,13 +145,40 @@ These are already true and need to stay true:
   in this component tree yet (still just `hakoniwaos` in
   `EXTRA_COMPONENT_DIRS`), so there is no pet screen (ADR 0017) to hand it
   to.
+- **`idf.py build` genuinely succeeded** on Chris's own machine, 2026-08-06:
+  a fresh ESP-IDF v6.0.2 install (xtensa-esp-elf 15.2.0, Ubuntu under WSL)
+  built this slice clean, producing `kamiframe-firmware.bin` at `0x41a20`
+  bytes (~266KB) against a 1MB app partition -- 74% still free. A real bug
+  surfaced and was fixed on the first attempt (a field-naming mistake in
+  the new logging code); see ADR 0025's "Verified" section for the full
+  story.
+
+## What ADR 0026 added
+
+- A real DS3231 driver, added directly to `esp_time.cpp` rather than a new
+  file: `kf_time_init()` now tries once, at boot, to read the DS3231 over
+  I2C and seed the wall clock from it, and `kf_time_set_wall()` now writes
+  through to the chip as well as RAM. `ports/esp32/main/CMakeLists.txt`
+  gained one new `REQUIRES` entry, `esp_driver_i2c`, the same component
+  `ports/esp32-bringup` already uses for the same chip.
+- Every failure path -- bus init fails, nothing answers at `0x68`, the
+  device answers but isn't actually a DS3231 (its temperature register
+  says so -- see ADR 0026 decision #4, guarding the documented DS3231/
+  MPU-6050 address collision), or the OSF flag says the oscillator has
+  stopped -- leaves the wall clock exactly as unset as it was before this
+  slice. Nothing here can regress a board with no RTC wired.
+- This closes the gap ADR 0025's own "What this slice does NOT reach"
+  named: `kf_pet_session_init()`'s offline fast-forward now has something
+  real to fast-forward across, on hardware where the DS3231 is present,
+  wired correctly, and has a working backup cell.
+- **`idf.py build` succeeded** on Chris's machine, 2026-08-06, same day as
+  ADR 0025's own build: `esp_driver_i2c` linked cleanly, and
+  `kamiframe-firmware.bin` grew to `0x45ff0` bytes (~280KB) against the
+  same 1MB app partition -- 73% still free. Still not run against a
+  physical DS3231 -- see ADR 0026's own "Not yet done" section.
 
 ## What still has to be written
 
-- A real DS3231 RTC driver over I2C, to close the wall-clock gap
-  `esp_time.cpp` currently leaves open -- see ADR 0020. Until this exists,
-  `kf_pet_session_init()`'s offline fast-forward has nothing to
-  fast-forward across on a genuine power-off.
 - A partition table: firmware, OTA, NVS for save state, and an asset
   partition sized to `KF_FLASH_ASSET_BUDGET_BYTES` in `kf/budget.h`. Today's
   build uses ESP-IDF's default single-app partition table, which is enough
@@ -141,8 +187,13 @@ These are already true and need to stay true:
   likely each its own `EXTRA_COMPONENT_DIRS` entry and its own ADR, once
   there's real hardware to debug them against. The pet session itself
   (ADR 0025) no longer waits on either.
+- A caller for `kf_time_set_wall()` in production -- ADR 0026 implemented
+  the write-through correctly, but nothing (no settings screen, no NTP
+  sync) actually calls it yet, so a DS3231 that lost its seed still needs
+  a human re-running the bring-up diagnostic to recover, not an in-app fix.
 - The real hardware bring-up pass: flash an actual board, confirm every pin
-  in `kf_esp_pins.h`, measure the real achievable SPI clock (see below).
+  in `kf_esp_pins.h`, measure the real achievable SPI clock (see below), and
+  confirm the DS3231 driver added in ADR 0026 actually talks to a real chip.
 
 ## The number to check first at bring-up
 
