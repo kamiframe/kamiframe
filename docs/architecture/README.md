@@ -30,14 +30,19 @@ future us in month eight asking the same question with less patience.
 | [0020](adr-0020-esp32-hal-backends.md) | Real ESP32 HAL backends, compile-verified but not hardware-verified | Accepted |
 | [0021](adr-0021-life-stages-and-evolution.md) | Life stages and evolution | Accepted |
 | [0022](adr-0022-menu-screen-navigation.md) | Menu/screen navigation | Accepted |
-| [0023](adr-0023-bringup-pinout-and-diagnostic.md) | The bring-up pinout, and a diagnostic separate from the firmware | Accepted |
+| [0023](adr-0023-personality-traits.md) | Personality traits | Accepted |
+| [0024](adr-0024-bringup-pinout-and-diagnostic.md) | The bring-up pinout, and a diagnostic separate from the firmware | Accepted |
+| [0025](adr-0025-esp32-pet-session.md) | The pet session, running for real on ESP32 | Accepted |
 
 Open evaluations, deliberately not decided:
 
 - **The creature class name.** Deferred by the naming decision record.
+  The character bible (`14-character-bible-v1.md` in the planning folder)
+  floats 癖/kuse as a direction, not an answer -- still needs its own
+  verification pass.
 
 See also `../hardware-bringup.md`, which is the wiring-and-testing procedure
-ADR 0023's pinout is for, `../frame-budget.md`, which works through what the display bandwidth
+ADR 0024's pinout is for, `../frame-budget.md`, which works through what the display bandwidth
 means for full-screen animation and what the options are for 60fps, and
 `../sdk-style-guide.md`, which names the design principle behind `pet.*`/
 `kf.*`'s function-per-action shape for whatever Lua bindings get added next.

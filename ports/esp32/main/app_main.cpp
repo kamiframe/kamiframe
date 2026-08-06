@@ -1,46 +1,50 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * ESP-IDF entry point, Phase 1b (ADR 0020). Supersedes main.c, which was
- * deliberately a plain hello-world that never called into hakoniwaos's own
- * app loop -- see main.c's retired header comment, kept in git history, for
- * why that was the right scope for ADR 0019.
+ * ESP-IDF entry point. Phase 1b (ADR 0020) got the HAL backends running
+ * for real; this slice (ADR 0025) is the first one where a live
+ * kf_pet_state is actually ticking on the device, not just proven to
+ * compile against it.
  *
  * This file calls the real thing: kf_app_init()/kf_app_frame() (kf/app.h),
  * the exact same core entry points sdl_main.cpp drives on desktop, now
- * running against the ESP32 HAL backends in ../hal/ instead of SDL3.
+ * running against the ESP32 HAL backends in ../hal/ instead of SDL3 --
+ * plus kf_pet_session_init()/kf_pet_session_frame() (simulator/src/pet/),
+ * the same pet-session orchestration sdl_main.cpp drives, wired up here
+ * the same way.
  *
  * ============================================================================
  *  WHAT THIS DOES NOT DO, AND WHY -- read before assuming more than this
  *  slice claims.
  *
- *  kf_app_frame() drives kf/demo.h's placeholder content (KF_DEMO_SPRITE
- *  below), NOT the pet. kf_pet_session.{h,cpp} -- the code that owns the
- *  live kf_pet_state, offline fast-forward, and per-frame decay -- lives in
- *  simulator/src/pet/, which simulator/CMakeLists.txt documents as living
- *  outside hakoniwaos "for the same reason kamiframe_lvgl_port and
- *  kamiframe_lua_port do: this is simulator-only orchestration around a
- *  Core mechanism, not a claim that the ESP32 build has it wired up." This
- *  port's CMakeLists.txt (see ../CMakeLists.txt) only points
- *  EXTRA_COMPONENT_DIRS at hakoniwaos -- simulator/src/pet, simulator/src/lvgl,
- *  and simulator/src/lua are not in the ESP32 component tree at all, and
- *  hakoniwaos/sources.cmake itself contains no LVGL or Lua files either.
+ *  kf_app_frame() still drives kf/demo.h's placeholder content
+ *  (KF_DEMO_SPRITE below), same as ADR 0020 -- see that macro's comment
+ *  just below for why it stays. The pet session runs entirely alongside
+ *  it: it never touches the framebuffer, only its own state and NVS, so
+ *  there is no coordination needed between the two, the same "no
+ *  coordination, because nothing shares a surface" reasoning KF_DEMO_NONE's
+ *  own comment gives for the desktop build once LVGL is in the picture.
  *
- *  So: no ADR 0017 pet screen (LVGL isn't reachable), no ADR 0018 demo
- *  creature (Lua isn't reachable), and no live pet state (kf_pet_session
- *  isn't reachable). What DOES run, for real, on real ESP-IDF, through the
- *  real ST7789/GPIO/NVS/deep-sleep HAL backends written for this slice: the
- *  same bouncing-sprite placeholder kf/demo.h's own header comment calls
- *  "the cheap case" -- proof the HAL backends actually work, not proof the
- *  game does. Porting the pet session (and, later, LVGL/Lua) onto ESP-IDF is
- *  real, separate, future work -- most likely each becoming its own
- *  EXTRA_COMPONENT_DIRS entry once there's real hardware to debug them
- *  against, not something to guess at compile-only.
+ *  What still is NOT reachable: no ADR 0017 pet screen and no ADR 0018 demo
+ *  creature. LVGL and Lua are not in this component tree -- this port's
+ *  CMakeLists.txt (see ../CMakeLists.txt) still only points
+ *  EXTRA_COMPONENT_DIRS at hakoniwaos, and hakoniwaos/sources.cmake itself
+ *  contains no LVGL or Lua files. So the pet is genuinely alive and being
+ *  saved/loaded through real NVS, but the only way to see it right now is
+ *  the periodic KF_LOGI summary below, not a screen. Also unchanged from
+ *  ADR 0020: kf_time_wall() has no DS3231 behind it yet (see
+ *  ../hal/esp_time.cpp's own header comment), so kf_pet_session_init()'s
+ *  offline fast-forward has nothing to fast-forward across on a genuine
+ *  power-off -- a pet that ages while the device is unplugged is still
+ *  future work, not this slice's.
  * ============================================================================
  */
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
+#include "kf/hal/time.h"
+
+#include "kf_pet_session.h"
 
 #include "esp_chip_info.h"
 #include "esp_flash.h"
@@ -51,7 +55,31 @@
 
 namespace {
 constexpr const char *TAG = "app_main";
+
+/* How often to print the pet's state to the serial log. Nothing renders
+ * it yet (see this file's header comment), so this IS the visibility
+ * this slice has -- 10s is frequent enough to watch hunger/happiness/
+ * energy move against the default decay rates (the fastest, hunger, is
+ * 1042 mp/hour -- about 3 millipercent every 10s, visible over a few
+ * minutes) without flooding the monitor. */
+constexpr uint64_t kPetLogIntervalUs = 10ull * 1000ull * 1000ull;
+
+void log_pet_state() {
+    const kf_pet_state *pet = kf_pet_session_state();
+    KF_LOGI(TAG,
+            "pet: stage=%d hunger=%lu.%02lu%% happy=%lu.%02lu%% "
+            "energy=%lu.%02lu%% base_trait=%u",
+            static_cast<int>(pet->stage),
+            static_cast<unsigned long>(pet->hunger_mp / 1000u),
+            static_cast<unsigned long>((pet->hunger_mp / 10u) % 100u),
+            static_cast<unsigned long>(pet->happiness_mp / 1000u),
+            static_cast<unsigned long>((pet->happiness_mp / 10u) % 100u),
+            static_cast<unsigned long>(pet->energy_mp / 1000u),
+            static_cast<unsigned long>((pet->energy_mp / 10u) % 100u),
+            static_cast<unsigned>(pet->base_trait));
 }
+
+} // namespace
 
 extern "C" void app_main(void) {
     /* Kept from ADR 0019's hello-world verbatim: this banner is what Chris's
@@ -74,20 +102,43 @@ extern "C" void app_main(void) {
 
     /* Real HAL backends from here on -- see this file's header comment for
      * exactly what "real" does and does not mean yet. KF_DEMO_SPRITE, not
-     * KF_DEMO_NONE: there is no LVGL screen to coordinate with on this
-     * build (see header comment), so the placeholder content is the only
-     * thing worth having on screen, and KF_DEMO_SPRITE is the cheap case
-     * that best exercises the dirty-rect path esp_display.cpp's
-     * kf_display_present() still ignores today. */
+     * KF_DEMO_NONE: there is still no LVGL screen to coordinate with on
+     * this build, so the placeholder content is the only thing worth
+     * having on screen, and KF_DEMO_SPRITE is the cheap case that best
+     * exercises the dirty-rect path esp_display.cpp's kf_display_present()
+     * still ignores today. */
     KF_LOGI(TAG, "starting kf_app_init (real ESP32 HAL backends)");
     kf_app_init(KF_DEMO_SPRITE);
+
+    /* Same ordering sdl_main.cpp uses, and the same reason: this only
+     * needs the storage/power/time HAL, already up as of kf_app_init()
+     * above. First real on-device call -- a fresh pet if NVS has no save
+     * yet, or a loaded one fast-forwarded by however long kf_time_wall()
+     * says has passed (nothing, today -- see this file's header comment). */
+    KF_LOGI(TAG, "starting kf_pet_session_init (real NVS-backed pet)");
+    kf_pet_session_init();
+    log_pet_state();
+
+    uint64_t next_pet_log_us = kf_time_mono_us() + kPetLogIntervalUs;
 
     KF_LOGI(TAG, "running (kf_app_frame loop; no quit condition on device)");
     while (kf_app_frame()) {
         /* kf_app_frame() paces itself against KF_FRAME_BUDGET_US via
          * kf_time_delay_us() (see hakoniwaos/src/app.cpp) -- no extra
          * vTaskDelay needed here, matching sdl_main.cpp's own bare
-         * while-loop shape on desktop. */
+         * while-loop shape on desktop.
+         *
+         * kf_pet_session_frame(0): 0 means "use your own real-elapsed-time
+         * tracking" (see kf_pet_session.h) -- there is no debug time
+         * multiplier on this backend to fold in, unlike sdl_main.cpp's
+         * own call, so there is nothing this file needs to compute itself. */
+        kf_pet_session_frame(0);
+
+        const uint64_t now_us = kf_time_mono_us();
+        if (now_us >= next_pet_log_us) {
+            log_pet_state();
+            next_pet_log_us = now_us + kPetLogIntervalUs;
+        }
     }
 
     /* Unreachable in practice: esp_input.cpp's kf_input_poll() hardcodes
@@ -96,6 +147,9 @@ extern "C" void app_main(void) {
      * the same way sdl_main.cpp keeps its own shutdown call after a loop
      * that can exit -- correct shape if that ever changes, dead code if it
      * doesn't, and either way cheaper than leaving it out and being wrong
-     * later. */
+     * later. Session shutdown before app shutdown, same order sdl_main.cpp
+     * uses -- kf_pet_session_shutdown() still needs the storage HAL
+     * kf_app_shutdown() is about to tear down. */
+    kf_pet_session_shutdown();
     kf_app_shutdown();
 }

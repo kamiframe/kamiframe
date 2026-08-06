@@ -3,10 +3,12 @@
 **Real ESP32 HAL backends -- display, input, time, memory, entropy,
 logging, storage, power -- all compiling and linking clean against the real
 ESP-IDF v6.0.2 toolchain, driving the real `kf_app_init()`/`kf_app_frame()`
-loop from `kf/app.h`. Not yet run against real hardware, and not yet
-running the pet, LVGL, or Lua (see ADR 0020 for exactly why not).** See
-ADR 0019 for the hello-world this was built on top of, and ADR 0020 for
-this slice.
+loop from `kf/app.h`, now with a real, NVS-backed `kf_pet_session` ticking
+alongside it (ADR 0025). Not yet run against real hardware. Still not
+running LVGL or Lua -- see ADR 0025 for exactly why not, and ADR 0020 for
+why the pet session itself waited this long.** See ADR 0019 for the
+hello-world this was built on top of, ADR 0020 for the HAL backends, and
+ADR 0025 for the pet session.
 
 This directory used to be a documented skeleton, never compiled. It now
 builds and boots: `idf.py build` produces a real `kamiframe-firmware.elf`/
@@ -95,38 +97,50 @@ These are already true and need to stay true:
   `esp_memory.cpp`'s `MALLOC_CAP_SPIRAM` pool has to actually exist. Flash
   size unchanged from ADR 0019.
 - `main/app_main.cpp` replaces `main.c`: it calls the real
-  `kf_app_init()`/`kf_app_frame()` loop against the backends above. It does
-  **not** run the pet session, LVGL, or Lua -- that's not a missing call,
-  it's a missing component directory (`EXTRA_COMPONENT_DIRS` only points at
-  `hakoniwaos`); see ADR 0020's "What this slice does NOT reach."
+  `kf_app_init()`/`kf_app_frame()` loop against the backends above. As of
+  ADR 0020 it did **not** run the pet session, LVGL, or Lua -- that's not a
+  missing call, it's a missing component directory (`EXTRA_COMPONENT_DIRS`
+  only points at `hakoniwaos`); see ADR 0020's "What this slice does NOT
+  reach." ADR 0025 below changes the pet session half of that.
 
-## Wiring a real board
+## What ADR 0025 added
 
-`kf_esp_pins.h` is the single place both this firmware and the bring-up
-diagnostic read pin numbers from. It now also covers I2C (the DS3231) and
-the microSD card, which ADR 0020 did not reach -- see **ADR 0023** for why
-the card gets its own SPI bus and why GPIO33-37 are a trap on the N16R8.
-
-The procedure for wiring and testing a board is
-[`../../docs/hardware-bringup.md`](../../docs/hardware-bringup.md), and the
-diagnostic it tells you to run lives in
-[`../esp32-bringup`](../esp32-bringup) -- a separate ESP-IDF project that
-shares only the pin header with this one.
+- `kf_pet_session.{h,cpp}` (`simulator/src/pet/`) is now built as part of
+  `main`, referenced by relative path the same way the HAL backends
+  already are -- one canonical file, not a fork. `app_main.cpp` calls
+  `kf_pet_session_init()` after `kf_app_init()` and
+  `kf_pet_session_frame(0)` every frame, the same two calls and the same
+  ordering `sdl_main.cpp` uses on desktop. The pet is genuinely alive,
+  saved to and loaded from real NVS, decaying against real elapsed time.
+  Nothing renders it yet -- see the next bullet.
+- `KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0` on this build only. The desktop/
+  headless backends' scrubbable debug timeline (`kf_pet_session_debug_
+  seek()` and friends) backs onto a 2048-entry snapshot ring that costs
+  200KB+ of static memory -- fine on a desktop process, not something a
+  512KB-SRAM device should pay for a feature nothing on it calls. See
+  `kf_pet_session.cpp`'s own top-of-file comment.
+- No screen. `main/app_main.cpp` still runs `KF_DEMO_SPRITE` (the same
+  placeholder from ADR 0020) for its display proof, and separately logs
+  the pet's stage/needs/`base_trait` over serial every 10 seconds -- that
+  log line is the only way to observe the pet on this build. LVGL isn't
+  in this component tree yet (still just `hakoniwaos` in
+  `EXTRA_COMPONENT_DIRS`), so there is no pet screen (ADR 0017) to hand it
+  to.
 
 ## What still has to be written
 
 - A real DS3231 RTC driver over I2C, to close the wall-clock gap
-  `esp_time.cpp` currently leaves open -- see ADR 0020. The bring-up
-  diagnostic already talks to the chip (`ports/esp32-bringup`), so the
-  register-level work is done; what is missing is the HAL-shaped version
-  behind `kf_time_wall()`.
+  `esp_time.cpp` currently leaves open -- see ADR 0020. Until this exists,
+  `kf_pet_session_init()`'s offline fast-forward has nothing to
+  fast-forward across on a genuine power-off.
 - A partition table: firmware, OTA, NVS for save state, and an asset
   partition sized to `KF_FLASH_ASSET_BUDGET_BYTES` in `kf/budget.h`. Today's
   build uses ESP-IDF's default single-app partition table, which is enough
   to boot but not what real bring-up needs.
-- Porting `kf_pet_session`, then LVGL, then Lua onto ESP-IDF -- each real,
-  separate work, most likely each its own `EXTRA_COMPONENT_DIRS` entry and
-  its own ADR, once there's real hardware to debug them against.
+- Porting LVGL, then Lua, onto ESP-IDF -- each real, separate work, most
+  likely each its own `EXTRA_COMPONENT_DIRS` entry and its own ADR, once
+  there's real hardware to debug them against. The pet session itself
+  (ADR 0025) no longer waits on either.
 - The real hardware bring-up pass: flash an actual board, confirm every pin
   in `kf_esp_pins.h`, measure the real achievable SPI clock (see below).
 

@@ -34,6 +34,15 @@
 ## clean. WHOLE_ARCHIVE forces the entire component into the final binary
 ## regardless of reference-resolution order, which is exactly the fix ESP-IDF
 ## documents this flag for.
+##
+## kf_pet_session.cpp, added here rather than given its own EXTRA_COMPONENT_
+## DIRS entry: it is one file with one dependency (hakoniwaos, already
+## REQUIRES'd below) and no third-party library of its own -- unlike the
+## LVGL and Lua ports still ahead, which each pull in an external
+## dependency and earn their own component the way hakoniwaos itself does.
+## Referenced from simulator/src/pet/ by relative path, the same pattern
+## the HAL backends above already use for ../hal/ -- one canonical copy of
+## the file, not a fork.
 idf_component_register(
     SRCS
         app_main.cpp
@@ -45,7 +54,8 @@ idf_component_register(
         ../hal/esp_log.cpp
         ../hal/esp_storage.cpp
         ../hal/esp_power.cpp
-    INCLUDE_DIRS "." "../hal"
+        ../../../simulator/src/pet/kf_pet_session.cpp
+    INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet"
     REQUIRES
         hakoniwaos
         spi_flash
@@ -58,4 +68,13 @@ idf_component_register(
         heap
         esp_system
     WHOLE_ARCHIVE
+)
+
+## See kf_pet_session.cpp's top-of-file comment: the desktop/headless
+## backends get the scrubbable debug-timeline ring by default (a real
+## static allocation over 200KB), and this build opts out of it
+## explicitly, since a real device has neither the SRAM to spare nor any
+## caller for it (nothing in app_main.cpp is a debug key binding).
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0
 )

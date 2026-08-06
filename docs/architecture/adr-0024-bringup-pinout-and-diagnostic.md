@@ -1,4 +1,4 @@
-# ADR 0023: The bring-up pinout, and a diagnostic separate from the firmware
+# ADR 0024: The bring-up pinout, and a diagnostic separate from the firmware
 
 **Status:** Accepted
 **Date:** 2026-08-06

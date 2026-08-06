@@ -127,6 +127,20 @@ void kf_pet_session_shutdown(void);
  * arbitrary amount of pet-time cheap and safe to call directly, and the
  * default illustrative stage durations (an hour for an egg, about a week
  * for a full grow-up) are otherwise much too slow to watch interactively.
+ *
+ * These four are DECLARED unconditionally below, same as everything else
+ * in this header, so nothing calling into this file needs to know or
+ * care which backend it is. Whether they are DEFINED depends on
+ * KF_PET_SESSION_ENABLE_DEBUG_TOOLS -- see kf_pet_session.cpp's
+ * top-of-file comment. Desktop/headless get real definitions by default;
+ * ESP32's main/CMakeLists.txt turns that off, both because "not called
+ * by the ESP32 build" (this comment, unchanged since before there was an
+ * ESP32 build capable of calling anything) is meant literally, and
+ * because the snapshot ring backing kf_pet_session_debug_seek() below
+ * costs 200KB+ of static memory a real device cannot spend on a feature
+ * it never uses. Calling one of these four from ESP32 code is therefore
+ * a link error, not silently-wrong behaviour -- the correct outcome,
+ * since none of them are meant to be reachable there.
  * --------------------------------------------------------------------- */
 
 /* Advances the live pet by exactly `seconds`, immediately -- bypassing
