@@ -33,19 +33,25 @@ future us in month eight asking the same question with less patience.
 | [0023](adr-0023-personality-traits.md) | Personality traits | Accepted |
 | [0024](adr-0024-bringup-pinout-and-diagnostic.md) | The bring-up pinout, and a diagnostic separate from the firmware | Accepted |
 | [0025](adr-0025-esp32-pet-session.md) | The pet session, running for real on ESP32 | Accepted |
+| [0026](adr-0026-ds3231-rtc-driver.md) | A real DS3231 RTC driver, closing the wall-clock gap | Accepted |
 
 Open evaluations, deliberately not decided:
 
 - **The creature class name.** Deferred by the naming decision record.
-  The character bible (`14-character-bible-v1.md` in the planning folder)
-  floats 癖/kuse as a direction, not an answer -- still needs its own
-  verification pass.
 
-See also `../hardware-bringup.md`, which is the wiring-and-testing procedure
-ADR 0024's pinout is for, `../frame-budget.md`, which works through what the display bandwidth
+LVGL and Lua were both open evaluations here once; ADR 0013 and ADR 0014
+each decided one, so neither is listed above anymore.
+
+See also `../frame-budget.md`, which works through what the display bandwidth
 means for full-screen animation and what the options are for 60fps, and
 `../sdk-style-guide.md`, which names the design principle behind `pet.*`/
 `kf.*`'s function-per-action shape for whatever Lua bindings get added next.
 
 The full option space behind these, including what was rejected, is in
 `08-phase1-slice1-decisions.md` in the planning folder.
+
+**This index had drifted out of date before this edit** -- it stopped at
+ADR 0009 while the directory already held files through ADR 0025. Rows
+0010-0025 above are being added back in the same pass that adds 0026, not
+because anything about ADR 0026 required it, just because a broken index is
+worse than a slightly oversized diff to fix it.
