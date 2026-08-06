@@ -251,6 +251,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_stage_evolution_check
              COMMAND kamiframe-headless --verify-pet-stage)
 
+    # Proves the personality-traits mechanic (ADR 0023): base_trait rolled
+    # once via kf_rng_below() and fixed for the pet's whole life, the three
+    # care-derived accumulators building whole-life rather than resetting
+    # at a stage transition, the periodic-halving EMA math itself,
+    # kf_pet_dominant_care_trait()'s band selection (including its tie-
+    # break default), and the v3 save format round-tripping every new
+    # field. See headless_main.cpp's run_pet_personality_check().
+    add_test(NAME pet_personality_check
+             COMMAND kamiframe-headless --verify-pet-personality)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
@@ -314,7 +324,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # fails because Info's screen deliberately changed, run
     # `kamiframe-headless --verify-screen-nav`, take the checksum it
     # prints, and update the value here in the same commit.
-    set(KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM "c0a79b4b2cc0253e")
+    #
+    # Updated with ADR 0023 (personality traits): Info grew a "Personality"
+    # section showing base_trait (and, once past Egg, the dominant care
+    # trait) -- an intentional content addition, not a regression.
+    # Deterministic across repeated runs before being locked in, same
+    # discipline as every earlier value here -- this check bypasses
+    # kf_app_init() (see run_screen_nav_check()), so kf_rng is never
+    # reseeded from the entropy HAL and a fresh pet's base_trait comes out
+    # identical run to run, the same fixed-default-seed determinism every
+    # other kf_rng consumer in a headless-bypass path already relies on.
+    set(KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM "ac44bb9819809bea")
 
     add_test(NAME screen_nav_check
              COMMAND kamiframe-headless --verify-screen-nav

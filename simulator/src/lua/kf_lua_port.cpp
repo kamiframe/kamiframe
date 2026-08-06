@@ -176,12 +176,43 @@ int lua_pet_adult_branch(lua_State *L) {
     return 1;
 }
 
+/* pet.base_trait() / pet.dominant_care_trait() -- ADR 0023's personality
+ * traits, the same opaque-0-based-index convention as teen_form/
+ * adult_branch above and for the identical reason: the actual trait
+ * names (Chatty/Quiet/Curious/... for base traits, Foodie/Playful/Chill
+ * for the care-derived ones -- see 16-personality-traits-concrete-plan.md,
+ * still placeholders as of this slice) are real creative content that
+ * belongs in the Lua cartridge layer, not here. base_trait() is
+ * meaningful from the moment a pet exists (rolled once at kf_pet_init(),
+ * see kf/pet.h); dominant_care_trait() defaults to 0 (hunger-leaning)
+ * before any care has actually accumulated, e.g. still an egg -- see
+ * kf_pet_dominant_care_trait()'s own header comment in kf/pet.h for the
+ * tie-break rule. */
+int lua_pet_base_trait(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->base_trait));
+    return 1;
+}
+
+int lua_pet_dominant_care_trait(lua_State *L) {
+    lua_pushinteger(L, static_cast<lua_Integer>(
+                            kf_pet_dominant_care_trait(kf_pet_session_state())));
+    return 1;
+}
+
 const luaL_Reg kKfPetFuncs[] = {
-    {"hunger", lua_pet_hunger},       {"happiness", lua_pet_happiness},
-    {"energy", lua_pet_energy},       {"feed", lua_pet_feed},
-    {"play", lua_pet_play},           {"rest", lua_pet_rest},
-    {"save", lua_pet_save},           {"stage", lua_pet_stage},
-    {"teen_form", lua_pet_teen_form}, {"adult_branch", lua_pet_adult_branch},
+    {"hunger", lua_pet_hunger},
+    {"happiness", lua_pet_happiness},
+    {"energy", lua_pet_energy},
+    {"feed", lua_pet_feed},
+    {"play", lua_pet_play},
+    {"rest", lua_pet_rest},
+    {"save", lua_pet_save},
+    {"stage", lua_pet_stage},
+    {"teen_form", lua_pet_teen_form},
+    {"adult_branch", lua_pet_adult_branch},
+    {"base_trait", lua_pet_base_trait},
+    {"dominant_care_trait", lua_pet_dominant_care_trait},
     {nullptr, nullptr},
 };
 

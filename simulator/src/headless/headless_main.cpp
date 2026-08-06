@@ -15,6 +15,7 @@
  *     kamiframe-headless --verify-lua [--frames N]
  *     kamiframe-headless --verify-pet
  *     kamiframe-headless --verify-pet-stage
+ *     kamiframe-headless --verify-pet-personality
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
@@ -34,6 +35,7 @@
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
 #include "kf/pet.h"
+#include "kf/rng.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
 #include "../lvgl/kf_lvgl_port.h"
@@ -697,6 +699,245 @@ int run_pet_stage_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves ADR 0023's personality traits: base_trait rolled once and never
+ * touched again, the three care-derived accumulators building whole-life
+ * (never resetting at a stage transition, unlike care_integral_mp_seconds
+ * -- see run_pet_stage_check()'s check 3 for the contrasting reset
+ * behaviour), the periodic-halving math itself, kf_pet_dominant_care_
+ * trait()'s band selection, and the v3 save format round-tripping every
+ * new field. Same isolated-per-PID storage directory trick as
+ * run_pet_stage_check() above. */
+int run_pet_personality_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-pet-personality-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. base_trait: in range, and repeatable under a pinned RNG seed --
+     * the same "poke a known input, check a known output" style as
+     * run_pet_stage_check()'s select_branch() checks, applied to
+     * kf_rng_below() instead. Two fresh pets from the identical reseed
+     * must land on the identical trait; this is the actual claim doc 16
+     * makes ("same RNG path... same determinism story the rest of this
+     * project already has"), not just "the value is in range". */
+    {
+        kf_rng_seed(0x1234u);
+        kf_pet_state state_a;
+        kf_pet_init(&state_a);
+        check(state_a.base_trait < KF_PET_BASE_TRAIT_COUNT,
+              "base_trait is rolled within the base-trait table's bounds");
+
+        kf_rng_seed(0x1234u);
+        kf_pet_state state_b;
+        kf_pet_init(&state_b);
+        check(state_a.base_trait == state_b.base_trait,
+              "the identical RNG seed produces the identical base_trait "
+              "on a fresh pet -- repeatable, not merely in-range");
+
+        /* 2. Rolled once, never touched again: neither ordinary time
+         * passing nor a care action may change it. */
+        kf_pet_state state = state_a;
+        kf_pet_advance(&state, &config, 30u * 86400u); /* a month, offline-style */
+        state.hunger_mp = 0u;
+        kf_pet_feed(&state);
+        check(state.base_trait == state_a.base_trait,
+              "base_trait is unchanged by kf_pet_advance() and a care "
+              "action -- rolled once at init, fixed for the pet's whole "
+              "life, per kf/pet.h's header comment");
+    }
+
+    /* 3. Whole-life accumulation: personality accumulators are NOT reset
+     * at a stage transition, unlike care_integral_mp_seconds (see
+     * run_pet_stage_check()'s check 3, the direct contrast). Zero decay
+     * and zero personality half-life (treated as "no periodic halving",
+     * per accumulate_personality()'s own header comment) isolate this
+     * from both decay math and the halving math below. */
+    {
+        kf_pet_config zero_decay_no_halving = config;
+        zero_decay_no_halving.hunger_decay_mp_per_hour = 0u;
+        zero_decay_no_halving.happiness_decay_mp_per_hour = 0u;
+        zero_decay_no_halving.energy_decay_mp_per_hour = 0u;
+        zero_decay_no_halving.personality_recency_half_life_seconds = 0u;
+        zero_decay_no_halving.baby_duration_seconds = 1000u;
+        zero_decay_no_halving.child_duration_seconds = 500u;
+
+        kf_pet_state state;
+        kf_pet_init(&state);
+        state.stage = KF_PET_STAGE_BABY;
+        state.hunger_mp = 60000u; /* held constant by zero decay */
+        state.happiness_mp = 60000u;
+        state.energy_mp = 60000u;
+
+        kf_pet_advance(&state, &zero_decay_no_halving,
+                        zero_decay_no_halving.baby_duration_seconds);
+        check(state.stage == KF_PET_STAGE_CHILD,
+              "Baby completes into Child, the transition under test");
+        const uint64_t hunger_after_baby = state.hunger_integral_mp_seconds;
+        check(hunger_after_baby == 60000ull * zero_decay_no_halving.baby_duration_seconds,
+              "the personality accumulator picked up exactly Baby's "
+              "constant-60% contribution (60000 * baby_duration_seconds, "
+              "no periodic halving with half_life == 0)");
+
+        kf_pet_advance(&state, &zero_decay_no_halving,
+                        zero_decay_no_halving.child_duration_seconds);
+        check(state.stage == KF_PET_STAGE_TEEN,
+              "Child completes into Teen");
+        check(state.hunger_integral_mp_seconds ==
+                  hunger_after_baby +
+                      60000ull * zero_decay_no_halving.child_duration_seconds,
+              "the accumulator carried Baby's contribution FORWARD across "
+              "the Baby->Child transition and simply added Child's on top "
+              "-- unlike care_integral_mp_seconds, this never reset, "
+              "which is the entire point of a whole-life reading (doc 16)");
+    }
+
+    /* 4. The periodic halving itself, isolated with a small, exact
+     * half-life: 1000s. A first segment of 999s (just under one
+     * half-life) must NOT trigger a halving; a further 1s (landing
+     * exactly on the boundary) must trigger exactly one. Zero decay again
+     * holds the need constant so the expected accumulator value is exact
+     * arithmetic, not an approximation. */
+    {
+        kf_pet_config cfg = config;
+        cfg.hunger_decay_mp_per_hour = 0u;
+        cfg.happiness_decay_mp_per_hour = 0u;
+        cfg.energy_decay_mp_per_hour = 0u;
+        cfg.personality_recency_half_life_seconds = 1000u;
+        cfg.baby_duration_seconds = 1'000'000u; /* stay in Baby throughout */
+
+        kf_pet_state state;
+        kf_pet_init(&state);
+        state.stage = KF_PET_STAGE_BABY;
+        state.hunger_mp = 40000u;
+        state.happiness_mp = 40000u;
+        state.energy_mp = 40000u;
+
+        kf_pet_advance(&state, &cfg, 999u);
+        const uint64_t before_boundary = state.hunger_integral_mp_seconds;
+        check(before_boundary == 40000ull * 999u,
+              "999s of a 1000s half-life accumulates at full weight, no "
+              "halving triggered yet");
+        check(state.care_recency_window_seconds == 999u,
+              "the recency window counter tracks exactly how many seconds "
+              "have accumulated toward the next halving");
+
+        kf_pet_advance(&state, &cfg, 1u); /* the 1000th second: the boundary */
+        check(state.care_recency_window_seconds == 0u,
+              "landing exactly on the half-life boundary consumes the "
+              "whole window and resets the remainder to 0");
+        const uint64_t expected_after_boundary =
+            (before_boundary >> 1) + 40000ull * 1u;
+        check(state.hunger_integral_mp_seconds == expected_after_boundary,
+              "crossing the half-life boundary halves the prior total "
+              "BEFORE adding the new segment's own full-weight "
+              "contribution -- the periodic-halving EMA doc 16 describes, "
+              "not a hard reset");
+        check(state.happiness_integral_mp_seconds == expected_after_boundary &&
+                  state.energy_integral_mp_seconds == expected_after_boundary,
+              "all three accumulators halve together on the same schedule "
+              "-- they share one recency window, not three independent "
+              "ones");
+    }
+
+    /* 5. kf_pet_dominant_care_trait()'s band selection: three isolated
+     * pets, each with exactly one need's accumulator nonzero, must each
+     * report that need's own index. Plus the documented tie-break: a
+     * freshly-initialised pet (all three accumulators at their initial
+     * zero, per kf_pet_init()) reports hunger (0), not an unspecified
+     * value. */
+    {
+        kf_pet_state fresh;
+        kf_pet_init(&fresh);
+        check(kf_pet_dominant_care_trait(&fresh) == 0u,
+              "an all-zero (freshly-initialised) pet's dominant care "
+              "trait defaults to 0 (hunger) -- the documented tie-break, "
+              "not an unspecified value");
+
+        kf_pet_state hunger_led{};
+        hunger_led.hunger_integral_mp_seconds = 500u;
+        hunger_led.happiness_integral_mp_seconds = 100u;
+        hunger_led.energy_integral_mp_seconds = 100u;
+        check(kf_pet_dominant_care_trait(&hunger_led) == 0u,
+              "the pet with the highest hunger accumulator reports "
+              "hunger-dominant (0)");
+
+        kf_pet_state happiness_led{};
+        happiness_led.hunger_integral_mp_seconds = 100u;
+        happiness_led.happiness_integral_mp_seconds = 500u;
+        happiness_led.energy_integral_mp_seconds = 100u;
+        check(kf_pet_dominant_care_trait(&happiness_led) == 1u,
+              "the pet with the highest happiness accumulator reports "
+              "happiness-dominant (1)");
+
+        kf_pet_state energy_led{};
+        energy_led.hunger_integral_mp_seconds = 100u;
+        energy_led.happiness_integral_mp_seconds = 100u;
+        energy_led.energy_integral_mp_seconds = 500u;
+        check(kf_pet_dominant_care_trait(&energy_led) == 2u,
+              "the pet with the highest energy accumulator reports "
+              "energy-dominant (2)");
+    }
+
+    /* 6. The v3 save format round-trips every new field. Same wall-clock-
+     * pinning technique as run_pet_stage_check()'s check 6, for the
+     * identical reason: zero elapsed time on reload means nothing here
+     * perturbs the very accumulators this check exists to prove
+     * round-trip correctly. */
+    {
+        kf_pet_state state{};
+        check(kf_pet_load_and_advance(&state, &config) == KF_OK,
+              "load_and_advance with no prior save succeeds");
+
+        state.base_trait = 4u;
+        state.hunger_integral_mp_seconds = 111111111ull;
+        state.happiness_integral_mp_seconds = 222222222ull;
+        state.energy_integral_mp_seconds = 333333333ull;
+        state.care_recency_window_seconds = 12345u;
+
+        const kf_wall_time saved_at = state.last_advanced;
+        check(kf_pet_save(&state) == KF_OK, "save the non-trivial state");
+        check(kf_time_set_wall(saved_at.epoch_seconds) == KF_OK,
+              "pin the wall clock back to exactly the saved last_advanced, "
+              "guaranteeing the reload below sees zero elapsed time");
+
+        kf_pet_state loaded{};
+        check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
+              "load_and_advance reloads the save");
+        check(loaded.base_trait == 4u,
+              "base_trait round-trips through save/load");
+        check(loaded.hunger_integral_mp_seconds == 111111111ull &&
+                  loaded.happiness_integral_mp_seconds == 222222222ull &&
+                  loaded.energy_integral_mp_seconds == 333333333ull,
+              "all three personality accumulators round-trip through "
+              "save/load, byte for byte, with zero elapsed time to "
+              "perturb them");
+        check(loaded.care_recency_window_seconds == 12345u,
+              "the recency window counter round-trips through save/load");
+    }
+
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves the LVGL port glue -- not the custom engine -- renders
  * deterministically. See ADR 0013. Bypasses kf_app_init()/kf_app_frame()
  * entirely: this exercises LVGL directly, the same way
@@ -1162,15 +1403,20 @@ int run_lua_pet_check() {
           "which is what makes the report comparison below a real check "
           "rather than a trivially-true one");
     const int64_t expected_packed =
-        static_cast<int64_t>(live_after_stage->stage) * 1000 +
-        static_cast<int64_t>(live_after_stage->teen_form) * 10 +
-        static_cast<int64_t>(live_after_stage->adult_branch);
+        static_cast<int64_t>(live_after_stage->stage) * 100000 +
+        static_cast<int64_t>(live_after_stage->teen_form) * 10000 +
+        static_cast<int64_t>(live_after_stage->adult_branch) * 1000 +
+        static_cast<int64_t>(live_after_stage->base_trait) * 10 +
+        static_cast<int64_t>(kf_pet_dominant_care_trait(live_after_stage));
     check(kf_lua_port_last_report() == expected_packed,
-          "pet.stage()/pet.teen_form()/pet.adult_branch() read via Lua, "
-          "packed into one integer, match the identical packing computed "
-          "directly from kf_pet_session_state() in C++ -- proves the "
-          "string pet.stage() hands back round-trips to the correct enum "
-          "value, not just that some string comes out");
+          "pet.stage()/pet.teen_form()/pet.adult_branch()/pet.base_trait()/"
+          "pet.dominant_care_trait() (ADR 0023) read via Lua, packed into "
+          "one integer, match the identical packing computed directly "
+          "from kf_pet_session_state()/kf_pet_dominant_care_trait() in "
+          "C++ -- proves the string pet.stage() hands back round-trips to "
+          "the correct enum value, not just that some string comes out, "
+          "and that the two new personality accessors are wired to the "
+          "same live state as everything else here");
     kf_lua_port_shutdown();
 
     kf_pet_session_shutdown();
@@ -1303,6 +1549,7 @@ int main(int argc, char *argv[]) {
     bool verify_lua = false;
     bool verify_pet = false;
     bool verify_pet_stage = false;
+    bool verify_pet_personality = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_screen_nav = false;
@@ -1333,6 +1580,8 @@ int main(int argc, char *argv[]) {
             verify_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-stage") == 0) {
             verify_pet_stage = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-personality") == 0) {
+            verify_pet_personality = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
@@ -1349,6 +1598,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lua [--frames N]\n"
                         "kamiframe-headless --verify-pet\n"
                         "kamiframe-headless --verify-pet-stage\n"
+                        "kamiframe-headless --verify-pet-personality\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -1386,6 +1636,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_stage) {
         return run_pet_stage_check();
+    }
+
+    if (verify_pet_personality) {
+        return run_pet_personality_check();
     }
 
     if (verify_lua_pet) {

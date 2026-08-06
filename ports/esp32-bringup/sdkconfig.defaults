@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# Kept deliberately close to ports/esp32/sdkconfig.defaults. The diagnostic
+# has to run under the same memory and clock configuration the firmware
+# does, or "PSRAM: 8MB" here would not tell you anything about whether the
+# firmware will see PSRAM.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Octal PSRAM, per the N16R8 module. Stage 0 reports the size it finds, so
+# if this is wrong you find out in the first ten lines of output rather than
+# at some later point when an allocation fails.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Long filenames on the SD card. The bring-up test itself only writes an
+# 8.3-safe name, but a card the firmware will later use for assets wants
+# this, and finding out the filesystem config is wrong during bring-up is
+# cheaper than finding out later.
+CONFIG_FATFS_LFN_HEAP=y
+
+# The serial console this program's entire output goes to. Explicit rather
+# than inherited, because a diagnostic you cannot read is worthless.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

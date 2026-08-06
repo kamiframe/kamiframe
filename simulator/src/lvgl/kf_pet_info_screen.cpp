@@ -20,6 +20,7 @@ struct Screen {
     lv_obj_t *stage_label = nullptr;
     lv_obj_t *time_label = nullptr;
     lv_obj_t *branch_label = nullptr;
+    lv_obj_t *trait_label = nullptr;
     bool ready = false;
 };
 Screen g;
@@ -115,6 +116,20 @@ void kf_pet_info_screen_init(void) {
     g.branch_label = lv_label_create(g.root);
     lv_obj_align(g.branch_label, LV_ALIGN_TOP_LEFT, 12, 152);
 
+    /* ADR 0023. Unlike branch_label above, base_trait is meaningful from
+     * the moment a pet exists (rolled at kf_pet_init(), see kf/pet.h) --
+     * shown here every time, no blank-before-a-branch-point case to
+     * handle. "Care trait" (dominant_care_trait) follows the same
+     * blank-until-meaningful convention branch_label already uses, since
+     * it reads as 0/hunger-leaning by default before any real care has
+     * accumulated (still an egg) -- see kf_pet_dominant_care_trait()'s own
+     * header comment in kf/pet.h. */
+    lv_obj_t *trait_caption = lv_label_create(g.root);
+    lv_label_set_text(trait_caption, "Personality");
+    lv_obj_align(trait_caption, LV_ALIGN_TOP_LEFT, 12, 188);
+    g.trait_label = lv_label_create(g.root);
+    lv_obj_align(g.trait_label, LV_ALIGN_TOP_LEFT, 12, 208);
+
     g.ready = true;
     kf_pet_info_screen_update();
 }
@@ -139,6 +154,21 @@ void kf_pet_info_screen_update(void) {
                                static_cast<unsigned>(state->adult_branch));
     } else {
         lv_label_set_text(g.branch_label, "");
+    }
+
+    /* base_trait: always shown, plain number -- see the init() comment
+     * above. dominant_care_trait: blank while still an egg (no care has
+     * had a chance to accumulate yet, see apply_stage_segment()'s EGG
+     * early-return in pet.cpp), a plain number from Baby onward, the same
+     * "blank before it means anything" shape branch_label already uses. */
+    if (state->stage == KF_PET_STAGE_EGG) {
+        lv_label_set_text_fmt(g.trait_label, "Base trait %u",
+                               static_cast<unsigned>(state->base_trait));
+    } else {
+        lv_label_set_text_fmt(
+            g.trait_label, "Base trait %u, care trait %u",
+            static_cast<unsigned>(state->base_trait),
+            static_cast<unsigned>(kf_pet_dominant_care_trait(state)));
     }
 }
 

@@ -100,10 +100,26 @@ These are already true and need to stay true:
   it's a missing component directory (`EXTRA_COMPONENT_DIRS` only points at
   `hakoniwaos`); see ADR 0020's "What this slice does NOT reach."
 
+## Wiring a real board
+
+`kf_esp_pins.h` is the single place both this firmware and the bring-up
+diagnostic read pin numbers from. It now also covers I2C (the DS3231) and
+the microSD card, which ADR 0020 did not reach -- see **ADR 0023** for why
+the card gets its own SPI bus and why GPIO33-37 are a trap on the N16R8.
+
+The procedure for wiring and testing a board is
+[`../../docs/hardware-bringup.md`](../../docs/hardware-bringup.md), and the
+diagnostic it tells you to run lives in
+[`../esp32-bringup`](../esp32-bringup) -- a separate ESP-IDF project that
+shares only the pin header with this one.
+
 ## What still has to be written
 
 - A real DS3231 RTC driver over I2C, to close the wall-clock gap
-  `esp_time.cpp` currently leaves open -- see ADR 0020.
+  `esp_time.cpp` currently leaves open -- see ADR 0020. The bring-up
+  diagnostic already talks to the chip (`ports/esp32-bringup`), so the
+  register-level work is done; what is missing is the HAL-shaped version
+  behind `kf_time_wall()`.
 - A partition table: firmware, OTA, NVS for save state, and an asset
   partition sized to `KF_FLASH_ASSET_BUDGET_BYTES` in `kf/budget.h`. Today's
   build uses ESP-IDF's default single-app partition table, which is enough

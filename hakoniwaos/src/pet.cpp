@@ -47,6 +47,7 @@
 #include "kf/hal/log.h"
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
+#include "kf/rng.h"
 
 #include <cstdint>
 
@@ -56,11 +57,11 @@ namespace {
 
 constexpr const char *TAG = "pet";
 
-/* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution) --
- * kf_pet_deserialize() refuses to load anything written by a different
- * version rather than guessing at a layout that changed, see unpack()
- * below. */
-constexpr uint8_t kSaveVersion = 2;
+/* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution)
+ * and to 3 with ADR 0023 (personality traits) -- kf_pet_deserialize()
+ * refuses to load anything written by a different version rather than
+ * guessing at a layout that changed, see unpack() below. */
+constexpr uint8_t kSaveVersion = 3;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -180,26 +181,85 @@ void advance_to_next_stage(kf_pet_state *state) {
     state->care_integral_mp_seconds = 0u;
 }
 
-/* Applies decay (and, on the two stages where it matters, accumulates the
- * care integral) for exactly `segment` seconds, all still within the
- * SAME stage -- kf_pet_advance()'s loop never lets a segment cross a
- * stage boundary, so this never needs to know about stages other than the
- * current one. */
+/* ADR 0023: updates the three per-need personality accumulators (whole-
+ * life, never reset) for exactly `segment` seconds, weighting each need by
+ * its value BEFORE this segment's own decay -- the identical "weight by
+ * the start-of-segment value" convention care_integral_mp_seconds already
+ * uses just above, applied per-need instead of to one blended average.
+ *
+ * The periodic halving itself is one division and (at most) one shift, not
+ * a loop -- closed-form regardless of how large `segment` is, matching
+ * this file's existing "bounded by stages, never by elapsed_seconds"
+ * discipline (see the file header comment and kf_pet_advance()). `window`
+ * is the running total of not-yet-consumed seconds; every half_life
+ * seconds' worth that accumulates in it triggers exactly one halving of
+ * all three accumulators, and the leftover remainder carries forward in
+ * care_recency_window_seconds for the next call to pick up exactly where
+ * this one left off -- so many small per-frame segments and one huge
+ * offline-fast-forward segment produce the identical halving schedule for
+ * the identical total elapsed time.
+ *
+ * `halvings` can in principle be enormous (a multi-year offline gap against
+ * a short configured half-life) -- shifting a 64-bit value by 64 or more is
+ * undefined behaviour in C++, so the actual shift amount is capped at 63,
+ * which already flushes every accumulator to 0 (any real value right-
+ * shifted 63 times is 0), the mathematically correct answer for "so much
+ * time passed under this half-life that nothing old survives" without
+ * needing to special-case it. */
+void accumulate_personality(kf_pet_state *state, const kf_pet_config *config,
+                             uint32_t segment, uint64_t hunger_before_mp,
+                             uint64_t happiness_before_mp,
+                             uint64_t energy_before_mp) {
+    const uint32_t half_life = config->personality_recency_half_life_seconds;
+    if (half_life > 0u) {
+        uint64_t window =
+            static_cast<uint64_t>(state->care_recency_window_seconds) + segment;
+        const uint64_t halvings = window / half_life;
+        if (halvings > 0u) {
+            const uint64_t shift = halvings > 63u ? 63u : halvings;
+            state->hunger_integral_mp_seconds >>= shift;
+            state->happiness_integral_mp_seconds >>= shift;
+            state->energy_integral_mp_seconds >>= shift;
+            window %= half_life;
+        }
+        state->care_recency_window_seconds = static_cast<uint32_t>(window);
+    }
+    /* half_life == 0 (a misconfigured kf_pet_config): treated as "no
+     * periodic halving," i.e. plain whole-life accumulation below, rather
+     * than dividing by zero -- the same defensive-default spirit as
+     * select_branch()'s zero-stage-duration guard above. */
+
+    state->hunger_integral_mp_seconds += hunger_before_mp * segment;
+    state->happiness_integral_mp_seconds += happiness_before_mp * segment;
+    state->energy_integral_mp_seconds += energy_before_mp * segment;
+}
+
+/* Applies decay (and, on the stages where it matters, accumulates the care
+ * integral and/or the personality accumulators) for exactly `segment`
+ * seconds, all still within the SAME stage -- kf_pet_advance()'s loop
+ * never lets a segment cross a stage boundary, so this never needs to know
+ * about stages other than the current one. */
 void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
                           uint32_t segment) {
     if (state->stage == KF_PET_STAGE_EGG) {
         /* No care needed as an egg -- see kf/pet.h's header comment and
          * kf_pet_init(): needs stay at whatever they were (full, for a
-         * freshly-initialised pet) until the egg hatches. */
+         * freshly-initialised pet) until the egg hatches. Personality
+         * does not accumulate here either, for the same reason
+         * care_integral_mp_seconds does not: nothing has been cared for
+         * yet, so there is nothing meaningful to weight by. */
         return;
     }
+
+    const uint64_t hunger_before_mp = state->hunger_mp;
+    const uint64_t happiness_before_mp = state->happiness_mp;
+    const uint64_t energy_before_mp = state->energy_mp;
 
     const bool feeds_branch = stage_feeds_a_branch_choice(state->stage);
     uint64_t average_before_mp = 0u;
     if (feeds_branch) {
-        average_before_mp = (static_cast<uint64_t>(state->hunger_mp) +
-                              state->happiness_mp + state->energy_mp) /
-                             3u;
+        average_before_mp =
+            (hunger_before_mp + happiness_before_mp + energy_before_mp) / 3u;
     }
 
     state->hunger_mp =
@@ -212,6 +272,9 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
     if (feeds_branch) {
         state->care_integral_mp_seconds += average_before_mp * segment;
     }
+
+    accumulate_personality(state, config, segment, hunger_before_mp,
+                            happiness_before_mp, energy_before_mp);
 }
 
 /* -----------------------------------------------------------------------
@@ -282,6 +345,11 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u8(out, off, state->adult_branch);
     put_u64(out, off, state->stage_elapsed_seconds);
     put_u64(out, off, state->care_integral_mp_seconds);
+    put_u64(out, off, state->hunger_integral_mp_seconds);
+    put_u64(out, off, state->happiness_integral_mp_seconds);
+    put_u64(out, off, state->energy_integral_mp_seconds);
+    put_u32(out, off, state->care_recency_window_seconds);
+    put_u8(out, off, state->base_trait);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -328,6 +396,19 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->adult_branch = get_u8(in, off);
     state->stage_elapsed_seconds = get_u64(in, off);
     state->care_integral_mp_seconds = get_u64(in, off);
+    state->hunger_integral_mp_seconds = get_u64(in, off);
+    state->happiness_integral_mp_seconds = get_u64(in, off);
+    state->energy_integral_mp_seconds = get_u64(in, off);
+    state->care_recency_window_seconds = get_u32(in, off);
+    const uint8_t base_trait_byte = get_u8(in, off);
+    if (base_trait_byte >= KF_PET_BASE_TRAIT_COUNT) {
+        KF_LOGE(TAG,
+                "save has an invalid base_trait byte (%u, table has only %u "
+                "entries) -- refusing to load",
+                base_trait_byte, KF_PET_BASE_TRAIT_COUNT);
+        return false;
+    }
+    state->base_trait = base_trait_byte;
     return true;
 }
 
@@ -347,6 +428,12 @@ kf_pet_config kf_pet_default_config(void) {
     c.baby_duration_seconds = 86400u;           /* 1 day */
     c.child_duration_seconds = 2u * 86400u;     /* 2 days */
     c.teen_duration_seconds = 3u * 86400u;      /* 3 days */
+
+    /* ADR 0023: illustrative, same status as every other number in this
+     * function -- 24h means a stretch of one care style dominates the
+     * personality reading for about a day after it ends before fresher
+     * care outweighs it. */
+    c.personality_recency_half_life_seconds = 86400u; /* 24 hours */
     return c;
 }
 
@@ -361,6 +448,25 @@ void kf_pet_init(kf_pet_state *state) {
     state->adult_branch = 0u;
     state->stage_elapsed_seconds = 0u;
     state->care_integral_mp_seconds = 0u;
+    state->hunger_integral_mp_seconds = 0u;
+    state->happiness_integral_mp_seconds = 0u;
+    state->energy_integral_mp_seconds = 0u;
+    state->care_recency_window_seconds = 0u;
+
+    /* ADR 0023: rolled once, here, and never touched again for the rest
+     * of the pet's life (see kf/pet.h's header comment on kf_pet_state's
+     * base_trait). kf_rng_below(), not kf_entropy() directly -- the
+     * game-visible, deterministic RNG kf/rng.h documents as exactly what
+     * "anything the pet ... observes" should come from, so this stays
+     * repeatable across a save/load and identical run to run under a
+     * pinned seed, the same property every other kf_rng_below() call in
+     * this codebase already relies on. Requires kf_rng_seed() to already
+     * have run before the first pet a process creates -- normally once at
+     * boot from the entropy HAL (kf/app.cpp's kf_demo_init() call) -- the
+     * same ordering requirement this file now shares with every other
+     * kf_rng consumer, not a new one it introduces. */
+    state->base_trait =
+        static_cast<uint8_t>(kf_rng_below(KF_PET_BASE_TRAIT_COUNT));
 }
 
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
@@ -418,6 +524,28 @@ void kf_pet_play(kf_pet_state *state) {
 
 void kf_pet_rest(kf_pet_state *state) {
     state->energy_mp = clamp_add(state->energy_mp, kCareBoostMp);
+}
+
+/* ADR 0023: a pure query over the three whole-life accumulators, computed
+ * fresh every call rather than cached anywhere -- see kf/pet.h's header
+ * comment on kf_pet_state for why. Comparing the three raw accumulator
+ * totals directly (rather than dividing each by elapsed time first to get
+ * a true average) is valid because all three accumulate over the
+ * identical span of time, segment for segment, via the same
+ * accumulate_personality() call above -- there is no per-need difference
+ * in "how many seconds were counted" for this to normalise away. */
+uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state) {
+    uint64_t best = state->hunger_integral_mp_seconds;
+    uint8_t best_index = 0u; /* hunger -- also the tie-break/all-zero default */
+    if (state->happiness_integral_mp_seconds > best) {
+        best = state->happiness_integral_mp_seconds;
+        best_index = 1u;
+    }
+    if (state->energy_integral_mp_seconds > best) {
+        best = state->energy_integral_mp_seconds;
+        best_index = 2u;
+    }
+    return best_index;
 }
 
 kf_result kf_pet_save(const kf_pet_state *state) {
