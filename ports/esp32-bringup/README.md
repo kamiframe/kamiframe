@@ -2,6 +2,10 @@
 
 A hardware diagnostic. **Not** the firmware.
 
+**Plug into the DevKitC-1's `UART` port, not `USB`** -- see
+[`docs/hardware-bringup.md`](../../docs/hardware-bringup.md#running-the-diagnostic)
+for why the other port silently won't flash.
+
 ```
 idf.py set-target esp32s3
 idf.py flash monitor
@@ -31,7 +35,7 @@ list of things that could be wrong should be as short as possible, and
 header is the part that matters: a bring-up that passes cannot be testing
 different pins than the firmware will use.
 
-See ADR 0024 for the full reasoning, including why the microSD card gets its
+See ADR 0023 for the full reasoning, including why the microSD card gets its
 own SPI bus and why the bring-up clocks run at half the firmware's.
 
 ## Start here

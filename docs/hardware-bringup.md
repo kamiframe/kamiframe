@@ -194,6 +194,20 @@ pressed.
 
 ## Running the diagnostic
 
+**Plug into the port labelled `UART`, not the one labelled `USB`.** The
+DevKitC-1 has two USB-C ports. `UART` goes through the onboard USB-to-serial
+chip and is wired to GPIO43/44 -- the same UART0 every stage above prints
+to, and the port `idf.py flash monitor` below needs. `USB` is the chip's
+native USB (GPIO19/20, reserved in the pin table above) and nothing in this
+repo talks over it yet. Plugging into `USB` instead is the most common
+reason a board looks "dead" during bring-up when it is actually fine --
+`idf.py` will simply find no serial port to flash.
+
+Once it's plugged into `UART`, it shows up as a serial device you point
+`idf.py -p` at -- `COMx` on Windows, `/dev/cu.usbserial-XXXX` (or
+`/dev/cu.SLAB_USBtoUART`) on macOS. If it doesn't show up at all, that's
+usually the Silicon Labs CP210x driver missing, not a wiring problem.
+
 ```
 cd ports/esp32-bringup
 idf.py set-target esp32s3
