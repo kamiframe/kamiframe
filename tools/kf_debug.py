@@ -399,6 +399,15 @@ class SerialLink:
         return read_frame(self._ser.readline, overall_timeout=overall_timeout,
                            verbose=self.verbose)
 
+    def readline(self):
+        """The raw per-call-timeout readline() read_frame() is built on,
+        exposed directly. Callers that want the framing/CRC/log-skipping
+        logic should use read_frame() above -- this exists so something
+        outside this module (kf_panel.py's transport layer) can hand
+        read_frame() (the free function) its own line source without
+        reaching into the pyserial object this class wraps."""
+        return self._ser.readline()
+
     def close(self):
         self._ser.close()
 

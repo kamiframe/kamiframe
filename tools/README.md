@@ -8,6 +8,8 @@ firmware or the simulator.
 - `kf_debug.py` -- talk to a real board over USB. Explained below.
 - `kf_debug_selftest.py` -- proves `kf_debug.py` decodes the wire protocol
   correctly, without needing a board plugged in.
+- `kf_panel.py` -- a window you can click and type into to drive a real
+  board. Explained below.
 
 ## kf_debug.py -- seeing and driving a real board without a camera
 
@@ -111,3 +113,113 @@ uses, and checks the picture that comes back out is pixel-for-pixel
 identical to the one that went in -- along with a few other checks (a
 deliberately corrupted reply is caught, a silent board times out with a
 useful message, and so on).
+
+## kf_panel.py -- a remote control for the hardware
+
+`kf_debug.py` is a command you run once and get one answer back.
+`kf_panel.py` is a window that stays open: a pad of buttons you click (or
+control from the keyboard) that presses the real buttons on the board, a
+box that shows the pet's live stats, and a button to grab a screenshot
+whenever you want one. Think of it as a remote control, not a screenshot
+tool.
+
+The idea is you keep this window open next to the physical device (or
+plugged into your laptop with the screen facing you) while you poke at
+it, instead of typing a new `kf_debug.py` command every time you want to
+press a button.
+
+### Launching it
+
+```
+python3 tools/kf_panel.py
+```
+
+That auto-detects the board's serial port, the same way `kf_debug.py`
+does, and shows a "Connect" button -- nothing happens to the board until
+you click it. If you have more than one board plugged in, or the
+auto-detect doesn't find it, there's a port dropdown next to Connect;
+pick the right one and click Rescan if it's not listed yet.
+
+To try the window with no hardware at all -- to see what it looks like,
+or if you're changing something in this file and want to check it still
+works -- there's a demo mode that fakes a whole device in software:
+
+```
+python3 tools/kf_panel.py --demo
+```
+
+In demo mode the window connects itself automatically, the button pad
+moves a little coloured blob around a fake screen, and the state readout
+shows made-up-but-plausible numbers that actually change when you press
+buttons. It's not a real pet, just enough of a stand-in to prove the
+window works.
+
+### What's in the window
+
+- **Buttons.** UP, DOWN, LEFT, RIGHT, A, B, and MENU, laid out like a
+  real device's D-pad-plus-two-buttons-plus-menu. Click one for a quick
+  tap; click and hold for a longer, timed press (the board tells the
+  difference the same way a real finger would). The same seven buttons
+  work from the keyboard too: arrow keys for the D-pad, Z and X for A and
+  B, and Enter or Escape for MENU -- clicking with a mouse seven times in
+  a row gets old fast.
+- **Pet state.** Stage, hunger, happiness, energy, personality trait, how
+  long it's been in this stage, plus some low-level health numbers (free
+  memory, frames per second) -- refreshed automatically, about once a
+  second by default. This reply is tiny, so refreshing it often doesn't
+  slow anything else down. You can change how often it refreshes with the
+  "State poll" box next to Connect.
+- **Save Screenshot.** Grabs a real screenshot straight off the device
+  and saves it as a PNG, the same as `kf_debug.py shot` does. Every click
+  makes a new file with the time in its name (like
+  `kf_shot_20260808_193355.png`) in your Downloads folder, so clicking it
+  five times in a row while debugging gives you five separate files
+  instead of overwriting the same one. The full path to the last file you
+  saved is shown in a box you can click into and copy (Cmd+C / Ctrl+C) --
+  handy for dragging or pasting the file into a chat with someone (or
+  something) that isn't standing next to the device. There's also a
+  keyboard shortcut, Cmd+S on a Mac or Ctrl+S elsewhere. A small preview
+  of the last screenshot you took sits underneath the button, so you can
+  tell at a glance you captured the moment you meant to.
+
+  A screenshot takes a second or two to arrive -- the button will say
+  "Capturing..." and grey itself out while that's happening. That's
+  normal, not a freeze; the rest of the window (buttons, state readout)
+  keeps working while it waits.
+- **Simulator debug controls.** A greyed-out section for things like
+  fast-forwarding the pet's clock and resetting it -- controls the
+  desktop simulator's own debug window already has. The real board
+  doesn't support any of this yet, so every control in this section is
+  disabled; hover over one to see why. It's there so the window doesn't
+  need to be redesigned later, once those commands exist.
+
+There is deliberately **no live view of the screen itself** in this
+window. The assumption is you're looking at the actual device screen (or
+the simulator window) while you use this panel to drive it, so nothing
+here polls the display in the background -- that would only compete with
+button presses and state updates for no benefit. If you want a one-off
+picture of what's currently on the screen, that's what Save Screenshot is
+for.
+
+### Picking what to connect to
+
+By default `kf_panel.py` looks for a real board over USB, same as
+`kf_debug.py`. You can be explicit with `--target`:
+
+```
+python3 tools/kf_panel.py --target serial:/dev/cu.usbserial-1420
+python3 tools/kf_panel.py --target serial:auto     # same as the default
+python3 tools/kf_panel.py --demo                   # no hardware at all
+```
+
+There's also a `sim:` form (`--target sim:localhost:9500`) reserved for
+once the desktop simulator can speak this same protocol over the network
+instead of a real board over USB -- it isn't built yet, so using it today
+just gives you a clear "not implemented" message instead of a crash.
+
+### If something goes wrong
+
+Same causes as `kf_debug.py` -- see that section above. The window
+reports connection and command failures in the status line along the
+bottom rather than popping up dialogs, so if a button press or screenshot
+doesn't seem to do anything, that's the first place to look.
