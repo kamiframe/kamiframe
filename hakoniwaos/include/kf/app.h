@@ -137,6 +137,20 @@ uint32_t kf_app_buttons_pressed(void);
 
 const kf_frame_stats *kf_app_last_frame(void);
 
+/* The on-screen constraint HUD (ADR 0006). Off by default, and deliberately
+ * NOT bound to any button: MENU used to toggle it, which both stole a button
+ * the player needs for screen navigation (ADR 0022) and put a
+ * redrawn-every-frame overlay on the panel, which is a visible ripple on a
+ * display with no tearing-effect signal.
+ *
+ * The same numbers are available without drawing anything: over serial once a
+ * second via kf_app_log_budget_report(), on demand as JSON through the KFDBG
+ * bridge (ADR 0030), and live in the desktop debug window. Reach for this only
+ * when the numbers genuinely have to be burned into the framebuffer -- a
+ * photograph of the panel, or a backend with no console. */
+void kf_app_set_hud_visible(bool visible);
+bool kf_app_hud_visible(void);
+
 /* Rolling summary over the most recent window of frames (256). */
 kf_frame_summary kf_app_frame_summary(void);
 

@@ -63,11 +63,11 @@ struct AppState {
     uint64_t candidate_since_us = 0;
     uint32_t buttons_pressed_edge = 0;
 
-    /* The constraint HUD from ADR 0006's "Later" section. Off by default:
-     * it is a development affordance, not something the device shows a
-     * user, and keeping it off keeps the golden-frame and dirty-area tests
-     * (which never press MENU) exercising the demo alone. Toggle with
-     * KF_BTN_MENU. */
+    /* The constraint HUD from ADR 0006's "Later" section. Off by default and
+     * no longer bound to any button -- it is a development affordance, not
+     * something the device shows a player, and it redraws every frame, which
+     * is a visible ripple on a panel with no tearing-effect signal. A backend
+     * that wants it drives it through kf_app_set_hud_visible(). */
     bool hud_visible = false;
 };
 
@@ -331,7 +331,6 @@ void kf_app_init(kf_demo_mode mode) {
     KF_LOGI(TAG, "budget: %d fps, %" PRIu32 " us per frame, link %" PRIu32 " bytes/s",
             KF_TARGET_FPS, static_cast<uint32_t>(KF_FRAME_BUDGET_US),
             caps->link_bytes_per_second);
-    KF_LOGI(TAG, "press MENU to toggle the on-screen constraint HUD");
 
     g.last_report_us = kf_time_mono_us();
     g.initialised = true;
@@ -355,14 +354,26 @@ bool kf_app_frame(void) {
         debounce(raw);
     }
 
-    if (g.buttons_pressed_edge & KF_BTN_MENU) {
-        g.hud_visible = !g.hud_visible;
-        /* Whichever way it just toggled, something on screen needs a
-         * clean repaint: turning the HUD off leaves its last frame's
-         * pixels sitting in the framebuffer with nothing left to redraw
-         * them, and only the demo knows its own background colour. */
-        kf_demo_request_full_repaint();
-    }
+    /* MENU no longer toggles the HUD. It used to, and that was two separate
+     * mistakes wearing one button.
+     *
+     * It stole a game button: MENU is how the player moves between screens
+     * (ADR 0022), so every screen change also flipped a developer overlay on
+     * or off, and the overlay drew on top of whatever screen you had just
+     * navigated to.
+     *
+     * And the overlay is live timing data, so it redrew every frame -- 12% of
+     * the panel, measured on hardware -- which on a display with no
+     * tearing-effect signal is a visible ripple. See kf_lvgl_idempotent.h for
+     * why continuous redrawing is a correctness problem here rather than a
+     * performance one.
+     *
+     * The numbers themselves lost nothing: kf_app_log_budget_report() prints
+     * them over serial once a second, the KFDBG bridge serves them as JSON on
+     * demand (ADR 0030), and the desktop debug window shows them live. A
+     * backend that still wants them burned into the framebuffer can call
+     * kf_app_set_hud_visible() -- it is just not bound to a button the player
+     * uses. */
 
     kf_demo_update(g.buttons_stable, g.buttons_pressed_edge);
     kf_demo_draw();
@@ -455,6 +466,20 @@ uint32_t kf_app_buttons_held(void) { return g.buttons_stable; }
 uint32_t kf_app_buttons_pressed(void) { return g.buttons_pressed_edge; }
 
 const kf_frame_stats *kf_app_last_frame(void) { return &g.last; }
+
+void kf_app_set_hud_visible(bool visible) {
+    if (g.hud_visible == visible) {
+        return;
+    }
+    g.hud_visible = visible;
+    /* Whichever way it just changed, something on screen needs a clean
+     * repaint: turning the HUD off leaves its last frame's pixels sitting in
+     * the framebuffer with nothing left to redraw them, and only the demo
+     * knows its own background colour. */
+    kf_demo_request_full_repaint();
+}
+
+bool kf_app_hud_visible(void) { return g.hud_visible; }
 
 kf_frame_summary kf_app_frame_summary(void) {
     kf_frame_summary s{};
