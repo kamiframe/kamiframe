@@ -60,24 +60,90 @@ namespace {
 constexpr int kWidth = 240;
 constexpr int kHeight = 320;
 
-/* SPI clock for the display during bring-up: 20MHz, deliberately half of
- * kf/budget.h's KF_DISPLAY_SPI_HZ. Long breadboard jumper wires are not
- * controlled-impedance anything, and a panel that works at 20MHz on a
- * breadboard and fails at 40 is a wiring-length problem, not a wiring-order
- * problem. Prove it works slowly first; measure the real ceiling later. */
-constexpr int kLcdClockHz = 20 * 1000 * 1000;
+/* 4MHz, dropped from 20 after the first real bring-up: Chris's panel is on
+ * a chain of Dupont jumpers with inline couplers, which is a long way from
+ * a controlled-impedance trace. Prove the panel works at a clock no wiring
+ * can plausibly break, then raise it. If it works here and fails at 20MHz,
+ * that is a wire-length answer, not a wiring-order one. */
+constexpr int kLcdClockHz = 4 * 1000 * 1000;
 
 /* One horizontal strip of the framebuffer at a time, so nothing here needs
  * a full 150KB frame and every transfer comes out of DMA-capable internal
  * RAM. 240 x 40 x 2 bytes = 19200 bytes. */
+
+/* ------------------------------------------------------------------------
+ * WHICH PANEL IS PLUGGED IN.
+ *
+ * false = Waveshare 2inch, ST7789V, PH2.0 cable.
+ * true  = HiLetgo 2.8in, ILI9341, plain 0.1in pins.
+ *
+ * Flip this, rebuild, flash. Nothing else changes: the wires are the same
+ * eight, and the 2.8in module has ordinary header pins so it goes straight
+ * into the breadboard with no cable and no couplers.
+ *
+ * This exists as a control experiment. After a full evening of measurement
+ * the ESP32 side is verified about as far as it can be -- all five control
+ * lines swing a clean 3.3V at the panel's own pads under firmware, the
+ * supply is 3.3V, and the init sequence matches the upstream Linux driver
+ * written for that exact Waveshare module. If a different panel on the same
+ * eight wires produces a picture, the Waveshare one is faulty. If it also
+ * stays dark, everything I have concluded is wrong and the fault is on the
+ * ESP32 side somewhere none of these tests has looked.
+ * ---------------------------------------------------------------------- */
+constexpr bool kPanelIsIli9341 = true;
+
 constexpr int kStripRows = 40;
 
-constexpr uint16_t kBlack = 0x0000;
-constexpr uint16_t kWhite = 0xFFFF;
-constexpr uint16_t kRed = 0xF800;
-constexpr uint16_t kGreen = 0x07E0;
-constexpr uint16_t kBlue = 0x001F;
-constexpr uint16_t kGrey = 0x2104;
+/* ------------------------------------------------------------------------
+ * BYTE ORDER. This is the whole reason the first ILI9341 run showed the
+ * wrong colours, and it is worth writing down properly because it is
+ * invisible from the outside.
+ *
+ * RGB565 is sixteen bits, and both of these controllers want the high byte
+ * on the wire first. The ESP32-S3 is little-endian, so a uint16_t 0xF800
+ * sitting in a framebuffer is stored as 0x00 0xF8 and esp_lcd hands the
+ * bytes to SPI exactly as they lie in memory -- panel_io_spi_tx_color does
+ * not touch colour data, only commands and parameters get byte-reversed.
+ * The panel therefore reads 0x00F8, which is not red. It is blue.
+ *
+ * The ST7789 has a way out: RAMCTRL (0xB0) carries a little-endian bit, and
+ * esp_lcd_new_panel_st7789() sets it from panel_dev_config.data_endian,
+ * which this file sets to LITTLE. That is why the constants below were
+ * written plain in the first place.
+ *
+ * But that bit is only ever sent by esp_lcd_panel_init(), and for the
+ * ILI9341 this file deliberately SKIPS esp_lcd_panel_init(), because 0xB0
+ * is a different register on that controller. So the request never reaches
+ * the panel -- and the ILI9341 has no equivalent register anyway. It is
+ * always big-endian. The framebuffer has to match it.
+ *
+ * Measured, not deduced. Full-screen fills on the 2.8in module read:
+ *
+ *   sent 0xF800 (red)   -> shown blue    0x00F8 = R0  G7  B24
+ *   sent 0x07E0 (green) -> shown pink    0xE007 = R28 G0  B7
+ *   sent 0x001F (blue)  -> shown green   0x1F00 = R3  G56 B0
+ *   sent 0xFFFF (white) -> shown white   (byte order cannot show)
+ *   sent 0x0000 (black) -> shown black   (byte order cannot show)
+ *
+ * Every one of those five matches a plain byte swap and nothing else. So
+ * the colours below are stored pre-swapped for the ILI9341: what the name
+ * says is what comes out of the glass.
+ * ---------------------------------------------------------------------- */
+constexpr uint16_t wire(uint16_t c) {
+    return kPanelIsIli9341
+               ? static_cast<uint16_t>((c >> 8) | (c << 8))
+               : c;
+}
+
+constexpr uint16_t kBlack = wire(0x0000);
+constexpr uint16_t kWhite = wire(0xFFFF);
+constexpr uint16_t kRed = wire(0xF800);
+constexpr uint16_t kGreen = wire(0x07E0);
+constexpr uint16_t kBlue = wire(0x001F);
+constexpr uint16_t kGrey = wire(0x2104);
+constexpr uint16_t kYellow = wire(0xFFE0);
+constexpr uint16_t kCyan = wire(0x07FF);
+constexpr uint16_t kMagenta = wire(0xF81F);
 
 struct Stage {
     const char *name;
@@ -236,11 +302,128 @@ void fill_strip(uint16_t color) {
     }
 }
 
+
+/* An ILI9341's power-up sequence. Same shape as the Waveshare table below:
+ * the controller needs its power and gamma registers set before it will
+ * drive glass, and neither ESP-IDF nor anything else sends them for you.
+ *
+ * The panel handle still comes from esp_lcd_new_panel_st7789(). That is not
+ * a bodge: the only thing the driver does per-frame is CASET (0x2A), RASET
+ * (0x2B) and RAMWR (0x2C), and those three are byte-identical on the two
+ * controllers. Only the init differs, and this file sends that itself. What
+ * IS skipped for this panel is esp_lcd_panel_init(), because it would send
+ * RAMCTRL (0xB0), which on an ILI9341 is a completely different register.
+ */
+struct PanelCmd {
+    uint8_t cmd;
+    uint8_t data[16];
+    uint8_t len;
+    const char *what;
+};
+
+const PanelCmd kIli9341Init[] = {
+    {0xEF, {0x03, 0x80, 0x02}, 3, "undocumented, in every driver"},
+    {0xCF, {0x00, 0xC1, 0x30}, 3, "power control B"},
+    {0xED, {0x64, 0x03, 0x12, 0x81}, 4, "power on sequence"},
+    {0xE8, {0x85, 0x00, 0x78}, 3, "driver timing A"},
+    {0xCB, {0x39, 0x2C, 0x00, 0x34, 0x02}, 5, "power control A"},
+    {0xF7, {0x20}, 1, "pump ratio"},
+    {0xEA, {0x00, 0x00}, 2, "driver timing B"},
+    {0xC0, {0x23}, 1, "PWCTR1  power control 1"},
+    {0xC1, {0x10}, 1, "PWCTR2  power control 2"},
+    {0xC5, {0x3E, 0x28}, 2, "VMCTR1  vcom 1"},
+    {0xC7, {0x86}, 1, "VMCTR2  vcom 2"},
+    /* 0x88 = MY set, MX clear, BGR set. Portrait, with the module's pin
+     * header at the TOP, which is how it gets mounted. The value every
+     * Arduino library prints for this panel is 0x48, which is the same
+     * thing rotated 180 degrees, i.e. header at the bottom. Both are
+     * correct portrait; only the two mirror bits differ. Verified by
+     * photograph of the test card 2026-08-08. */
+    {0x36, {0x88}, 1, "MADCTL  orientation + BGR"},
+    {0x3A, {0x55}, 1, "COLMOD  16 bit"},
+    {0xB1, {0x00, 0x18}, 2, "FRMCTR1 frame rate"},
+    {0xB6, {0x08, 0x82, 0x27}, 3, "DFUNCTR display function"},
+    {0xF2, {0x00}, 1, "gamma disable"},
+    {0x26, {0x01}, 1, "gamma curve select"},
+    {0xE0, {0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
+            0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00}, 15, "GMCTRP1"},
+    {0xE1, {0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1,
+            0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F}, 15, "GMCTRN1"},
+    {0x11, {}, 0, "SLPOUT  wake up"},
+};
+
+void send_init_table(const PanelCmd *table, int count) {
+    for (int i = 0; i < count; ++i) {
+        const esp_err_t err = esp_lcd_panel_io_tx_param(
+            g_panel_io, table[i].cmd, table[i].len ? table[i].data : nullptr,
+            table[i].len);
+        printf("             0x%02X  %-30s %s\n", table[i].cmd, table[i].what,
+               err == ESP_OK ? "ok" : "FAILED");
+        if (table[i].cmd == 0x11) {
+            vTaskDelay(pdMS_TO_TICKS(150)); /* datasheet wants 120ms */
+        }
+    }
+}
+
+/* Every esp_lcd call in this file used to have its return value thrown
+ * away, including the reset, the init, the display-on and every single
+ * draw. That is a real hole in a diagnostic: a panel whose transfers are
+ * all failing looks identical, from the serial log, to a panel that is
+ * wired perfectly and simply will not light. Nothing here ignores a return
+ * code any more. */
+int g_lcd_errors = 0;
+
+bool lcd_ok(esp_err_t err, const char *what) {
+    if (err == ESP_OK) {
+        return true;
+    }
+    ++g_lcd_errors;
+    printf("           ** %s FAILED: %s (0x%x)\n", what, esp_err_to_name(err),
+           (int)err);
+    return false;
+}
+
+/* A single small block, and nothing else on the panel touched. This is the
+ * cheapest possible write: one draw_bitmap call, a few thousand pixels, no
+ * loop. If a panel will show this and will not show a full frame, the two
+ * failures are different and worth separating. */
+void draw_square(uint16_t color, int x, int y, int size) {
+    for (int i = 0; i < size * size; ++i) {
+        g_strip[i] = color;
+    }
+    lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, x, y, x + size, y + size, g_strip),
+           "draw_bitmap (square)");
+}
+
+/* Three horizontal bands, for identifying colour-order faults. A solid fill
+ * cannot tell you whether red and blue are swapped, because you have nothing
+ * to compare it against and a wrong colour still looks like a colour. Three
+ * named bands at once can: the human reads them off top to bottom and the
+ * order they report tells you exactly which transform is wrong. */
+[[maybe_unused]] void draw_bands(uint16_t top, uint16_t mid, uint16_t bot) {
+    const int third = kHeight / 3;
+    for (int y = 0; y < kHeight; y += kStripRows) {
+        const int rows = (y + kStripRows > kHeight) ? (kHeight - y) : kStripRows;
+        for (int r = 0; r < rows; ++r) {
+            const int abs_y = y + r;
+            const uint16_t c = (abs_y < third) ? top
+                             : (abs_y < 2 * third) ? mid
+                             : bot;
+            for (int x = 0; x < kWidth; ++x) {
+                g_strip[r * kWidth + x] = c;
+            }
+        }
+        lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip),
+               "draw_bitmap (bands)");
+    }
+}
+
 void fill_screen(uint16_t color) {
     fill_strip(color);
     for (int y = 0; y < kHeight; y += kStripRows) {
         const int rows = (y + kStripRows > kHeight) ? (kHeight - y) : kStripRows;
-        esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip);
+        lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip),
+               "draw_bitmap (strip)");
     }
 }
 
@@ -253,7 +436,7 @@ void fill_screen(uint16_t color) {
  * modules. If the green square is not top-left, the rotation or mirror
  * settings are wrong. Both are one-line fixes, but only if you can see
  * them. */
-void draw_alignment_frame() {
+[[maybe_unused]] void draw_alignment_frame() {
     constexpr int kBorder = 6;
     constexpr int kCorner = 40;
 
@@ -272,8 +455,148 @@ void draw_alignment_frame() {
                 g_strip[r * kWidth + x] = c;
             }
         }
-        esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip);
+        lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip),
+               "draw_bitmap (strip)");
     }
+}
+
+/* One static frame that answers colour order and orientation together, and
+ * holds still long enough to photograph. Everything in it is positioned so
+ * that a photo is unambiguous even if the module is held upside down:
+ *
+ *   - an 18px RED bar across the TOP, with a WHITE notch at its LEFT end
+ *   - a 10px GREEN stripe down the LEFT edge only
+ *   - an 18px BLUE bar across the BOTTOM
+ *   - eight named patches in the middle, two across and four down, in a
+ *     fixed reading order:
+ *
+ *         WHITE    BLACK
+ *         RED      GREEN
+ *         BLUE     YELLOW
+ *         CYAN     MAGENTA
+ *
+ * Read off the photo: if the white notch is not in the top-left corner the
+ * orientation bits are wrong, and which corner it lands in says exactly
+ * which of MX/MY/MV to change. If the notch is right but a patch is the
+ * wrong colour, that is the colour path, and the pattern of which patches
+ * are wrong says whether it is the BGR bit (red and blue exchange, the
+ * greys and the greens stay put) or byte order (nothing sane happens, but
+ * white and black stay correct). Those two are impossible to tell apart
+ * from three bands, which is why the three-band test wasted an evening. */
+void draw_test_card() {
+    constexpr int kBar = 18;
+    constexpr int kStripe = 10;
+    constexpr int kNotch = 24;
+
+    const uint16_t card[8] = {kWhite, kBlack, kRed,  kGreen,
+                              kBlue,  kYellow, kCyan, kMagenta};
+
+    const int iy0 = kBar;
+    const int iy1 = kHeight - kBar;
+    const int cw = (kWidth - kStripe) / 2;
+    const int ch = (iy1 - iy0) / 4;
+
+    for (int y = 0; y < kHeight; y += kStripRows) {
+        const int rows = (y + kStripRows > kHeight) ? (kHeight - y) : kStripRows;
+        for (int r = 0; r < rows; ++r) {
+            const int ay = y + r;
+            for (int x = 0; x < kWidth; ++x) {
+                uint16_t c;
+                if (ay < kBar) {
+                    c = (x < kNotch) ? kWhite : kRed;
+                } else if (ay >= iy1) {
+                    c = kBlue;
+                } else if (x < kStripe) {
+                    c = kGreen;
+                } else {
+                    int col = (x - kStripe) / cw;
+                    int row = (ay - iy0) / ch;
+                    if (col > 1) col = 1;
+                    if (row > 3) row = 3;
+                    c = card[row * 2 + col];
+                }
+                g_strip[r * kWidth + x] = c;
+            }
+        }
+        lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip),
+               "draw_bitmap (test card)");
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * Stage 2a: is each control line actually arriving at the panel?
+ *
+ * This exists because of a mistake worth naming. For several rounds of
+ * debugging I described the panel as "accepting" and "acknowledging" the
+ * data, because every esp_lcd call returned ESP_OK. That was wrong. This
+ * panel has no SDO pin -- the header is VCC GND DIN CLK CS DC RST BL --
+ * so the bus is write-only and nothing is ever read back. ESP_OK means the
+ * ESP32 clocked bytes out of its own pin. It says nothing whatsoever about
+ * whether the panel received them.
+ *
+ * A continuity test does not close that gap either: it proves copper joins
+ * two points while the board is switched off. It cannot prove a pin is
+ * being driven, or driven to the right voltage, under firmware.
+ *
+ * So: drive each line by hand, slowly enough that a multimeter can follow,
+ * and let a human confirm the voltage at the panel's own pad. That tests
+ * the whole chain -- GPIO, breadboard, jumper, coupler, cable, connector,
+ * pad -- which is the thing nothing else here has actually tested.
+ * ---------------------------------------------------------------------- */
+void stage_pin_wiggle() {
+    banner("STAGE 2a: are the control lines arriving AT THE PANEL?");
+
+    struct Line {
+        gpio_num_t pin;
+        const char *panel_pad;
+    };
+    constexpr Line kLines[] = {
+        {KF_ESP_PIN_LCD_RST, "RST"}, {KF_ESP_PIN_LCD_DC, "DC"},
+        {KF_ESP_PIN_LCD_CS, "CS"},   {KF_ESP_PIN_LCD_SCLK, "CLK"},
+        {KF_ESP_PIN_LCD_MOSI, "DIN"},
+    };
+
+    printf("  Put your multimeter on DC volts. Black probe on the panel's\n");
+    printf("  GND pad. Leave the red probe on the pad named below.\n\n");
+    printf("  Each line is held HIGH for 6 seconds, then LOW for 6. You are\n");
+    printf("  looking for roughly 3.3V, then roughly 0V, at the PANEL end.\n\n");
+    printf("  Anything that never moves is not reaching the panel, whatever\n");
+    printf("  a continuity test says. Anything that swings but only reaches\n");
+    printf("  1-2V is being loaded down by something.\n");
+
+    uint64_t mask = 0;
+    for (const Line &l : kLines) {
+        mask |= (1ULL << l.pin);
+    }
+    gpio_config_t cfg{};
+    cfg.pin_bit_mask = mask;
+    cfg.mode = GPIO_MODE_OUTPUT;
+    cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+    cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    cfg.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&cfg);
+    for (const Line &l : kLines) {
+        gpio_set_level(l.pin, 0);
+    }
+
+    for (const Line &l : kLines) {
+        printf("\n  ---- probe the panel's %s pad now ----\n", l.panel_pad);
+        printf("       GPIO%-2d  HIGH ... expect about 3.3V\n", (int)l.pin);
+        gpio_set_level(l.pin, 1);
+        vTaskDelay(pdMS_TO_TICKS(6000));
+        printf("       GPIO%-2d  LOW  ... expect about 0V\n", (int)l.pin);
+        gpio_set_level(l.pin, 0);
+        vTaskDelay(pdMS_TO_TICKS(6000));
+    }
+
+    /* Hand the pins back so the SPI peripheral can claim them cleanly. */
+    for (const Line &l : kLines) {
+        gpio_reset_pin(l.pin);
+    }
+    printf("\n  Done. Also measure the panel's own VCC pad against GND while\n");
+    printf("  you are there: it should be about 3.3V. If it reads 5V, this\n");
+    printf("  module's own documentation says the supply and the logic have\n");
+    printf("  to match, and 3.3V logic into a 5V-powered panel will not work.\n");
 }
 
 void stage_display() {
@@ -334,31 +657,193 @@ void stage_display() {
         return;
     }
 
-    esp_lcd_panel_reset(g_panel);
-    esp_lcd_panel_init(g_panel);
-    esp_lcd_panel_invert_color(g_panel, false);
-    esp_lcd_panel_disp_on_off(g_panel, true);
-
-    info("Watch the panel: RED, GREEN, BLUE, WHITE, then a test frame.");
-
-    const uint16_t sequence[] = {kRed, kGreen, kBlue, kWhite, kBlack};
-    for (uint16_t c : sequence) {
-        fill_screen(c);
-        vTaskDelay(pdMS_TO_TICKS(600));
+    lcd_ok(esp_lcd_panel_reset(g_panel), "esp_lcd_panel_reset");
+    if (!kPanelIsIli9341) {
+        lcd_ok(esp_lcd_panel_init(g_panel), "esp_lcd_panel_init");
     }
-    draw_alignment_frame();
 
-    pass(1, "the panel accepted %d full frames at %d MHz.",
-         (int)(sizeof(sequence) / sizeof(sequence[0])) + 1, kLcdClockHz / 1000000);
-    info("NOW LOOK AT THE SCREEN. You should see a WHITE screen with a");
-    info("RED border on all four edges and a GREEN square top-left.");
+    /* ------------------------------------------------------------------
+     * The registers ESP-IDF does not send.
+     *
+     * panel_st7789_init() in esp_lcd_panel_st7789.c sends exactly four
+     * commands: SLPOUT, MADCTL, COLMOD, RAMCTRL. That is enough for the
+     * controller to accept traffic, which is why every transaction here
+     * reports success. It is NOT enough to drive this particular glass:
+     * nothing configures the common voltage, the gate voltage, the VRH
+     * drive level or the power control, so the panel runs on whatever its
+     * power-on defaults happen to be.
+     *
+     * On a module whose defaults suit it, that works and everyone is
+     * happy. On this one it does not, and the failure looks exactly like a
+     * wiring fault: the controller acknowledges everything and the screen
+     * stays dark.
+     *
+     * The values below are the Waveshare 2inch LCD module's own sequence,
+     * taken from the upstream Linux DRM driver written for this exact
+     * board rather than from a generic ST7789 example. VCOMS, VRHS, VDVS
+     * and PWCTRL1 are the four that decide whether anything is visible at
+     * all; the gamma tables only change how colours look.
+     * ------------------------------------------------------------------ */
+    static const PanelCmd kWaveshareInit[] = {
+        {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, "PORCTRL  porch control"},
+        {0xB7, {0x35}, 1, "GCTRL    gate control"},
+        {0xBB, {0x1F}, 1, "VCOMS    common voltage"},
+        {0xC0, {0x2C}, 1, "LCMCTRL  lcd control"},
+        {0xC2, {0x01}, 1, "VDVVRHEN vdv/vrh enable"},
+        {0xC3, {0x12}, 1, "VRHS     vrh set"},
+        {0xC4, {0x20}, 1, "VDVS     vdv set"},
+        {0xC6, {0x0F}, 1, "FRCTRL2  frame rate"},
+        {0xD0, {0xA4, 0xA1}, 2, "PWCTRL1  power control"},
+        {0xE0, {0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
+                0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23}, 14, "PVGAMCTRL"},
+        {0xE1, {0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
+                0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23}, 14, "NVGAMCTRL"},
+    };
+
+    if (kPanelIsIli9341) {
+        info("Panel selected: ILI9341 (the 2.8in HiLetgo). Sending its own");
+        info("full init, and skipping ESP-IDF's ST7789 init entirely:");
+        send_init_table(kIli9341Init,
+                        (int)(sizeof(kIli9341Init) / sizeof(kIli9341Init[0])));
+    } else {
+        info("Panel selected: ST7789 (the 2in Waveshare). Sending the power");
+        info("and gamma registers ESP-IDF's generic driver leaves at their");
+        info("power-on defaults:");
+        send_init_table(kWaveshareInit,
+                        (int)(sizeof(kWaveshareInit) / sizeof(kWaveshareInit[0])));
+    }
+
+    lcd_ok(esp_lcd_panel_disp_on_off(g_panel, true), "disp_on_off(true)");
+
+    /* ------------------------------------------------------------------
+     * Named colours, one at a time, slowly, with the serial line saying
+     * which one is on screen right now.
+     *
+     * The point of announcing each fill is to separate two failures that
+     * look identical to someone glancing at a panel: "the colours are
+     * flickering past too fast to read" and "the panel is showing noise."
+     * If the serial line says RED and the panel is solid anything, the SPI
+     * path works and the remaining questions are about the controller's
+     * settings. If the panel is fizzing static while the serial line says
+     * RED, the data is arriving corrupted and no amount of controller
+     * configuration will fix it.
+     * ------------------------------------------------------------------ */
+    struct NamedColor {
+        const char *name;
+        uint16_t value;
+    };
+    constexpr NamedColor kSequence[] = {
+        {"RED", kRed}, {"GREEN", kGreen}, {"BLUE", kBlue},
+        {"WHITE", kWhite}, {"BLACK", kBlack},
+    };
+
+    /* ------------------------------------------------------------------
+     * Bisect before filling anything.
+     *
+     * "Noise, then black" has two completely different causes and they
+     * need different fixes. Either the panel is fine and our pixel writes
+     * are being executed as commands (which would eventually hit 0x28,
+     * display off), or the panel never came up properly and goes dark on
+     * its own. Writing a full red frame immediately destroys the evidence
+     * for telling those apart, so: write nothing, then write almost
+     * nothing, then write everything, narrating each step.
+     * ------------------------------------------------------------------ */
+    info("");
+    info("STEP A. The panel is initialised and switched on, and I am now");
+    info("deliberately sending it NOTHING for 8 seconds. Whatever is on");
+    info("the screen right now is the panel's own uninitialised memory.");
+    info("  still fuzzy after 8s -> the panel is alive and our writes are");
+    info("                          what kills it. That is a DC problem.");
+    info("  goes black by itself -> the panel is not staying awake, which");
+    info("                          is reset or power, not the data path.");
+    vTaskDelay(pdMS_TO_TICKS(8000));
+
+    info("");
+    info("STEP B. Writing ONE small red square, 60x60, near the top-left.");
+    info("Nothing else on the screen is touched.");
+    info("  a red square appears -> the data path works and the problem is");
+    info("                          somewhere in the full-frame path");
+    info("  no square, and the");
+    info("    screen goes black  -> those pixel bytes were executed as");
+    info("                          commands. DC again, whatever continuity");
+    info("                          says -- check it while the board runs.");
+    draw_square(kRed, 20, 20, 60);
+    vTaskDelay(pdMS_TO_TICKS(8000));
+
+    info("");
+    info("STEP C. A second square, GREEN, further down. If the red one is");
+    info("still there and a green one joins it, the panel is genuinely");
+    info("working and only the full-frame writes are the problem.");
+    draw_square(kGreen, 20, 120, 60);
+    vTaskDelay(pdMS_TO_TICKS(8000));
+
+    info("");
+    info("STEP D. Now full-screen fills, one second each.");
+    for (const NamedColor &c : kSequence) {
+        printf("           ... now showing %s\n", c.name);
+        fill_screen(c.value);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    /* ------------------------------------------------------------------
+     * Then the same test frame twice, once with the panel's inversion off
+     * and once on, because that single bit is the difference between a
+     * mostly-white frame and a mostly-black one.
+     *
+     * ST7789 silicon defaults to inversion OFF, but a great many IPS
+     * modules built around it -- Waveshare's included -- are wired such
+     * that they need INVON to show correct colours. Guessing costs a
+     * rebuild; showing both and asking costs eight seconds.
+     * ------------------------------------------------------------------ */
+    /* Inversion OFF is the settled answer for this module: the alignment
+     * frame drawn with it off came out on a white field, and with it on
+     * came out on a black one. Left here as one explicit call rather than
+     * an A/B pair, so the panel is never in an unknown inversion state. */
+    lcd_ok(esp_lcd_panel_invert_color(g_panel, false), "invert_color(false)");
+
+    info("");
+    info("STEP E. The test card. It stays up for 90 seconds -- long enough");
+    info("to photograph. Take a photo of the panel and send it.");
+    info("");
+    info("What SHOULD be on the glass:");
+    info("  a RED bar across the top, with a WHITE notch at its LEFT end");
+    info("  a GREEN stripe down the LEFT edge only");
+    info("  a BLUE bar across the bottom");
+    info("  and eight patches in the middle, two across, four down:");
+    info("        WHITE   BLACK");
+    info("        RED     GREEN");
+    info("        BLUE    YELLOW");
+    info("        CYAN    MAGENTA");
+    info("");
+    info("Hold the module the way it sits on the breadboard, ribbon and");
+    info("pin header at the bottom, and photograph it straight on.");
+    draw_test_card();
+    vTaskDelay(pdMS_TO_TICKS(90000));
+
+    /* Left in whichever state the panel was last put into, so the button
+     * stage in stage 5 is readable either way. */
+    if (g_lcd_errors == 0) {
+        pass(1, "%d frames pushed at %d MHz, every esp_lcd call returned OK.",
+             (int)(sizeof(kSequence) / sizeof(kSequence[0])) + 4,
+             kLcdClockHz / 1000000);
+        info("That means the ESP32 clocked the bytes out. It does NOT mean");
+        info("the panel received them: this bus is write-only, there is no");
+        info("SDO pin on this module, and nothing is ever read back.");
+    } else {
+        fail(1, "some esp_lcd calls returned errors -- see the ** lines above",
+             "the errors themselves, not the wiring");
+    }
+    info("  A looked right      -> nothing to change, the panel is done");
+    info("  B looked right      -> this panel needs inversion; tell me and");
+    info("                         I will set it in esp_display.cpp too");
+    info("  both looked wrong,");
+    info("    but SOLID          -> rgb_ele_order should be BGR");
+    info("  fizzing static      -> DC (GPIO9) first, then wire length");
     info("  nothing at all      -> SCLK (GPIO12) or MOSI (GPIO11)");
-    info("  white noise/garbage -> DC (GPIO9), or wires too long for 20MHz");
     info("  border clipped      -> the panel needs an offset "
          "(esp_lcd_panel_set_gap)");
-    info("  colours swapped     -> rgb_ele_order should be BGR for this panel");
-    info("  green square not");
-    info("    in the top-left   -> mirror/swap_xy settings");
+    info("  green square in the");
+    info("    wrong corner      -> mirror/swap_xy settings");
 }
 
 /* ------------------------------------------------------------------------
@@ -649,9 +1134,9 @@ struct ButtonBinding {
 };
 
 constexpr ButtonBinding kButtons[] = {
-    {KF_ESP_PIN_BTN_UP, "UP", kRed},      {KF_ESP_PIN_BTN_DOWN, "DOWN", 0xFD20},
-    {KF_ESP_PIN_BTN_LEFT, "LEFT", 0xFFE0}, {KF_ESP_PIN_BTN_RIGHT, "RIGHT", kGreen},
-    {KF_ESP_PIN_BTN_A, "A", 0x07FF},      {KF_ESP_PIN_BTN_B, "B", kBlue},
+    {KF_ESP_PIN_BTN_UP, "UP", kRed},       {KF_ESP_PIN_BTN_DOWN, "DOWN", wire(0xFD20)},
+    {KF_ESP_PIN_BTN_LEFT, "LEFT", kYellow}, {KF_ESP_PIN_BTN_RIGHT, "RIGHT", kGreen},
+    {KF_ESP_PIN_BTN_A, "A", kCyan},        {KF_ESP_PIN_BTN_B, "B", kBlue},
     {KF_ESP_PIN_BTN_MENU, "MENU", 0xF81F},
 };
 constexpr int kButtonCount = sizeof(kButtons) / sizeof(kButtons[0]);
@@ -672,7 +1157,8 @@ void draw_button_bands(uint32_t pressed_mask) {
                 g_strip[r * kWidth + x] = held ? kButtons[band].color : kGrey;
             }
         }
-        esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip);
+        lcd_ok(esp_lcd_panel_draw_bitmap(g_panel, 0, y, kWidth, y + rows, g_strip),
+               "draw_bitmap (strip)");
     }
 }
 
@@ -787,6 +1273,7 @@ extern "C" void app_main(void) {
 
     stage_board_info();
     stage_backlight();
+    stage_pin_wiggle();
     stage_display();
     stage_i2c_and_rtc();
     stage_sd_card();

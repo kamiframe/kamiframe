@@ -64,11 +64,32 @@ extern "C" {
  * same resolution is NOT a drop-in: same wires, different init sequence, so
  * it needs esp_lcd_new_panel_ili9341() instead. Check which controller the
  * module actually has before wiring.
+ *
+ * The panel actually working on the bench as of 2026-08-08 is an ILI9341
+ * (HiLetgo 2.8in, module HSD028309). Its settled configuration, measured
+ * rather than assumed, is in ADR 0023: MADCTL 0x88 with the pin header
+ * mounted at the TOP, COLMOD 0x55, inversion OFF, and -- the one that
+ * costs an evening if you miss it -- a BIG-ENDIAN framebuffer, because the
+ * ILI9341 has no equivalent of the ST7789's RAMCTRL little-endian bit and
+ * esp_lcd does not byte-reverse colour data. esp_display.cpp still targets
+ * the ST7789 and will need all of that if the ILI9341 becomes the panel.
  * ------------------------------------------------------------------------- */
 #define KF_ESP_PIN_LCD_MOSI GPIO_NUM_11
 #define KF_ESP_PIN_LCD_SCLK GPIO_NUM_12
 #define KF_ESP_PIN_LCD_CS   GPIO_NUM_10
-#define KF_ESP_PIN_LCD_DC   GPIO_NUM_9
+/* DC moved off GPIO9 to GPIO7 during first bring-up (2026-08-07). Two
+ * reasons, one measured and one on principle.
+ *
+ * Measured: on the board in hand, GPIO9 driven high as a plain GPIO
+ * produced under a millivolt at the panel, while RST, CS, CLK and DIN all
+ * swung a clean 3.3V on the same breadboard through the same kind of
+ * jumper. A new wire and a different cable changed nothing.
+ *
+ * On principle: GPIO9 is FSPIHD, one of SPI2's own IOMUX function pins on
+ * this chip, and this build drives SPI2 on 10/11/12 which are the other
+ * three. Borrowing the fourth as a hand-driven GPIO is the kind of thing
+ * that works right up until it does not. GPIO7 has no such second job. */
+#define KF_ESP_PIN_LCD_DC   GPIO_NUM_7
 #define KF_ESP_PIN_LCD_RST  GPIO_NUM_8
 #define KF_ESP_PIN_LCD_BL   GPIO_NUM_6
 
@@ -143,7 +164,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 #define KF_ESP_PIN_I2S_BCLK  GPIO_NUM_1 /* shared: amp + mic */
 #define KF_ESP_PIN_I2S_WS    GPIO_NUM_2 /* shared: amp + mic */
-#define KF_ESP_PIN_I2S_DOUT  GPIO_NUM_7 /* to MAX98357A DIN */
+#define KF_ESP_PIN_I2S_DOUT  GPIO_NUM_9 /* to MAX98357A DIN; was 7, swapped with LCD_DC */
 #define KF_ESP_PIN_I2S_DIN   GPIO_NUM_47 /* from INMP441 SD */
 
 #ifdef __cplusplus
