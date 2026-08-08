@@ -65,6 +65,12 @@
 ## needed on kamiframe_lvgl_port itself. See docs/architecture/
 ## adr-0027-lvgl-on-esp32.md's "Verified" section for how that was actually
 ## confirmed, not just reasoned about.
+##
+## kf_dbg_bridge.cpp/kf_dbg_codec.cpp (ADR 0030, the KFDBG serial debug
+## bridge): plain files in this directory, not a new component -- same
+## reasoning as kf_pet_session.cpp above, one canonical copy with no
+## third-party dependency of its own. esp_driver_uart REQUIRES is new here:
+## nothing else in this component called driver/uart.h before this.
 idf_component_register(
     SRCS
         app_main.cpp
@@ -79,6 +85,8 @@ idf_component_register(
         ../../../simulator/src/pet/kf_pet_session.cpp
         ../../../simulator/src/lua/kf_lua_alloc.cpp
         ../../../simulator/src/lua/kf_lua_port.cpp
+        kf_dbg_bridge.cpp
+        kf_dbg_codec.cpp
     INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../simulator/src/lua"
     REQUIRES
         hakoniwaos
@@ -88,6 +96,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_spi
         esp_driver_i2c
+        esp_driver_uart
         esp_lcd
         esp_timer
         nvs_flash
@@ -108,6 +117,18 @@ idf_component_register(
 ## (an xtensa-esp-elf/C++ LLONG_MAX gap, and the ABI reason both sides of
 ## the kf_lua_port.cpp <-> lua_core boundary have to agree on LUA_INTEGER's
 ## real width, not just its typedef'd name).
+##
+## KF_DBG_BRIDGE_ENABLE / KF_DBG_INPUT_INJECT_ENABLE (ADR 0030) are NOT set
+## here -- both default to 1 in kf_dbg_bridge.h, which is correct for this
+## pre-release developer firmware. A SHIPPING build removes the bridge (and
+## therefore remote button injection) entirely by adding, right here:
+##     target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_DBG_BRIDGE_ENABLE=0)
+## which compiles kf_dbg_bridge_init()/_frame()/_shutdown() down to empty
+## functions and kf_dbg_input_mask() down to an unconditional `return 0` --
+## see kf_dbg_bridge.h's own comment on that flag. Setting only
+## KF_DBG_INPUT_INJECT_ENABLE=0 keeps PING/SHOT/STATE (read-only
+## introspection) while refusing remote control of the buttons, for a
+## build that wants the former without the latter.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0
     LUA_32BITS

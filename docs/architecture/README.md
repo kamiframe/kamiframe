@@ -37,6 +37,7 @@ future us in month eight asking the same question with less patience.
 | [0027](adr-0027-lvgl-on-esp32.md) | LVGL on ESP32: the pet screen, on the real panel | Accepted |
 | [0028](adr-0028-esp32-lua-port.md) | Lua on ESP-IDF, and the demo creature driving the pet for real | Accepted |
 | [0029](adr-0029-panel-profiles.md) | Panel profiles: one display driver, many panels | Accepted |
+| [0030](adr-0030-serial-debug-bridge.md) | The KFDBG serial debug bridge: see and drive the device over USB, no camera | Accepted |
 
 Open evaluations, deliberately not decided:
 

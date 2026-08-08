@@ -62,6 +62,7 @@
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
 
+#include "kf_dbg_bridge.h"
 #include "kf_lua_demo_creature_script.h"
 #include "kf_lua_port.h"
 #include "kf_lvgl_port.h"
@@ -166,10 +167,35 @@ extern "C" void app_main(void) {
     kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
                       kKfLuaDemoCreatureScriptChunkName);
 
+    /* Last of all the *_init() calls, and deliberately so: STATE's reply
+     * reads kf_pet_session_state(), SHOT reads kf_fb_pixels() (up since
+     * kf_app_init() above), and PING reads KF_PANEL_PROFILE -- every one of
+     * those needs to already be real by the time a command could possibly
+     * arrive, which is only ever inside the loop below. See ADR 0030 for
+     * the full protocol and docs/architecture/adr-0030-serial-debug-bridge.md's
+     * "Shipping a build with this off" section for the one-flag way to
+     * remove this from a non-developer build. */
+    KF_LOGI(TAG, "starting kf_dbg_bridge_init (serial debug bridge)");
+    kf_dbg_bridge_init();
+
     uint64_t next_pet_log_us = kf_time_mono_us() + kPetLogIntervalUs;
 
     KF_LOGI(TAG, "running (kf_app_frame loop; no quit condition on device)");
-    while (kf_app_frame()) {
+    for (;;) {
+        /* kf_dbg_bridge_frame() runs BEFORE kf_app_frame() specifically so
+         * a KFDBG BTN/BTNHOLD command already sitting in the queue affects
+         * THIS iteration's kf_input_poll() (called from inside
+         * kf_app_frame(), first thing) -- "for the next frame," as the
+         * protocol spec puts it, means the very next one, not the one
+         * after. Non-blocking either way: see kf_dbg_bridge.h's own "WHY A
+         * BACKGROUND TASK" comment for why this never stalls the loop
+         * regardless of where it sits in it. */
+        kf_dbg_bridge_frame();
+
+        if (!kf_app_frame()) {
+            break;
+        }
+
         /* kf_app_frame() paces itself against KF_FRAME_BUDGET_US via
          * kf_time_delay_us() (see hakoniwaos/src/app.cpp) -- no extra
          * vTaskDelay needed here, matching sdl_main.cpp's own bare
@@ -208,15 +234,19 @@ extern "C" void app_main(void) {
 
     /* Unreachable in practice: esp_input.cpp's kf_input_poll() hardcodes
      * quit_requested = false (there is no hardware "quit" concept), so
-     * g.running in app.cpp never flips false on this backend. Kept anyway,
-     * the same way sdl_main.cpp keeps its own shutdown call after a loop
-     * that can exit -- correct shape if that ever changes, dead code if it
-     * doesn't, and either way cheaper than leaving it out and being wrong
-     * later. Shutdown is the exact reverse of the init order above -- Lua,
-     * then LVGL, then the pet session, then the app -- which is also the
-     * order sdl_main.cpp uses. Lua and LVGL only touch their own arena
-     * blocks, but kf_pet_session_shutdown() still needs the storage HAL that
+     * g.running in app.cpp never flips false on this backend -- `for (;;)`
+     * with an explicit `if (!kf_app_frame()) break;` above still only ever
+     * exits through that same, never-taken path. Kept anyway, the same way
+     * sdl_main.cpp keeps its own shutdown call after a loop that can exit --
+     * correct shape if that ever changes, dead code if it doesn't, and
+     * either way cheaper than leaving it out and being wrong later.
+     * Shutdown is the exact reverse of the init order above -- the debug
+     * bridge, then Lua, then LVGL, then the pet session, then the app --
+     * which for everything below kf_dbg_bridge_shutdown() is also the order
+     * sdl_main.cpp uses. Lua and LVGL only touch their own arena blocks, but
+     * kf_pet_session_shutdown() still needs the storage HAL that
      * kf_app_shutdown() is about to tear down. */
+    kf_dbg_bridge_shutdown();
     kf_lua_port_shutdown();
     kf_lvgl_port_shutdown();
     kf_pet_session_shutdown();

@@ -15,12 +15,24 @@
  * needed for bring-up; if the real board ends up with external pull-ups or
  * a different active level, that is a kf_esp_pins.h + this file change, not
  * a core change.
+ *
+ * kf_dbg_input_mask() (kf_dbg_bridge.h, ADR 0030): the KFDBG serial debug
+ * bridge's BTN/BTNHOLD commands let a host inject a button mask for
+ * testing without hardware in front of it. ORed into the real GPIO read
+ * below, never assigned over it, so a physical button press still works
+ * exactly as before even while an injection is live -- this file has no
+ * way to tell "real" and "injected" apart once merged, by design: core's
+ * debounce (app.cpp) is meant to see one raw mask, not two sources to
+ * reconcile. Behind KF_DBG_INPUT_INJECT_ENABLE (defaults on; see that
+ * flag's own comment for what a shipping build should do), and a no-op
+ * (always returns 0) whenever the bridge is compiled out entirely.
  */
 
 #include "kf/hal/input.h"
 
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "kf_dbg_bridge.h"
 #include "kf_esp_pins.h"
 
 #include "driver/gpio.h"
@@ -79,6 +91,10 @@ kf_result kf_input_poll(kf_input_raw *out) {
             mask |= static_cast<uint32_t>(b.button);
         }
     }
+
+    /* OR, not assign: see this file's header comment. A no-op (returns 0)
+     * unless the debug bridge and its input-injection flag are both on. */
+    mask |= kf_dbg_input_mask();
 
     out->buttons = mask;
     out->sampled_at_us = kf_time_mono_us();
