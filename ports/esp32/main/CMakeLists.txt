@@ -43,6 +43,12 @@
 ## Referenced from simulator/src/pet/ by relative path, the same pattern
 ## the HAL backends above already use for ../hal/ -- one canonical copy of
 ## the file, not a fork.
+##
+## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0030): same relative-path pattern as
+## kf_pet_session.cpp above -- these two files have no third-party library of
+## their own, only Lua itself does, which is why Lua earns the new
+## "lua" REQUIRES below (../components/lua, registered via this port's
+## CMakeLists.txt EXTRA_COMPONENT_DIRS) instead of being folded in here.
 idf_component_register(
     SRCS
         app_main.cpp
@@ -55,9 +61,12 @@ idf_component_register(
         ../hal/esp_storage.cpp
         ../hal/esp_power.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
-    INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet"
+        ../../../simulator/src/lua/kf_lua_alloc.cpp
+        ../../../simulator/src/lua/kf_lua_port.cpp
+    INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../simulator/src/lua"
     REQUIRES
         hakoniwaos
+        lua
         spi_flash
         esp_driver_gpio
         esp_driver_spi
@@ -76,6 +85,13 @@ idf_component_register(
 ## static allocation over 200KB), and this build opts out of it
 ## explicitly, since a real device has neither the SRAM to spare nor any
 ## caller for it (nothing in app_main.cpp is a debug key binding).
+##
+## LUA_32BITS: must match ../components/lua/CMakeLists.txt's identical
+## define on `lua_core` exactly -- see that file's own comment for why
+## (an xtensa-esp-elf/C++ LLONG_MAX gap, and the ABI reason both sides of
+## the kf_lua_port.cpp <-> lua_core boundary have to agree on LUA_INTEGER's
+## real width, not just its typedef'd name).
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0
+    LUA_32BITS
 )

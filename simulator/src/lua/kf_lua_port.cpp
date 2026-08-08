@@ -353,7 +353,8 @@ void kf_lua_port_shutdown() {
     if (!g.ready) {
         return;
     }
-    KF_LOGI(TAG, "shutting down after %u frame(s)", g.frame_count);
+    KF_LOGI(TAG, "shutting down after %u frame(s)",
+            static_cast<unsigned>(g.frame_count));
     lua_close(g.L);
     g.L = nullptr;
     g.ready = false;

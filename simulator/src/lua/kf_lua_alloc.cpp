@@ -231,7 +231,7 @@ void kf_lua_alloc_init() {
 
     KF_LOGI(TAG, "ready: %u bytes usable for Lua's heap (KF_ARENA_LUA_BYTES "
                  "%u, %zu bytes of that is this allocator's own bookkeeping)",
-            payload, static_cast<unsigned>(KF_ARENA_LUA_BYTES),
+            static_cast<unsigned>(payload), static_cast<unsigned>(KF_ARENA_LUA_BYTES),
             2u * kTagBytes);
 }
 
@@ -317,7 +317,7 @@ void *kf_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
                 "out of Lua heap on grow: wanted %zu bytes, had %u. "
                 "Returning NULL, which Lua surfaces as a catchable "
                 "script-level error.",
-                nsize, header->payload_bytes);
+                nsize, static_cast<unsigned>(header->payload_bytes));
         return nullptr;
     }
     const size_t copy_bytes =
