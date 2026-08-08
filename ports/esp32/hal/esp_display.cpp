@@ -17,13 +17,19 @@
  * Three decisions worth naming, matching sdl_display.cpp's own honesty
  * comment:
  *
- * 1. supports_partial_update is false. dirty_rects/dirty_rect_count are
- *    accepted (the signature requires it) but ignored, and every present()
- *    pushes the full frame. Honouring dirty rects for real is a genuine
- *    future optimisation -- union the rects, one bitmap call per rect, wait
- *    once at the end -- not done here because a wrong partial-update
- *    implementation that skips pixels it shouldn't is a worse bug than an
- *    honest full-frame push.
+ * 1. supports_partial_update is TRUE, and dirty rectangles are honoured. This
+ *    started life as an optimisation to do later and turned out to be a
+ *    correctness requirement, found on hardware: re-sending an unchanged
+ *    frame is not merely wasteful. The panel scans its own memory out to the
+ *    glass continuously on its own clock, and nothing on this board wires up
+ *    a tearing-effect signal to say when writing is safe, so rewriting all
+ *    153,600 bytes underneath that scan 30 times a second leaves a permanent
+ *    moving boundary between old and new contents. To the eye that is a
+ *    pulsing band travelling down the screen. A still pet now costs zero
+ *    bytes and the flicker has nowhere to come from.
+ *
+ *    It is also most of the frame budget: a full frame is ~31ms of wire time
+ *    at the measured 40MHz, against a 33ms budget at 30fps.
  *
  * 2. Byte order is per-panel, and on a panel that needs swapping it costs a
  *    pass over the frame. See kf_display_present() for the reasoning and
@@ -50,6 +56,8 @@
 #include "esp_lcd_panel_vendor.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include <cstring>
 
 namespace {
 
@@ -101,8 +109,8 @@ kf_display_caps g_caps = {
     KF_DISPLAY_WIDTH,
     KF_DISPLAY_HEIGHT,
     KF_PIXFMT_RGB565,
-    /* supports_partial_update: false -- see header comment above. */
-    false,
+    /* supports_partial_update: true -- see header comment above. */
+    true,
     /* has_backlight: true -- on/off only, see header comment above. */
     true,
     /* link_bytes_per_second: the real, configured SPI clock, not an
@@ -238,70 +246,112 @@ kf_result kf_display_init(void) {
 
 const kf_display_caps *kf_display_get_caps(void) { return &g_caps; }
 
+namespace {
+
+/* Push one rectangle, staging it through the alternating strip buffers.
+ *
+ * Everything goes through a staging copy, including panels that need no byte
+ * swap, for two reasons. A rectangle narrower than the screen is not
+ * contiguous in the framebuffer, so its rows have to be packed somewhere
+ * regardless. And handing esp_lcd a pointer into the live framebuffer is the
+ * same DMA race this file already fixed once: LVGL writes into that memory
+ * between frames, with no regard for whether a transfer is still reading it.
+ *
+ * Now that only changed pixels are sent, the copy is proportional to what
+ * actually moved rather than to the screen, which is what makes paying for it
+ * unconditionally the cheaper trade. */
+kf_result push_rect(const kf_color *framebuffer, int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > KF_DISPLAY_WIDTH) x1 = KF_DISPLAY_WIDTH;
+    if (y1 > KF_DISPLAY_HEIGHT) y1 = KF_DISPLAY_HEIGHT;
+
+    const int w = x1 - x0;
+    if (w <= 0 || y1 - y0 <= 0) {
+        return KF_OK;
+    }
+
+    constexpr int kCapacityPixels = KF_DISPLAY_WIDTH * kSwapStripRows;
+    int rows_per_chunk = kCapacityPixels / w;
+    if (rows_per_chunk < 1) {
+        rows_per_chunk = 1;
+    }
+
+    for (int y = y0; y < y1; y += rows_per_chunk) {
+        int rows = rows_per_chunk;
+        if (y + rows > y1) {
+            rows = y1 - y;
+        }
+
+        /* Alternate before writing, never after -- see kSwapBufferCount. */
+        g_swap_index = (g_swap_index + 1) % kSwapBufferCount;
+        uint16_t *strip = g_swap_strip[g_swap_index];
+
+        for (int row = 0; row < rows; ++row) {
+            const kf_color *src =
+                framebuffer + static_cast<size_t>(y + row) * KF_DISPLAY_WIDTH + x0;
+            uint16_t *dst = strip + static_cast<size_t>(row) * w;
+            if (kPanel.big_endian_fb) {
+                for (int i = 0; i < w; ++i) {
+                    dst[i] = __builtin_bswap16(src[i]);
+                }
+            } else {
+                memcpy(dst, src, static_cast<size_t>(w) * sizeof(uint16_t));
+            }
+        }
+
+        const esp_err_t err =
+            esp_lcd_panel_draw_bitmap(g_panel, x0, y, x1, y + rows, strip);
+        if (err != ESP_OK) {
+            KF_LOGE(TAG, "draw_bitmap(%d,%d,%d,%d) failed: %d", x0, y, x1,
+                    y + rows, err);
+            return KF_ERR_IO;
+        }
+    }
+    return KF_OK;
+}
+
+/* The dirty list describes what changed since the previous present. Before
+ * the first one there is no previous, so the panel's memory holds whatever it
+ * powered up with and the whole screen has to go out once. */
+bool g_first_present = true;
+
+} // namespace
+
 kf_result kf_display_present(const kf_color *framebuffer,
                               const kf_rect *dirty_rects, int dirty_rect_count) {
-    (void)dirty_rects;
-    (void)dirty_rect_count;
-
     if (g_panel == nullptr) {
         return KF_ERR_UNAVAILABLE;
     }
 
-    /* Half-open x_end/y_end, exactly kf_rect's own convention (kf/types.h)
-     * -- draw_bitmap's x_end/y_end are documented the same way, so the full
-     * frame is [0, WIDTH) x [0, HEIGHT) with no off-by-one adjustment. */
-    if (!kPanel.big_endian_fb) {
-        const esp_err_t err = esp_lcd_panel_draw_bitmap(
-            g_panel, 0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT, framebuffer);
-        if (err != ESP_OK) {
-            KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed: %d", err);
-            return KF_ERR_IO;
-        }
+    if (g_first_present) {
+        g_first_present = false;
+        return push_rect(framebuffer, 0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT);
+    }
+
+    /* Nothing changed: send nothing.
+     *
+     * This is the line that stops the flicker. Re-sending an identical frame
+     * is not a harmless waste -- the panel is scanning its memory out to the
+     * glass continuously, on its own clock, with no tearing-effect signal
+     * wired to tell us when it is safe to write. Rewriting all 153,600 bytes
+     * underneath that scan 30 times a second means the scan permanently sees
+     * a moving boundary between the old contents and the identical new ones,
+     * which reads to the eye as a pulsing band travelling down the screen.
+     *
+     * It is also most of the frame budget: a full frame is ~31ms of wire time
+     * at the measured 40MHz (KF_DISPLAY_SPI_HZ), against a 33ms budget. A pet
+     * standing still should cost nothing at all, and now does. */
+    if (dirty_rects == nullptr || dirty_rect_count <= 0) {
         return KF_OK;
     }
 
-    /* ------------------------------------------------------------------
-     * The byte-swapping path.
-     *
-     * kf_color is native-endian RGB565 by contract (kf/hal/display.h) and
-     * that contract is worth keeping: the blitter, the font renderer, the
-     * sprite data in flash and LVGL all produce and consume colours without
-     * caring what panel is attached. So the swap happens here, at the one
-     * place that knows the panel is big-endian, rather than leaking a
-     * panel's quirk into every producer of a pixel.
-     *
-     * Strip at a time rather than one big staging frame: a second full
-     * framebuffer would be another 150KB of internal RAM on a chip with
-     * 512KB, to save a handful of draw_bitmap calls. The strip costs 19KB.
-     *
-     * Cost is one pass over 76,800 pixels. Against ~31ms of wire time at
-     * 40MHz (KF_DISPLAY_SPI_HZ, measured) that is small, but it is not free,
-     * and it is a genuine reason to prefer a panel that does not need it --
-     * which is the ST7789 profile's advantage over the ILI9341 one.
-     * ------------------------------------------------------------------ */
-    for (int y = 0; y < KF_DISPLAY_HEIGHT; y += kSwapStripRows) {
-        int rows = kSwapStripRows;
-        if (y + rows > KF_DISPLAY_HEIGHT) {
-            rows = KF_DISPLAY_HEIGHT - y;
-        }
-
-        /* Alternate before writing, never after -- see kSwapBufferCount's
-         * comment. The buffer picked here must be one no in-flight transfer
-         * is still reading. */
-        g_swap_index = (g_swap_index + 1) % kSwapBufferCount;
-        uint16_t *strip = g_swap_strip[g_swap_index];
-
-        const kf_color *src = framebuffer + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
-        const int count = rows * KF_DISPLAY_WIDTH;
-        for (int i = 0; i < count; ++i) {
-            strip[i] = __builtin_bswap16(src[i]);
-        }
-
-        const esp_err_t err = esp_lcd_panel_draw_bitmap(
-            g_panel, 0, y, KF_DISPLAY_WIDTH, y + rows, strip);
-        if (err != ESP_OK) {
-            KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed at row %d: %d", y, err);
-            return KF_ERR_IO;
+    for (int i = 0; i < dirty_rect_count; ++i) {
+        const kf_rect &r = dirty_rects[i];
+        const kf_result res =
+            push_rect(framebuffer, r.x0, r.y0, r.x1, r.y1);
+        if (res != KF_OK) {
+            return res;
         }
     }
     return KF_OK;
