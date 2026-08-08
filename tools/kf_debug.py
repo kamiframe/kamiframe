@@ -82,6 +82,11 @@ BUTTON_BITS = {
 _BEGIN_RE = re.compile(r"^KFDBG-BEGIN (\S+) (\d+)$")
 _END_RE = re.compile(r"^KFDBG-END ([0-9a-fA-F]+)$")
 
+# A payload line: nothing but the base64 alphabet, optional '=' padding at the
+# very end. Used to tell payload apart from firmware log lines sharing the
+# same UART -- see the comment in read_frame()'s payload loop.
+_B64_LINE_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+
 
 class KfDebugError(Exception):
     """Anything that should stop the CLI with a plain-English message."""
@@ -160,21 +165,28 @@ def read_frame(readline, overall_timeout=DEFAULT_TIMEOUT, verbose=False):
         line = next_line()
         if line is None:
             continue
-        # Deliberately NOT enforcing a maximum line length.
+        # Two things this deliberately does NOT do.
         #
-        # This used to reject anything over 76 characters, because the
-        # protocol spec suggested that as the wrap width. The device wraps at
-        # 88, and a real screenshot therefore failed with a protocol error --
-        # two halves of one protocol disagreeing about a number that does not
-        # matter to either of them.
+        # It does not enforce a maximum line length. That used to reject
+        # anything over 76 characters because the spec suggested that wrap
+        # width; the device wraps at 88, and a real screenshot failed on a
+        # cosmetic disagreement. Wrap width is the sender's business. The
+        # declared length below and the CRC32 catch real corruption.
         #
-        # Wrap width is a formatting detail of the sender. The receiver has no
-        # reason to care: KFDBG-BEGIN declares the exact base64 character
-        # count and KFDBG-END carries a CRC32 over the decoded bytes, so a
-        # genuinely malformed frame is caught by the length check below or the
-        # checksum, both of which detect real corruption. A line-length rule
-        # detects only disagreement about cosmetics, and it fails the whole
-        # transfer to do it.
+        # It does not assume the payload arrives uninterrupted. The bridge
+        # shares one UART with ordinary KF_LOG output, and those logs come
+        # from a different task than the transfer, so a screenshot that takes
+        # seconds to stream WILL have a log line land in the middle of it --
+        # the frame budget report alone prints once a second. Treating those
+        # as payload is what produced "17036 declared, 17081 arrived".
+        #
+        # Base64 is a strict alphabet, and log lines are full of spaces and
+        # brackets, so telling them apart is reliable. A log line that happened
+        # to be pure base64 characters would slip through, but then the CRC32
+        # rejects the frame rather than handing back a silently corrupted
+        # screenshot -- which is the failure mode that matters.
+        if not _B64_LINE_RE.match(line):
+            continue
         chunks.append(line)
         got += len(line)
     if got != b64_len:
