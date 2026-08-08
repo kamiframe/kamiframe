@@ -563,6 +563,27 @@ def build_parser():
                      "console: screenshot the real screen, read live pet "
                      "state, and press buttons, without hardware in front "
                      "of you.")
+    # --port and --verbose are attached BOTH to the top-level parser and, via
+    # `parents=`, to every subcommand. argparse would otherwise accept only
+    # `kf_debug.py --verbose shot` and reject `kf_debug.py shot --verbose`
+    # with an unhelpful "unrecognized arguments" -- a footgun that has already
+    # cost real time at the bench, where the natural thing to type is the
+    # command first and the flag after it. Both orders now work.
+    # default=SUPPRESS on the shared copies matters. Without it the subparser
+    # writes its OWN default over whatever the top-level parser already
+    # stored, so `kf_debug.py --verbose shot` would silently come back with
+    # verbose=False -- the flag accepted and then thrown away, which is worse
+    # than rejecting it. With SUPPRESS the subparser only sets the attribute
+    # when the flag actually appears after the subcommand, and the top-level
+    # value survives otherwise.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--port", default=argparse.SUPPRESS,
+                         help="serial device, e.g. /dev/cu.usbserial-1420. "
+                              "Auto-detected if omitted.")
+    common.add_argument("--verbose", action="store_true",
+                         default=argparse.SUPPRESS,
+                         help="dump raw protocol lines to stderr")
+
     p.add_argument("--port",
                     help="serial device, e.g. /dev/cu.usbserial-1420. "
                          "Auto-detected if omitted.")
@@ -571,23 +592,28 @@ def build_parser():
 
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("ping", help="check the device is alive, print build info")
+    sub.add_parser("ping", parents=[common],
+                    help="check the device is alive, print build info")
 
-    shot = sub.add_parser("shot", help="capture the live screen as a PNG")
+    shot = sub.add_parser("shot", parents=[common],
+                           help="capture the live screen as a PNG")
     shot.add_argument("--out", default=None,
                        help="output PNG path (default: ~/Downloads/kf_shot.png)")
 
-    state = sub.add_parser("state", help="print the pet's current state")
+    state = sub.add_parser("state", parents=[common],
+                            help="print the pet's current state")
     state.add_argument("--json", action="store_true",
                         help="print the raw JSON line instead of a summary")
 
-    press = sub.add_parser("press", help="simulate a button press")
+    press = sub.add_parser("press", parents=[common],
+                            help="simulate a button press")
     press.add_argument("buttons",
                         help="comma-separated button names, e.g. UP,A")
     press.add_argument("--hold-ms", type=int, default=0,
                         help="hold the button(s) for this many milliseconds")
 
-    watch = sub.add_parser("watch", help="print device state repeatedly")
+    watch = sub.add_parser("watch", parents=[common],
+                            help="print device state repeatedly")
     watch.add_argument("--interval", type=float, default=1.0,
                         help="seconds between polls (default: 1.0)")
 
