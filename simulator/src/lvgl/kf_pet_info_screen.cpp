@@ -13,7 +13,10 @@
 
 namespace {
 
-constexpr const char *TAG = "pet-info-screen";
+/* No TAG constant here: this file logs nothing. One was declared and never
+ * used, which clang rejects under -Werror (-Wunused-const-variable) while gcc
+ * and MSVC stay quiet, so it broke macOS builds without CI noticing. Add one
+ * back alongside the first KF_LOG* call, not before it. */
 
 struct Screen {
     lv_obj_t *root = nullptr;
