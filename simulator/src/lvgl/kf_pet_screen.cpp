@@ -17,9 +17,35 @@ namespace {
 
 constexpr const char *TAG = "pet-screen";
 
+/* The last values actually pushed into the widgets, so an update that would
+ * not change a single pixel can be skipped entirely.
+ *
+ * This is not a micro-optimisation, it is what stops the panel flickering.
+ * LVGL invalidates on every lv_bar_set_value()/lv_label_set_text_fmt() call
+ * whether or not the value differs -- it does not diff for you. Calling them
+ * unconditionally each frame therefore marks three bars, three labels and the
+ * blob dirty forever, which on real hardware measured as a steady 7% of the
+ * screen redrawn every frame on a pet that was doing nothing at all.
+ *
+ * A display being rewritten continuously is not free the way it is on a
+ * desktop: the panel scans its own memory out to the glass on its own clock,
+ * with no tearing-effect signal wired up, so a permanent stream of writes
+ * leaves a permanently moving boundary between old and new pixels. It reads
+ * as a ripple. Skipping unchanged updates takes a still screen to zero dirty
+ * pixels and the ripple has nowhere to come from.
+ *
+ * The sentinels are deliberately impossible values, so the first update after
+ * init always writes. */
+constexpr int32_t kBarValueUnset = INT32_MIN;
+constexpr uint32_t kTenthsUnset = UINT32_MAX;
+
 struct Row {
     lv_obj_t *bar = nullptr;
     lv_obj_t *value_label = nullptr;
+    int32_t last_bar_value = kBarValueUnset;
+    /* Tenths of a percent -- exactly the precision the label renders, so two
+     * millipercent values that format identically compare equal here. */
+    uint32_t last_tenths = kTenthsUnset;
 };
 
 struct Screen {
@@ -29,6 +55,12 @@ struct Screen {
     lv_obj_t *blob = nullptr;
     lv_obj_t *blob_label = nullptr;
     bool ready = false;
+
+    /* Last blob inputs pushed into the widgets -- see update_blob(). -1
+     * rather than a valid enum value so the first update always draws. */
+    int last_stage = -1;
+    int last_teen_form = -1;
+    int last_adult_branch = -1;
 };
 Screen g;
 
@@ -82,16 +114,30 @@ Row make_row(lv_obj_t *screen, const char *name, int16_t top_y) {
     return row;
 }
 
-void update_row(const Row &row, kf_pet_millipercent mp) {
-    lv_bar_set_value(row.bar, to_bar_value(mp), LV_ANIM_OFF);
+void update_row(Row &row, kf_pet_millipercent mp) {
+    const int32_t bar_value = to_bar_value(mp);
+    if (bar_value != row.last_bar_value) {
+        lv_bar_set_value(row.bar, bar_value, LV_ANIM_OFF);
+        row.last_bar_value = bar_value;
+    }
+
     /* e.g. "92.3%" -- one decimal digit, matching kf/app.cpp's own
      * append_fixed1() convention for the constraint HUD, just via LVGL's
      * built-in printf-style label setter instead of hand-rolled digits:
      * this file is simulator-side presentation code, not Core, so
-     * kf/poison.h's ban on libc string formatting does not apply here. */
-    lv_label_set_text_fmt(row.value_label, "%u.%u%%",
-                           static_cast<unsigned>(mp / 1000u),
-                           static_cast<unsigned>((mp / 100u) % 10u));
+     * kf/poison.h's ban on libc string formatting does not apply here.
+     *
+     * Compared in tenths rather than millipercent, because that is the
+     * precision actually rendered: hunger drifting from 92.34% to 92.36%
+     * produces the same six characters, and redrawing them would be a write
+     * to the panel that changes nothing. See Row's own comment. */
+    const uint32_t tenths = mp / 100u;
+    if (tenths != row.last_tenths) {
+        lv_label_set_text_fmt(row.value_label, "%u.%u%%",
+                               static_cast<unsigned>(tenths / 10u),
+                               static_cast<unsigned>(tenths % 10u));
+        row.last_tenths = tenths;
+    }
 }
 
 /* Placeholder blob styling (ADR 0021, see kf_pet_screen.h's header
@@ -172,6 +218,20 @@ BlobStyle blob_style(const kf_pet_state *state) {
 }
 
 void update_blob(const kf_pet_state *state) {
+    /* Same reasoning as update_row(): everything about the blob is a pure
+     * function of these three fields, so if none of them moved, redrawing it
+     * would dirty a large area of the panel to produce identical pixels. The
+     * blob is the biggest object on the screen, so this is the single
+     * largest contributor to a still frame's dirty area. */
+    if (static_cast<int>(state->stage) == g.last_stage &&
+        static_cast<int>(state->teen_form) == g.last_teen_form &&
+        static_cast<int>(state->adult_branch) == g.last_adult_branch) {
+        return;
+    }
+    g.last_stage = static_cast<int>(state->stage);
+    g.last_teen_form = static_cast<int>(state->teen_form);
+    g.last_adult_branch = static_cast<int>(state->adult_branch);
+
     const BlobStyle style = blob_style(state);
     lv_obj_set_size(g.blob, style.diameter, style.diameter);
     lv_obj_set_style_bg_color(g.blob, lv_palette_main(style.palette), 0);
