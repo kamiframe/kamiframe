@@ -47,6 +47,7 @@
 #include "kf/hal/time.h"
 
 #include "driver/uart.h"
+#include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -546,6 +547,48 @@ void kf_dbg_rx_task(void * /*arg*/) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Console muting during a transfer.
+ *
+ * This is a CORRECTNESS requirement, not tidiness, and it was found the
+ * expensive way -- on hardware, after the first real screenshot failed twice.
+ *
+ * The bridge shares one UART with every KF_LOG/ESP_LOG line the firmware
+ * emits, and those come from other tasks. A screenshot takes seconds to
+ * stream while the frame budget report prints once a second, so a log WILL
+ * arrive mid-transfer. The damaging part is that two writers to one UART do
+ * not interleave at line boundaries: the log's bytes land INSIDE a base64
+ * payload line, splicing text into the middle of it.
+ *
+ * That cannot be repaired on the host. The injected log text is made of
+ * letters and digits which are themselves valid base64 characters, so a
+ * parser cannot tell payload from intruder. Both host-side attempts proved
+ * it: counting the merged line gave 45 characters too many, rejecting it gave
+ * 38 too few, and neither number is recoverable.
+ *
+ * So the device stops talking while it transmits. Log lines emitted during a
+ * transfer are dropped, not queued -- a few missing lines during a debug
+ * screenshot is a trade worth making, and buffering them would need memory
+ * proportional to how long the transfer takes.
+ *
+ * One honest limitation: a task already inside the log function when the mute
+ * is set can still get its bytes out. That window is microseconds against a
+ * multi-second transfer, and the CRC32 catches the result, so the failure
+ * mode is a clear error and a retry rather than a silently corrupt image.
+ * ------------------------------------------------------------------------- */
+volatile bool g_console_muted = false;
+vprintf_like_t g_prev_vprintf = nullptr;
+
+int kf_dbg_log_filter(const char *fmt, va_list args) {
+    if (g_console_muted) {
+        return 0;
+    }
+    if (g_prev_vprintf != nullptr) {
+        return g_prev_vprintf(fmt, args);
+    }
+    return vprintf(fmt, args);
+}
+
 void kf_dbg_tx_task(void * /*arg*/) {
     for (;;) {
         KfDbgReplyMsg msg{};
@@ -559,7 +602,9 @@ void kf_dbg_tx_task(void * /*arg*/) {
                  * what should happen here, on this dedicated task, and
                  * exactly what must NOT happen on the frame-loop thread
                  * (see kf_dbg_bridge.h's header comment). */
+                g_console_muted = true;
                 uart_write_bytes(kUartNum, msg.data, msg.len);
+                g_console_muted = false;
             }
             heap_caps_free(msg.data);
         }
@@ -593,6 +638,14 @@ void kf_dbg_bridge_init(void) {
 
     xTaskCreate(kf_dbg_rx_task, "kf_dbg_rx", kTaskStackBytes, nullptr, kTaskPriority,
                 &g_rx_task);
+    /* Route every log line through the mute filter -- see its comment above.
+     * esp_log_set_vprintf() catches KF_LOG (which goes through esp_log_write)
+     * and ESP-IDF's own ESP_LOGx alike, which is why it is done here rather
+     * than by teaching esp_log.cpp about the bridge. Bare printf() bypasses
+     * it, but the only bare printfs are the boot banner, long before any
+     * transfer. */
+    g_prev_vprintf = esp_log_set_vprintf(kf_dbg_log_filter);
+
     xTaskCreate(kf_dbg_tx_task, "kf_dbg_tx", kTaskStackBytes, nullptr, kTaskPriority,
                 &g_tx_task);
 
@@ -616,6 +669,11 @@ void kf_dbg_bridge_shutdown(void) {
         vTaskDelete(g_rx_task);
         g_rx_task = nullptr;
     }
+    if (g_prev_vprintf != nullptr) {
+        esp_log_set_vprintf(g_prev_vprintf);
+        g_prev_vprintf = nullptr;
+    }
+    g_console_muted = false;
     if (g_tx_task != nullptr) {
         vTaskDelete(g_tx_task);
         g_tx_task = nullptr;
