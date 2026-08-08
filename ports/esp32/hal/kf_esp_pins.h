@@ -13,12 +13,20 @@
  * no doc.
  *
  * ============================================================================
- *  ASSUMPTION, NOT MEASURED. Same caveat kf/budget.h applies to
- *  KF_DISPLAY_SPI_HZ: nothing here has been wired to a real board yet (ADR
- *  0020). These are a reasonable, GPIO-matrix-friendly starting point for an
- *  ESP32-S3-WROOM-1 N16R8 devkit, not a verified pinout. Correct these at
- *  bring-up, the same as every other "ASSUMPTION, NOT MEASURED" figure in
- *  this codebase.
+ *  MEASURED, 2026-08-07/08. This file carried an "ASSUMPTION, NOT MEASURED"
+ *  banner for all of Phase 1 and no longer needs one: every pin below has
+ *  been wired to a real ESP32-S3-DevKitC-1 N16R8 and exercised by
+ *  ports/esp32-bringup, which passed every stage -- backlight, panel over
+ *  SPI, I2C with a DS3231 answering and keeping time across a power cut,
+ *  a microSD card mounting and round-tripping a file, and all seven buttons.
+ *
+ *  One pin changed as a result: LCD_DC moved from GPIO9 to GPIO7. See its
+ *  own comment below.
+ *
+ *  Still unmeasured, and called out where they live rather than here: the
+ *  I2S lines at the bottom of this file (reserved, never wired), and
+ *  KF_DISPLAY_TRANSFER_OVERHEAD_BYTES in kf/budget.h. KF_DISPLAY_SPI_HZ is
+ *  no longer among them -- the bring-up clock sweep measured it at 40MHz.
  * ============================================================================
  *
  * HARD CONSTRAINTS, not guesses. Every assignment below avoids all of these:

@@ -324,10 +324,26 @@ IOMUX pins on the ESP32-S3 are exactly the ones this pinout uses (CLK 12,
 MOSI 11, CS 10), which is the configuration that can bypass the GPIO matrix
 and reach the full rate. Whether breadboard jumpers can is the real question.
 
-Set `kRunClockSweep = false` once the figure is measured and recorded --
-after that it is 45 seconds per run answering a settled question. Note also
-that a breadboard result is a floor, not a verdict: the real PCB should be
-faster, and this should be re-measured on it.
+#### Result, 2026-08-08
+
+**40MHz.** It rendered the card correctly; 80MHz came out solid white, which
+is what wholesale data corruption looks like on this panel. `KF_DISPLAY_SPI_HZ`
+was already guessing 40MHz, so the number did not move -- but it is now
+measured, its `ASSUMPTION, NOT MEASURED` banner is gone, and the ~32fps
+full-frame ceiling the frame budget is built on is real.
+
+`kRunClockSweep` is therefore `false`. Turn it back on when the wiring or the
+panel changes, and specifically when the replacement 2in ST7789 arrives:
+that is the primary panel, this was measured on the 2.8in ILI9341, and
+ST7789 modules commonly tolerate more.
+
+Two things worth remembering about that number. 40MHz is about four times the
+ILI9341 datasheet's own write-cycle figure -- it works, and it is what
+practically every driver for this panel does, but it is outside spec and
+could be marginal on another unit or at a different temperature. And it was
+measured through Dupont jumpers with inline couplers, which is close to the
+worst wiring this project will ever have, so treat it as a floor rather than
+a ceiling for the real PCB.
 
 ---
 
@@ -365,17 +381,34 @@ does not survive `idf.py erase-flash`, which simply puts you back at step 1.
 
 ---
 
-## Known unknowns going in
+## What is measured now, and what still is not
 
-Everything in `kf_esp_pins.h` is still marked *assumption, not measured*,
-and stays that way until a real board has run against it. The same applies
-to `KF_DISPLAY_SPI_HZ` and to the ST7789's need (or not) for an x/y offset,
-which varies between modules that are otherwise identical.
+This section used to be called "known unknowns going in" and said that none
+of it had been run on hardware. That is no longer true.
 
-What has been verified: both `ports/esp32` and `ports/esp32-bringup` build
-clean against ESP-IDF v6.0.2 for the esp32s3 target, and the diagnostic's
-two drawing routines were rendered natively and inspected, because a test
-frame that is itself wrong would send you looking for a wiring fault that
-does not exist.
+**Measured on a real board, 2026-08-07/08.** Every pin in `kf_esp_pins.h`,
+via a full pass of the diagnostic: backlight, panel over SPI, I2C with a
+DS3231 present and keeping time across a real power cut, a microSD card
+mounting and round-tripping a file, and all seven buttons. `kf_esp_pins.h`
+has dropped its *assumption, not measured* banner. `KF_DISPLAY_SPI_HZ` is a
+measured 40MHz. The ILI9341 needed no x/y offset -- the test card's bars
+reach all four edges.
 
-What has not: any of it, on hardware. That is the point of the exercise.
+One pin moved: LCD_DC from GPIO9 to GPIO7, because GPIO9 measured under a
+millivolt at the panel while every other line swung a clean 3.3V. GPIO9 is
+FSPIHD, one of SPI2's own IOMUX pins, and this build drives SPI2 on the other
+three.
+
+**Still not measured.** The I2S lines are reserved and have never been wired.
+`KF_DISPLAY_TRANSFER_OVERHEAD_BYTES` in `kf/budget.h` keeps its assumption
+banner -- the clock sweep tested throughput, not per-rectangle overhead. The
+primary 2in ST7789 panel has not been measured at all; everything above was
+measured on the 2.8in ILI9341, which is the supported alternative rather than
+the reference. And none of these figures have been re-measured on a real PCB,
+where they should all improve.
+
+**Still true, and worth keeping:** both `ports/esp32` and `ports/esp32-bringup`
+build clean against ESP-IDF v6.0.2 for the esp32s3 target, and the
+diagnostic's drawing routines were rendered natively and inspected before
+they were ever trusted on glass -- because a test frame that is itself wrong
+sends you looking for a wiring fault that does not exist.

@@ -45,10 +45,32 @@
 #define KF_TARGET_FPS          30
 #define KF_FRAME_BUDGET_US     (1000000 / KF_TARGET_FPS)
 
-/* ASSUMPTION, NOT MEASURED. Correct this at hardware bring-up (Phase 1b).
+/* MEASURED, 2026-08-08, on the first real board. This was an assumption for
+ * the whole of Phase 1 and is not one any more.
  *
- * ST7789 over SPI is commonly clocked at 40-80MHz on the ESP32-S3. 40MHz is
- * the conservative figure. At 40MHz a full 240x320 RGB565 frame is
+ * Stage 2b of ports/esp32-bringup swept the panel across 4/10/20/40/80MHz,
+ * redrawing a test card at each. 40MHz was the highest that rendered
+ * correctly; 80MHz produced a solid white screen, which is what wholesale
+ * data corruption looks like on this panel. So the figure this file already
+ * guessed turns out to be right, and the ~32fps ceiling below is real rather
+ * than hoped for.
+ *
+ * Three caveats, because "measured" should not be read as "settled":
+ *
+ *   1. Measured on a HiLetgo 2.8in ILI9341 -- the officially supported
+ *      option, not the primary panel. The 2in ST7789 is the reference panel
+ *      and has not been measured. Re-measure when it arrives; ST7789 modules
+ *      commonly tolerate more, so this may go up.
+ *   2. 40MHz is roughly four times the ILI9341 datasheet's own write-cycle
+ *      figure. It works, and is what practically every driver for this panel
+ *      does, but it is outside spec and could be marginal on a different unit
+ *      or at a different temperature. It is a working number, not a
+ *      guaranteed one.
+ *   3. Measured on a breadboard through Dupont jumpers with inline couplers,
+ *      which is close to the worst wiring this project will ever have. A real
+ *      PCB should do at least this well, so treat 40MHz as a floor.
+ *
+ * At 40MHz a full 240x320 RGB565 frame is
  *
  *     240 * 320 * 2 bytes * 8 bits = 1,228,800 bits
  *     1,228,800 / 40,000,000       = 30.7 ms
@@ -66,8 +88,9 @@
  * See docs/frame-budget.md. */
 #define KF_DISPLAY_SPI_HZ      40000000
 
-/* ASSUMPTION, NOT MEASURED. Correct at hardware bring-up, same as
- * KF_DISPLAY_SPI_HZ above.
+/* ASSUMPTION, NOT MEASURED. Correct at hardware bring-up. (KF_DISPLAY_SPI_HZ
+ * above no longer carries this banner -- stage 2b measured it -- but this one
+ * still does: per-rectangle overhead was never what that sweep tested.)
  *
  * Every separate rectangle sent to the panel costs a small fixed overhead
  * before its pixels: the ST7789 needs CASET (column address window, 1

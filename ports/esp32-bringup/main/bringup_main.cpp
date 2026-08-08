@@ -75,10 +75,16 @@ constexpr int kHeight = 320;
  * sweep has measured it. */
 constexpr int kLcdClockHz = 4 * 1000 * 1000;
 
-/* Stage 2b, the clock sweep. On until KF_DISPLAY_SPI_HZ has a measured value
- * and its ASSUMPTION banner is gone; after that this is 45 seconds per run
- * answering a question already answered, and should go to false. */
-constexpr bool kRunClockSweep = true;
+/* Stage 2b, the clock sweep. Off: it did its job on 2026-08-08. 40MHz was the
+ * highest speed that rendered correctly on the ILI9341 and 80MHz came out
+ * solid white, so KF_DISPLAY_SPI_HZ is now a measured 40MHz rather than an
+ * assumed one, and running this every time would be 45 seconds spent
+ * re-answering it.
+ *
+ * Turn it back on when the wiring or the panel changes -- specifically when
+ * the replacement 2in ST7789 arrives, since that is the primary panel and
+ * this figure was measured on the 2.8in ILI9341. */
+constexpr bool kRunClockSweep = false;
 
 /* One horizontal strip of the framebuffer at a time, so nothing here needs
  * a full 150KB frame and every transfer comes out of DMA-capable internal

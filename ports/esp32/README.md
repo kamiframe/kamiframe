@@ -195,9 +195,17 @@ These are already true and need to stay true:
   in `kf_esp_pins.h`, measure the real achievable SPI clock (see below), and
   confirm the DS3231 driver added in ADR 0026 actually talks to a real chip.
 
-## The number to check first at bring-up
+## The number checked first at bring-up, and its answer
 
-`KF_DISPLAY_SPI_HZ` in `kf/budget.h` is currently an **assumption**: 40MHz,
-which puts a full 240x320 RGB565 frame at about 30ms of wire time. Everything
-the simulator says about transfer cost rests on it. Measure the real figure on
-day one of bring-up and correct it.
+`KF_DISPLAY_SPI_HZ` in `kf/budget.h` was an **assumption** for all of Phase 1:
+40MHz, putting a full 240x320 RGB565 frame at about 30ms of wire time, with
+everything the simulator says about transfer cost resting on it.
+
+**Measured 2026-08-08: 40MHz.** The bring-up diagnostic's clock sweep drove
+the panel at 4/10/20/40/80MHz in turn; 40 rendered correctly and 80 came out
+solid white. The guess was right, the ~32fps full-frame ceiling is real, and
+the banner is gone.
+
+Measured on the 2.8in ILI9341 through breadboard jumpers, which makes it a
+floor rather than a verdict -- re-measure when the primary 2in ST7789 arrives
+and again on the real PCB. See `docs/hardware-bringup.md` for the caveats.
