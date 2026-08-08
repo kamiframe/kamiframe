@@ -43,6 +43,8 @@
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "sdmmc_cmd.h"
 
 #include <cinttypes>
@@ -64,8 +66,19 @@ constexpr int kHeight = 320;
  * a chain of Dupont jumpers with inline couplers, which is a long way from
  * a controlled-impedance trace. Prove the panel works at a clock no wiring
  * can plausibly break, then raise it. If it works here and fails at 20MHz,
- * that is a wire-length answer, not a wiring-order one. */
+ * that is a wire-length answer, not a wiring-order one.
+ *
+ * "Then raise it" is stage 2b's job, not a value to edit here. This constant
+ * is the SAFE clock -- the one stage 2 proves the panel at, and the one the
+ * sweep returns to afterwards so the button stage stays readable. The real
+ * achievable figure belongs in KF_DISPLAY_SPI_HZ (kf/budget.h) once the
+ * sweep has measured it. */
 constexpr int kLcdClockHz = 4 * 1000 * 1000;
+
+/* Stage 2b, the clock sweep. On until KF_DISPLAY_SPI_HZ has a measured value
+ * and its ASSUMPTION banner is gone; after that this is 45 seconds per run
+ * answering a question already answered, and should go to false. */
+constexpr bool kRunClockSweep = true;
 
 /* One horizontal strip of the framebuffer at a time, so nothing here needs
  * a full 150KB frame and every transfer comes out of DMA-capable internal
@@ -91,6 +104,29 @@ constexpr int kLcdClockHz = 4 * 1000 * 1000;
  * ESP32 side somewhere none of these tests has looked.
  * ---------------------------------------------------------------------- */
 constexpr bool kPanelIsIli9341 = true;
+
+/* ------------------------------------------------------------------------
+ * DEAD-PANEL INVESTIGATION MODE.
+ *
+ * false (normal): the diagnostic answers "is this wired correctly" and gets
+ * out of the way. About three minutes faster per run, which matters because
+ * the RTC power-off check needs two runs.
+ *
+ * true: turns back on everything that was written to answer a different and
+ * much worse question -- "the panel is dark and I do not know why."
+ * Specifically stage 2a (drive each control line slowly enough to follow
+ * with a multimeter at the panel's own pads) and stage 2's steps A/B/C
+ * (send nothing, then one square, then a second square, so a panel that
+ * dies on write can be told apart from one that never woke up). It also
+ * holds the final test card for 90 seconds instead of 10, which is what you
+ * want if you are photographing it rather than glancing at it.
+ *
+ * Kept rather than deleted because it earned its keep once already: it is
+ * what proved the first Waveshare module's DC line was dead at the panel
+ * while the GPIO drove it perfectly. When the replacement ST7789 arrives and
+ * shows nothing, flip this to true before assuming the wiring is wrong.
+ * ---------------------------------------------------------------------- */
+constexpr bool kPanelDebugMode = false;
 
 constexpr int kStripRows = 40;
 
@@ -154,7 +190,7 @@ struct Stage {
 constexpr int kStageCount = 5;
 Stage g_stages[kStageCount] = {
     {"1. Backlight (GPIO6)", false, ""},
-    {"2. Display (ST7789 on SPI2)", false, ""},
+    {"2. Display (SPI2)", false, ""},
     {"3. I2C bus + DS3231 RTC", false, ""},
     {"4. microSD card (SPI3)", false, ""},
     {"5. Buttons", false, ""},
@@ -165,6 +201,40 @@ esp_lcd_panel_io_handle_t g_panel_io = nullptr;
 uint16_t *g_strip = nullptr;
 
 i2c_master_bus_handle_t g_i2c_bus = nullptr;
+
+/* ------------------------------------------------------------------------
+ * The one thing stage 3 cannot prove in a single run: that the DS3231 keeps
+ * time with the USB cable pulled out. That is the entire reason the RTC and
+ * its coin cell are on the board -- kf_time_wall()'s valid flag, the offline
+ * fast-forward in kf/pet.h, and every life-stage transition that happens
+ * while the device is in a drawer all rest on it.
+ *
+ * docs/hardware-bringup.md used to hand this to the human: remember the time
+ * printed, unplug for 30 seconds, plug back in, and decide for yourself
+ * whether the number moved by roughly the right amount. That works, but it
+ * is a comparison a person does badly at 1am and the firmware does perfectly
+ * -- so the firmware does it. The last reading is written to NVS, which
+ * lives in flash and therefore survives exactly the power cut being tested,
+ * and the next run compares against it.
+ *
+ * Deliberately NOT a row in the stage table above. On a first run there is
+ * nothing to compare against, and that is not a failure -- printing FAIL for
+ * it would send someone hunting a fault that does not exist, which is the
+ * specific thing this whole diagnostic is arranged to avoid.
+ * ---------------------------------------------------------------------- */
+enum class ColdBoot {
+    NotChecked,    /* stage 3 never got far enough to read a time */
+    BaselineSaved, /* first run: nothing to compare against yet */
+    Passed,
+    FailedOscillatorStopped,
+    FailedNoAdvance,
+};
+
+ColdBoot g_cold_boot = ColdBoot::NotChecked;
+int64_t g_cold_boot_gap_s = 0;
+
+constexpr const char *kNvsNamespace = "kfbringup";
+constexpr const char *kNvsKeyRtcEpoch = "rtc_epoch";
 
 /* ------------------------------------------------------------------------
  * Output helpers. Plain printf, not ESP_LOG, so the diagnostic output is
@@ -352,13 +422,53 @@ const PanelCmd kIli9341Init[] = {
     {0x11, {}, 0, "SLPOUT  wake up"},
 };
 
-void send_init_table(const PanelCmd *table, int count) {
+/* The Waveshare 2inch module's own power-up sequence, from the upstream
+ * Linux DRM driver written for that exact board rather than a generic
+ * ST7789 example.
+ *
+ * panel_st7789_init() in esp_lcd_panel_st7789.c sends exactly four commands:
+ * SLPOUT, MADCTL, COLMOD, RAMCTRL. That is enough for the controller to
+ * accept traffic, which is why every transaction reports success. It is NOT
+ * enough to drive this particular glass: nothing configures the common
+ * voltage, the gate voltage, the VRH drive level or the power control, so
+ * the panel runs on whatever its power-on defaults happen to be. On a module
+ * whose defaults suit it that works; on this one it does not, and the
+ * failure looks exactly like a wiring fault -- every call acknowledged, and
+ * a dark screen.
+ *
+ * VCOMS, VRHS, VDVS and PWCTRL1 are the four that decide whether anything is
+ * visible at all. The gamma tables only change how colours look.
+ *
+ * At namespace scope rather than inside stage_display() because the clock
+ * sweep has to re-send it every time it rebuilds the panel at a new speed. */
+const PanelCmd kWaveshareInit[] = {
+    {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, "PORCTRL  porch control"},
+    {0xB7, {0x35}, 1, "GCTRL    gate control"},
+    {0xBB, {0x1F}, 1, "VCOMS    common voltage"},
+    {0xC0, {0x2C}, 1, "LCMCTRL  lcd control"},
+    {0xC2, {0x01}, 1, "VDVVRHEN vdv/vrh enable"},
+    {0xC3, {0x12}, 1, "VRHS     vrh set"},
+    {0xC4, {0x20}, 1, "VDVS     vdv set"},
+    {0xC6, {0x0F}, 1, "FRCTRL2  frame rate"},
+    {0xD0, {0xA4, 0xA1}, 2, "PWCTRL1  power control"},
+    {0xE0, {0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
+            0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23}, 14, "PVGAMCTRL"},
+    {0xE1, {0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
+            0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23}, 14, "NVGAMCTRL"},
+};
+
+/* verbose=false during the clock sweep, which re-sends this table once per
+ * frequency and would otherwise bury the sweep's own output in twenty lines
+ * of register names per step. Failures still print either way. */
+void send_init_table(const PanelCmd *table, int count, bool verbose = true) {
     for (int i = 0; i < count; ++i) {
         const esp_err_t err = esp_lcd_panel_io_tx_param(
             g_panel_io, table[i].cmd, table[i].len ? table[i].data : nullptr,
             table[i].len);
-        printf("             0x%02X  %-30s %s\n", table[i].cmd, table[i].what,
-               err == ESP_OK ? "ok" : "FAILED");
+        if (verbose || err != ESP_OK) {
+            printf("             0x%02X  %-30s %s\n", table[i].cmd, table[i].what,
+                   err == ESP_OK ? "ok" : "FAILED");
+        }
         if (table[i].cmd == 0x11) {
             vTaskDelay(pdMS_TO_TICKS(150)); /* datasheet wants 120ms */
         }
@@ -599,8 +709,96 @@ void stage_pin_wiggle() {
     printf("  to match, and 3.3V logic into a 5V-powered panel will not work.\n");
 }
 
+/* ------------------------------------------------------------------------
+ * Bring the panel up at a given SPI clock, tearing down any previous one.
+ *
+ * Split out of stage_display() because the clock sweep needs it: esp_lcd
+ * fixes pclk_hz when the panel IO handle is created, so there is no way to
+ * change speed other than destroying the handle and building another. The
+ * panel handle is built on top of the IO handle, so that goes too, and a new
+ * panel has forgotten its init sequence -- hence re-sending the table here
+ * rather than in the caller.
+ *
+ * The SPI *bus* is deliberately not touched. It is initialised once in
+ * stage_display() and outlives every panel built on it.
+ * ---------------------------------------------------------------------- */
+bool bring_panel_up(int clock_hz, bool verbose) {
+    if (g_panel != nullptr) {
+        esp_lcd_panel_del(g_panel);
+        g_panel = nullptr;
+    }
+    if (g_panel_io != nullptr) {
+        esp_lcd_panel_io_del(g_panel_io);
+        g_panel_io = nullptr;
+    }
+
+    esp_lcd_panel_io_spi_config_t io{};
+    io.cs_gpio_num = KF_ESP_PIN_LCD_CS;
+    io.dc_gpio_num = KF_ESP_PIN_LCD_DC;
+    io.spi_mode = 0;
+    io.pclk_hz = clock_hz;
+    io.trans_queue_depth = 10;
+    io.lcd_cmd_bits = 8;
+    io.lcd_param_bits = 8;
+
+    if (esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI2_HOST),
+                                 &io, &g_panel_io) != ESP_OK) {
+        if (verbose) {
+            fail(1, "could not attach the panel to SPI2",
+                 "the CS and DC wires (see the pin line printed above)");
+        }
+        return false;
+    }
+
+    esp_lcd_panel_dev_config_t dev{};
+    dev.reset_gpio_num = KF_ESP_PIN_LCD_RST;
+    dev.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    dev.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
+    dev.bits_per_pixel = 16;
+    dev.flags.reset_active_high = 0;
+
+    /* esp_lcd_new_panel_st7789() supplies the handle for BOTH panels. On the
+     * ILI9341 path its own init is skipped below and this file's table is
+     * sent instead -- see kIli9341Init's comment for why that is sound. */
+    if (esp_lcd_new_panel_st7789(g_panel_io, &dev, &g_panel) != ESP_OK) {
+        if (verbose) {
+            fail(1, "the panel driver would not initialise",
+                 "the RST wire (see the pin line printed above)");
+        }
+        return false;
+    }
+
+    lcd_ok(esp_lcd_panel_reset(g_panel), "esp_lcd_panel_reset");
+    if (!kPanelIsIli9341) {
+        lcd_ok(esp_lcd_panel_init(g_panel), "esp_lcd_panel_init");
+    }
+
+    if (kPanelIsIli9341) {
+        if (verbose) {
+            info("Panel selected: ILI9341 (the 2.8in HiLetgo). Sending its own");
+            info("full init, and skipping ESP-IDF's ST7789 init entirely:");
+        }
+        send_init_table(kIli9341Init,
+                        (int)(sizeof(kIli9341Init) / sizeof(kIli9341Init[0])),
+                        verbose);
+    } else {
+        if (verbose) {
+            info("Panel selected: ST7789 (the 2in Waveshare). Sending the power");
+            info("and gamma registers ESP-IDF's generic driver leaves at their");
+            info("power-on defaults:");
+        }
+        send_init_table(kWaveshareInit,
+                        (int)(sizeof(kWaveshareInit) / sizeof(kWaveshareInit[0])),
+                        verbose);
+    }
+
+    lcd_ok(esp_lcd_panel_disp_on_off(g_panel, true), "disp_on_off(true)");
+    return true;
+}
+
 void stage_display() {
-    banner("STAGE 2: display over SPI (ST7789, SPI2)");
+    banner(kPanelIsIli9341 ? "STAGE 2: display over SPI (ILI9341, SPI2)"
+                           : "STAGE 2: display over SPI (ST7789, SPI2)");
     info("SCLK=GPIO%d MOSI=GPIO%d CS=GPIO%d DC=GPIO%d RST=GPIO%d",
          KF_ESP_PIN_LCD_SCLK, KF_ESP_PIN_LCD_MOSI, KF_ESP_PIN_LCD_CS,
          KF_ESP_PIN_LCD_DC, KF_ESP_PIN_LCD_RST);
@@ -627,93 +825,9 @@ void stage_display() {
         return;
     }
 
-    esp_lcd_panel_io_spi_config_t io{};
-    io.cs_gpio_num = KF_ESP_PIN_LCD_CS;
-    io.dc_gpio_num = KF_ESP_PIN_LCD_DC;
-    io.spi_mode = 0;
-    io.pclk_hz = kLcdClockHz;
-    io.trans_queue_depth = 10;
-    io.lcd_cmd_bits = 8;
-    io.lcd_param_bits = 8;
-
-    if (esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI2_HOST),
-                                 &io, &g_panel_io) != ESP_OK) {
-        fail(1, "could not attach the panel to SPI2",
-             "the CS (GPIO10) and DC (GPIO9) wires");
+    if (!bring_panel_up(kLcdClockHz, /*verbose=*/true)) {
         return;
     }
-
-    esp_lcd_panel_dev_config_t dev{};
-    dev.reset_gpio_num = KF_ESP_PIN_LCD_RST;
-    dev.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
-    dev.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
-    dev.bits_per_pixel = 16;
-    dev.flags.reset_active_high = 0;
-
-    if (esp_lcd_new_panel_st7789(g_panel_io, &dev, &g_panel) != ESP_OK) {
-        fail(1, "the ST7789 driver would not initialise",
-             "the RST wire (GPIO8), and whether this panel is really an "
-             "ST7789 rather than an ILI9341");
-        return;
-    }
-
-    lcd_ok(esp_lcd_panel_reset(g_panel), "esp_lcd_panel_reset");
-    if (!kPanelIsIli9341) {
-        lcd_ok(esp_lcd_panel_init(g_panel), "esp_lcd_panel_init");
-    }
-
-    /* ------------------------------------------------------------------
-     * The registers ESP-IDF does not send.
-     *
-     * panel_st7789_init() in esp_lcd_panel_st7789.c sends exactly four
-     * commands: SLPOUT, MADCTL, COLMOD, RAMCTRL. That is enough for the
-     * controller to accept traffic, which is why every transaction here
-     * reports success. It is NOT enough to drive this particular glass:
-     * nothing configures the common voltage, the gate voltage, the VRH
-     * drive level or the power control, so the panel runs on whatever its
-     * power-on defaults happen to be.
-     *
-     * On a module whose defaults suit it, that works and everyone is
-     * happy. On this one it does not, and the failure looks exactly like a
-     * wiring fault: the controller acknowledges everything and the screen
-     * stays dark.
-     *
-     * The values below are the Waveshare 2inch LCD module's own sequence,
-     * taken from the upstream Linux DRM driver written for this exact
-     * board rather than from a generic ST7789 example. VCOMS, VRHS, VDVS
-     * and PWCTRL1 are the four that decide whether anything is visible at
-     * all; the gamma tables only change how colours look.
-     * ------------------------------------------------------------------ */
-    static const PanelCmd kWaveshareInit[] = {
-        {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, "PORCTRL  porch control"},
-        {0xB7, {0x35}, 1, "GCTRL    gate control"},
-        {0xBB, {0x1F}, 1, "VCOMS    common voltage"},
-        {0xC0, {0x2C}, 1, "LCMCTRL  lcd control"},
-        {0xC2, {0x01}, 1, "VDVVRHEN vdv/vrh enable"},
-        {0xC3, {0x12}, 1, "VRHS     vrh set"},
-        {0xC4, {0x20}, 1, "VDVS     vdv set"},
-        {0xC6, {0x0F}, 1, "FRCTRL2  frame rate"},
-        {0xD0, {0xA4, 0xA1}, 2, "PWCTRL1  power control"},
-        {0xE0, {0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
-                0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23}, 14, "PVGAMCTRL"},
-        {0xE1, {0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
-                0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23}, 14, "NVGAMCTRL"},
-    };
-
-    if (kPanelIsIli9341) {
-        info("Panel selected: ILI9341 (the 2.8in HiLetgo). Sending its own");
-        info("full init, and skipping ESP-IDF's ST7789 init entirely:");
-        send_init_table(kIli9341Init,
-                        (int)(sizeof(kIli9341Init) / sizeof(kIli9341Init[0])));
-    } else {
-        info("Panel selected: ST7789 (the 2in Waveshare). Sending the power");
-        info("and gamma registers ESP-IDF's generic driver leaves at their");
-        info("power-on defaults:");
-        send_init_table(kWaveshareInit,
-                        (int)(sizeof(kWaveshareInit) / sizeof(kWaveshareInit[0])));
-    }
-
-    lcd_ok(esp_lcd_panel_disp_on_off(g_panel, true), "disp_on_off(true)");
 
     /* ------------------------------------------------------------------
      * Named colours, one at a time, slowly, with the serial line saying
@@ -748,62 +862,68 @@ void stage_display() {
      * for telling those apart, so: write nothing, then write almost
      * nothing, then write everything, narrating each step.
      * ------------------------------------------------------------------ */
-    info("");
-    info("STEP A. The panel is initialised and switched on, and I am now");
-    info("deliberately sending it NOTHING for 8 seconds. Whatever is on");
-    info("the screen right now is the panel's own uninitialised memory.");
-    info("  still fuzzy after 8s -> the panel is alive and our writes are");
-    info("                          what kills it. That is a DC problem.");
-    info("  goes black by itself -> the panel is not staying awake, which");
-    info("                          is reset or power, not the data path.");
-    vTaskDelay(pdMS_TO_TICKS(8000));
+    if (kPanelDebugMode) {
+        info("");
+        info("STEP A. The panel is initialised and switched on, and I am now");
+        info("deliberately sending it NOTHING for 8 seconds. Whatever is on");
+        info("the screen right now is the panel's own uninitialised memory.");
+        info("  still fuzzy after 8s -> the panel is alive and our writes are");
+        info("                          what kills it. That is a DC problem.");
+        info("  goes black by itself -> the panel is not staying awake, which");
+        info("                          is reset or power, not the data path.");
+        vTaskDelay(pdMS_TO_TICKS(8000));
 
-    info("");
-    info("STEP B. Writing ONE small red square, 60x60, near the top-left.");
-    info("Nothing else on the screen is touched.");
-    info("  a red square appears -> the data path works and the problem is");
-    info("                          somewhere in the full-frame path");
-    info("  no square, and the");
-    info("    screen goes black  -> those pixel bytes were executed as");
-    info("                          commands. DC again, whatever continuity");
-    info("                          says -- check it while the board runs.");
-    draw_square(kRed, 20, 20, 60);
-    vTaskDelay(pdMS_TO_TICKS(8000));
+        info("");
+        info("STEP B. Writing ONE small red square, 60x60, near the top-left.");
+        info("Nothing else on the screen is touched.");
+        info("  a red square appears -> the data path works and the problem is");
+        info("                          somewhere in the full-frame path");
+        info("  no square, and the");
+        info("    screen goes black  -> those pixel bytes were executed as");
+        info("                          commands. DC again, whatever continuity");
+        info("                          says -- check it while the board runs.");
+        draw_square(kRed, 20, 20, 60);
+        vTaskDelay(pdMS_TO_TICKS(8000));
 
-    info("");
-    info("STEP C. A second square, GREEN, further down. If the red one is");
-    info("still there and a green one joins it, the panel is genuinely");
-    info("working and only the full-frame writes are the problem.");
-    draw_square(kGreen, 20, 120, 60);
-    vTaskDelay(pdMS_TO_TICKS(8000));
+        info("");
+        info("STEP C. A second square, GREEN, further down. If the red one is");
+        info("still there and a green one joins it, the panel is genuinely");
+        info("working and only the full-frame writes are the problem.");
+        draw_square(kGreen, 20, 120, 60);
+        vTaskDelay(pdMS_TO_TICKS(8000));
+    }
 
+    /* Kept out of the debug gate above: seven seconds, and it is the one
+     * test that separates a byte-order fault from a BGR fault, because white
+     * and black are invariant under both while the saturated fills are not.
+     * That is worth paying for on every run. */
     info("");
-    info("STEP D. Now full-screen fills, one second each.");
+    info("Full-screen fills, one second each.");
     for (const NamedColor &c : kSequence) {
         printf("           ... now showing %s\n", c.name);
         fill_screen(c.value);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    /* ------------------------------------------------------------------
-     * Then the same test frame twice, once with the panel's inversion off
-     * and once on, because that single bit is the difference between a
-     * mostly-white frame and a mostly-black one.
+    /* Inversion OFF is the settled answer for this module, measured: the
+     * test frame came out on a white field with it off and a black one with
+     * it on. This used to be an A/B pair that drew the frame twice and asked
+     * which looked right; now that the answer is known it is one explicit
+     * call, so the panel is never left in an unknown inversion state.
      *
-     * ST7789 silicon defaults to inversion OFF, but a great many IPS
-     * modules built around it -- Waveshare's included -- are wired such
-     * that they need INVON to show correct colours. Guessing costs a
-     * rebuild; showing both and asking costs eight seconds.
-     * ------------------------------------------------------------------ */
-    /* Inversion OFF is the settled answer for this module: the alignment
-     * frame drawn with it off came out on a white field, and with it on
-     * came out on a black one. Left here as one explicit call rather than
-     * an A/B pair, so the panel is never in an unknown inversion state. */
+     * Worth keeping in mind for the next panel: ST7789 silicon defaults to
+     * inversion OFF, but many IPS modules built around it are wired to need
+     * INVON instead, so this is a per-module question rather than a
+     * per-controller one. */
     lcd_ok(esp_lcd_panel_invert_color(g_panel, false), "invert_color(false)");
 
+    const int card_hold_ms = kPanelDebugMode ? 90000 : 10000;
+
     info("");
-    info("STEP E. The test card. It stays up for 90 seconds -- long enough");
-    info("to photograph. Take a photo of the panel and send it.");
+    info("The test card. It stays up for %d seconds.", card_hold_ms / 1000);
+    if (kPanelDebugMode) {
+        info("That is long enough to photograph -- take a photo and send it.");
+    }
     info("");
     info("What SHOULD be on the glass:");
     info("  a RED bar across the top, with a WHITE notch at its LEFT end");
@@ -815,10 +935,12 @@ void stage_display() {
     info("        BLUE    YELLOW");
     info("        CYAN    MAGENTA");
     info("");
-    info("Hold the module the way it sits on the breadboard, ribbon and");
-    info("pin header at the bottom, and photograph it straight on.");
+    info("This is drawn for the module mounted with its PIN HEADER AT THE");
+    info("TOP -- the mounting ADR 0024 settled on, and what MADCTL 0x88");
+    info("encodes. Header at the bottom is the same image upside down, and");
+    info("is a one-byte change (0x48) rather than a fault.");
     draw_test_card();
-    vTaskDelay(pdMS_TO_TICKS(90000));
+    vTaskDelay(pdMS_TO_TICKS(card_hold_ms));
 
     /* Left in whichever state the panel was last put into, so the button
      * stage in stage 5 is readable either way. */
@@ -833,17 +955,27 @@ void stage_display() {
         fail(1, "some esp_lcd calls returned errors -- see the ** lines above",
              "the errors themselves, not the wiring");
     }
-    info("  A looked right      -> nothing to change, the panel is done");
-    info("  B looked right      -> this panel needs inversion; tell me and");
-    info("                         I will set it in esp_display.cpp too");
-    info("  both looked wrong,");
-    info("    but SOLID          -> rgb_ele_order should be BGR");
-    info("  fizzing static      -> DC (GPIO9) first, then wire length");
-    info("  nothing at all      -> SCLK (GPIO12) or MOSI (GPIO11)");
-    info("  border clipped      -> the panel needs an offset "
+    info("");
+    info("Reading the test card -- what each fault looks like:");
+    info("  card is correct       -> nothing to change, the panel is done");
+    info("  WHITE and BLACK are");
+    info("    right, the colour");
+    info("    patches are not     -> framebuffer byte order. This is the one");
+    info("                           that cost an evening: white and black");
+    info("                           survive a byte swap, saturated colours");
+    info("                           do not. See kPanelIsIli9341's comment.");
+    info("  EVERY patch is wrong,");
+    info("    but each is SOLID   -> rgb_ele_order should be BGR, not RGB");
+    info("  whole card inverted   -> this panel needs invert_color(true)");
+    info("  fizzing static        -> DC (GPIO%d) first, then wire length",
+         KF_ESP_PIN_LCD_DC);
+    info("  nothing at all        -> SCLK (GPIO%d) or MOSI (GPIO%d)",
+         KF_ESP_PIN_LCD_SCLK, KF_ESP_PIN_LCD_MOSI);
+    info("  bars clipped at an");
+    info("    edge                -> the panel needs an offset "
          "(esp_lcd_panel_set_gap)");
-    info("  green square in the");
-    info("    wrong corner      -> mirror/swap_xy settings");
+    info("  green stripe on the");
+    info("    RIGHT, not the left -> MADCTL mirror/swap_xy settings");
 }
 
 /* ------------------------------------------------------------------------
@@ -892,6 +1024,242 @@ bool ds3231_write(i2c_master_dev_handle_t dev, uint8_t reg, const uint8_t *data,
     buf[0] = reg;
     memcpy(&buf[1], data, len);
     return i2c_master_transmit(dev, buf, len + 1, 200) == ESP_OK;
+}
+
+/* Days since 1970-01-01 from a civil date -- the standard days_from_civil
+ * algorithm. Written out rather than reached for via mktime() because
+ * mktime() applies a timezone and the DS3231 has no concept of one. The
+ * comparison here only needs two readings to sit on the same monotonic
+ * scale, and a hand-rolled conversion cannot be wrong about a timezone it
+ * never consults. Valid for any date this project will ever see. */
+int64_t days_from_civil(int y, unsigned m, unsigned d) {
+    y -= (m <= 2) ? 1 : 0;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    /* March-based month index, 0-11: March is 0, February is 11. Spelled out
+     * rather than the usual `m + (m > 2 ? -3 : 9)` so it does not depend on
+     * unsigned wraparound to be correct. */
+    const unsigned mp = (m > 2) ? (m - 3u) : (m + 9u);
+    const unsigned doy = (153u * mp + 2u) / 5u + d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+/* The DS3231's seven time registers (0x00-0x06) as a single comparable
+ * number. Masks match the datasheet: bit 7 of seconds is unused, bit 6 of
+ * hours selects 12/24h mode (this diagnostic always writes 24h), and the
+ * top three bits of the month register carry the century flag. */
+int64_t ds3231_regs_to_epoch(const uint8_t regs[7]) {
+    const unsigned sec = bcd_to_bin(static_cast<uint8_t>(regs[0] & 0x7F));
+    const unsigned min = bcd_to_bin(regs[1]);
+    const unsigned hour = bcd_to_bin(static_cast<uint8_t>(regs[2] & 0x3F));
+    const unsigned day = bcd_to_bin(static_cast<uint8_t>(regs[4] & 0x3F));
+    const unsigned month = bcd_to_bin(static_cast<uint8_t>(regs[5] & 0x1F));
+    const unsigned year = 2000u + bcd_to_bin(regs[6]);
+
+    return days_from_civil(static_cast<int>(year), month, day) * 86400 +
+           static_cast<int64_t>(hour) * 3600 + static_cast<int64_t>(min) * 60 +
+           static_cast<int64_t>(sec);
+}
+
+/* Compare this run's clock reading against the one the previous run stored,
+ * then store this one for the next. `oscillator_was_stopped` is the OSF flag
+ * as it was found on entry to stage 3, BEFORE that stage reseeds the clock --
+ * by the time this is called the flag has already been cleared, so it has to
+ * be passed in rather than re-read. */
+void check_cold_boot(const uint8_t now_regs[7], bool oscillator_was_stopped) {
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        info("could not open NVS (%d) -- skipping the power-off check.", err);
+        return;
+    }
+
+    nvs_handle_t nvs = 0;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &nvs) != ESP_OK) {
+        info("could not open NVS namespace -- skipping the power-off check.");
+        return;
+    }
+
+    const int64_t now_epoch = ds3231_regs_to_epoch(now_regs);
+
+    int64_t previous = 0;
+    const bool have_previous =
+        nvs_get_i64(nvs, kNvsKeyRtcEpoch, &previous) == ESP_OK;
+
+    if (!have_previous) {
+        g_cold_boot = ColdBoot::BaselineSaved;
+    } else if (oscillator_was_stopped) {
+        /* Checked before the time comparison on purpose: when OSF is set the
+         * clock has already been reseeded above, so the times would also look
+         * wrong -- but "the backup cell is not holding" is the real finding
+         * and "time went backwards" is only its symptom. */
+        g_cold_boot = ColdBoot::FailedOscillatorStopped;
+    } else if (now_epoch > previous) {
+        g_cold_boot = ColdBoot::Passed;
+        g_cold_boot_gap_s = now_epoch - previous;
+    } else {
+        g_cold_boot = ColdBoot::FailedNoAdvance;
+        g_cold_boot_gap_s = now_epoch - previous;
+    }
+
+    /* Stored unconditionally, including after a failure: a failed run should
+     * still leave a usable baseline for the next attempt rather than making
+     * someone run it twice more to get back to a comparison. */
+    nvs_set_i64(nvs, kNvsKeyRtcEpoch, now_epoch);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/* Printed under the summary table rather than in it -- see ColdBoot's own
+ * comment for why this is not a PASS/FAIL row. */
+void print_cold_boot_verdict() {
+    switch (g_cold_boot) {
+    case ColdBoot::NotChecked:
+        printf("  RTC survives power-off             NOT CHECKED\n");
+        printf("    Stage 3 did not get far enough to read a time.\n");
+        break;
+
+    case ColdBoot::BaselineSaved:
+        printf("  RTC survives power-off             RUN AGAIN TO FIND OUT\n");
+        printf("    This run saved a baseline. Now do exactly this:\n");
+        printf("      1. unplug the board completely -- USB out, not just RST\n");
+        printf("      2. wait 30 seconds\n");
+        printf("      3. plug it back in and let this run again\n");
+        printf("    The next run will compare the clock against the baseline\n");
+        printf("    and tell you PASS or FAIL itself. Nothing to remember.\n");
+        break;
+
+    case ColdBoot::Passed:
+        printf("  RTC survives power-off             PASS\n");
+        printf("    The clock advanced %lld seconds since the previous run,\n",
+               static_cast<long long>(g_cold_boot_gap_s));
+        printf("    across a power cut, on coin-cell power alone. That is the\n");
+        printf("    whole feature: the pet can age while the device is off.\n");
+        break;
+
+    case ColdBoot::FailedOscillatorStopped:
+        printf("  RTC survives power-off             FAIL\n");
+        printf("    The OSF flag was set again this boot, which means the\n");
+        printf("    clock lost time while unpowered. In order of likelihood:\n");
+        printf("      - the CR2032 is in backwards (+ faces up, away from the board)\n");
+        printf("      - the coin cell holder is not making contact -- press it\n");
+        printf("      - the cell is flat. A fresh one reads 3.0V+ on a meter\n");
+        printf("      - the trickle-charge resistor marked 201 was never removed,\n");
+        printf("        and has been quietly killing a non-rechargeable cell\n");
+        break;
+
+    case ColdBoot::FailedNoAdvance:
+        printf("  RTC survives power-off             FAIL\n");
+        printf("    OSF stayed clear, but the clock did not move forward:\n");
+        printf("    it read %lld seconds relative to the previous run.\n",
+               static_cast<long long>(g_cold_boot_gap_s));
+        printf("    A clock that holds a value but does not advance while\n");
+        printf("    unpowered usually means the crystal is not oscillating\n");
+        printf("    off USB power -- most often a counterfeit DS3231 module.\n");
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * Stage 2b: how fast can this panel actually be driven?
+ *
+ * KF_DISPLAY_SPI_HZ in kf/budget.h is 40MHz and is marked ASSUMPTION, NOT
+ * MEASURED. Every claim the desktop simulator makes about transfer cost and
+ * frame budget rests on it, so it is the one number bring-up exists to
+ * replace with a measured figure.
+ *
+ * A full 240x320 RGB565 frame is 153,600 bytes, so the clock maps straight
+ * onto a frame rate ceiling:
+ *
+ *     4MHz  -> 307ms/frame ->  ~3fps
+ *    10MHz  -> 123ms/frame ->  ~8fps
+ *    20MHz  ->  61ms/frame -> ~16fps
+ *    40MHz  ->  31ms/frame -> ~32fps     <- what budget.h assumes
+ *    80MHz  ->  15ms/frame -> ~65fps
+ *
+ * The firmware cannot score this itself, and it is important to be honest
+ * about why: this bus is write-only, there is no data-out pin on either
+ * module, and nothing is ever read back. esp_lcd returning ESP_OK means the
+ * ESP32 clocked bytes out of its own pin. At the speed where the wires give
+ * up, every call still returns ESP_OK and the picture is simply wrong. So
+ * the panel is driven at each speed in turn and a human reads the glass.
+ *
+ * 80MHz is on the list because SPI2's IOMUX pins on the ESP32-S3 are exactly
+ * the ones this pinout uses -- CLK=12, MOSI=11, CS=10 -- which is the
+ * configuration that can bypass the GPIO matrix and reach the full rate.
+ * Whether breadboard jumpers can is the actual question.
+ * ---------------------------------------------------------------------- */
+void stage_clock_sweep() {
+    banner("STAGE 2b: how fast can the panel be driven?");
+
+    if (g_panel == nullptr) {
+        info("Skipped: stage 2 never brought a panel up.");
+        return;
+    }
+
+    constexpr int kClocks[] = {4, 10, 20, 40, 80};
+    constexpr int kHoldMs = 7000;
+
+    info("The test card will be redrawn at each speed below, %d seconds",
+         kHoldMs / 1000);
+    info("each. WATCH THE GLASS, not this log -- the log will say every");
+    info("step succeeded even at a speed that is plainly broken.");
+    info("");
+    info("You are looking for the highest speed where the card is still");
+    info("PERFECT: solid patches, clean edges, no fizzing, no torn or");
+    info("shifted rows, no colour speckle. Note the first speed that");
+    info("misbehaves; the one below it is the answer.");
+    info("");
+
+    int last_good_attempted = 0;
+    for (const int mhz : kClocks) {
+        const int hz = mhz * 1000 * 1000;
+        const int errors_before = g_lcd_errors;
+
+        printf("\n  ---- now driving at %d MHz ", mhz);
+        printf("(%d ms per full frame, ~%d fps ceiling) ----\n",
+               (240 * 320 * 2 * 8) / (mhz * 1000), mhz * 1000000 / (240 * 320 * 2 * 8));
+
+        if (!bring_panel_up(hz, /*verbose=*/false)) {
+            printf("     esp_lcd REFUSED this clock outright -- the driver would\n");
+            printf("     not create a panel at %d MHz. That is a hard ceiling in\n", mhz);
+            printf("     software, not a wiring limit. Stopping here.\n");
+            break;
+        }
+
+        draw_test_card();
+        vTaskDelay(pdMS_TO_TICKS(kHoldMs));
+
+        if (g_lcd_errors > errors_before) {
+            printf("     ** %d esp_lcd call(s) reported an error at this speed.\n",
+                   g_lcd_errors - errors_before);
+            printf("     That is unusual -- normally the calls succeed and only\n");
+            printf("     the picture degrades. Treat this speed as failed.\n");
+        } else {
+            last_good_attempted = mhz;
+        }
+    }
+
+    /* Back to the known-good clock so stage 5's button bands are readable
+     * regardless of how far up the sweep got. */
+    printf("\n");
+    info("Sweep done. Returning the panel to %d MHz for the button stage.",
+         kLcdClockHz / 1000000);
+    bring_panel_up(kLcdClockHz, /*verbose=*/false);
+    draw_test_card();
+
+    info("");
+    info("Every speed up to %d MHz was driven without a driver error.",
+         last_good_attempted);
+    info("That is NOT the answer -- only your eyes are. Tell me the highest");
+    info("speed where the card still looked perfect, and I will set");
+    info("KF_DISPLAY_SPI_HZ in kf/budget.h to it and drop its ASSUMPTION");
+    info("banner. If even 4 MHz looked wrong, something else is at fault");
+    info("and the speed is not the problem.");
 }
 
 void stage_i2c_and_rtc() {
@@ -1009,11 +1377,10 @@ void stage_i2c_and_rtc() {
     }
 
     pass(2, "DS3231 present, readable, and ticking.");
-    info("THE REAL TEST IS NEXT, and only you can do it:");
-    info("  1. unplug the board completely for 30 seconds");
-    info("  2. plug it back in and re-run");
-    info("  3. OSF must still be clear and the time must have moved forward");
-    info("That is what proves the pet can age while switched off.");
+
+    /* t2 rather than t1: it is two seconds newer and both were read from a
+     * clock already confirmed to be advancing. */
+    check_cold_boot(t2, oscillator_stopped);
 }
 
 /* ------------------------------------------------------------------------
@@ -1244,6 +1611,8 @@ void print_summary() {
             ++failures;
         }
     }
+    print_cold_boot_verdict();
+
     printf("\n");
     if (failures == 0) {
         printf("  Everything the firmware can check by itself passed. Confirm\n");
@@ -1273,8 +1642,15 @@ extern "C" void app_main(void) {
 
     stage_board_info();
     stage_backlight();
-    stage_pin_wiggle();
+    if (kPanelDebugMode) {
+        /* 60 seconds and a multimeter. Off unless a panel is actually dark
+         * -- see kPanelDebugMode's own comment. */
+        stage_pin_wiggle();
+    }
     stage_display();
+    if (kRunClockSweep) {
+        stage_clock_sweep();
+    }
     stage_i2c_and_rtc();
     stage_sd_card();
     print_summary();

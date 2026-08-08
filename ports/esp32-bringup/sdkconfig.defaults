@@ -27,6 +27,24 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # cheaper than finding out later.
 CONFIG_FATFS_LFN_HEAP=y
 
+# SDIO probing OFF, or a plain memory card will not mount at all. Measured
+# during first bring-up (2026-08-07, ADR 0024), not reasoned about:
+# sdmmc_init.c calls sdmmc_io_reset(), which sends CMD52. A memory card --
+# as opposed to an SDIO peripheral like a WiFi card -- answers that with the
+# function-number-error bit set. r1_sdio_response_to_err() maps that to
+# ESP_ERR_INVALID_ARG, and sdmmc_io_reset() only tolerates TIMEOUT,
+# NOT_SUPPORTED and INVALID_CRC, so the whole mount aborts before the card
+# is ever asked anything about its filesystem.
+#
+# The symptom is stage 4 failing with "no card responded at all" on a card
+# that is perfectly good and perfectly wired, which is about the most
+# misleading failure this diagnostic could produce.
+#
+# This lives here rather than only in a local sdkconfig because a gitignored
+# sdkconfig is not a fix -- it is a fix that works on exactly one machine
+# until someone deletes a build directory.
+CONFIG_SD_ENABLE_SDIO_SUPPORT=n
+
 # The serial console this program's entire output goes to. Explicit rather
 # than inherited, because a diagnostic you cannot read is worthless.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

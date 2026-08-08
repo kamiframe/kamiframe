@@ -30,6 +30,15 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_TYPE_AUTO=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# SDIO probing OFF. This build does not touch the SD card yet -- esp_storage.
+# cpp is NVS-only -- so this setting changes nothing today. It is here anyway
+# because it is a MEASURED finding from first bring-up (2026-08-07, ADR 0024)
+# and the alternative is rediscovering it later: sdmmc_init.c's
+# sdmmc_io_reset() sends CMD52, a plain memory card answers with the
+# function-number-error bit, and the mount aborts with what looks exactly
+# like "no card is connected". Costing an evening once is enough.
+CONFIG_SD_ENABLE_SDIO_SUPPORT=n
+
 # 240MHz, the fastest option Kconfig.cpu offers for this target. Nothing
 # about this ADR's HAL backends specifically requires it over the default
 # clock -- it is here because the eventual pet + LVGL + Lua workload this

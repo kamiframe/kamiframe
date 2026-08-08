@@ -20,4 +20,9 @@ idf_component_register(
         esp_timer
         esp_hw_support
         spi_flash
+        ## NVS, for one thing only: remembering the DS3231's last reading
+        ## across a power cut so stage 3 can check the coin cell by itself
+        ## rather than asking a human to compare two timestamps by eye. See
+        ## the ColdBoot comment in bringup_main.cpp.
+        nvs_flash
 )

@@ -236,50 +236,132 @@ run everything again.
 | 4 | the card mounts, and a file survives a write/read round trip |
 | 5 | every button reads correctly (runs forever) |
 
-Stage 2 finishes on a deliberately diagnostic frame: a white field, a 6px
-red border touching all four edges, and a green square in the top-left
-corner only. That makes geometry problems visible instead of merely
-suspected -- a clipped border means the panel needs an offset
-(`esp_lcd_panel_set_gap`), a green square in the wrong corner means the
-rotation settings are wrong, and both are one-line fixes you cannot make if
-you cannot see them.
+Stage 2 finishes on a test card that holds still for ten seconds: a red bar
+across the top with a white notch at its left end, a green stripe down the
+left edge, a blue bar across the bottom, and eight patches in the middle --
+white/black, red/green, blue/yellow, cyan/magenta.
+
+Every element of that is load-bearing. The bars and the stripe make geometry
+faults visible rather than merely suspected: a clipped edge means the panel
+needs an offset (`esp_lcd_panel_set_gap`), and a stripe on the wrong side
+means the rotation byte is wrong. The patches separate the two colour faults
+that otherwise look identical -- white and black survive both a byte-order
+mistake and a BGR mistake, so *white and black correct while the saturated
+patches are wrong* means byte order, and everything wrong together means
+BGR. Three coloured bands could not tell those apart, which is exactly how
+the ILI9341 byte-order bug cost an evening.
 
 Stage 5 splits the screen into seven colour bands and lights a band while
 its button is held.
 
+### When a panel shows nothing at all
+
+Set `kPanelDebugMode = true` at the top of `bringup_main.cpp` and reflash.
+That turns on the dead-panel investigation kit, which is off by default
+because it costs about three minutes per run:
+
+- **stage 2a**, which drives each control line high for six seconds and low
+  for six, slowly enough to follow with a multimeter at the panel's own
+  pads. This is the only test here that proves a signal *arrives*. Every
+  `esp_lcd` call returning `ESP_OK` does not, because these panels have no
+  data-out pin and nothing is ever read back.
+- **stage 2 steps A/B/C**, which send nothing, then one square, then a
+  second square, so a panel that dies when written to can be told apart
+  from one that never woke up.
+- the test card holds for 90 seconds instead of 10, long enough to
+  photograph.
+
+This is what proved the first Waveshare module's DC line was dead at the
+panel while its GPIO was driving perfectly. Reach for it before assuming the
+wiring is wrong.
+
 ### The bring-up clock runs slower on purpose
 
-The diagnostic drives the panel at 20MHz and the card at 10MHz, both roughly
-half of what the firmware will ask for. Breadboard jumper wires are not
-controlled-impedance anything. A panel that works at 20MHz and fails at 40
-is a wire-length problem, not a wiring-order problem, and it is much easier
-to tell those apart if the first attempt is the slow one.
+Stage 2 drives the panel at **4MHz** and stage 4 drives the card at 10MHz,
+both far below what the firmware will eventually ask for. Breadboard jumper
+wires are not controlled-impedance anything, and the panel here runs through
+a chain of Dupont jumpers with inline couplers. A panel that works at 4MHz
+and fails at 40 is a wire-length problem, not a wiring-order problem, and
+those are much easier to tell apart when the first attempt is the slow one.
 
-`KF_DISPLAY_SPI_HZ` in `kf/budget.h` is still an assumption (40MHz).
-Measuring the real achievable figure is a bring-up task in its own right,
-and it should be measured on something closer to the real board than a
-breadboard.
+(This started at 20MHz and was dropped to 4 during the first bring-up. The
+constant is `kLcdClockHz` in `bringup_main.cpp`, and it is deliberately the
+*safe* clock rather than the target one.)
+
+### Stage 2b: measuring the real clock ceiling
+
+`KF_DISPLAY_SPI_HZ` in `kf/budget.h` is 40MHz and marked **assumption, not
+measured**. Every claim the desktop simulator makes about transfer cost and
+frame budget rests on it, so replacing it with a measured number is one of
+the things bring-up exists for.
+
+Stage 2b redraws the test card at 4, 10, 20, 40 and 80MHz in turn, seven
+seconds each, then returns the panel to the safe clock. The clock maps
+straight onto a frame-rate ceiling, because a full 240x320 RGB565 frame is
+153,600 bytes:
+
+| SPI clock | Per frame | fps ceiling |
+|---|---|---|
+| 4MHz | 307ms | ~3 |
+| 10MHz | 123ms | ~8 |
+| 20MHz | 61ms | ~16 |
+| 40MHz | 31ms | ~32 |
+| 80MHz | 15ms | ~65 |
+
+**The firmware cannot score this and it is important to know why.** The bus
+is write-only -- neither module has a data-out pin -- so nothing is ever read
+back, and `ESP_OK` only means the ESP32 clocked bytes out of its own pin. At
+the speed where the wiring gives up, every call still returns `ESP_OK` and
+the picture is simply wrong. So you watch the glass, not the log.
+
+Look for the highest speed where the card is still perfect: solid patches,
+clean edges, no fizzing, no torn or shifted rows, no colour speckle. The
+first speed that misbehaves is the ceiling; the one below it is the answer,
+and that is the number `KF_DISPLAY_SPI_HZ` should become.
+
+80MHz is on the list rather than being obviously hopeless because SPI2's
+IOMUX pins on the ESP32-S3 are exactly the ones this pinout uses (CLK 12,
+MOSI 11, CS 10), which is the configuration that can bypass the GPIO matrix
+and reach the full rate. Whether breadboard jumpers can is the real question.
+
+Set `kRunClockSweep = false` once the figure is measured and recorded --
+after that it is 45 seconds per run answering a settled question. Note also
+that a breadboard result is a floor, not a verdict: the real PCB should be
+faster, and this should be re-measured on it.
 
 ---
 
-## The one test the firmware cannot run for you
+## The power-off test, which takes two runs
 
-Stage 3 confirms the DS3231 is present and its oscillator is running. It
-cannot confirm the thing that actually matters.
+Stage 3 confirms in one run that the DS3231 is present and its oscillator is
+running. It cannot confirm the thing that actually matters in one run,
+because the thing that matters only happens between two of them: that the
+clock keeps time with the USB cable pulled out.
 
-After stage 3 passes:
+So it takes two runs, and the diagnostic does the comparing:
 
-1. unplug the board completely, and leave it for 30 seconds
-2. plug it back in and run the diagnostic again
-3. the clock must report a time that moved forward across the gap, and must
-   **not** report that its oscillator stopped
+1. run it once. The summary prints `RTC survives power-off  RUN AGAIN TO
+   FIND OUT` and saves the clock's reading to flash.
+2. **unplug the board completely** -- USB out, not just the `RST` button,
+   which does not remove power and therefore tests nothing.
+3. wait 30 seconds.
+4. plug it back in and let it run again.
+
+The second run prints `PASS` or `FAIL` on its own, along with how many
+seconds the clock advanced while it was unplugged. There is no timestamp to
+remember and nothing to compare by eye.
 
 That is the whole feature. `kf_time_wall()`'s `valid` flag, the offline
 fast-forward path in `kf/pet.h`, and every life-stage transition that
-happens while the device is in a drawer all rest on it. If the oscillator
-flag is set on every boot, the coin cell is dead, inserted backwards, or the
-holder is not making contact -- and the pet will reset its age every time the
-battery runs out.
+happens while the device is in a drawer all rest on it. A `FAIL` here means
+the pet resets its age every time the device loses power, and the fix is
+almost always the coin cell: flat, in backwards, not making contact in its
+holder, or slowly killed by the trickle-charge resistor that should have
+been removed during assembly.
+
+The baseline lives in NVS, in flash, which is the same storage the firmware
+saves the pet into -- so it survives exactly the power cut being tested. It
+does not survive `idf.py erase-flash`, which simply puts you back at step 1.
 
 ---
 
