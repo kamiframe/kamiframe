@@ -22,7 +22,7 @@ Wire protocol (fixed; the device side implements the exact same spec):
     interleaved between (never inside) these blocks and are skipped:
 
         KFDBG-BEGIN <type> <length>
-        <payload, base64, wrapped at <=76 chars per line>
+        <payload, base64, wrapped at any width the device chooses>
         KFDBG-END <crc32-hex>
 
     <length> is the base64 character count. The CRC32 in KFDBG-END covers
@@ -160,10 +160,21 @@ def read_frame(readline, overall_timeout=DEFAULT_TIMEOUT, verbose=False):
         line = next_line()
         if line is None:
             continue
-        if len(line) > 76:
-            raise ProtocolError(
-                f"payload line is {len(line)} chars, protocol caps it at "
-                "76 -- this is not a KFDBG frame this parser understands.")
+        # Deliberately NOT enforcing a maximum line length.
+        #
+        # This used to reject anything over 76 characters, because the
+        # protocol spec suggested that as the wrap width. The device wraps at
+        # 88, and a real screenshot therefore failed with a protocol error --
+        # two halves of one protocol disagreeing about a number that does not
+        # matter to either of them.
+        #
+        # Wrap width is a formatting detail of the sender. The receiver has no
+        # reason to care: KFDBG-BEGIN declares the exact base64 character
+        # count and KFDBG-END carries a CRC32 over the decoded bytes, so a
+        # genuinely malformed frame is caught by the length check below or the
+        # checksum, both of which detect real corruption. A line-length rule
+        # detects only disagreement about cosmetics, and it fails the whole
+        # transfer to do it.
         chunks.append(line)
         got += len(line)
     if got != b64_len:
