@@ -9,6 +9,8 @@
 #include "kf/hal/log.h"
 #include "kf/pet.h"
 
+#include "kf_lvgl_idempotent.h"
+
 #include <lvgl.h>
 
 #include <cstdint>
@@ -17,35 +19,13 @@ namespace {
 
 constexpr const char *TAG = "pet-screen";
 
-/* The last values actually pushed into the widgets, so an update that would
- * not change a single pixel can be skipped entirely.
- *
- * This is not a micro-optimisation, it is what stops the panel flickering.
- * LVGL invalidates on every lv_bar_set_value()/lv_label_set_text_fmt() call
- * whether or not the value differs -- it does not diff for you. Calling them
- * unconditionally each frame therefore marks three bars, three labels and the
- * blob dirty forever, which on real hardware measured as a steady 7% of the
- * screen redrawn every frame on a pet that was doing nothing at all.
- *
- * A display being rewritten continuously is not free the way it is on a
- * desktop: the panel scans its own memory out to the glass on its own clock,
- * with no tearing-effect signal wired up, so a permanent stream of writes
- * leaves a permanently moving boundary between old and new pixels. It reads
- * as a ripple. Skipping unchanged updates takes a still screen to zero dirty
- * pixels and the ripple has nowhere to come from.
- *
- * The sentinels are deliberately impossible values, so the first update after
- * init always writes. */
-constexpr int32_t kBarValueUnset = INT32_MIN;
-constexpr uint32_t kTenthsUnset = UINT32_MAX;
-
+/* Row carries no cached "last value" fields: kf_lvgl_idempotent.h's setters
+ * ask the widget what it currently shows instead. That header explains why
+ * skipping unchanged updates is a correctness requirement on real hardware
+ * rather than an optimisation. */
 struct Row {
     lv_obj_t *bar = nullptr;
     lv_obj_t *value_label = nullptr;
-    int32_t last_bar_value = kBarValueUnset;
-    /* Tenths of a percent -- exactly the precision the label renders, so two
-     * millipercent values that format identically compare equal here. */
-    uint32_t last_tenths = kTenthsUnset;
 };
 
 struct Screen {
@@ -114,30 +94,24 @@ Row make_row(lv_obj_t *screen, const char *name, int16_t top_y) {
     return row;
 }
 
-void update_row(Row &row, kf_pet_millipercent mp) {
-    const int32_t bar_value = to_bar_value(mp);
-    if (bar_value != row.last_bar_value) {
-        lv_bar_set_value(row.bar, bar_value, LV_ANIM_OFF);
-        row.last_bar_value = bar_value;
-    }
+void update_row(const Row &row, kf_pet_millipercent mp) {
+    kf_lvgl_set_bar(row.bar, to_bar_value(mp));
 
     /* e.g. "92.3%" -- one decimal digit, matching kf/app.cpp's own
-     * append_fixed1() convention for the constraint HUD, just via LVGL's
-     * built-in printf-style label setter instead of hand-rolled digits:
-     * this file is simulator-side presentation code, not Core, so
-     * kf/poison.h's ban on libc string formatting does not apply here.
+     * append_fixed1() convention for the constraint HUD, just via a
+     * printf-style label setter instead of hand-rolled digits: this file is
+     * simulator-side presentation code, not Core, so kf/poison.h's ban on
+     * libc string formatting does not apply here.
      *
-     * Compared in tenths rather than millipercent, because that is the
-     * precision actually rendered: hunger drifting from 92.34% to 92.36%
-     * produces the same six characters, and redrawing them would be a write
-     * to the panel that changes nothing. See Row's own comment. */
+     * Both setters are the idempotent wrappers, which is what keeps an idle
+     * screen from redrawing itself forever -- see kf_lvgl_idempotent.h. The
+     * text comparison also makes the precision question answer itself:
+     * hunger drifting 92.34% -> 92.36% formats to the same six characters,
+     * so nothing is written. */
     const uint32_t tenths = mp / 100u;
-    if (tenths != row.last_tenths) {
-        lv_label_set_text_fmt(row.value_label, "%u.%u%%",
-                               static_cast<unsigned>(tenths / 10u),
-                               static_cast<unsigned>(tenths % 10u));
-        row.last_tenths = tenths;
-    }
+    kf_lvgl_set_label_fmt(row.value_label, "%u.%u%%",
+                           static_cast<unsigned>(tenths / 10u),
+                           static_cast<unsigned>(tenths % 10u));
 }
 
 /* Placeholder blob styling (ADR 0021, see kf_pet_screen.h's header

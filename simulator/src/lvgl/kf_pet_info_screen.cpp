@@ -5,6 +5,7 @@
 #include "kf_pet_info_screen.h"
 
 #include "../pet/kf_pet_session.h"
+#include "kf_lvgl_idempotent.h"
 
 #include "kf/hal/log.h"
 #include "kf/pet.h"
@@ -71,19 +72,19 @@ void set_duration_label(lv_obj_t *label, uint64_t seconds) {
     constexpr uint64_t kDay = 24u * kHour;
 
     if (seconds >= kDay) {
-        lv_label_set_text_fmt(label, "%u" "d %u" "h",
+        kf_lvgl_set_label_fmt(label, "%u" "d %u" "h",
                                static_cast<unsigned>(seconds / kDay),
                                static_cast<unsigned>((seconds % kDay) / kHour));
     } else if (seconds >= kHour) {
-        lv_label_set_text_fmt(label, "%u" "h %u" "m",
+        kf_lvgl_set_label_fmt(label, "%u" "h %u" "m",
                                static_cast<unsigned>(seconds / kHour),
                                static_cast<unsigned>((seconds % kHour) / kMinute));
     } else if (seconds >= kMinute) {
-        lv_label_set_text_fmt(label, "%u" "m %02u" "s",
+        kf_lvgl_set_label_fmt(label, "%u" "m %02u" "s",
                                static_cast<unsigned>(seconds / kMinute),
                                static_cast<unsigned>(seconds % kMinute));
     } else {
-        lv_label_set_text_fmt(label, "%u" "s", static_cast<unsigned>(seconds));
+        kf_lvgl_set_label_fmt(label, "%u" "s", static_cast<unsigned>(seconds));
     }
 }
 
@@ -142,21 +143,21 @@ void kf_pet_info_screen_update(void) {
               "kf_pet_info_screen_update called before kf_pet_info_screen_init");
     const kf_pet_state *state = kf_pet_session_state();
 
-    lv_label_set_text(g.stage_label, stage_name(state->stage));
+    kf_lvgl_set_label(g.stage_label, stage_name(state->stage));
     set_duration_label(g.time_label, state->stage_elapsed_seconds);
 
     /* teen_form/adult_branch are opaque indices (kf/pet.h) shown as plain
      * numbers once they mean anything, exactly kf_pet_screen.cpp's
      * update_blob() convention for the same fields. */
     if (state->stage == KF_PET_STAGE_TEEN) {
-        lv_label_set_text_fmt(g.branch_label, "Teen form %u",
+        kf_lvgl_set_label_fmt(g.branch_label, "Teen form %u",
                                static_cast<unsigned>(state->teen_form));
     } else if (state->stage == KF_PET_STAGE_ADULT) {
-        lv_label_set_text_fmt(g.branch_label, "Adult form %u-%u",
+        kf_lvgl_set_label_fmt(g.branch_label, "Adult form %u-%u",
                                static_cast<unsigned>(state->teen_form),
                                static_cast<unsigned>(state->adult_branch));
     } else {
-        lv_label_set_text(g.branch_label, "");
+        kf_lvgl_set_label(g.branch_label, "");
     }
 
     /* base_trait: always shown, plain number -- see the init() comment
@@ -165,10 +166,10 @@ void kf_pet_info_screen_update(void) {
      * early-return in pet.cpp), a plain number from Baby onward, the same
      * "blank before it means anything" shape branch_label already uses. */
     if (state->stage == KF_PET_STAGE_EGG) {
-        lv_label_set_text_fmt(g.trait_label, "Base trait %u",
+        kf_lvgl_set_label_fmt(g.trait_label, "Base trait %u",
                                static_cast<unsigned>(state->base_trait));
     } else {
-        lv_label_set_text_fmt(
+        kf_lvgl_set_label_fmt(
             g.trait_label, "Base trait %u, care trait %u",
             static_cast<unsigned>(state->base_trait),
             static_cast<unsigned>(kf_pet_dominant_care_trait(state)));
