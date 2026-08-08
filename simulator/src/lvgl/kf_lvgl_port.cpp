@@ -6,8 +6,17 @@
 
 #include "kf_lvgl_display.h"
 #include "kf_lvgl_input.h"
-#include "kf_lvgl_pointer.h"
 #include "kf_lvgl_tick.h"
+/* kf_lvgl_pointer.h's own header comment is explicit: "It has no ESP32
+ * counterpart and never will" -- a mouse cursor is a desktop development
+ * convenience, and kf_sim_pointer_poll() (the function it calls) is only
+ * ever implemented by a desktop backend (sdl_input.cpp, headless_input.cpp).
+ * ESP_PLATFORM is the same macro hakoniwaos/CMakeLists.txt already branches
+ * on, so this stays the ONE copy of kf_lvgl_port.cpp -- not a fork -- for
+ * the same reason ADR 0027 gives for every other file it ports unchanged. */
+#ifndef ESP_PLATFORM
+#include "kf_lvgl_pointer.h"
+#endif
 
 #include "kf/hal/log.h"
 
@@ -45,7 +54,12 @@ lv_group_t *kf_lvgl_port_init(void) {
 
     kf_lvgl_display_init();
     lv_group_t *group = kf_lvgl_input_init();
+#ifndef ESP_PLATFORM
+    /* Desktop only -- see the #include guard above. `group` is still
+     * returned below either way: ESP32 skips the mouse cursor, not the
+     * keypad group itself. */
     kf_lvgl_pointer_init(group);
+#endif
     kf_lvgl_tick_init();
 
     KF_LOGI(TAG, "LVGL %d.%d.%d ready (lv_obj, lv_label, lv_image, "

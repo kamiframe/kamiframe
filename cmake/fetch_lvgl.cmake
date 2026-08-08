@@ -13,6 +13,17 @@
 ##
 ## To use a local checkout instead (offline, or while debugging LVGL):
 ##     cmake -B build -DFETCHCONTENT_SOURCE_DIR_LVGL=/path/to/lvgl
+##
+## Included from two places now (ADR 0027): simulator/CMakeLists.txt (desktop)
+## and ports/esp32/kamiframe_lvgl_port/CMakeLists.txt (device) -- the whole
+## point being the SAME pinned tag and the SAME curated lv_conf.h reach both,
+## so there is exactly one LVGL configuration to reason about, not two that
+## can quietly drift apart. That is why every path below is anchored on
+## CMAKE_CURRENT_LIST_DIR (this file's own directory, cmake/, fixed
+## regardless of who includes it) rather than CMAKE_CURRENT_SOURCE_DIR (the
+## INCLUDING file's directory, which used to work only by coincidence: it
+## happened to equal simulator/ because simulator/CMakeLists.txt was the only
+## caller).
 
 set(KAMIFRAME_LVGL_TAG "v9.2.2" CACHE STRING
     "LVGL git tag to build")
@@ -25,7 +36,7 @@ include(FetchContent)
 # glue that uses it. LV_CONF_PATH is a plain #include of this exact file --
 # see lv_conf_internal.h -- so this is the whole mechanism, no copying or
 # generation step needed.
-set(LV_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/lvgl/lv_conf.h")
+set(LV_CONF_PATH "${CMAKE_CURRENT_LIST_DIR}/../simulator/src/lvgl/lv_conf.h")
 set(LV_CONF_INCLUDE_SIMPLE ON CACHE BOOL "" FORCE)
 
 # Only the library itself. The example gallery, the demo apps and ThorVG
@@ -43,6 +54,40 @@ FetchContent_Declare(lvgl
     GIT_PROGRESS   TRUE
 )
 FetchContent_MakeAvailable(lvgl)
+
+# ARM-only SIMD assembly kernels, dropped from the `lvgl` target's SOURCES
+# unconditionally -- neither Xtensa (ESP32) nor this project's desktop
+# targets (x86-64/ARM64, never Cortex-M) can ever use Helium (an M-profile
+# MVE extension) or NEON assembly, so these two files can only ever be dead
+# weight, on any build this project produces, forever.
+#
+# Found on the ESP32 side (ADR 0027), not guessed: `lv_blend_helium.S`
+# unconditionally #includes lv_conf_internal.h (a plain C header, not
+# assembly-safe -- it was never written expecting to run through `as`) two
+# lines above the `#if defined(__ARM_FEATURE_MVE) ...` guard that correctly
+# excludes the file's actual SIMD body on any non-ARM target; that guard
+# never gets a chance to matter, because parsing lv_conf_internal.h's own
+# C declarations as assembly mnemonics fails immediately, before the guard
+# is even reached. `lv_blend_neon.S` has the same shape and the same
+# unconditional include, so it is pruned for the identical reason, not
+# because it was separately confirmed to fail. Desktop's own build has
+# never hit this: the root CMakeLists.txt's project() call never enables
+# the ASM language (LANGUAGES C CXX only), so CMake has always silently
+# never compiled either .S file there -- ESP-IDF's project() enables ASM
+# project-wide (its own startup/vector code needs it), which is what
+# actually exercises this LVGL v9.2.2 bug for the first time. Pruned here,
+# not per-build-system, because the underlying fact (neither target is
+# ever ARM) is the same fact either way -- see ADR 0027's "Found after
+# delivery" section.
+if(TARGET lvgl)
+    get_target_property(_kf_lvgl_srcs lvgl SOURCES)
+    if(_kf_lvgl_srcs)
+        list(FILTER _kf_lvgl_srcs EXCLUDE REGEX
+             "blend/(helium|neon)/lv_blend_(helium|neon)\\.[Ss]$")
+        set_property(TARGET lvgl PROPERTY SOURCES ${_kf_lvgl_srcs})
+    endif()
+    unset(_kf_lvgl_srcs)
+endif()
 
 # MSVC C2099 fix -- the ACTUAL root cause, confirmed by capturing the real
 # cl.exe command line for lv_bar.c via a /verbosity:detailed CI build (see
@@ -120,10 +165,11 @@ endif()
 # lv_conf.h pulls in kf/budget.h (see the comment in that file) so
 # KF_ARENA_LVGL_BYTES can never drift from LV_MEM_SIZE. LVGL's own source is
 # compiled as plain C with no notion of hakoniwaos/include, so it needs the
-# path added explicitly.
+# path added explicitly. CMAKE_CURRENT_LIST_DIR (this file's own directory),
+# not CMAKE_CURRENT_SOURCE_DIR -- see this file's header comment.
 if(TARGET lvgl)
     target_include_directories(lvgl PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../hakoniwaos/include")
+        "${CMAKE_CURRENT_LIST_DIR}/../hakoniwaos/include")
 endif()
 
 # Belt-and-suspenders alongside the top-level CMAKE_C_STANDARD 17 /

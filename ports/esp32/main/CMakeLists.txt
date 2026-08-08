@@ -37,18 +37,34 @@
 ##
 ## kf_pet_session.cpp, added here rather than given its own EXTRA_COMPONENT_
 ## DIRS entry: it is one file with one dependency (hakoniwaos, already
-## REQUIRES'd below) and no third-party library of its own -- unlike the
-## LVGL and Lua ports still ahead, which each pull in an external
-## dependency and earn their own component the way hakoniwaos itself does.
-## Referenced from simulator/src/pet/ by relative path, the same pattern
-## the HAL backends above already use for ../hal/ -- one canonical copy of
-## the file, not a fork.
+## REQUIRES'd below) and no third-party library of its own -- unlike LVGL
+## (ADR 0027) and Lua (ADR 0028), which each pull in an external dependency
+## and earn their own component the way hakoniwaos itself does. Referenced
+## from simulator/src/pet/ by relative path, the same pattern the HAL
+## backends above already use for ../hal/ -- one canonical copy of the file,
+## not a fork.
 ##
-## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0030): same relative-path pattern as
+## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0028): same relative-path pattern as
 ## kf_pet_session.cpp above -- these two files have no third-party library of
-## their own, only Lua itself does, which is why Lua earns the new
-## "lua" REQUIRES below (../components/lua, registered via this port's
-## CMakeLists.txt EXTRA_COMPONENT_DIRS) instead of being folded in here.
+## their own, only Lua itself does, which is why Lua earns the "lua" REQUIRES
+## below (../components/lua, registered via this port's CMakeLists.txt
+## EXTRA_COMPONENT_DIRS) instead of being folded in here.
+##
+## kamiframe_lvgl_port REQUIRES: app_main.cpp now calls kf_lvgl_port_init()/
+## kf_lvgl_port_pump() and kf_screen_nav_init()/kf_screen_nav_frame()
+## (ADR 0027), both defined in that component, not this one -- REQUIRES
+## brings in both its public headers (so app_main.cpp's bare #include
+## "kf_lvgl_port.h" / "kf_screen_nav.h" resolve, the same
+## INCLUDE_DIRS-propagation ../../hakoniwaos already relies on for kf/*.h)
+## and, per the WHOLE_ARCHIVE comment above, positions kamiframe_lvgl_port.a
+## after this component in the final link -- the same position hakoniwaos.a
+## already occupies, for the same single-pass-resolution reason: this
+## component's own object files reference symbols that component defines,
+## not the other way around, so this component staying WHOLE_ARCHIVE and
+## that one staying an ordinary REQUIRES entry is enough; no WHOLE_ARCHIVE
+## needed on kamiframe_lvgl_port itself. See docs/architecture/
+## adr-0027-lvgl-on-esp32.md's "Verified" section for how that was actually
+## confirmed, not just reasoned about.
 idf_component_register(
     SRCS
         app_main.cpp
@@ -67,6 +83,7 @@ idf_component_register(
     REQUIRES
         hakoniwaos
         lua
+        kamiframe_lvgl_port
         spi_flash
         esp_driver_gpio
         esp_driver_spi

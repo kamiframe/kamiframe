@@ -1,7 +1,7 @@
 ## SPDX-License-Identifier: Apache-2.0
 ## Copyright the Kamiframe contributors.
 ##
-## Lua for the ESP-IDF build. See docs/architecture/adr-0030-esp32-lua-port.md
+## Lua for the ESP-IDF build. See docs/architecture/adr-0028-esp32-lua-port.md
 ## and ADR 0014 (the original embedding decision: version, float precision,
 ## sandboxing).
 ##

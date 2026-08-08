@@ -69,7 +69,16 @@ lv_display_t *kf_lvgl_display_init(void) {
      * nothing to do with it. */
     lv_display_set_theme(disp, lv_theme_simple_init(disp));
 
+    /* static_cast<int>(kDrawBufRows), not kDrawBufRows bare: found on the
+     * ESP32 target, not desktop -- xtensa-esp32s3-elf's <cstdint> typedefs
+     * int32_t to `long`, a distinct type from `int` even though both are
+     * 32 bits there, so %d (which only ever promises `int`) genuinely
+     * mismatches kDrawBufRows's declared type on that one target. Desktop's
+     * int32_t is plain `int`, so this was never visible there. Casting
+     * makes the actual printf argument type match %d's contract on every
+     * target, not just the one that happened to warn first. */
     KF_LOGI(TAG, "%dx%d RGB565, %d-row partial draw buffer (%zu bytes)",
-            KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT, kDrawBufRows, kDrawBufBytes);
+            KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT,
+            static_cast<int>(kDrawBufRows), kDrawBufBytes);
     return disp;
 }

@@ -34,11 +34,9 @@ future us in month eight asking the same question with less patience.
 | [0024](adr-0024-bringup-pinout-and-diagnostic.md) | The bring-up pinout, and a diagnostic separate from the firmware | Accepted |
 | [0025](adr-0025-esp32-pet-session.md) | The pet session, running for real on ESP32 | Accepted |
 | [0026](adr-0026-ds3231-rtc-driver.md) | A real DS3231 RTC driver, closing the wall-clock gap | Accepted |
-| [0030](adr-0030-esp32-lua-port.md) | Lua on ESP-IDF, and the demo creature driving the pet for real | Accepted |
-
-Numbers 0027-0029 are not listed here yet -- claimed by other, concurrently
-running slices at the time this row was added; see each one's own ADR once
-it lands.
+| [0027](adr-0027-lvgl-on-esp32.md) | LVGL on ESP32: the pet screen, on the real panel | Accepted |
+| [0028](adr-0028-esp32-lua-port.md) | Lua on ESP-IDF, and the demo creature driving the pet for real | Accepted |
+| [0029](adr-0029-panel-profiles.md) | Panel profiles: one display driver, many panels | Accepted |
 
 Open evaluations, deliberately not decided:
 

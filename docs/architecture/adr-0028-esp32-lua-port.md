@@ -1,4 +1,4 @@
-# ADR 0030: Lua on ESP-IDF, and the demo creature driving the pet for real
+# ADR 0028: Lua on ESP-IDF, and the demo creature driving the pet for real
 
 **Status:** Accepted
 **Date:** 2026-08-08
