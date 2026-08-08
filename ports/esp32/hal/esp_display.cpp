@@ -1,38 +1,38 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * HAL backend: display, ESP32 implementation (ST7789 over SPI + DMA).
+ * HAL backend: display, ESP32 implementation.
+ *
+ * This file knows how to talk to a 240x320 SPI panel. It does NOT know which
+ * one. Everything panel-specific -- init sequence, orientation, colour
+ * inversion, framebuffer byte order, window offset -- is data in
+ * kf_panel_profile.h, so supporting another module means adding a table
+ * there and nothing here changes.
+ *
+ * That split is deliberate and is a product requirement, not a tidiness
+ * preference: Kamiframe is meant to be buildable with whatever 240x320 SPI
+ * panel someone can source. Two are supported today (see kf_panel_profile.h)
+ * and neither is a special case in this file.
  *
  * Three decisions worth naming, matching sdl_display.cpp's own honesty
  * comment:
  *
  * 1. supports_partial_update is false. dirty_rects/dirty_rect_count are
  *    accepted (the signature requires it) but ignored, and every present()
- *    pushes the full KF_DISPLAY_WIDTH*KF_DISPLAY_HEIGHT frame with one
- *    esp_lcd_panel_draw_bitmap() call. Honouring dirty rects for real is a
- *    genuine future optimisation (union the rects, issue one bitmap call per
- *    rect, only wait once at the end) -- not done here because getting SPI
- *    + DMA compiling and linking against the real ST7789 driver at all is
- *    this slice's job (ADR 0020), and a wrong partial-update implementation
- *    that skips pixels it shouldn't is a worse bug than an honest full-frame
- *    push.
+ *    pushes the full frame. Honouring dirty rects for real is a genuine
+ *    future optimisation -- union the rects, one bitmap call per rect, wait
+ *    once at the end -- not done here because a wrong partial-update
+ *    implementation that skips pixels it shouldn't is a worse bug than an
+ *    honest full-frame push.
  *
- * 2. data_endian is LCD_RGB_DATA_ENDIAN_LITTLE, not because the wire format
- *    is little-endian -- ST7789 panels are natively big-endian (MSB first)
- *    over SPI -- but because esp_lcd_panel_st7789.c programs the panel's own
- *    RAMCTL register to accept little-endian input when told to (see that
- *    file's `ramctl_val_2 |= ST7789_DATA_LITTLE_ENDIAN_BIT` when this flag is
- *    set). That means kf_color's own contract (native-endian uint16_t
- *    RGB565, per kf/hal/display.h) can go straight to the panel with zero
- *    host-side byte swapping, which is both simpler and faster than
- *    swapping 76800 pixels in software every frame.
+ * 2. Byte order is per-panel, and on a panel that needs swapping it costs a
+ *    pass over the frame. See kf_display_present() for the reasoning and
+ *    what it costs; kf_panel_profile.h explains why the panels differ.
  *
  * 3. Backlight is a plain GPIO on/off, not PWM. has_backlight is true and
  *    kf_display_set_backlight() treats any level > 0 as "on" -- there is no
- *    LEDC (PWM) channel wired up here, so dimming is not implemented. This
- *    is a real, smaller gap than the wall-clock one in esp_time.cpp: adding
- *    LEDC brightness control later is a self-contained change to this one
- *    function, not an architectural one.
+ *    LEDC channel wired up here, so dimming is not implemented. Adding it
+ *    later is a self-contained change to one function.
  */
 
 #include "kf/hal/display.h"
@@ -40,12 +40,16 @@
 #include "kf/budget.h"
 #include "kf/hal/log.h"
 #include "kf_esp_pins.h"
+#include "kf_panel_profile.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace {
 
@@ -53,9 +57,18 @@ constexpr const char *TAG = "display";
 
 constexpr spi_host_device_t kSpiHost = SPI2_HOST;
 
+/* The panel this build drives. One line, resolved at compile time. */
+const kf_panel_profile &kPanel = KF_PANEL_PROFILE;
+
+/* Rows per staging transfer on panels that need a byte swap. 240 x 40 x 2 =
+ * 19,200 bytes, which is a comfortable DMA-capable internal-RAM allocation --
+ * a full frame would be 153,600 and internal RAM is only 512KB in total. */
+constexpr int kSwapStripRows = 40;
+
 esp_lcd_panel_io_handle_t g_io = nullptr;
 esp_lcd_panel_handle_t g_panel = nullptr;
 bool g_spi_bus_initialized = false;
+uint16_t *g_swap_strip = nullptr;
 
 kf_display_caps g_caps = {
     KF_DISPLAY_WIDTH,
@@ -71,14 +84,31 @@ kf_display_caps g_caps = {
     KF_DISPLAY_SPI_HZ / 8u,
 };
 
+/* Send a profile's init table straight down the command channel. Commands and
+ * their parameters ARE byte-reversed by esp_lcd, unlike colour data, so
+ * nothing here needs the swapping present() does. */
+void send_init_table(const kf_panel_profile &panel) {
+    for (size_t i = 0; i < panel.init_count; ++i) {
+        const kf_panel_cmd &c = panel.init[i];
+        const esp_err_t err = esp_lcd_panel_io_tx_param(
+            g_io, c.cmd, c.len ? c.data : nullptr, c.len);
+        if (err != ESP_OK) {
+            KF_LOGE(TAG, "init cmd 0x%02X failed: %d", c.cmd, err);
+        }
+        if (c.delay_ms != 0) {
+            vTaskDelay(pdMS_TO_TICKS(c.delay_ms));
+        }
+    }
+}
+
 } // namespace
 
 kf_result kf_display_init(void) {
-    /* No MISO: this panel is write-only, and leaving it at -1 tells the SPI
-     * driver not to reserve a pin for it (matches kf_esp_pins.h's own
-     * comment). max_transfer_sz covers one full frame in one DMA transfer,
-     * since kf_display_present() below issues exactly one draw_bitmap()
-     * call per frame. */
+    KF_LOGI(TAG, "panel profile: %s", kPanel.name);
+
+    /* No MISO: these panels are write-only, and leaving it at -1 tells the
+     * SPI driver not to reserve a pin. max_transfer_sz covers a full frame,
+     * since the no-swap path issues exactly one draw_bitmap() per frame. */
     spi_bus_config_t bus_config{};
     bus_config.mosi_io_num = KF_ESP_PIN_LCD_MOSI;
     bus_config.miso_io_num = -1;
@@ -104,8 +134,8 @@ kf_result kf_display_init(void) {
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
     /* flags left at their default (all zero): dc_cmd_level = 0, dc_data_level
-     * = 1, the standard "DC low = command, DC high = data" wiring this panel
-     * uses -- confirmed against esp_lcd_panel_io_spi.c rather than assumed. */
+     * = 1, the standard "DC low = command, DC high = data" wiring these panels
+     * use -- confirmed against esp_lcd_panel_io_spi.c rather than assumed. */
 
     err = esp_lcd_new_panel_io_spi(
         static_cast<esp_lcd_spi_bus_handle_t>(kSpiHost), &io_config, &g_io);
@@ -116,11 +146,20 @@ kf_result kf_display_init(void) {
 
     esp_lcd_panel_dev_config_t panel_config{};
     panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    /* Only consulted on the built-in-init path: it is what makes
+     * esp_lcd_panel_init() set RAMCTRL's little-endian bit. On a panel with
+     * big_endian_fb the swap happens in present() instead, and this is
+     * ignored because esp_lcd_panel_init() is never called. */
     panel_config.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
     panel_config.bits_per_pixel = 16;
     panel_config.reset_gpio_num = KF_ESP_PIN_LCD_RST;
     panel_config.flags.reset_active_high = 0;
 
+    /* esp_lcd_new_panel_st7789() supplies the handle for every panel here,
+     * including the ILI9341. That is not a mistake: the handle only provides
+     * the generic draw_bitmap/reset/invert plumbing, and the controller-
+     * specific part is whether esp_lcd_panel_init() is allowed to run --
+     * which is exactly what use_builtin_init decides. */
     err = esp_lcd_new_panel_st7789(g_io, &panel_config, &g_panel);
     if (err != ESP_OK) {
         KF_LOGE(TAG, "esp_lcd_new_panel_st7789 failed: %d", err);
@@ -128,13 +167,30 @@ kf_result kf_display_init(void) {
     }
 
     esp_lcd_panel_reset(g_panel);
-    esp_lcd_panel_init(g_panel);
-    esp_lcd_panel_invert_color(g_panel, false);
+    if (kPanel.use_builtin_init) {
+        esp_lcd_panel_init(g_panel);
+    }
+    send_init_table(kPanel);
+    esp_lcd_panel_invert_color(g_panel, kPanel.invert);
+    if (kPanel.x_gap != 0 || kPanel.y_gap != 0) {
+        esp_lcd_panel_set_gap(g_panel, kPanel.x_gap, kPanel.y_gap);
+    }
     esp_lcd_panel_disp_on_off(g_panel, true);
 
+    if (kPanel.big_endian_fb) {
+        g_swap_strip = static_cast<uint16_t *>(
+            heap_caps_malloc(KF_DISPLAY_WIDTH * kSwapStripRows * sizeof(uint16_t),
+                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (g_swap_strip == nullptr) {
+            KF_LOGE(TAG, "could not allocate the %d-byte byte-swap strip",
+                    KF_DISPLAY_WIDTH * kSwapStripRows *
+                        static_cast<int>(sizeof(uint16_t)));
+            return KF_ERR_EXHAUSTED;
+        }
+    }
+
     /* Backlight GPIO, plain push-pull output, defaults to off until the
-     * caller explicitly asks for one -- see this file's header comment on
-     * why this is on/off rather than PWM. */
+     * caller explicitly asks for one. */
     gpio_config_t bl_config{};
     bl_config.pin_bit_mask = (1ULL << KF_ESP_PIN_LCD_BL);
     bl_config.mode = GPIO_MODE_OUTPUT;
@@ -144,8 +200,10 @@ kf_result kf_display_init(void) {
     gpio_config(&bl_config);
     gpio_set_level(KF_ESP_PIN_LCD_BL, 0);
 
-    KF_LOGI(TAG, "ST7789 up: %dx%d, %lu Hz SPI, RGB565", KF_DISPLAY_WIDTH,
-            KF_DISPLAY_HEIGHT, static_cast<unsigned long>(KF_DISPLAY_SPI_HZ));
+    KF_LOGI(TAG, "%s up: %dx%d, %lu Hz SPI, RGB565, %s framebuffer",
+            kPanel.name, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT,
+            static_cast<unsigned long>(KF_DISPLAY_SPI_HZ),
+            kPanel.big_endian_fb ? "byte-swapped" : "native-endian");
     return KF_OK;
 }
 
@@ -163,11 +221,53 @@ kf_result kf_display_present(const kf_color *framebuffer,
     /* Half-open x_end/y_end, exactly kf_rect's own convention (kf/types.h)
      * -- draw_bitmap's x_end/y_end are documented the same way, so the full
      * frame is [0, WIDTH) x [0, HEIGHT) with no off-by-one adjustment. */
-    const esp_err_t err = esp_lcd_panel_draw_bitmap(
-        g_panel, 0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT, framebuffer);
-    if (err != ESP_OK) {
-        KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed: %d", err);
-        return KF_ERR_IO;
+    if (!kPanel.big_endian_fb) {
+        const esp_err_t err = esp_lcd_panel_draw_bitmap(
+            g_panel, 0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT, framebuffer);
+        if (err != ESP_OK) {
+            KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed: %d", err);
+            return KF_ERR_IO;
+        }
+        return KF_OK;
+    }
+
+    /* ------------------------------------------------------------------
+     * The byte-swapping path.
+     *
+     * kf_color is native-endian RGB565 by contract (kf/hal/display.h) and
+     * that contract is worth keeping: the blitter, the font renderer, the
+     * sprite data in flash and LVGL all produce and consume colours without
+     * caring what panel is attached. So the swap happens here, at the one
+     * place that knows the panel is big-endian, rather than leaking a
+     * panel's quirk into every producer of a pixel.
+     *
+     * Strip at a time rather than one big staging frame: a second full
+     * framebuffer would be another 150KB of internal RAM on a chip with
+     * 512KB, to save a handful of draw_bitmap calls. The strip costs 19KB.
+     *
+     * Cost is one pass over 76,800 pixels. Against ~31ms of wire time at
+     * 40MHz (KF_DISPLAY_SPI_HZ, measured) that is small, but it is not free,
+     * and it is a genuine reason to prefer a panel that does not need it --
+     * which is the ST7789 profile's advantage over the ILI9341 one.
+     * ------------------------------------------------------------------ */
+    for (int y = 0; y < KF_DISPLAY_HEIGHT; y += kSwapStripRows) {
+        int rows = kSwapStripRows;
+        if (y + rows > KF_DISPLAY_HEIGHT) {
+            rows = KF_DISPLAY_HEIGHT - y;
+        }
+
+        const kf_color *src = framebuffer + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
+        const int count = rows * KF_DISPLAY_WIDTH;
+        for (int i = 0; i < count; ++i) {
+            g_swap_strip[i] = __builtin_bswap16(src[i]);
+        }
+
+        const esp_err_t err = esp_lcd_panel_draw_bitmap(
+            g_panel, 0, y, KF_DISPLAY_WIDTH, y + rows, g_swap_strip);
+        if (err != ESP_OK) {
+            KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed at row %d: %d", y, err);
+            return KF_ERR_IO;
+        }
     }
     return KF_OK;
 }
@@ -179,6 +279,10 @@ kf_result kf_display_set_backlight(uint8_t level) {
 }
 
 void kf_display_shutdown(void) {
+    if (g_swap_strip != nullptr) {
+        heap_caps_free(g_swap_strip);
+        g_swap_strip = nullptr;
+    }
     if (g_panel != nullptr) {
         esp_lcd_panel_del(g_panel);
         g_panel = nullptr;

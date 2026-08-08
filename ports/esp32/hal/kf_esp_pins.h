@@ -68,19 +68,21 @@ extern "C" {
  * and leaving MISO unset (-1) tells the SPI driver not to reserve a pin for
  * it. See esp_display.cpp.
  *
- * The panel this is written against is a 240x320 ST7789. An ILI9341 of the
- * same resolution is NOT a drop-in: same wires, different init sequence, so
- * it needs esp_lcd_new_panel_ili9341() instead. Check which controller the
- * module actually has before wiring.
+ * These wires are the same for every 240x320 SPI module this project
+ * supports -- what differs between controllers is the init sequence,
+ * orientation, colour inversion and framebuffer byte order, none of which is
+ * a pin. All of that lives in kf_panel_profile.h, one table per panel, and
+ * esp_display.cpp reads it rather than hardcoding a controller.
  *
- * The panel actually working on the bench as of 2026-08-08 is an ILI9341
- * (HiLetgo 2.8in, module HSD028309). Its settled configuration, measured
- * rather than assumed, is in ADR 0023: MADCTL 0x88 with the pin header
- * mounted at the TOP, COLMOD 0x55, inversion OFF, and -- the one that
- * costs an evening if you miss it -- a BIG-ENDIAN framebuffer, because the
- * ILI9341 has no equivalent of the ST7789's RAMCTRL little-endian bit and
- * esp_lcd does not byte-reverse colour data. esp_display.cpp still targets
- * the ST7789 and will need all of that if the ILI9341 becomes the panel.
+ * The panel working on the bench as of 2026-08-08 is an ILI9341 (HiLetgo
+ * 2.8in, module HSD028309), and it is what this build drives by default. Its
+ * settled configuration, measured rather than assumed, is recorded in ADR
+ * 0024 and encoded in kf_panel_profile.h: MADCTL 0x88 with the pin header
+ * mounted at the TOP, COLMOD 0x55, inversion OFF, and -- the one that costs
+ * an evening if you miss it -- a BIG-ENDIAN framebuffer.
+ *
+ * The 2in ST7789 remains the primary panel and has its own profile, not yet
+ * hardware-verified: the first unit was faulty and was returned.
  * ------------------------------------------------------------------------- */
 #define KF_ESP_PIN_LCD_MOSI GPIO_NUM_11
 #define KF_ESP_PIN_LCD_SCLK GPIO_NUM_12

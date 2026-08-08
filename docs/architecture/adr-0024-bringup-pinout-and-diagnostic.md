@@ -112,11 +112,21 @@ recorded so it is not a surprise during layout.
 
 ## Not verified
 
-Any of it, on hardware. `kf_esp_pins.h` keeps its *assumption, not measured*
-banner. The specific figures to correct on day one are `KF_DISPLAY_SPI_HZ`
-and whether this particular ST7789 module needs an x/y offset -- which varies
-between modules that are otherwise identical, and is why stage 2 draws a
-border touching all four edges.
+The pinout and diagnostic have now been run on real hardware -- see
+"Bring-up results, 2026-08-07/08" below for what was measured and changed
+as a result. Still not verified:
+
+- The primary 2in ST7789 panel. The measurements below were taken on a
+  2.8in ILI9341, the supported alternative, after the Waveshare 2in ST7789
+  module in hand turned out to be faulty. `kf_esp_pins.h` keeps its
+  *assumption, not measured* banner for the ST7789 path, and whether this
+  particular ST7789 module needs an x/y offset is still open -- which
+  varies between modules that are otherwise identical, and is why stage 2
+  draws a border touching all four edges.
+- `KF_DISPLAY_SPI_HZ` against the ST7789, for the same reason.
+- The reserved I2S lines. I2S_DOUT now shares a pin with the diagnostic's
+  bring-up use of GPIO9 (see below), but the I2S peripheral itself has
+  never been wired to a speaker or driven.
 
 ## Cost to change
 
@@ -126,3 +136,96 @@ Moving the SD card back onto the display's bus is a slightly larger change
 to `esp_storage.cpp`'s eventual card support and to stage 4 of the
 diagnostic, and should happen at PCB design time rather than on a
 breadboard.
+
+## Bring-up results, 2026-08-07/08
+
+The pinout survived first contact with one change and three surprises. All
+of this is measured on the board in hand, not reasoned about.
+
+### GPIO9 is not usable as LCD_DC on this board
+
+Driven high as a plain GPIO it produced under a millivolt at the panel,
+while RST, CS, CLK and DIN all swung a clean 3.3V through the same jumpers.
+GPIO9 is FSPIHD, one of SPI2's own IOMUX function pins, and this build
+drives SPI2 on 10/11/12 which are the other three. DC moved to GPIO7 and
+I2S_DOUT took GPIO9 in exchange. See the comment in `kf_esp_pins.h`.
+
+### The devkit's 5Vin pin is diode-blocked from USB VBUS
+
+It reads 0.55V out of the bag. An IN-OUT solder jumper next to GPIO 10-12
+bridges it. Once bridged, never feed external 5V into that pin while USB is
+connected.
+
+### SDIO probing breaks plain SD cards
+
+`sdmmc_init.c` calls `sdmmc_io_reset()`, which sends CMD52; a memory card
+answers with the function-number-error bit, `r1_sdio_response_to_err()`
+maps that to `ESP_ERR_INVALID_ARG`, and `sdmmc_io_reset()` only tolerates
+TIMEOUT, NOT_SUPPORTED and INVALID_CRC. The card mounts fine once
+`CONFIG_SD_ENABLE_SDIO_SUPPORT=n` is set. This belongs in the real port's
+`sdkconfig.defaults` too, not just the diagnostic's.
+
+### Framebuffer byte order is a trap on any non-ST7789 panel
+
+This one cost an evening and is the reason to write it down. RGB565 goes on
+the wire high byte first. The ESP32-S3 is little-endian, and
+`panel_io_spi_tx_color()` hands colour data to SPI exactly as it lies in
+memory -- only commands and parameters get byte-reversed. So a `uint16_t`
+framebuffer is transmitted backwards.
+
+The ST7789 hides this: RAMCTRL (0xB0) carries a little-endian bit, and
+`esp_lcd_new_panel_st7789()` sets it from `panel_dev_config.data_endian`.
+But that bit is only ever sent by `esp_lcd_panel_init()`, and the ILI9341
+path skips `esp_lcd_panel_init()` because 0xB0 is a different register on
+that controller. The ILI9341 has no equivalent register at all. It is
+always big-endian, so the framebuffer has to be.
+
+Measured, on full-screen fills where no geometry is involved:
+
+| sent   | intended | panel read | shown |
+|--------|----------|-----------|-------|
+| 0xF800 | red      | 0x00F8    | blue  |
+| 0x07E0 | green    | 0xE007    | pink  |
+| 0x001F | blue     | 0x1F00    | green |
+| 0xFFFF | white    | 0xFFFF    | white |
+| 0x0000 | black    | 0x0000    | black |
+
+All five match a plain byte swap and nothing else. Three horizontal colour
+bands could *not* distinguish this from a BGR-bit fault, because both
+produce "wrong colours" and neither produces a colour you can name -- which
+is why the diagnostic now draws a single static test card with white and
+black patches in it and holds it long enough to photograph. White and black
+are invariant under byte order and under BGR, so their being correct while
+the saturated patches are wrong is the signature that separates the two.
+
+If the flagship panel ends up being an ILI9341 rather than an ST7789,
+`esp_display.cpp` needs the same treatment: its own init table, no
+`esp_lcd_panel_init()`, and a big-endian framebuffer.
+
+### The Waveshare 2inch module in hand is faulty
+
+Its DC line measured 0.7mV at the panel while RST, CS, CLK and DIN swung
+3.3V, and pulling the wire showed the GPIO driving perfectly unloaded.
+Soldering direct to the pad restored 3.3V and the panel still never
+displayed. A HiLetgo 2.8in ILI9341 on the identical eight wires lit up
+immediately. Returned.
+
+### Settled ILI9341 configuration
+
+Confirmed by photograph on 2026-08-08, after the byte-order fix:
+
+- `MADCTL` (0x36) = `0x88`. MY set, MX clear, BGR set. Portrait with the
+  module's pin header at the TOP, which is the mounting decision taken.
+  Every Arduino library prints `0x48` for this panel, which is the same
+  portrait rotated 180 degrees, i.e. header at the bottom. Only the two
+  mirror bits differ, so switching later is one byte.
+- `COLMOD` (0x3A) = `0x55`, 16 bit.
+- Inversion OFF. The alignment frame came out on a white field with it off
+  and a black one with it on.
+- Framebuffer stored big-endian, per the section above.
+
+The eight-patch test card read correctly in every position: the green edge
+stripe on the left, the blue bar at the bottom, and the patches in order
+white/black, red/green, blue/yellow, cyan/magenta. Magenta photographs as
+lavender and yellow as yellow-green on this panel, which is the glass and
+the camera, not the data.
