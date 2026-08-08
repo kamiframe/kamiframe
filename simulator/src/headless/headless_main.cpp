@@ -1006,6 +1006,48 @@ int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
  * reads kf_pet_session_state(), which needs the storage/power HAL and
  * kf_pet_session_init() -- the same isolated-per-PID storage directory
  * trick run_pet_check() and run_lua_pet_check() already use. */
+/* Where --dump-fb should write the framebuffer, or nullptr for "don't".
+ *
+ * A checksum tells you a frame CHANGED. It cannot tell you the frame is
+ * WRONG, and the two questions need different tools: the golden checksums in
+ * this file would happily lock in a layout with every widget drawn twice, and
+ * did not notice when exactly that reached real hardware. This writes the
+ * frame somewhere a human (or a vision model) can look at it. */
+const char *g_dump_path = nullptr;
+
+/* Binary PPM (P6). Chosen over PNG because it needs no library at all -- a
+ * 15-line writer against a format every image viewer and converter already
+ * reads is a better trade here than a dependency taken on for debugging. */
+void dump_framebuffer_ppm(const char *path) {
+    if (path == nullptr) {
+        return;
+    }
+    std::FILE *f = std::fopen(path, "wb");
+    if (f == nullptr) {
+        KF_LOGE(TAG, "could not open %s for writing", path);
+        return;
+    }
+    std::fprintf(f, "P6\n%d %d\n255\n", KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT);
+
+    const kf_color *px = kf_fb_pixels();
+    for (int i = 0; i < KF_DISPLAY_WIDTH * KF_DISPLAY_HEIGHT; ++i) {
+        /* RGB565 -> RGB888, replicating the high bits into the low ones so
+         * white stays 0xFF rather than 0xF8. */
+        const kf_color c = px[i];
+        const uint8_t r5 = static_cast<uint8_t>((c >> 11) & 0x1F);
+        const uint8_t g6 = static_cast<uint8_t>((c >> 5) & 0x3F);
+        const uint8_t b5 = static_cast<uint8_t>(c & 0x1F);
+        const uint8_t rgb[3] = {
+            static_cast<uint8_t>((r5 << 3) | (r5 >> 2)),
+            static_cast<uint8_t>((g6 << 2) | (g6 >> 4)),
+            static_cast<uint8_t>((b5 << 3) | (b5 >> 2)),
+        };
+        std::fwrite(rgb, 1, 3, f);
+    }
+    std::fclose(f);
+    KF_LOGI(TAG, "framebuffer written to %s", path);
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -1152,6 +1194,10 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     check(kf_screen_nav_debug_index() == 0,
           "still on Home after 30 quiet frames (nothing should have "
           "switched screens on its own)");
+
+    /* Home, exactly as the device draws it -- this is the same init order and
+     * the same per-frame order app_main.cpp uses. */
+    dump_framebuffer_ppm(g_dump_path);
 
     kf_screen_nav_debug_advance();
     check(kf_screen_nav_debug_index() == 1,
@@ -1584,6 +1630,8 @@ int main(int argc, char *argv[]) {
             verify_pet_personality = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
+        } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
+            g_dump_path = argv[++i];
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
             verify_pet_screen = true;
         } else if (std::strcmp(argv[i], "--verify-screen-nav") == 0) {

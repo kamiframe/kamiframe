@@ -65,10 +65,37 @@ const kf_panel_profile &kPanel = KF_PANEL_PROFILE;
  * a full frame would be 153,600 and internal RAM is only 512KB in total. */
 constexpr int kSwapStripRows = 40;
 
+/* TWO strip buffers, alternating, and the reason is not performance.
+ *
+ * esp_lcd_panel_draw_bitmap() does NOT block until the pixels are on the
+ * wire. It queues a DMA transaction and returns. The transfer is only waited
+ * for at the START of the next tx_color call, where esp_lcd_panel_io_spi.c
+ * drains num_trans_inflight before queuing anything new.
+ *
+ * So a single shared strip buffer is a data race with DMA: the swap loop for
+ * strip N+1 overwrites the very bytes strip N's transfer is still reading.
+ * The panel then shows whichever side won, which looks like duplicated bands,
+ * a picture shifted off the top of the screen, and a brightness flicker that
+ * changes every frame -- all three at once, and all three only on hardware,
+ * because no desktop backend has DMA.
+ *
+ * Alternating two buffers fixes it exactly: between two writes to the same
+ * buffer there is always one intervening draw_bitmap() call, and that call
+ * drains the earlier transfer before it queues its own. It also keeps the
+ * CPU's byte-swap of the next strip overlapping the current transfer, which
+ * a blocking wait would have thrown away.
+ *
+ * g_swap_index deliberately persists across frames rather than resetting to
+ * zero. Resetting would be correct only while the strip count per frame
+ * happens to be even -- 320/40 = 8 today -- and would silently become a race
+ * again if either constant changed. */
+constexpr int kSwapBufferCount = 2;
+
 esp_lcd_panel_io_handle_t g_io = nullptr;
 esp_lcd_panel_handle_t g_panel = nullptr;
 bool g_spi_bus_initialized = false;
-uint16_t *g_swap_strip = nullptr;
+uint16_t *g_swap_strip[kSwapBufferCount] = {nullptr, nullptr};
+int g_swap_index = 0;
 
 kf_display_caps g_caps = {
     KF_DISPLAY_WIDTH,
@@ -178,14 +205,16 @@ kf_result kf_display_init(void) {
     esp_lcd_panel_disp_on_off(g_panel, true);
 
     if (kPanel.big_endian_fb) {
-        g_swap_strip = static_cast<uint16_t *>(
-            heap_caps_malloc(KF_DISPLAY_WIDTH * kSwapStripRows * sizeof(uint16_t),
-                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        if (g_swap_strip == nullptr) {
-            KF_LOGE(TAG, "could not allocate the %d-byte byte-swap strip",
-                    KF_DISPLAY_WIDTH * kSwapStripRows *
-                        static_cast<int>(sizeof(uint16_t)));
-            return KF_ERR_EXHAUSTED;
+        constexpr size_t kStripBytes = static_cast<size_t>(KF_DISPLAY_WIDTH) *
+                                        kSwapStripRows * sizeof(uint16_t);
+        for (int i = 0; i < kSwapBufferCount; ++i) {
+            g_swap_strip[i] = static_cast<uint16_t *>(
+                heap_caps_malloc(kStripBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+            if (g_swap_strip[i] == nullptr) {
+                KF_LOGE(TAG, "could not allocate byte-swap strip %d (%zu bytes)",
+                        i, kStripBytes);
+                return KF_ERR_EXHAUSTED;
+            }
         }
     }
 
@@ -256,14 +285,20 @@ kf_result kf_display_present(const kf_color *framebuffer,
             rows = KF_DISPLAY_HEIGHT - y;
         }
 
+        /* Alternate before writing, never after -- see kSwapBufferCount's
+         * comment. The buffer picked here must be one no in-flight transfer
+         * is still reading. */
+        g_swap_index = (g_swap_index + 1) % kSwapBufferCount;
+        uint16_t *strip = g_swap_strip[g_swap_index];
+
         const kf_color *src = framebuffer + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
         const int count = rows * KF_DISPLAY_WIDTH;
         for (int i = 0; i < count; ++i) {
-            g_swap_strip[i] = __builtin_bswap16(src[i]);
+            strip[i] = __builtin_bswap16(src[i]);
         }
 
         const esp_err_t err = esp_lcd_panel_draw_bitmap(
-            g_panel, 0, y, KF_DISPLAY_WIDTH, y + rows, g_swap_strip);
+            g_panel, 0, y, KF_DISPLAY_WIDTH, y + rows, strip);
         if (err != ESP_OK) {
             KF_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed at row %d: %d", y, err);
             return KF_ERR_IO;
@@ -279,9 +314,11 @@ kf_result kf_display_set_backlight(uint8_t level) {
 }
 
 void kf_display_shutdown(void) {
-    if (g_swap_strip != nullptr) {
-        heap_caps_free(g_swap_strip);
-        g_swap_strip = nullptr;
+    for (int i = 0; i < kSwapBufferCount; ++i) {
+        if (g_swap_strip[i] != nullptr) {
+            heap_caps_free(g_swap_strip[i]);
+            g_swap_strip[i] = nullptr;
+        }
     }
     if (g_panel != nullptr) {
         esp_lcd_panel_del(g_panel);
