@@ -39,7 +39,7 @@ Wire protocol (fixed; the device side implements the exact same spec):
 
 Usage:
     python3 tools/kf_debug.py [--port PORT] ping
-    python3 tools/kf_debug.py [--port PORT] shot [--out FILE.png]
+    python3 tools/kf_debug.py [--port PORT] shot [--out FILE.png]   # default: ~/Downloads
     python3 tools/kf_debug.py [--port PORT] state [--json]
     python3 tools/kf_debug.py [--port PORT] press UP,A [--hold-ms 300]
     python3 tools/kf_debug.py [--port PORT] watch [--interval 1.0]
@@ -51,6 +51,7 @@ import argparse
 import base64
 import binascii
 import json
+import os
 import re
 import struct
 import sys
@@ -78,6 +79,27 @@ BUTTON_BITS = {
     "B": 1 << 5,
     "MENU": 1 << 6,
 }
+
+def resolve_shot_path(out):
+    """Where a screenshot should land.
+
+    Default is the user's Downloads folder rather than the current directory,
+    because the command is nearly always run from wherever you happen to be
+    standing -- often deep inside ports/esp32 -- and a PNG dropped there is a
+    PNG you have to go hunting for. Downloads is somewhere both a person and
+    an assistant can reliably find afterwards.
+
+    An explicit --out always wins, and `~` is expanded so `--out ~/foo.png`
+    behaves the way it looks. If Downloads does not exist (a stripped-down
+    Linux box, a CI container), fall back to the current directory rather than
+    inventing folders in someone's home.
+    """
+    if out:
+        return os.path.abspath(os.path.expanduser(out))
+    downloads = os.path.expanduser("~/Downloads")
+    directory = downloads if os.path.isdir(downloads) else os.getcwd()
+    return os.path.join(directory, "kf_shot.png")
+
 
 _BEGIN_RE = re.compile(r"^KFDBG-BEGIN (\S+) (\d+)$")
 _END_RE = re.compile(r"^KFDBG-END ([0-9a-fA-F]+)$")
@@ -474,7 +496,8 @@ def cmd_shot(link, args):
         idx += 3
 
     png_bytes = png_encode(FB_WIDTH, FB_HEIGHT, bytes(rgb))
-    out_path = args.out or "kf_shot.png"
+    out_path = resolve_shot_path(args.out)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(png_bytes)
     print(f"wrote {out_path} ({FB_WIDTH}x{FB_HEIGHT})")
@@ -551,8 +574,8 @@ def build_parser():
     sub.add_parser("ping", help="check the device is alive, print build info")
 
     shot = sub.add_parser("shot", help="capture the live screen as a PNG")
-    shot.add_argument("--out", default="kf_shot.png",
-                       help="output PNG path (default: kf_shot.png)")
+    shot.add_argument("--out", default=None,
+                       help="output PNG path (default: ~/Downloads/kf_shot.png)")
 
     state = sub.add_parser("state", help="print the pet's current state")
     state.add_argument("--json", action="store_true",
