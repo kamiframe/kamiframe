@@ -51,6 +51,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kf_debug as kfd  # noqa: E402
 
+# Shown in the window title. Bump it whenever the panel's appearance or
+# controls change. This is not decoration: three separate rounds of "it still
+# looks the same" turned out to be a stale window or an older copy of this
+# file being run, and there was no way to tell by looking at it. Now there is.
+PANEL_BUILD = "2026-08-08.2 light-theme"
+
 try:
     import tkinter as tk
     from tkinter import ttk
@@ -677,7 +683,12 @@ if tk is not None:
             self._worker = threading.Thread(target=self._worker_loop, daemon=True)
             self._worker.start()
 
-            root.title("Kamiframe Hardware Panel")
+            # The build marker in the title is not decoration. Three separate
+            # rounds of "it still looks the same" turned out to be a stale
+            # window or an older file being run, and there was no way to tell
+            # by looking. Now there is: if the title does not say the build
+            # you expect, you are not running the code you think you are.
+            root.title(f"Kamiframe Hardware Panel [{PANEL_BUILD}]")
             root.protocol("WM_DELETE_WINDOW", self.on_close)
 
             self._build_ui()
