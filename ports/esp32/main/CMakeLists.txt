@@ -142,12 +142,15 @@ esptool_py_flash_to_partition(flash "assets"
 ##   multi-day decay curve over the serial bridge instead of watching it
 ##   do nothing for days (see ADR 0030's "Time control" section).
 ##
-##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY the scrubbable-timeline
+##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates the scrubbable-timeline
 ##   snapshot ring and kf_pet_session_debug_seek() -- a real static
-##   allocation over 200KB that desktop/headless get by default. This
-##   build opts out of it explicitly, since a real device has neither the
-##   SRAM to spare nor any caller for it (nothing in app_main.cpp scrubs a
-##   timeline).
+##   allocation over 200KB that desktop/headless get by default -- plus
+##   kf_pet_session_state_mutable_for_test() (Task 5), which costs nothing
+##   itself but rides the same flag as a test-only reach-into-Core no real
+##   device should link in either. This build opts out of all of it
+##   explicitly, since a real device has neither the SRAM to spare nor any
+##   caller for any of the three (nothing in app_main.cpp scrubs a timeline
+##   or reaches into pet state directly).
 ##
 ## LUA_32BITS: must match ../components/lua/CMakeLists.txt's identical
 ## define on `lua_core` exactly -- see that file's own comment for why

@@ -102,13 +102,17 @@ int main(int argc, char *argv[]) {
              * roster built by tools/kf_ingest_sprites.py -- without
              * touching KF_ASSET_PACK (the CMake cache variable
              * examples/hello_sprite/assets.kfpack is baked in from,
-             * simulator/CMakeLists.txt) or recompiling. Deliberately does
-             * NOT change kamiframe-headless or any ctest target: this flag
-             * only exists on this binary's argv, and
-             * kf_host_assets_set_pack_path() is only ever called from
-             * here -- see host_assets.h's own comment on why the override
-             * has to be a desktop-only, opt-in call rather than something
-             * Core (or the default path) can reach. */
+             * simulator/CMakeLists.txt) or recompiling. This flag only
+             * exists on this binary's argv, so it cannot itself affect
+             * kamiframe-headless or any ctest target -- the one other
+             * caller of kf_host_assets_set_pack_path(),
+             * run_creature_screen_sprite_check() in headless_main.cpp,
+             * reaches it through its own compiled-in demo-pack path
+             * instead, and restores the override to null before
+             * returning, which is what keeps every other test's mount
+             * unaffected -- see host_assets.h's own comment on why the
+             * override has to be a desktop-only, opt-in call rather than
+             * something Core (or the default path) can reach. */
             pack_path = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf(

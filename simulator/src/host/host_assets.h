@@ -19,10 +19,16 @@
  * variable for that default).
  *
  * Call before kf_app_init() (which is what actually mounts); has no effect
- * once the pack is up. kamiframe-sim's `--pack <path>` flag is the only
- * caller today -- kamiframe-headless and every ctest target never call
- * this, so they always get the compiled-in default unchanged, which is
- * exactly what keeps their checksummed output stable.
+ * once the pack is up. Two callers today: kamiframe-sim's `--pack <path>`
+ * flag (sdl_main.cpp), and kamiframe-headless's run_creature_screen_
+ * sprite_check() (headless_main.cpp), which sets the override to its own
+ * demo pack, mounts it, and restores the override to null before
+ * returning -- see that function's own comment. Every other ctest target,
+ * and every other check within kamiframe-headless, never calls this, so
+ * they always get the compiled-in default unchanged, which is what keeps
+ * their checksummed output stable: it holds because the one caller that
+ * touches the override always puts it back, not because nothing else
+ * could reach this function.
  *
  * A null or empty path clears any previous override, going back to the
  * compiled-in default -- the same "null/empty means default" contract

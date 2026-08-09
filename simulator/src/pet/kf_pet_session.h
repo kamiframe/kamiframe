@@ -127,7 +127,7 @@ void kf_pet_session_shutdown(void);
  * time on its own pet) and not something a real device would ever expose
  * to a player.
  *
- * Split across TWO flags, not one, because the four functions below have
+ * Split across TWO flags, not one, because the five functions below have
  * very different costs:
  *
  *   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates kf_pet_session_debug_
@@ -159,12 +159,12 @@ void kf_pet_session_shutdown(void);
  *   business linking in any more than it does the snapshot ring, so it
  *   rides the same flag rather than getting a third one of its own.
  *
- * All four are DECLARED unconditionally below, same as everything else
+ * All five are DECLARED unconditionally below, same as everything else
  * in this header, so nothing calling into this file needs to know or
  * care which backend it is, or which of the two flags gates which
  * function below. Whether each is DEFINED depends on its own flag --
  * see kf_pet_session.cpp's top-of-file comment. Desktop/headless get real
- * definitions of all four by default. Calling a function whose flag is
+ * definitions of all five by default. Calling a function whose flag is
  * off for the calling backend is therefore a link error, not
  * silently-wrong behaviour -- the correct outcome, since a function
  * gated off is not meant to be reachable from that backend.
