@@ -33,6 +33,48 @@ but because each one needs firmware that does not exist yet, and adding
 untested hardware to untested wiring means you cannot tell which one is
 wrong.
 
+## The display for real units — buy later, decided now
+
+The breadboard panels are development hardware. Neither is what the real
+units should ship with, and ADR 0032 explains why in full: neither exposes
+a tearing-effect (TE) signal, so both flicker on content that is actually
+changing, and nothing in software can fix that.
+
+The intended production display is Adafruit's EYESPI ecosystem. Not yet
+bought — there is no reason to spend before the software needs it — but
+recorded here so the decision does not have to be made again under time
+pressure.
+
+| Part | Adafruit # | Why this one |
+|---|---|---|
+| [2.0" 320x240 Color IPS TFT (ST7789)](https://www.adafruit.com/product/4311) | 4311 | The size the product actually wants, in the resolution the whole firmware assumes. IPS, so viewing angle does not depend on how someone holds it. |
+| [EYESPI Breakout Board, 18-pin FPC](https://www.adafruit.com/product/5613) | 5613 | Fans the flex out to breadboard headers. Development only -- the real PCB carries its own FPC connector and this becomes unnecessary. |
+| [EYESPI Cable, 100mm](https://www.adafruit.com/product/5239) | 5239 | The sensible default length for bench work. |
+| [EYESPI Cable, 50mm](https://www.adafruit.com/product/5462) | 5462 | For a compact enclosure, where 100mm has to be folded somewhere. |
+| [EYESPI Cable, 200mm](https://www.adafruit.com/product/5240) | 5240 | Only if the board and panel end up far apart. |
+
+Buy the display, the breakout, and one 100mm cable. The other lengths are
+worth knowing about, not worth buying up front.
+
+**Verify TE before committing the PCB to this.** The EYESPI connector
+standard includes a TE position, but a display only drives it if its own
+flex routes it -- exactly the trap the ILI9341 sprang, where the controller
+has the pin and the module does not bring it out. This 2.0" display's own
+92-page guide never mentions TE at all, which is not proof of absence but is
+not encouraging either. Check the breakout's pinout page for which numbered
+pin TE is, then confirm against the display's schematic, or simply ask
+Adafruit. One question answered before ordering beats rediscovering this
+after a PCB run.
+
+Two things this display gains regardless of how TE turns out, both of which
+the current 2.8in module cannot do at all:
+
+- **PWM backlight control.** The HiLetgo's LED pin is tied to 3V3 with no
+  control, so the screen cannot be dimmed or switched off. On a
+  battery-powered device that sleeps, that is a real cost, not a nicety.
+- **A flex connector instead of eight jumper wires**, which is the correct
+  mechanical answer for anything that goes in an enclosure.
+
 **Use the 2" Coolwell panel, not the 2.8" HiLetgo.** Both are 240x320 SPI
 and they wire identically, but the 2.8" is an ILI9341 and the 2" is an
 ST7789. `esp_display.cpp` calls `esp_lcd_new_panel_st7789()`, so the ILI9341
