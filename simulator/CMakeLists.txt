@@ -49,6 +49,13 @@ target_link_libraries(kamiframe_host_common
 #   cmake -B build -DKF_ASSET_PACK=/abs/path/to/some.kfpack
 # Unset, it is exactly the old hardcoded path, so a plain `cmake -B build`
 # and dev.sh behave as before.
+#
+# EXPECT TESTS TO FAIL WHILE THIS POINTS SOMEWHERE ELSE, and do not go
+# hunting for the bug. headless_determinism, headless_fullscreen and
+# asset_pipeline_check all checksum rendered output or read the pack
+# directly, so a different pack legitimately produces different numbers.
+# Point it back at the default before trusting a test run:
+#   cmake -B build -DKF_ASSET_PACK=${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack
 set(KF_ASSET_PACK "${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack"
     CACHE FILEPATH "Asset pack the host builds mount by default")
 
