@@ -293,6 +293,14 @@ typedef struct {
      * halving" (pure whole-life accumulation) rather than a divide-by-zero
      * -- see pet.cpp's accumulate_personality(). */
     uint32_t personality_recency_half_life_seconds;
+
+    /* What a care action restores, by how the creature took it. The gap
+     * between liked and disliked is the discovery signal: too small and the
+     * player cannot tell which is which without a spreadsheet, too large
+     * and getting it wrong is punishing rather than informative. */
+    kf_pet_millipercent care_boost_liked_mp;
+    kf_pet_millipercent care_boost_neutral_mp;
+    kf_pet_millipercent care_boost_disliked_mp;
 } kf_pet_config;
 
 /* A reasonable illustrative default: hunger drains fastest (empty from
@@ -356,6 +364,14 @@ typedef struct {
      * creature is a new kf_pet_init(), which is the honest way to say what
      * has happened. */
     bool dead;
+
+    /* How the creature took the last care action, and which action it was.
+     * Saved, so a creature reloaded mid-sulk is still sulking. This is the
+     * feedback channel the spec's section 6 puts first: the reaction leads
+     * and the bars confirm, because a reaction is readable at a glance on a
+     * two-inch screen and a three-thousand-millipercent difference is not. */
+    uint8_t last_reaction;    /* kf_pet_reaction */
+    uint8_t last_care_action; /* kf_pet_care_action */
 
     /* The wall-clock time this state was last advanced to. Saved
      * alongside the needs (see kf_pet_save()) so a reload can compute
@@ -489,24 +505,31 @@ void apply_stage_segment_for_test(kf_pet_state *state,
                                    const kf_pet_config *config,
                                    uint32_t segment_seconds);
 
-/* Care actions. Each raises its need by a fixed amount and clamps at
- * KF_PET_MILLIPERCENT_MAX -- feeding an already-full pet does nothing
- * extra, it does not "bank" overfeeding against future decay.
+/* Care actions. Each raises its need and clamps at KF_PET_MILLIPERCENT_MAX
+ * -- feeding an already-full creature does nothing extra, it does not bank
+ * overfeeding against future decay.
  *
- * kf_pet_feed() takes the config because eating also brings the next poop
- * forward, and by how much is a tuning figure that lives in the config like
- * every other one (see kf_pet_config). The other three need nothing from
- * it yet. Rather than give them an unused parameter for symmetry's sake,
- * they take it when they have a reason to -- which the care variations
- * (see the care-loop spec's section 5) will give all four at once. */
-void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config);
-void kf_pet_play(kf_pet_state *state);
-void kf_pet_rest(kf_pet_state *state);
+ * `variation` is which of the KF_PET_CARE_VARIATION_COUNT ways of doing it
+ * was chosen. How much it restores depends on how this creature's base
+ * trait feels about that variation (kf_pet_reaction_to()), and the reaction
+ * is recorded on the state for the screen to show. Out-of-range is treated
+ * as neutral, not rejected: a cartridge passing a bad index should get a
+ * dull creature, not a dead one. */
+void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_play(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_rest(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
 
 /* Clears every waiting poop. Counts as care, like the other three -- a
  * creature you clean up after is one you have interacted with, which is what
- * separates it from the never-touched path to the dust form. */
-void kf_pet_clean(kf_pet_state *state);
+ * separates it from the never-touched path to the dust form. Cleaning
+ * restores no need of its own, but still records the reaction (a creature
+ * can like or dislike how it was bathed just as much as how it was fed),
+ * which is why it takes `config` and `variation` now too. */
+void kf_pet_clean(kf_pet_state *state, const kf_pet_config *config,
+                   uint8_t variation);
 
 /* Which of the three care-derived traits is currently dominant --
  * 0 = hunger, 1 = happiness, 2 = energy -- computed fresh from the three
@@ -534,12 +557,16 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * accumulated neglect to fall back to that would not silently un-sicken a
  * creature that was ill at save time, so it is refused rather than guessed
  * at -- and to version 7, in the same plan, with death: `dead` was added.
+ * Bumped to version 8 with care variations (docs/superpowers/plans/
+ * 2026-08-09-care-variations.md): `last_reaction` and `last_care_action`
+ * were added, so a creature reloaded mid-sulk is still sulking rather than
+ * silently forgetting how the last care action went.
  * A save from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
  * code, an explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 89u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 91u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

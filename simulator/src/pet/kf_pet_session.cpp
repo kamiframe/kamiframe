@@ -243,31 +243,31 @@ const kf_pet_state *kf_pet_session_state(void) {
     return &g.state;
 }
 
-void kf_pet_session_feed(void) {
+void kf_pet_session_feed(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_feed called before kf_pet_session_init");
-    kf_pet_feed(&g.state, &g.config);
+    kf_pet_feed(&g.state, &g.config, variation);
     debug_snapshot_push();
 }
 
-void kf_pet_session_play(void) {
+void kf_pet_session_play(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_play called before kf_pet_session_init");
-    kf_pet_play(&g.state);
+    kf_pet_play(&g.state, &g.config, variation);
     debug_snapshot_push();
 }
 
-void kf_pet_session_rest(void) {
+void kf_pet_session_rest(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_rest called before kf_pet_session_init");
-    kf_pet_rest(&g.state);
+    kf_pet_rest(&g.state, &g.config, variation);
     debug_snapshot_push();
 }
 
-void kf_pet_session_clean(void) {
+void kf_pet_session_clean(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_clean called before kf_pet_session_init");
-    kf_pet_clean(&g.state);
+    kf_pet_clean(&g.state, &g.config, variation);
     debug_snapshot_push();
 }
 

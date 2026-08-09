@@ -97,27 +97,36 @@ int lua_pet_energy(lua_State *L) {
     return 1;
 }
 
+/* pet.feed(variation)/play(variation)/rest(variation)/clean(variation) --
+ * `variation` is optional and defaults to 0 (luaL_optinteger, not
+ * luaL_checkinteger): a script that does not care about variations, like
+ * the demo creature's pet.feed(), keeps working unchanged rather than
+ * erroring for omitting an argument it has no opinion about. */
 int lua_pet_feed(lua_State *L) {
-    (void)L;
-    kf_pet_session_feed();
+    const uint8_t variation =
+        static_cast<uint8_t>(luaL_optinteger(L, 1, 0));
+    kf_pet_session_feed(variation);
     return 0;
 }
 
 int lua_pet_play(lua_State *L) {
-    (void)L;
-    kf_pet_session_play();
+    const uint8_t variation =
+        static_cast<uint8_t>(luaL_optinteger(L, 1, 0));
+    kf_pet_session_play(variation);
     return 0;
 }
 
 int lua_pet_rest(lua_State *L) {
-    (void)L;
-    kf_pet_session_rest();
+    const uint8_t variation =
+        static_cast<uint8_t>(luaL_optinteger(L, 1, 0));
+    kf_pet_session_rest(variation);
     return 0;
 }
 
 int lua_pet_clean(lua_State *L) {
-    (void)L;
-    kf_pet_session_clean();
+    const uint8_t variation =
+        static_cast<uint8_t>(luaL_optinteger(L, 1, 0));
+    kf_pet_session_clean(variation);
     return 0;
 }
 

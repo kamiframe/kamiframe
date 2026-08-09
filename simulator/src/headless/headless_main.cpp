@@ -19,6 +19,7 @@
  *     kamiframe-headless --verify-mess
  *     kamiframe-headless --verify-dirtiness
  *     kamiframe-headless --verify-pet-preferences
+ *     kamiframe-headless --verify-pet-care-variation
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -288,14 +289,14 @@ int run_pet_check() {
     {
         kf_pet_state state;
         kf_pet_init(&state);
-        kf_pet_feed(&state, &config);
+        kf_pet_feed(&state, &config, 0u);
         check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX,
               "feeding an already-full pet does not overflow past max");
 
         kf_pet_advance(&state, &config, 3600u);
-        kf_pet_feed(&state, &config);
-        kf_pet_play(&state);
-        kf_pet_rest(&state);
+        kf_pet_feed(&state, &config, 0u);
+        kf_pet_play(&state, &config, 0u);
+        kf_pet_rest(&state, &config, 0u);
         check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
                   state.happiness_mp == KF_PET_MILLIPERCENT_MAX &&
                   state.energy_mp == KF_PET_MILLIPERCENT_MAX,
@@ -326,7 +327,7 @@ int run_pet_check() {
          * pre-sleep snapshot below is not just a fresh pet -- proving the
          * equivalence holds from an arbitrary state, not only from zero. */
         kf_pet_advance(&state, &config, 2u * 3600u);
-        kf_pet_feed(&state, &config);
+        kf_pet_feed(&state, &config, 0u);
         check(kf_pet_save(&state) == KF_OK, "save after some care actions");
 
         const kf_pet_state pre_sleep = state;
@@ -795,7 +796,7 @@ int run_pet_personality_check() {
         kf_pet_state state = state_a;
         kf_pet_advance(&state, &config, 30u * 86400u); /* a month, offline-style */
         state.hunger_mp = 0u;
-        kf_pet_feed(&state, &config);
+        kf_pet_feed(&state, &config, 0u);
         check(state.base_trait == state_a.base_trait,
               "base_trait is unchanged by kf_pet_advance() and a care "
               "action -- rolled once at init, fixed for the pet's whole "
@@ -1160,7 +1161,7 @@ int run_hokorimaru_check(void) {
     /* Touched even once: an ordinary family. */
     kf_pet_state touched{};
     kf_pet_init(&touched);
-    kf_pet_feed(&touched, &config);
+    kf_pet_feed(&touched, &config, 0u);
     check(touched.care_actions_taken == 1u, "feeding counts as care");
     advance_to_teen_for_test(&touched, &config);
     check(touched.teen_form != KF_PET_TEEN_FORM_DUST,
@@ -1271,14 +1272,14 @@ int run_pet_mess_check(void) {
     check(pet.poop_count == KF_PET_MAX_POOPS, "poop count saturates rather than growing forever");
 
     /* Cleaning clears all of them. */
-    kf_pet_clean(&pet);
+    kf_pet_clean(&pet, &config, 0u);
     check(pet.poop_count == 0u, "cleaning clears every poop");
 
     /* Feeding brings the next one sooner. */
     kf_pet_state fed{};
     kf_pet_init(&fed);
     fed.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&fed, &config);
+    kf_pet_feed(&fed, &config, 0u);
     check(fed.seconds_until_next_poop == config.poop_interval_after_feed_seconds,
           "feeding shortens the wait for the next poop");
     check(config.poop_interval_after_feed_seconds < config.poop_interval_seconds,
@@ -1297,7 +1298,7 @@ int run_pet_mess_check(void) {
     kf_pet_state tuned_pet{};
     kf_pet_init(&tuned_pet);
     tuned_pet.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&tuned_pet, &tuned);
+    kf_pet_feed(&tuned_pet, &tuned, 0u);
     check(tuned_pet.seconds_until_next_poop == tuned.poop_interval_after_feed_seconds,
           "feeding honours the caller's config, not the default one");
 
@@ -1346,7 +1347,7 @@ int run_pet_dirtiness_check(void) {
           "flies show up before stink lines");
 
     /* Cleaning resets it. */
-    kf_pet_clean(&messy);
+    kf_pet_clean(&messy, &config, 0u);
     check(messy.dirtiness_mp == 0u, "cleaning also washes the creature");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
@@ -1380,7 +1381,7 @@ int run_pet_sickness_check(void) {
     kf_pet_state pet{};
     kf_pet_init(&pet);
     pet.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&pet, &config);
+    kf_pet_feed(&pet, &config, 0u);
     check(!pet.sick, "a fresh creature is not sick");
     check(pet.neglect_seconds == 0u, "and has accumulated no neglect");
 
@@ -1406,20 +1407,20 @@ int run_pet_sickness_check(void) {
 
     /* One round of every button does not undo it. That is the whole point
      * of curing through care rather than through a medicine action. */
-    kf_pet_feed(&pet, &config);
-    kf_pet_play(&pet);
-    kf_pet_rest(&pet);
-    kf_pet_clean(&pet);
+    kf_pet_feed(&pet, &config, 0u);
+    kf_pet_play(&pet, &config, 0u);
+    kf_pet_rest(&pet, &config, 0u);
+    kf_pet_clean(&pet, &config, 0u);
     check(pet.sick, "a single round of care does not cure it on the spot");
 
     /* Sustained care does. Sixty ten-minute stretches of being properly
      * looked after -- comfortably more than the accumulated neglect, since
      * what is being checked is that recovery HAPPENS, not the exact rate. */
     for (int i = 0; i < 60; ++i) {
-        kf_pet_feed(&pet, &config);
-        kf_pet_play(&pet);
-        kf_pet_rest(&pet);
-        kf_pet_clean(&pet);
+        kf_pet_feed(&pet, &config, 0u);
+        kf_pet_play(&pet, &config, 0u);
+        kf_pet_rest(&pet, &config, 0u);
+        kf_pet_clean(&pet, &config, 0u);
         apply_stage_segment_for_test(&pet, &config, 600u);
     }
     check(pet.neglect_seconds == 0u, "attentive care works the clock back down");
@@ -1430,7 +1431,7 @@ int run_pet_sickness_check(void) {
     kf_pet_state filthy{};
     kf_pet_init(&filthy);
     filthy.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&filthy, &config);
+    kf_pet_feed(&filthy, &config, 0u);
     filthy.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
     filthy.poop_count = KF_PET_MAX_POOPS;
     apply_stage_segment_for_test(&filthy, &config, 600u);
@@ -1460,7 +1461,7 @@ int run_pet_sickness_check(void) {
     kf_pet_state drawer{};
     kf_pet_init(&drawer);
     drawer.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&drawer, &config);
+    kf_pet_feed(&drawer, &config, 0u);
     kf_pet_advance(&drawer, &config, 86400u);
     check(drawer.sick, "a day in a drawer makes a cared-for creature ill");
     check(drawer.neglect_seconds > 12u * 3600u,
@@ -1474,7 +1475,7 @@ int run_pet_sickness_check(void) {
     kf_pet_state well{};
     kf_pet_init(&well);
     well.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&well, &config);
+    kf_pet_feed(&well, &config, 0u);
 
     kf_pet_state ill = well;
     ill.sick = true;
@@ -1518,7 +1519,7 @@ int run_pet_death_check(void) {
     kf_pet_state pet{};
     kf_pet_init(&pet);
     pet.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&pet, &config);
+    kf_pet_feed(&pet, &config, 0u);
 
     /* Bad, then ill. Two segments, for the both-ends-sampling reason given
      * at the top of run_pet_sickness_check(). */
@@ -1536,10 +1537,10 @@ int run_pet_death_check(void) {
     const kf_pet_stage stage_at_death = pet.stage;
     const uint32_t care_at_death = pet.care_actions_taken;
     kf_pet_advance(&pet, &config, 7u * 86400u);
-    kf_pet_feed(&pet, &config);
-    kf_pet_play(&pet);
-    kf_pet_rest(&pet);
-    kf_pet_clean(&pet);
+    kf_pet_feed(&pet, &config, 0u);
+    kf_pet_play(&pet, &config, 0u);
+    kf_pet_rest(&pet, &config, 0u);
+    kf_pet_clean(&pet, &config, 0u);
     check(pet.dead, "a week of care does not bring it back");
     check(pet.hunger_mp == hunger_at_death, "nothing decays after death");
     check(pet.stage == stage_at_death, "and it does not keep growing up");
@@ -1555,7 +1556,7 @@ int run_pet_death_check(void) {
     kf_pet_state cut_short{};
     kf_pet_init(&cut_short);
     cut_short.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&cut_short, &config);
+    kf_pet_feed(&cut_short, &config, 0u);
     kf_pet_advance(&cut_short, &config, 3u * 86400u);
     check(cut_short.dead, "three days of abandonment is fatal");
     check(cut_short.stage == KF_PET_STAGE_CHILD,
@@ -1569,7 +1570,7 @@ int run_pet_death_check(void) {
     kf_pet_state survivor{};
     kf_pet_init(&survivor);
     survivor.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&survivor, &immortal);
+    kf_pet_feed(&survivor, &immortal, 0u);
     apply_stage_segment_for_test(&survivor, &immortal, 4u * 3600u);
     apply_stage_segment_for_test(&survivor, &immortal, 30u * 86400u);
     check(survivor.sick, "still gets ill");
@@ -1679,6 +1680,95 @@ int run_pet_preferences_check(void) {
     check(kf_pet_reaction_to(0u, KF_PET_CARE_FEED, 200u) <=
               KF_PET_REACTION_DISLIKED,
           "an out-of-range variation returns a valid reaction");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* What a variation is worth depends on who you gave it to. This is the
+ * whole of the discovery mechanic in one function: the same button, on the
+ * same creature, doing noticeably different amounts of good depending on a
+ * fact the player has to work out. */
+int run_pet_care_variation_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    check(config.care_boost_liked_mp > config.care_boost_neutral_mp &&
+              config.care_boost_neutral_mp > config.care_boost_disliked_mp,
+          "liked beats neutral beats disliked, or there is nothing to "
+          "discover");
+
+    /* Walk every trait rather than trusting whichever one the RNG rolled:
+     * the point is that the RIGHT variation for THIS creature is worth
+     * more, and that is a different variation for each trait. */
+    for (uint8_t trait = 0u; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
+        uint8_t liked = 0u, disliked = 0u;
+        for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+            if (kf_pet_reaction_to(trait, KF_PET_CARE_FEED, v) ==
+                KF_PET_REACTION_LIKED) {
+                liked = v;
+            }
+            if (kf_pet_reaction_to(trait, KF_PET_CARE_FEED, v) ==
+                KF_PET_REACTION_DISLIKED) {
+                disliked = v;
+            }
+        }
+
+        kf_pet_state loved{};
+        kf_pet_init(&loved);
+        loved.base_trait = trait;
+        loved.stage = KF_PET_STAGE_CHILD;
+        loved.hunger_mp = 0u;
+
+        kf_pet_state tolerated = loved;
+
+        kf_pet_feed(&loved, &config, liked);
+        kf_pet_feed(&tolerated, &config, disliked);
+
+        check(loved.hunger_mp > tolerated.hunger_mp,
+              "the variation this creature likes feeds it better than the "
+              "one it does not");
+        check(loved.last_reaction == KF_PET_REACTION_LIKED,
+              "and it says so -- the reaction is what the player reads");
+        check(tolerated.last_reaction == KF_PET_REACTION_DISLIKED,
+              "as does the objection");
+        check(loved.last_care_action == KF_PET_CARE_FEED,
+              "the reaction records which action it was a reaction to, so "
+              "a screen showing it knows what to draw");
+    }
+
+    /* All four actions carry it, not just feeding. */
+    kf_pet_state pet{};
+    kf_pet_init(&pet);
+    pet.stage = KF_PET_STAGE_CHILD;
+    pet.happiness_mp = 0u;
+    pet.energy_mp = 0u;
+    pet.poop_count = 3u;
+
+    kf_pet_play(&pet, &config, 0u);
+    check(pet.last_care_action == KF_PET_CARE_PLAY, "playing records itself");
+    kf_pet_rest(&pet, &config, 0u);
+    check(pet.last_care_action == KF_PET_CARE_REST, "resting records itself");
+    kf_pet_clean(&pet, &config, 0u);
+    check(pet.last_care_action == KF_PET_CARE_CLEAN, "cleaning records itself");
+    check(pet.poop_count == 0u, "and still does its actual job");
+
+    /* Nonsense variation is treated as neutral rather than crashing or
+     * silently becoming a favourite. */
+    kf_pet_state odd{};
+    kf_pet_init(&odd);
+    odd.stage = KF_PET_STAGE_CHILD;
+    odd.hunger_mp = 0u;
+    kf_pet_feed(&odd, &config, 200u);
+    check(odd.last_reaction == KF_PET_REACTION_NEUTRAL,
+          "an out-of-range variation is taken as neutral");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -2260,17 +2350,21 @@ int run_lua_creature_check() {
      * this demo creature only reads, see kf_lua_demo_creature_script.h),
      * then a few more frames so on_frame() observes and announces the
      * "full" transition too, in the other direction from stage 1. Each
-     * care action only boosts its need by kCareBoostMp (25000, a quarter
-     * of the full range, see kf/pet.cpp) -- calibrated in ADR 0015 to
-     * exceed a single hour's decay, not to refill from zero in one call.
-     * Coming from stage 1's genuine rock bottom, that takes 4 calls per
-     * need to exactly reach max (4 * 25000 == KF_PET_MILLIPERCENT_MAX);
-     * kf_pet_feed()/play()/rest() clamp at max regardless, so a few extra
-     * calls past that is a harmless margin, not a source of drift. */
-    for (int i = 0; i < 5; ++i) {
-        kf_pet_session_feed();
-        kf_pet_session_play();
-        kf_pet_session_rest();
+     * care action's boost now depends on how this session's (randomly
+     * rolled) base_trait feels about variation 0 of that action (see
+     * kf/pet.cpp's care_boost_liked_mp/neutral_mp/disliked_mp and the
+     * care-variations plan) -- calibrated so even the worst case, disliked
+     * at 10000mp, still exceeds a single hour's decay. Coming from stage
+     * 1's genuine rock bottom, the worst case takes 10 calls per need to
+     * exactly reach max (10 * 10000 == KF_PET_MILLIPERCENT_MAX); this loops
+     * that many times regardless of which variation this trait happens to
+     * like, since kf_pet_feed()/play()/rest() clamp at max regardless, so
+     * extra calls past whatever the actual boost turns out to be are a
+     * harmless margin, not a source of drift. */
+    for (int i = 0; i < 10; ++i) {
+        kf_pet_session_feed(0u);
+        kf_pet_session_play(0u);
+        kf_pet_session_rest(0u);
     }
 
     constexpr uint32_t kFixedDtMs =
@@ -2466,6 +2560,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_sickness = false;
     bool verify_pet_death = false;
     bool verify_pet_preferences = false;
+    bool verify_pet_care_variation = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2514,6 +2609,8 @@ int main(int argc, char *argv[]) {
             verify_pet_death = true;
         } else if (std::strcmp(argv[i], "--verify-pet-preferences") == 0) {
             verify_pet_preferences = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-care-variation") == 0) {
+            verify_pet_care_variation = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2544,6 +2641,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-sickness\n"
                         "kamiframe-headless --verify-pet-death\n"
                         "kamiframe-headless --verify-pet-preferences\n"
+                        "kamiframe-headless --verify-pet-care-variation\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2615,6 +2713,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_preferences) {
         return run_pet_preferences_check();
+    }
+
+    if (verify_pet_care_variation) {
+        return run_pet_care_variation_check();
     }
 
     if (verify_lua_pet) {

@@ -98,11 +98,11 @@ const kf_pet_state *kf_pet_session_state(void);
 
 /* Care actions against the live pet. See kf/pet.h's kf_pet_feed() etc. --
  * these are exactly those functions, called against the one instance this
- * module owns. */
-void kf_pet_session_feed(void);
-void kf_pet_session_play(void);
-void kf_pet_session_rest(void);
-void kf_pet_session_clean(void);
+ * module owns, `variation` passed straight through. */
+void kf_pet_session_feed(uint8_t variation);
+void kf_pet_session_play(uint8_t variation);
+void kf_pet_session_rest(uint8_t variation);
+void kf_pet_session_clean(uint8_t variation);
 
 /* Persists the active pet's state now, via kf_pet_save(). Called
  * automatically by kf_pet_session_shutdown(), and exposed here too (and to

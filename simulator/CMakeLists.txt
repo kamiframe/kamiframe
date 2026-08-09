@@ -338,6 +338,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_preferences_check
              COMMAND kamiframe-headless --verify-pet-preferences)
 
+    # Proves the variation argument actually reaches all four care actions
+    # and changes what they're worth: the variation this creature's
+    # base_trait likes restores more than the one it dislikes, the reaction
+    # is recorded on the state (both which action and how it went), and an
+    # out-of-range variation degrades to neutral rather than crashing or
+    # becoming a secret favourite. See headless_main.cpp's
+    # run_pet_care_variation_check().
+    add_test(NAME pet_care_variation_check
+             COMMAND kamiframe-headless --verify-pet-care-variation)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read

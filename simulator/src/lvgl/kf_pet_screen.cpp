@@ -253,9 +253,12 @@ void update_blob(const kf_pet_state *state) {
     }
 }
 
-void on_feed(lv_event_t *) { kf_pet_session_feed(); }
-void on_play(lv_event_t *) { kf_pet_session_play(); }
-void on_rest(lv_event_t *) { kf_pet_session_rest(); }
+/* Variation 0, always -- see the care-variations plan's "What this
+ * deliberately does not do": choosing a variation is a UI design question
+ * for a future layout pass, not something this screen decides yet. */
+void on_feed(lv_event_t *) { kf_pet_session_feed(0u); }
+void on_play(lv_event_t *) { kf_pet_session_play(0u); }
+void on_rest(lv_event_t *) { kf_pet_session_rest(0u); }
 
 lv_obj_t *make_button(lv_obj_t *screen, const char *text, int16_t x,
                        lv_event_cb_t cb) {

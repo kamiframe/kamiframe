@@ -70,15 +70,13 @@ constexpr const char *TAG = "pet";
  * (dead added). A second bump in the same branch is correct and cheap: a
  * save written between the sickness and death work is a real file on a
  * real developer's disk with a genuinely different layout, and versions
- * exist precisely so that is refused rather than misread.
+ * exist precisely so that is refused rather than misread. Bumped again to
+ * 8 with care variations (docs/superpowers/plans/2026-08-09-care-
+ * variations.md): `last_reaction` and `last_care_action` were added.
  * kf_pet_deserialize() refuses to load anything written by a different
  * version rather than guessing at a layout that changed, see unpack()
  * below. */
-constexpr uint8_t kSaveVersion = 7;
-
-/* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
- * decay rates -- there is no real pet yet to tune either against. */
-constexpr kf_pet_millipercent kCareBoostMp = 25000u;
+constexpr uint8_t kSaveVersion = 8;
 
 kf_pet_millipercent clamp_add(kf_pet_millipercent value,
                                kf_pet_millipercent add) {
@@ -133,6 +131,27 @@ constexpr uint8_t kDislikedVariation[KF_PET_BASE_TRAIT_COUNT]
     {0u, 2u, 1u, 2u},
     {1u, 0u, 2u, 1u},
 };
+
+/* Resolves the reaction, records it, and returns what this action is worth.
+ * Shared by all four care actions: they differ in which need they raise,
+ * not in how preference works. */
+kf_pet_millipercent apply_care_reaction(kf_pet_state *state,
+                                         const kf_pet_config *config,
+                                         kf_pet_care_action action,
+                                         uint8_t variation) {
+    const uint8_t reaction =
+        kf_pet_reaction_to(state->base_trait, action, variation);
+    state->last_reaction = reaction;
+    state->last_care_action = static_cast<uint8_t>(action);
+    switch (reaction) {
+    case KF_PET_REACTION_LIKED:
+        return config->care_boost_liked_mp;
+    case KF_PET_REACTION_DISLIKED:
+        return config->care_boost_disliked_mp;
+    default:
+        return config->care_boost_neutral_mp;
+    }
+}
 
 /* -----------------------------------------------------------------------
  * Stage progression.
@@ -668,6 +687,8 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u32(out, off, state->care_recency_window_seconds);
     put_u8(out, off, state->base_trait);
     put_u32(out, off, state->care_actions_taken);
+    put_u8(out, off, state->last_reaction);
+    put_u8(out, off, state->last_care_action);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -734,6 +755,24 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     }
     state->base_trait = base_trait_byte;
     state->care_actions_taken = get_u32(in, off);
+    const uint8_t last_reaction_byte = get_u8(in, off);
+    if (last_reaction_byte > static_cast<uint8_t>(KF_PET_REACTION_DISLIKED)) {
+        KF_LOGE(TAG,
+                "save has an invalid last_reaction byte (%u) -- refusing to "
+                "load",
+                last_reaction_byte);
+        return false;
+    }
+    state->last_reaction = last_reaction_byte;
+    const uint8_t last_care_action_byte = get_u8(in, off);
+    if (last_care_action_byte >= KF_PET_CARE_ACTION_COUNT) {
+        KF_LOGE(TAG,
+                "save has an invalid last_care_action byte (%u, only %u "
+                "actions exist) -- refusing to load",
+                last_care_action_byte, KF_PET_CARE_ACTION_COUNT);
+        return false;
+    }
+    state->last_care_action = last_care_action_byte;
     return true;
 }
 
@@ -831,6 +870,16 @@ kf_pet_config kf_pet_default_config(void) {
      * personality reading for about a day after it ends before fresher
      * care outweighs it. */
     c.personality_recency_half_life_seconds = 86400u; /* 24 hours */
+
+    /* Care variations (docs/superpowers/plans/2026-08-09-care-variations.md):
+     * what a care action restores, by how the creature took it. Illustrative,
+     * same status as every other number in this function -- liked more than
+     * triples disliked, which is the discovery signal: the gap has to be big
+     * enough to notice on a bar, not so big that guessing wrong feels like a
+     * punishment. */
+    c.care_boost_liked_mp = 35000u;
+    c.care_boost_neutral_mp = 25000u;
+    c.care_boost_disliked_mp = 10000u;
     return c;
 }
 
@@ -844,6 +893,8 @@ void kf_pet_init(kf_pet_state *state) {
     state->neglect_seconds = 0u;
     state->sick = false;
     state->dead = false;
+    state->last_reaction = KF_PET_REACTION_NEUTRAL;
+    state->last_care_action = KF_PET_CARE_FEED;
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
     state->stage = KF_PET_STAGE_EGG;
@@ -933,14 +984,17 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
     }
 }
 
-void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config) {
+void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation) {
     if (state->dead) {
         return;
     }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
-    state->hunger_mp = clamp_add(state->hunger_mp, kCareBoostMp);
+    const kf_pet_millipercent boost =
+        apply_care_reaction(state, config, KF_PET_CARE_FEED, variation);
+    state->hunger_mp = clamp_add(state->hunger_mp, boost);
 
     /* Eating brings the next mess forward. Only ever shortens the wait --
      * feeding repeatedly should not be able to push mess further away.
@@ -958,33 +1012,45 @@ void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config) {
     }
 }
 
-void kf_pet_play(kf_pet_state *state) {
+void kf_pet_play(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation) {
     if (state->dead) {
         return;
     }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
-    state->happiness_mp = clamp_add(state->happiness_mp, kCareBoostMp);
+    const kf_pet_millipercent boost =
+        apply_care_reaction(state, config, KF_PET_CARE_PLAY, variation);
+    state->happiness_mp = clamp_add(state->happiness_mp, boost);
 }
 
-void kf_pet_rest(kf_pet_state *state) {
+void kf_pet_rest(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation) {
     if (state->dead) {
         return;
     }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
-    state->energy_mp = clamp_add(state->energy_mp, kCareBoostMp);
+    const kf_pet_millipercent boost =
+        apply_care_reaction(state, config, KF_PET_CARE_REST, variation);
+    state->energy_mp = clamp_add(state->energy_mp, boost);
 }
 
-void kf_pet_clean(kf_pet_state *state) {
+void kf_pet_clean(kf_pet_state *state, const kf_pet_config *config,
+                   uint8_t variation) {
     if (state->dead) {
         return;
     }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
+    /* Cleaning has no bar of its own to raise -- the boost is still
+     * resolved (and the reaction still recorded) so a creature can like or
+     * dislike how it was bathed just as much as how it was fed, but there
+     * is nothing here for the number itself to do. */
+    (void)apply_care_reaction(state, config, KF_PET_CARE_CLEAN, variation);
     state->poop_count = 0u;
     state->dirtiness_mp = 0u;
 }
