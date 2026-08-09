@@ -2163,8 +2163,13 @@ static int run_creature_wander_check(void) {
  * exactly one sprite, "test_sprite"), so every kf_assets_get() lookup
  * kf_creature_screen_frame() makes returns null and it falls back to a
  * placeholder rectangle (kf_creature_screen.cpp's kPlaceholderColor) --
- * this asserts that placeholder rectangle really was dirtied, not just
- * that IF something were dirtied it would be small.
+ * this asserts that placeholder rectangle's PIXELS really did change to
+ * something other than the background colour, not just that some
+ * rectangle got marked dirty (kf_fill_rect(g_previous, kBackground) does
+ * that unconditionally every frame, draw call or not, which is what makes
+ * a rect-count-only version of this check pass vacuously -- see
+ * creature_pixel_ever_drawn's own comment below for how this one avoids
+ * that trap).
  *
  * Bypasses kf_app_frame()/kf_screen_nav.cpp entirely -- this is a
  * rendering-cost check on kf_creature_screen_frame() itself, not on screen
@@ -2203,16 +2208,36 @@ static int run_creature_screen_check(void) {
     kf_pet_session_init();
     kf_creature_screen_init();
 
+    /* The background colour, sampled from the framebuffer itself rather
+     * than duplicating kf_creature_screen.cpp's private kBackground
+     * constant here (it lives in that file's anonymous namespace, not
+     * exposed via kf_creature_screen.h): kf_creature_screen_init()'s last
+     * step is kf_creature_screen_enter(), which -- after the Important-1
+     * fix -- paints the WHOLE 240x320 panel this colour before the
+     * creature's first frame ever runs. Any pixel is a faithful sample at
+     * this exact point; (0,0) is as good as any. */
+    const kf_color background_color = kf_fb_pixels()[0];
+
     size_t worst_rects = 0;
     size_t worst_bytes = 0;
-    bool creature_rect_ever_dirtied = false;
+    /* Whether any frame's dirty rectangle(s) actually contained a pixel
+     * that differs from the background colour -- proof the drawing path
+     * (placeholder rect today, real sprite art once the pack carries any)
+     * genuinely painted something, not just proof that SOME rectangle got
+     * marked dirty. d.count > 0 alone does not tell them apart:
+     * kf_fill_rect(g_previous, kBackground) in kf_creature_screen_frame()
+     * runs unconditionally every frame and always dirties a rectangle by
+     * itself, even with the entire draw call removed -- verified by
+     * deleting that block and confirming a rect-count-only version of this
+     * check kept passing. Checking the pixels themselves closes that gap:
+     * an erase-only frame leaves every dirtied pixel equal to
+     * background_color, so this stays false and the check below catches
+     * it. */
+    bool creature_pixel_ever_drawn = false;
     for (int i = 0; i < 300; ++i) {
         kf_fb_clear_dirty();
         kf_creature_screen_frame(33u);
         const kf_dirty_rects d = kf_fb_dirty_rects();
-        if (d.count > 0) {
-            creature_rect_ever_dirtied = true;
-        }
         if (static_cast<size_t>(d.count) > worst_rects) {
             worst_rects = static_cast<size_t>(d.count);
         }
@@ -2220,13 +2245,34 @@ static int run_creature_screen_check(void) {
         if (bytes > worst_bytes) {
             worst_bytes = bytes;
         }
+
+        if (!creature_pixel_ever_drawn) {
+            const kf_color *px = kf_fb_pixels();
+            for (int r = 0; r < d.count && !creature_pixel_ever_drawn; ++r) {
+                const kf_rect rect = d.rects[r];
+                for (int16_t y = rect.y0;
+                     y < rect.y1 && !creature_pixel_ever_drawn; ++y) {
+                    const kf_color *row =
+                        px + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
+                    for (int16_t x = rect.x0; x < rect.x1; ++x) {
+                        if (row[x] != background_color) {
+                            creature_pixel_ever_drawn = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    check(creature_rect_ever_dirtied,
-          "the creature's rectangle was never dirtied across 300 frames -- "
-          "drawing nothing (the vacuous case A3's placeholder rule exists "
-          "to prevent) would also pass the rect/byte budget below, so this "
-          "has to be checked separately");
+    check(creature_pixel_ever_drawn,
+          "no dirtied pixel ever differed from the background colour across "
+          "300 frames -- drawing nothing (the vacuous case A3's placeholder "
+          "rule exists to prevent) would also pass the rect/byte budget "
+          "below, and would also pass a rect-COUNT-only version of this "
+          "check, since the erase alone always dirties a rectangle; only "
+          "sampling actual pixel content catches the drawing path being "
+          "removed");
 
     /* Two rects: erase the old position, draw the new one. Three 48x48
      * sprite areas' worth of bytes is generous headroom for that. */

@@ -64,10 +64,29 @@ void load(size_t index) {
      * since it never went through LVGL's draw path at all. Left alone,
      * the coming kf_lvgl_port_pump() would only redraw whatever LVGL's
      * OWN widget tree thinks changed, which can easily be nothing, and
-     * leave creature debris on screen permanently. Force a full
-     * invalidate so this screen repaints every pixel of itself
-     * unconditionally, regardless of what its own bookkeeping believes
-     * changed since it was last shown. */
+     * leave creature debris on screen permanently.
+     *
+     * Both calls below are load-bearing, for two DIFFERENT reasons, not
+     * one -- this is not belt-and-suspenders:
+     *
+     * - lv_obj_invalidate() here is a no-op the very FIRST time this runs:
+     *   it returns early for an object that is not the active screen
+     *   (lv_obj_pos.c), and Info is not active yet at this point in the
+     *   call. That first full repaint instead comes from
+     *   lv_screen_load() -> scr_load_internal()'s OWN trailing
+     *   lv_obj_invalidate() call (lv_display.c), made once Info actually
+     *   is the active screen.
+     * - On every LATER switch back to Info, lv_screen_load() early-returns
+     *   immediately when asked to load the screen that is already active
+     *   (lv_display.c) -- scr_load_internal() never runs again, so its
+     *   trailing invalidate never fires either. The explicit call here is
+     *   what forces the repaint on THAT path.
+     *
+     * So the explicit call earns its keep on the second and later visits to
+     * a given screen; the first visit is carried by lv_screen_load()'s own
+     * internals. Order between the two calls does not matter -- both just
+     * flag the object dirty for the next kf_lvgl_port_pump(), which has not
+     * run yet either way. */
     lv_obj_invalidate(g_screens[index].root);
     lv_screen_load(g_screens[index].root);
 }
