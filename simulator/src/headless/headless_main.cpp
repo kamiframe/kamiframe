@@ -1687,6 +1687,233 @@ int run_pet_death_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Investigates a real bug report: "it evolved from baby to teen, then it
+ * also didn't go past teen to adult yet and I couldn't drag the timeline
+ * there." Drives the actual session/seek surface a real build and the SDL
+ * debug window use (kf_pet_session_frame(), kf_pet_session_debug_seek(),
+ * kf_pet_session_debug_age_seconds()) -- not kf_pet_advance() on a bare
+ * state the way run_pet_stage_check()/run_pet_death_check() above do --
+ * because the report is about the SESSION/TIMELINE surface reaching Adult,
+ * not about whether Core's stage-transition arithmetic is capable of it
+ * (check 5 of run_pet_stage_check() already proves that in isolation).
+ *
+ * Two leading candidate explanations, both worth ruling in or out before
+ * touching anything:
+ *
+ *   (a) the timeline/seek mechanism itself is broken -- dragging to the
+ *       axis's own right edge does not actually reach the Adult boundary.
+ *   (b) the reported creature was never cared for at all (Task 6, which
+ *       added the only way to feed/play/rest/bathe it, did not exist yet)
+ *       and default config's death-by-neglect rule (hakoniwaos/src/
+ *       pet.cpp's advance_to_next_stage() CHILD-case comment: an untouched
+ *       creature "now dies during CHILD, days before this branch point")
+ *       killed it before Adult was ever reached in its real lived history
+ *       -- in which case no amount of seeking can reach a stage transition
+ *       that never happened, and that is the intended rule working exactly
+ *       as designed, not a defect in the seek code.
+ *
+ * This proves (b) and disproves (a) by running the SAME kf_pet_session_
+ * debug_seek() call twice against two pets that only differ in whether
+ * they were cared for: a NEGLECTED pet (mirrors the bug report -- no care
+ * calls at all, the only thing possible before Task 6) and a CARED pet
+ * (fed/played/rested/bathed/flushed every flush interval, so it never
+ * crosses neglect_need_mp/neglect_poop_count/neglect_dirtiness_mp). Both
+ * are driven forward via kf_pet_session_frame() with KF_PET_SESSION_
+ * FLUSH_SECONDS-sized steps -- genuine live-tick chunking, the same
+ * granularity a real running build uses, not one giant kf_pet_advance()
+ * jump -- because the size of the segments apply_stage_segment()
+ * (hakoniwaos/src/pet.cpp) sees changes how much of a segment its neglect
+ * estimate attributes to "already neglected" vs "just crossed the
+ * threshold", which is exactly the kind of chunking-dependent
+ * approximation kf_pet_session.h's own header comment already warns
+ * kf_pet_session_debug_seek() inherits (there, described for branch
+ * selection) -- reproducing genuine per-flush ticks here keeps this check
+ * honest about what a REAL play session would have seen, not an artifact
+ * of jumping in one enormous step. */
+int run_pet_adult_reachability_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-adult-reachability-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_pet_session_init();
+
+    const kf_pet_config config = kf_pet_default_config();
+    /* Same sum kf_pet_session.cpp's own (private) elapsed_before_stage()
+     * and sdl_debug_window.cpp's timeline_axis_max_seconds() both compute
+     * -- the moment Adult begins, and the debug timeline's own right edge
+     * (timeline_seconds_for_x() clamps a drag to exactly this). This file
+     * has no way to reach either of those; four lines of addition is not
+     * worth exporting one for, the same call sdl_debug_window.cpp's own
+     * timeline_tick_seconds() comment already makes. */
+    const uint64_t axis_max_seconds = config.egg_duration_seconds +
+                                       config.baby_duration_seconds +
+                                       config.child_duration_seconds +
+                                       config.teen_duration_seconds;
+
+    constexpr uint32_t kStepMs = KF_PET_SESSION_FLUSH_SECONDS * 1000u;
+
+    /* Part (b): a NEGLECTED pet -- no care calls at all, mirroring the bug
+     * report exactly (Task 6, the only way to care for a running build,
+     * did not exist yet). Ticked forward live-tick style until it dies or
+     * a generous cap is hit (enough real ticks to cover several times
+     * config.sickness_death_seconds even from a standing start, so this
+     * cannot loop forever if the death rule itself ever regressed to "does
+     * not fire"). */
+    {
+        bool died = false;
+        uint64_t death_age_seconds = 0u;
+        kf_pet_stage death_stage = KF_PET_STAGE_EGG;
+        constexpr uint32_t kMaxSteps = 200000u; /* ~69 days of ticks */
+        for (uint32_t i = 0; i < kMaxSteps; ++i) {
+            kf_pet_session_frame(kStepMs);
+            if (kf_pet_session_state()->dead) {
+                died = true;
+                death_age_seconds = kf_pet_session_debug_age_seconds();
+                death_stage = kf_pet_session_state()->stage;
+                break;
+            }
+        }
+
+        check(died, "an entirely uncared-for pet, ticked forward live-tick "
+                    "style with no care calls at all, dies of sustained "
+                    "neglect within a generous cap -- see hakoniwaos/src/"
+                    "pet.cpp's advance_to_next_stage() CHILD-case comment");
+        check(death_stage != KF_PET_STAGE_ADULT,
+              "it dies before ever reaching Adult -- an uncared creature is "
+              "not supposed to make it there at all");
+        check(death_age_seconds < axis_max_seconds,
+              "death lands before the timeline's own axis_max (the Adult "
+              "boundary) on the pet's own lifetime clock, not past it");
+        KF_LOGI(TAG,
+                "neglected pet: died at age %llu s (stage %d), axis_max %llu s",
+                static_cast<unsigned long long>(death_age_seconds),
+                static_cast<int>(death_stage),
+                static_cast<unsigned long long>(axis_max_seconds));
+
+        /* The exact move from the bug report: drag the timeline as far
+         * right as it goes. sdl_debug_window.cpp's timeline_seconds_for_x()
+         * clamps any drag to [0, axis_max_seconds], so this IS "as far
+         * right as the timeline lets you drag", not an unrealistic
+         * out-of-range probe. */
+        kf_pet_session_debug_seek(axis_max_seconds);
+
+        check(kf_pet_session_state()->dead,
+              "still dead after seeking to axis_max -- dead is terminal, "
+              "seeking cannot revive a creature (kf_pet_advance()'s own "
+              "leading `if (state->dead) return;`)");
+        check(kf_pet_session_state()->stage == death_stage,
+              "seeking all the way to axis_max does not move a dead "
+              "creature's stage at all -- it lands exactly where it died, "
+              "not at Adult, however far right the drag goes");
+        check(kf_pet_session_debug_age_seconds() == death_age_seconds,
+              "a dead pet's own lifetime clock is frozen -- seeking forward "
+              "past death does not re-run or advance it");
+    }
+
+    /* Part (a): the SAME kf_pet_session_debug_seek() call, against a pet
+     * that only differs in having been cared for -- fed/played/rested/
+     * bathed/flushed every single flush interval, so hunger/happiness/
+     * energy never approach neglect_need_mp (each care call restores at
+     * LEAST care_boost_disliked_mp, 10%, against at most a few tenths of a
+     * percent of decay per 30-second step) and poop_count/dirtiness_mp
+     * never approach their own neglect thresholds either. If this pet
+     * reaches Adult via the identical seek() call the neglected pet above
+     * just failed to reach, that disproves candidate (a): the timeline/
+     * seek mechanism itself is not broken, only unable to produce a stage
+     * transition a dead creature's own history never lived through. */
+    {
+        kf_pet_session_debug_reset(); /* fresh egg; also clears the ring
+                                        * the neglected pet's history left
+                                        * in it (kf_pet_session.h's own
+                                        * kf_pet_session_debug_reset()
+                                        * comment) -- this pet gets a
+                                        * genuinely clean timeline. */
+
+        const uint32_t total_steps =
+            static_cast<uint32_t>(axis_max_seconds * 1000ull / kStepMs) + 2u;
+        for (uint32_t i = 0; i < total_steps; ++i) {
+            kf_pet_session_frame(kStepMs);
+            /* Variation is irrelevant here -- this is about keeping every
+             * need and mess signal away from its own neglect threshold,
+             * not about which reaction lands, so 0u throughout is fine. */
+            kf_pet_session_feed(0u);
+            kf_pet_session_play(0u);
+            kf_pet_session_rest(0u);
+            kf_pet_session_bath(0u);
+            kf_pet_session_flush();
+            if (kf_pet_session_state()->stage == KF_PET_STAGE_ADULT) {
+                break;
+            }
+        }
+
+        check(!kf_pet_session_state()->dead,
+              "a genuinely cared-for pet, ticked forward the same live-tick "
+              "way, never dies");
+        check(kf_pet_session_state()->stage == KF_PET_STAGE_ADULT,
+              "and reaches Adult on its own, live-ticked, well before this "
+              "generous step cap -- proving Adult is reachable through the "
+              "real session surface at all, the same one the neglected pet "
+              "above used");
+
+        /* Rewind, then reproduce the bug report's exact drag once more --
+         * this time against a pet whose own history genuinely does include
+         * an Adult transition.
+         *
+         * Not asserting the rewind lands on EXACTLY age 0/Egg: the live-
+         * tick loop above pushed a snapshot on every 30-second frame flush
+         * PLUS every one of the five care calls each iteration -- six
+         * pushes per iteration, ~17000 iterations, tens of thousands of
+         * pushes against a 2048-entry ring (kDebugSnapshotCapacity,
+         * kf_pet_session.cpp) -- so genesis has long since been evicted by
+         * the time this runs, and kf_pet_session_debug_seek()'s own
+         * documented clamping (kf_pet_session.h: "seeking earlier than the
+         * oldest surviving snapshot clamps to that snapshot instead of
+         * erroring") is expected and correct here, not a bug to route
+         * around. What this DOES prove: seeking away from Adult actually
+         * moves a live pet's state at all -- the opposite of the dead
+         * pet's seek above, which left stage/age completely unchanged no
+         * matter the target. */
+        kf_pet_session_debug_seek(0u);
+        check(kf_pet_session_state()->stage != KF_PET_STAGE_ADULT,
+              "seeking toward age 0 actually moves a live pet away from "
+              "Adult (unlike the dead pet above, whose seek left it frozen "
+              "exactly where it died no matter the target) -- confirms "
+              "this is not a seek that silently does nothing for every "
+              "pet");
+
+        kf_pet_session_debug_seek(axis_max_seconds);
+        check(kf_pet_session_state()->stage == KF_PET_STAGE_ADULT,
+              "dragging all the way right reaches Adult for a pet whose "
+              "real history includes it -- the timeline/seek mechanism "
+              "(kf_pet_session_debug_seek(), timeline_seconds_for_x()'s "
+              "[0, axis_max] clamp) works correctly; the neglected pet "
+              "above could not reach Adult because it never lived to see "
+              "one, not because seeking is broken");
+    }
+
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* The preference table is the one system in this care loop that a player
  * is meant to LEARN rather than read. That only works if it is consistent,
  * so this checks its shape exhaustively -- all six traits, all four
@@ -3839,6 +4066,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_death = false;
     bool verify_pet_preferences = false;
     bool verify_pet_care_variation = false;
+    bool verify_pet_adult_reachability = false;
     bool verify_creature_pose = false;
     bool verify_creature_wander = false;
     bool verify_creature_screen = false;
@@ -3895,6 +4123,9 @@ int main(int argc, char *argv[]) {
             verify_pet_preferences = true;
         } else if (std::strcmp(argv[i], "--verify-pet-care-variation") == 0) {
             verify_pet_care_variation = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-adult-reachability") ==
+                   0) {
+            verify_pet_adult_reachability = true;
         } else if (std::strcmp(argv[i], "--verify-creature-pose") == 0) {
             verify_creature_pose = true;
         } else if (std::strcmp(argv[i], "--verify-creature-wander") == 0) {
@@ -3940,6 +4171,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-death\n"
                         "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-pet-care-variation\n"
+                        "kamiframe-headless --verify-pet-adult-reachability\n"
                         "kamiframe-headless --verify-creature-pose\n"
                         "kamiframe-headless --verify-creature-wander\n"
                         "kamiframe-headless --verify-creature-screen\n"
@@ -4021,6 +4253,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_care_variation) {
         return run_pet_care_variation_check();
+    }
+
+    if (verify_pet_adult_reachability) {
+        return run_pet_adult_reachability_check();
     }
 
     if (verify_creature_pose) {

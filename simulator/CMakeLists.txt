@@ -390,6 +390,22 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_care_variation_check
              COMMAND kamiframe-headless --verify-pet-care-variation)
 
+    # Investigates a real bug report ("it evolved from baby to teen, then
+    # it also didn't go past teen to adult yet and I couldn't drag the
+    # timeline there") against the actual session/seek surface a running
+    # build and the SDL debug window use, not just Core's stage-transition
+    # arithmetic in isolation (already covered by pet_stage_evolution_check
+    # above). Proves an entirely uncared-for pet (no way to feed/play/rest/
+    # bathe it existed before Task 6) dies of sustained neglect before ever
+    # reaching Adult, that kf_pet_session_debug_seek() correctly leaves a
+    # dead pet exactly where it died however far right it is dragged (dead
+    # is terminal), and -- by running the SAME seek() call against a
+    # genuinely cared-for pet, which DOES reach Adult -- that the timeline/
+    # seek mechanism itself is not the defect. See headless_main.cpp's
+    # run_pet_adult_reachability_check().
+    add_test(NAME pet_adult_reachability_check
+             COMMAND kamiframe-headless --verify-pet-adult-reachability)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
