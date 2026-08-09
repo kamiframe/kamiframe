@@ -30,7 +30,12 @@ constexpr const char *TAG = "debug-window";
 constexpr int kLeftColumnW = 400;
 constexpr int kRightColumnW = 260;
 constexpr int kWindowW = kLeftColumnW + kRightColumnW;
-constexpr int kWindowH = 460;
+/* Grew from 460 with the stage-jump controls (Task 8): four new button
+ * rows (teen_form picker, adult_branch picker, the five stage-jump
+ * buttons, and Next Stage) pushed the timeline and the text readout below
+ * them further down the window -- see kTimelineBar and the readout's own
+ * starting `y` further down in this file for where. */
+constexpr int kWindowH = 670;
 constexpr float kRightColumnX = static_cast<float>(kLeftColumnW) + 16.0f;
 
 enum class DebugAction {
@@ -49,6 +54,42 @@ enum class DebugAction {
     kMult64,
     kMult128,
     kMult256,
+
+    /* Task 8: which teen_form/adult_branch a stage-jump button below will
+     * hand to kf_pet_session_debug_jump_to_stage() -- see that function's
+     * own header comment (kf_pet_session.h) for why the SESSION layer
+     * takes concrete indices rather than an "unset" sentinel: this window
+     * is where "unset" gets resolved to a concrete default (0, via
+     * Session::selected_teen_form/_adult_branch below), the same way
+     * g.multiplier already resolves "no multiplier button pressed yet" to
+     * 1x rather than passing an optional through to the frame loop. */
+    kTeenForm0,
+    kTeenForm1,
+    kTeenForm2,
+    kTeenForm3,
+    kAdultBranch0,
+    kAdultBranch1,
+    kAdultBranch2,
+
+    /* Task 8: jump the live pet directly to the start of a named stage --
+     * see kf_pet_session_debug_jump_to_stage()'s own header comment for
+     * exactly what "start of a stage" means (alive, full needs, not sick,
+     * at stage_elapsed_seconds == 0) and why teen_form/adult_branch above
+     * are meaningless (and therefore ignored) for a jump to a stage before
+     * their own branch point. */
+    kJumpEgg,
+    kJumpBaby,
+    kJumpChild,
+    kJumpTeen,
+    kJumpAdult,
+
+    /* Task 8: "I want a button to just autoprogress" (Chris's own words) --
+     * jumps from wherever the pet currently is to the START of the
+     * following stage, so repeated presses walk egg -> baby -> child ->
+     * teen -> adult one press at a time. A no-op-but-for-the-full-refill
+     * once already at Adult: Adult is terminal (kf/pet.h), so "the
+     * following stage" from Adult is Adult itself -- see perform() below. */
+    kJumpNextStage,
 };
 
 struct DebugButton {
@@ -86,6 +127,45 @@ constexpr DebugButton kButtons[] = {
     {{88, 136, 64, 32}, "64x", DebugAction::kMult64},
     {{160, 136, 64, 32}, "128x", DebugAction::kMult128},
     {{232, 136, 64, 32}, "256x", DebugAction::kMult256},
+
+    /* Task 8: picks which teen_form/adult_branch the stage-jump row below
+     * will use -- read this row (and the next) top-to-bottom BEFORE the
+     * jump row, the same order a player presses them in. Four teen_form
+     * slots (KF_PET_TEEN_FORM_COUNT) and three adult_branch slots
+     * (KF_PET_ADULT_BRANCH_MAX, the widest family) -- see kf/pet.h. An
+     * adult_branch picked here that is out of range for whichever
+     * teen_form is ALSO currently selected is not rejected here (this
+     * window does not know each family's exact count without calling
+     * kf_pet_adults_in_family(), which it happily could, but the session
+     * layer already clamps it defensively -- see kf_pet_session_debug_
+     * jump_to_stage()'s own header comment), so pressing e.g. "Adult 2"
+     * against a one-adult family is harmless, just not useful. */
+    {{16, 176, 64, 32}, "Form0", DebugAction::kTeenForm0},
+    {{88, 176, 64, 32}, "Form1", DebugAction::kTeenForm1},
+    {{160, 176, 64, 32}, "Form2", DebugAction::kTeenForm2},
+    {{232, 176, 64, 32}, "Form3", DebugAction::kTeenForm3},
+
+    {{16, 216, 64, 32}, "Adult0", DebugAction::kAdultBranch0},
+    {{88, 216, 64, 32}, "Adult1", DebugAction::kAdultBranch1},
+    {{160, 216, 64, 32}, "Adult2", DebugAction::kAdultBranch2},
+
+    /* Task 8: the actual stage jump -- "spawns the creature at full care
+     * stats... at each button press and timeline moves to the beginning
+     * of each life stage" (Chris's own words). Uses whichever teen_form/
+     * adult_branch the two rows above currently have selected (0/0 unless
+     * changed); see kf_pet_session_debug_jump_to_stage() for what "start
+     * of a stage" guarantees. */
+    {{16, 256, 64, 32}, "Egg", DebugAction::kJumpEgg},
+    {{88, 256, 64, 32}, "Baby", DebugAction::kJumpBaby},
+    {{160, 256, 64, 32}, "Child", DebugAction::kJumpChild},
+    {{232, 256, 64, 32}, "Teen", DebugAction::kJumpTeen},
+    {{304, 256, 64, 32}, "Adult", DebugAction::kJumpAdult},
+
+    /* Task 8: "I want a button to just autoprogress" -- one press, one
+     * stage forward, from wherever the pet currently is. See perform()'s
+     * kJumpNextStage case for exactly what "forward" means once already
+     * at Adult. */
+    {{16, 296, 150, 32}, "Next Stage", DebugAction::kJumpNextStage},
 };
 
 /* Duplicated from sdl_main.cpp's identical helper and kf_pet_screen.cpp's
@@ -183,7 +263,10 @@ uint64_t timeline_axis_max_seconds(const kf_pet_config &config) {
     return timeline_tick_seconds(config, KF_PET_STAGE_ADULT);
 }
 
-constexpr SDL_FRect kTimelineBar = {16, 200, kLeftColumnW - 32, 14};
+/* y moved from 200 to make room for the four Task 8 button rows above it
+ * (teen_form picker, adult_branch picker, the stage-jump row, Next Stage --
+ * see kButtons and kWindowH's own comments above). */
+constexpr SDL_FRect kTimelineBar = {16, 344, kLeftColumnW - 32, 14};
 /* Grabbable beyond the bar's own drawn height -- a 14px-tall target is
  * fiddly to click precisely; this widens the hit region without widening
  * what's actually drawn. Vertical position only matters for STARTING a
@@ -198,6 +281,17 @@ struct Session {
     bool previous_pressed = false;
     bool timeline_dragging = false;
     uint32_t multiplier = 1;
+
+    /* Task 8: which teen_form/adult_branch the stage-jump buttons and Next
+     * Stage will pass to kf_pet_session_debug_jump_to_stage() -- "defaults
+     * to the first one if not set" (Chris's own words), which is exactly
+     * what 0 already means for both indices, so no separate "unset" state
+     * is needed here at all. Changed only by the Form-N/Adult-N buttons
+     * below; a stage jump never changes these itself, so the same pick
+     * survives across repeated stage jumps until the player deliberately
+     * changes it. */
+    uint8_t selected_teen_form = 0;
+    uint8_t selected_adult_branch = 0;
 };
 Session g;
 
@@ -228,6 +322,80 @@ uint32_t multiplier_for(DebugAction action) {
 
 bool is_multiplier_button(DebugAction action) { return multiplier_for(action) != 0u; }
 
+/* Task 8: the same "map the enum value to what it means, a default of
+ * false/0 for anything else" shape as multiplier_for()/is_multiplier_
+ * button() just above, repeated for the two new pickers rather than
+ * generalised into one templated helper -- three tiny, obviously-correct
+ * functions read easier at a glance than one that has to be parameterised
+ * over which enum range and which Session field it is working with. */
+bool is_teen_form_button(DebugAction action) {
+    return action == DebugAction::kTeenForm0 ||
+           action == DebugAction::kTeenForm1 ||
+           action == DebugAction::kTeenForm2 ||
+           action == DebugAction::kTeenForm3;
+}
+
+uint8_t teen_form_for(DebugAction action) {
+    switch (action) {
+    case DebugAction::kTeenForm0:
+        return 0u;
+    case DebugAction::kTeenForm1:
+        return 1u;
+    case DebugAction::kTeenForm2:
+        return 2u;
+    case DebugAction::kTeenForm3:
+        return 3u;
+    default:
+        return 0u;
+    }
+}
+
+bool is_adult_branch_button(DebugAction action) {
+    return action == DebugAction::kAdultBranch0 ||
+           action == DebugAction::kAdultBranch1 ||
+           action == DebugAction::kAdultBranch2;
+}
+
+uint8_t adult_branch_for(DebugAction action) {
+    switch (action) {
+    case DebugAction::kAdultBranch0:
+        return 0u;
+    case DebugAction::kAdultBranch1:
+        return 1u;
+    case DebugAction::kAdultBranch2:
+        return 2u;
+    default:
+        return 0u;
+    }
+}
+
+/* Task 8: which kf_pet_stage a jump button targets -- kJumpNextStage is
+ * deliberately excluded (its target depends on the pet's CURRENT stage,
+ * computed in perform() below, not a fixed value a lookup table can hold),
+ * same reason it is not a multiplier/form/branch-style "pick a value"
+ * button. */
+bool is_jump_stage_button(DebugAction action) {
+    return action == DebugAction::kJumpEgg || action == DebugAction::kJumpBaby ||
+           action == DebugAction::kJumpChild ||
+           action == DebugAction::kJumpTeen || action == DebugAction::kJumpAdult;
+}
+
+kf_pet_stage jump_stage_for(DebugAction action) {
+    switch (action) {
+    case DebugAction::kJumpEgg:
+        return KF_PET_STAGE_EGG;
+    case DebugAction::kJumpBaby:
+        return KF_PET_STAGE_BABY;
+    case DebugAction::kJumpChild:
+        return KF_PET_STAGE_CHILD;
+    case DebugAction::kJumpTeen:
+        return KF_PET_STAGE_TEEN;
+    case DebugAction::kJumpAdult:
+    default:
+        return KF_PET_STAGE_ADULT;
+    }
+}
+
 void perform(DebugAction action) {
     switch (action) {
     case DebugAction::kSkipHour:
@@ -254,9 +422,36 @@ void perform(DebugAction action) {
          * comment. */
         kf_screen_nav_debug_advance();
         break;
+    case DebugAction::kJumpNextStage: {
+        /* "I want a button to just autoprogress" -- one press, one stage
+         * forward from wherever the pet currently is. Adult is terminal
+         * (kf/pet.h), so once already there, "the following stage" is
+         * Adult itself: this still refills needs and clears sickness/
+         * neglect/mess via the jump (kf_pet_session_debug_jump_to_stage()
+         * always starts from kf_pet_init()), it just does not move the
+         * marker further along the timeline -- there is nowhere further
+         * for it to go, the same terminal status kf_pet_advance() itself
+         * already enforces. */
+        const kf_pet_stage current = kf_pet_session_state()->stage;
+        const kf_pet_stage next = current < KF_PET_STAGE_ADULT
+                                       ? static_cast<kf_pet_stage>(
+                                             static_cast<int>(current) + 1)
+                                       : KF_PET_STAGE_ADULT;
+        kf_pet_session_debug_jump_to_stage(next, g.selected_teen_form,
+                                            g.selected_adult_branch);
+        break;
+    }
     default:
         if (is_multiplier_button(action)) {
             g.multiplier = multiplier_for(action);
+        } else if (is_teen_form_button(action)) {
+            g.selected_teen_form = teen_form_for(action);
+        } else if (is_adult_branch_button(action)) {
+            g.selected_adult_branch = adult_branch_for(action);
+        } else if (is_jump_stage_button(action)) {
+            kf_pet_session_debug_jump_to_stage(
+                jump_stage_for(action), g.selected_teen_form,
+                g.selected_adult_branch);
         }
         break;
     }
@@ -270,8 +465,20 @@ bool point_in_rect(int32_t x, int32_t y, const SDL_FRect &rect) {
 }
 
 void draw_button(const DebugButton &b) {
-    const bool active = is_multiplier_button(b.action) &&
-                         multiplier_for(b.action) == g.multiplier;
+    /* Highlighted whenever the button represents the CURRENTLY selected
+     * value of whichever pick it belongs to -- the multiplier, same as
+     * before Task 8, plus the two new Task 8 pickers (teen_form/
+     * adult_branch). Stage-jump and Next Stage buttons are one-shot
+     * actions, not picks, so neither is ever "active" in this sense --
+     * is_teen_form_button()/is_adult_branch_button() are false for them,
+     * same as is_multiplier_button() already is. */
+    const bool active =
+        (is_multiplier_button(b.action) &&
+         multiplier_for(b.action) == g.multiplier) ||
+        (is_teen_form_button(b.action) &&
+         teen_form_for(b.action) == g.selected_teen_form) ||
+        (is_adult_branch_button(b.action) &&
+         adult_branch_for(b.action) == g.selected_adult_branch);
     if (active) {
         SDL_SetRenderDrawColor(g.renderer, 40, 120, 220, 255);
     } else {
@@ -559,7 +766,9 @@ void kf_sdl_debug_window_frame(void) {
     draw_timeline(config, state->stage, current_age);
 
     char line[128];
-    float y = 250.0f;
+    /* Moved from 250 to make room for the four Task 8 button rows above
+     * the timeline -- see kWindowH's and kTimelineBar's own comments. */
+    float y = 400.0f;
     constexpr float kLineHeight = 18.0f;
     SDL_SetRenderDrawColor(g.renderer, 220, 220, 225, 255);
 
@@ -601,6 +810,19 @@ void kf_sdl_debug_window_frame(void) {
     } else {
         std::snprintf(line, sizeof(line), "adult branch: - (not decided yet)");
     }
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    /* Task 8: what the Form-N/Adult-N/stage-jump/Next Stage buttons above
+     * are CURRENTLY set to use -- distinct from "teen form"/"adult branch"
+     * above, which read the pet's own actual, already-decided state (and
+     * show "- (not decided yet)" until it has one). This line always shows
+     * a concrete pair (0/0 unless changed), because a jump always uses
+     * one -- see kf_pet_session_debug_jump_to_stage()'s header comment on
+     * why 0 is the fallback for both unset AND out-of-range. */
+    std::snprintf(line, sizeof(line), "jump picks: teen %u / adult %u",
+                  static_cast<unsigned>(g.selected_teen_form),
+                  static_cast<unsigned>(g.selected_adult_branch));
     SDL_RenderDebugText(g.renderer, 16, y, line);
     y += kLineHeight * 1.5f;
 

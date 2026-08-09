@@ -3,11 +3,15 @@
  *
  * A second SDL window, entirely separate from the pet window, for
  * interactive development controls -- time-skip buttons, a live stats
- * readout, a play-speed multiplier -- so none of it has to sit on the
- * actual pet screen (kf_pet_screen.cpp), which is meant to represent what
- * a real device would show. This window has no hardware counterpart and
- * never will, the same status as `--stress` mode and the window title
- * stats (sdl_main.cpp's update_title()) already have.
+ * readout, a play-speed multiplier, and (Task 8) a set of stage-jump
+ * buttons that spawn the live pet at the start of a chosen life stage
+ * (alive, full needs) with an optional teen_form/adult_branch pick, plus
+ * a "Next Stage" button that walks the pet forward one stage per press --
+ * so none of it has to sit on the actual pet screen (kf_pet_screen.cpp),
+ * which is meant to represent what a real device would show. This window
+ * has no hardware counterpart and never will, the same status as
+ * `--stress` mode and the window title stats (sdl_main.cpp's
+ * update_title()) already have.
  *
  * Deliberately plain SDL drawing (rects, SDL_RenderDebugText), not LVGL --
  * a debug panel of buttons and numbers does not need LVGL's widget/layout
