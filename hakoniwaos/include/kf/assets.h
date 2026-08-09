@@ -60,11 +60,25 @@ extern "C" {
 
 /* Bound on how many directory entries kf_assets_init() will build a table
  * row for, of ANY type -- sprites and, eventually, audio clips share this
- * one limit rather than each getting their own. Generous for a single test
- * sprite today; raise it (and re-check the KF_ARENA_ASSETS budget in
- * kf/budget.h, though at well under 100 bytes/row it would take thousands
- * of entries to matter) once a real pack needs more. */
-#define KF_ASSETS_MAX_ENTRIES 64
+ * one limit rather than each getting their own.
+ *
+ * 512: the full creature roster is 379 poses (one directory entry per
+ * pose, not per animation frame -- an animation's frames are stored
+ * contiguously inside its one entry's payload, so nine-frame art does not
+ * multiply this count), and 512 clears that with room rather than needing
+ * to be raised again as families keep getting added. Measured, not
+ * assumed, against the animated-indexed-sprites plan's kf_sprite growth
+ * (frame_count, palette, indices -- landing in the commit right after this
+ * one): sizeof(kf_sprite) becomes 40 bytes and sizeof(AssetEntry) -- the
+ * private row type in hakoniwaos/src/assets.cpp -- becomes 96 bytes
+ * (64-bit host; the ESP32 target's 32-bit pointers make every row
+ * smaller, so this is the conservative figure), so 512 rows is
+ * 512 * 96 = 49,152 bytes, 48KB of the 2MB KF_ARENA_ASSETS (kf/budget.h)
+ * -- under 2.5%. Re-measure sizeof(kf_sprite) rather than re-deriving this
+ * by hand if either figure changes again. This was previously 64, sized
+ * for a single test sprite; it had to be raised before that growth even
+ * landed because a 94-entry creature pack already exceeded it. */
+#define KF_ASSETS_MAX_ENTRIES 512
 
 /* What kind of payload a directory entry holds. Matches
  * tools/kf_pack_assets.py's ASSET_TYPE_* constants exactly -- see that
