@@ -86,7 +86,8 @@ extern "C" {
  * values are defined to equal. */
 typedef enum {
     /* RGB565 pixels, the kf_sprite shape kf_assets_get() already returns.
-     * The only type this file actually builds a usable view for today. */
+     * Sits alongside KF_ASSET_TYPE_SPRITE_INDEXED below as one of the two
+     * types this file actually builds a usable view for. */
     KF_ASSET_TYPE_SPRITE = 0,
 
     /* RESERVED, NOT YET LOADED. No kf_assets_get_clip() exists yet -- this
@@ -99,7 +100,19 @@ typedef enum {
      * not justify, the same "measure the real cost, do not pay for
      * generality nothing here needs" reasoning kf/budget.h applies
      * everywhere else. */
-    KF_ASSET_TYPE_AUDIO_CLIP = 1
+    KF_ASSET_TYPE_AUDIO_CLIP = 1,
+
+    /* 8bpp palette-indexed pixels, one to many frames, stored contiguously
+     * in one payload. Half the bytes of KF_ASSET_TYPE_SPRITE and -- for
+     * every sprite this project has measured, 6 to 27 colours each --
+     * exactly lossless. KF_ASSET_TYPE_SPRITE is NOT deprecated by this:
+     * a large opaque sprite still blits four times faster as raw RGB565,
+     * because an un-keyed RGB565 row is a memcpy and an indexed row can
+     * never be one. Both are returned by kf_assets_get() as a kf_sprite;
+     * the caller reads ::format if it cares, and kf/blit.h handles either
+     * without being told. See tools/kf_pack_assets.py's format comment for
+     * the type_meta layout and the payload's palette-then-frames shape. */
+    KF_ASSET_TYPE_SPRITE_INDEXED = 2
 } kf_asset_type;
 
 /* Bring the asset pipeline up: mounts the pack via kf/hal/assets.h, checks
@@ -120,10 +133,13 @@ kf_result kf_assets_init(void);
 /* Look up a SPRITE by name (plain C string, compared against the pack's
  * stored names -- see this header's own comment on why a scan, not a
  * hash). Returns NULL if no entry matches exactly, OR if an entry with
- * that name exists but is not KF_ASSET_TYPE_SPRITE (a future
- * kf_assets_get_clip() would be the equivalent call for
- * KF_ASSET_TYPE_AUDIO_CLIP -- deliberately no single "any type" getter, so
- * the return type a caller gets always matches what they asked for).
+ * that name exists but is neither sprite type -- KF_ASSET_TYPE_SPRITE nor
+ * KF_ASSET_TYPE_SPRITE_INDEXED (a future kf_assets_get_clip() would be the
+ * equivalent call for KF_ASSET_TYPE_AUDIO_CLIP -- deliberately no single
+ * "any type" getter, so the return type a caller gets always matches what
+ * they asked for). Either sprite type comes back through this same
+ * kf_sprite shape; a caller that cares which one it got reads
+ * kf_sprite::format.
  *
  * The returned pointer is valid for the remainder of the program: it
  * points into a permanent (KF_ARENA_ASSETS) table row whose own `pixels`

@@ -33,6 +33,7 @@
  *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
  *     kamiframe-headless --verify-assets
+ *     kamiframe-headless --verify-indexed-assets
  *     kamiframe-headless --verify-blit-mirror
  *
  * Exit codes:
@@ -90,6 +91,13 @@
  * (KF_ASSET_PACK) every other test would also inherit. */
 #ifndef KF_CREATURE_DEMO_PACK_PATH
 #error "KF_CREATURE_DEMO_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
+#endif
+
+/* run_indexed_asset_check()'s own fixture pack -- same reasoning as
+ * KF_CREATURE_DEMO_PACK_PATH just above: a compile-time define private to
+ * this target, not a new default every other test would also inherit. */
+#ifndef KF_INDEXED_FIXTURE_PACK_PATH
+#error "KF_INDEXED_FIXTURE_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
 #endif
 
 extern "C" void kf_host_entropy_pin(uint32_t value);
@@ -4638,6 +4646,102 @@ int run_asset_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves the indexed sprite type decodes: the palette, the frame count, the
+ * index data, and -- the point of the whole format -- that expanding index
+ * bytes through the palette reproduces exactly the RGB565 the RGB565
+ * test_sprite already carries. If the palette lookup were subtly wrong (an
+ * off-by-one index, a byte-swapped palette entry, a misplaced frame
+ * boundary) this is the check that would catch it, not merely notice that
+ * *something* decoded. Mounts examples/hello_sprite/assets_indexed.kfpack
+ * through the runtime override (host_assets.h) and restores the default
+ * before returning, so nothing later in this process inherits it and
+ * headless_determinism/headless_fullscreen/asset_pipeline_check keep seeing
+ * the pack they were checksummed against. */
+int run_indexed_asset_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_arena_init_all();
+
+    /* The RGB565 original, from the default pack, read first. */
+    check(kf_assets_init() == KF_OK, "default pack mounts");
+    const kf_sprite *rgb = kf_assets_get("test_sprite");
+    check(rgb != nullptr && rgb->format == KF_SPRITE_FORMAT_RGB565,
+          "the default pack's test_sprite is still RGB565");
+    std::vector<kf_color> expected;
+    if (rgb != nullptr) {
+        expected.assign(
+            rgb->pixels,
+            rgb->pixels + static_cast<size_t>(rgb->width) * rgb->height);
+    }
+    kf_assets_shutdown();
+
+    /* The indexed fixture. kf_arena_init_all() is NOT called again here --
+     * it panics on a second call (kf/arena.cpp), and KF_ARENA_ASSETS is not
+     * one of the resettable arenas (only KF_ARENA_SCRATCH is). Mounting a
+     * second pack in the same process just grows the same arena's
+     * directory-table allocation a little further along; kf_assets_shutdown()
+     * above already dropped the first mount's g_up flag so kf_assets_init()
+     * below is legal, and the arena is 2MB against a few dozen bytes/row --
+     * see kf/assets.h's KF_ASSETS_MAX_ENTRIES comment. */
+    kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the indexed fixture pack mounts");
+
+    const kf_sprite *ix = kf_assets_get("test_sprite");
+    check(ix != nullptr, "kf_assets_get finds the indexed test_sprite");
+    if (ix != nullptr) {
+        check(ix->format == KF_SPRITE_FORMAT_INDEXED8,
+              "it reports KF_SPRITE_FORMAT_INDEXED8");
+        check(ix->width == 32u && ix->height == 32u, "it is 32x32");
+        check(ix->frame_count == 1u, "it has one frame");
+        check(ix->pixels == nullptr, "an indexed sprite has no RGB565 pixels");
+        check(ix->indices != nullptr && ix->palette != nullptr,
+              "it has both index data and a palette");
+        check(ix->palette_count == 32u,
+              "the measured palette for this blob is 32 colours");
+        check(ix->has_color_key && ix->color_key == ix->palette[0],
+              "the colour key is palette entry 0");
+
+        bool identical = (expected.size() ==
+                          static_cast<size_t>(ix->width) * ix->height);
+        for (size_t i = 0; identical && i < expected.size(); ++i) {
+            if (ix->palette[ix->indices[i]] != expected[i]) {
+                identical = false;
+            }
+        }
+        check(identical,
+              "expanding every index through the palette reproduces the "
+              "RGB565 sprite byte for byte -- 8bpp is lossless for this "
+              "art");
+    }
+
+    const kf_sprite *anim = kf_assets_get("test_sprite_anim");
+    check(anim != nullptr, "kf_assets_get finds the 3-frame animation");
+    if (anim != nullptr) {
+        check(anim->frame_count == 3u, "it reports three frames");
+        const size_t stride =
+            static_cast<size_t>(anim->width) * anim->height;
+        check(std::memcmp(anim->indices, anim->indices + stride, stride) !=
+                  0,
+              "frame 1 differs from frame 0 -- the fixture is really "
+              "animated, not three copies of the same picture");
+    }
+
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+
+    if (ok) {
+        KF_LOGI(TAG, "indexed-assets: format decodes and is lossless");
+    }
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves kf_blit_mirrored() (Task 3b): a mirrored blit reverses the sprite's
  * columns rather than its rows, colour-key skip still works mirrored, and
  * clipping is mirror-aware -- the subtle part. An unmirrored sprite hanging
@@ -4846,6 +4950,7 @@ int main(int argc, char *argv[]) {
     bool verify_screen_nav = false;
     bool verify_lua_creature = false;
     bool verify_assets = false;
+    bool verify_indexed_assets = false;
     bool verify_blit_mirror = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
@@ -4931,6 +5036,8 @@ int main(int argc, char *argv[]) {
             verify_lua_creature = true;
         } else if (std::strcmp(argv[i], "--verify-assets") == 0) {
             verify_assets = true;
+        } else if (std::strcmp(argv[i], "--verify-indexed-assets") == 0) {
+            verify_indexed_assets = true;
         } else if (std::strcmp(argv[i], "--verify-blit-mirror") == 0) {
             verify_blit_mirror = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
@@ -4969,6 +5076,7 @@ int main(int argc, char *argv[]) {
                         "[--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua-creature\n"
                         "kamiframe-headless --verify-assets\n"
+                        "kamiframe-headless --verify-indexed-assets\n"
                         "kamiframe-headless --verify-blit-mirror\n");
             return 0;
         }
@@ -5101,6 +5209,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_assets) {
         return run_asset_check();
+    }
+
+    if (verify_indexed_assets) {
+        return run_indexed_asset_check();
     }
 
     if (verify_blit_mirror) {

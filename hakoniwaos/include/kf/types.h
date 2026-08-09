@@ -73,14 +73,41 @@ typedef enum {
 
 #define KF_BUTTON_COUNT 7
 
-/* An immutable sprite. Pixels are RGB565 and are expected to live in flash
- * or an asset arena, never to be copied. */
+/* How a sprite's pixels are stored. A property of the DATA, not a request
+ * from the caller -- which is why it lives on the sprite rather than being
+ * a flag passed to kf_blit(). See kf/blit.h's own comment for why that
+ * distinction is what makes this different from kf_blit_mirrored(). */
+typedef enum {
+    KF_SPRITE_FORMAT_RGB565 = 0,  /* `pixels` is valid */
+    KF_SPRITE_FORMAT_INDEXED8 = 1 /* `indices` + `palette` are valid */
+} kf_sprite_format;
+
+/* The palette slot a colour-keyed indexed sprite reserves for "do not draw
+ * this pixel". Fixed at 0 by convention rather than stored per sprite: it
+ * costs nothing, it makes the blitter's key test a compare against a
+ * compile-time constant, and the packer is what guarantees it (see
+ * tools/kf_ingest_sprites.py, which forces the magenta key to index 0). */
+#define KF_SPRITE_KEY_INDEX 0u
+
+/* An immutable sprite, possibly with more than one frame. Pixels live in
+ * flash or a mounted asset pack and are never copied.
+ *
+ * FRAMES ARE CONTIGUOUS. For an indexed sprite, frame k starts at
+ * `indices + k * width * height` -- one directory entry per animation, O(1)
+ * frame addressing, no per-frame name lookup. RGB565 sprites are always
+ * frame_count == 1; multi-frame RGB565 was never packed and is not worth
+ * adding when everything is migrating to indexed anyway. */
 typedef struct {
-    const kf_color *pixels;
+    const kf_color *pixels;  /* RGB565 data; NULL when format is INDEXED8 */
+    const uint8_t *indices;  /* 8bpp palette indices; NULL when RGB565 */
+    const kf_color *palette; /* palette_count entries; NULL when RGB565 */
     uint16_t width;
     uint16_t height;
-    kf_color color_key; /* pixels equal to this are not drawn */
-    bool has_color_key;
+    uint16_t frame_count;   /* always >= 1 */
+    uint16_t palette_count; /* 0 when RGB565 */
+    kf_color color_key;     /* for INDEXED8 this equals palette[0] */
+    bool has_color_key;     /* pixels equal to color_key are not drawn */
+    uint8_t format;         /* a kf_sprite_format value */
 } kf_sprite;
 
 #ifdef __cplusplus

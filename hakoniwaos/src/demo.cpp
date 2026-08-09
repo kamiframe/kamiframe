@@ -43,7 +43,16 @@ struct Mover {
 struct Demo {
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
-    kf_sprite sprite{};
+    /* frame_count explicit at 1 (position 6: pixels, indices, palette,
+     * width, height, frame_count) rather than left at value-init's 0, so
+     * this sprite meets its own type's invariant ("always >= 1", kf/types.h)
+     * even before kf_demo_init()'s `sprite = *test_sprite` overwrites every
+     * field wholesale. Nothing reads this particular frame_count today, but
+     * a value that violates the type it belongs to is a bug waiting for the
+     * day something does. */
+    kf_sprite sprite{nullptr, nullptr, nullptr, 0,
+                     0,       1,       0,       0,
+                     false,   KF_SPRITE_FORMAT_RGB565};
     Mover movers[kStressSprites];
     int mover_count = 1;
 

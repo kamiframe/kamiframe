@@ -82,7 +82,10 @@ that later, every directory entry already carries an asset_type tag and an
 8-byte type_meta block whose interpretation depends on it, so a new type
 is a new value in this table plus a new decoder, not a new file format:
 
-    ASSET_TYPE_SPRITE (0): the only type in use today.
+    ASSET_TYPE_SPRITE (0): raw RGB565 pixels, one frame, the format every
+        pack used before ASSET_TYPE_SPRITE_INDEXED existed and still the
+        right choice for a large opaque sprite (an un-keyed row is a
+        memcpy; an indexed row can never be one).
         type_meta: width (u16 @0), height (u16 @2), color_key (u16 @4),
         has_color_key (u8 @6), reserved (u8 @7).
 
@@ -98,6 +101,38 @@ is a new value in this table plus a new decoder, not a new file format:
         written by any code here: sample_rate (u32 @0), channels (u8 @4,
         always 1 for now), bits_per_sample (u8 @5, always 16 for now),
         reserved (u16 @6).
+
+    ASSET_TYPE_SPRITE_INDEXED (2): 8bpp palette-indexed pixels, one or
+        more frames.
+        type_meta: width (u16 @0), height (u16 @2), frame_count (u16 @4),
+        palette_count_minus_1 (u8 @6 -- the palette holds this + 1 entries,
+        so 1..256 are expressible in one byte), flags (u8 @7; bit 0 =
+        has_color_key, bits 1-7 reserved and 0).
+
+        Payload, in this order:
+          - palette: (palette_count_minus_1 + 1) * 2 bytes, RGB565
+            little-endian, zero-padded up to a multiple of 4 so the index
+            data that follows starts on a 4-byte boundary the same way
+            data_offset itself does;
+          - indices: frame_count * width * height bytes, one byte per
+            pixel, row-major, frame 0 first. FRAME k STARTS AT
+            palette_bytes_padded + k * width * height -- contiguous on
+            purpose, so a player addresses a frame with a multiply instead
+            of a directory lookup.
+        data_bytes therefore equals palette_bytes_padded +
+        frame_count * width * height, and is checked against exactly that.
+
+        When flags bit 0 is set, PALETTE ENTRY 0 IS THE COLOUR KEY and
+        index 0 is never drawn. Fixed by convention rather than stored,
+        so the blitter compares against a compile-time constant; the
+        producer is what guarantees it (tools/kf_ingest_sprites.py forces
+        the magenta key into slot 0).
+
+        NO FORMAT VERSION BUMP. This is a new asset_type in the existing
+        52-byte directory entry, which is precisely the extension path
+        adr-0033-asset-pipeline.md's "Cost to change" section describes.
+        A reader that does not know this type still walks the directory
+        correctly and simply builds no view for the entry.
 
 kf/assets.h's own header comment describes the C++ side of this: the
 directory WALK (bounds-checking name/data_offset/data_bytes) is the same
@@ -195,6 +230,7 @@ ALIGN = 4
 # produced by anything in this file.
 ASSET_TYPE_SPRITE = 0
 ASSET_TYPE_AUDIO_CLIP = 1  # reserved, see the format comment above
+ASSET_TYPE_SPRITE_INDEXED = 2
 
 TEST_SPRITE_W = 32
 TEST_SPRITE_H = 32
@@ -208,6 +244,76 @@ def _sprite_type_meta(width: int, height: int, color_key) -> bytes:
     meta = struct.pack("<HHHBB", width, height, color_key or 0, has_key, 0)
     assert len(meta) == TYPE_META_BYTES
     return meta
+
+
+def _indexed_sprite_type_meta(width: int, height: int, frame_count: int,
+                               palette_count: int, has_color_key: bool) -> bytes:
+    """Packs ASSET_TYPE_SPRITE_INDEXED's 8-byte type_meta block. See the
+    module docstring's "Asset types" section for the field layout."""
+    if not 1 <= palette_count <= 256:
+        raise ValueError(f"palette_count {palette_count} outside 1..256")
+    if not 1 <= frame_count <= 0xFFFF:
+        raise ValueError(f"frame_count {frame_count} outside 1..65535")
+    meta = struct.pack("<HHHBB", width, height, frame_count,
+                        palette_count - 1, 1 if has_color_key else 0)
+    assert len(meta) == TYPE_META_BYTES
+    return meta
+
+
+def make_indexed_asset(name, width, height, frames, palette, has_color_key):
+    """`frames` is a list of bytes objects, each width*height index bytes,
+    frame 0 first. `palette` is a list of RGB565 ints, entry 0 being the
+    colour key when has_color_key. Returns one packable entry dict, the same
+    shape make_test_sprite() returns."""
+    for i, f in enumerate(frames):
+        if len(f) != width * height:
+            raise ValueError(f"'{name}' frame {i}: {len(f)} bytes, expected "
+                              f"{width * height}")
+        hi = max(f) if f else 0
+        if hi >= len(palette):
+            raise ValueError(
+                f"'{name}' frame {i}: index {hi} is past the end of a "
+                f"{len(palette)}-entry palette -- the packer will not write a "
+                "sprite whose own indices read off the end of its palette")
+    pal = b"".join(struct.pack("<H", c) for c in palette)
+    pal += b"\x00" * ((-len(pal)) % ALIGN)
+    return {
+        "name": name,
+        "asset_type": ASSET_TYPE_SPRITE_INDEXED,
+        "type_meta": _indexed_sprite_type_meta(width, height, len(frames),
+                                                len(palette), has_color_key),
+        "data": pal + b"".join(frames),
+    }
+
+
+def quantize_rgb565(frames_565, key565):
+    """Turns a list of RGB565 pixel lists into (palette, index_frames).
+    The colour key, if present anywhere, is forced to palette slot 0 --
+    KF_SPRITE_KEY_INDEX in hakoniwaos/include/kf/types.h. Every other colour
+    follows in first-seen order, which is stable for a given input and so
+    keeps a regenerated pack byte-identical. Raises if the union exceeds 256:
+    that is the point at which 8bpp stops being lossless, and silently
+    quantising would be exactly the quality loss this format was chosen to
+    avoid."""
+    palette = [key565]
+    index_of = {key565: 0}
+    out = []
+    for pixels in frames_565:
+        buf = bytearray(len(pixels))
+        for i, c in enumerate(pixels):
+            slot = index_of.get(c)
+            if slot is None:
+                if len(palette) == 256:
+                    raise ValueError(
+                        "more than 256 distinct colours -- 8bpp indexing is "
+                        "lossless only up to 256; split this entry or move to "
+                        "a wider format deliberately")
+                slot = len(palette)
+                index_of[c] = slot
+                palette.append(c)
+            buf[i] = slot
+        out.append(bytes(buf))
+    return palette, out
 
 
 def rgb565(r: int, g: int, b: int) -> int:
@@ -250,22 +356,72 @@ def _test_sprite_pixel(x: int, y: int):
     return tuple(int(c * shade) for c in base)
 
 
+def _test_sprite_pixels_565():
+    """Row-major RGB565 ints for the test sprite blob -- one generator
+    shared by make_test_sprite() (packed as raw RGB565 bytes) and the
+    --indexed path (quantized into a palette + index bytes by
+    quantize_rgb565()), so both start from identical pixel data and an
+    --indexed pack's test_sprite is provably the same image."""
+    pixels = []
+    for y in range(TEST_SPRITE_H):
+        for x in range(TEST_SPRITE_W):
+            pixels.append(rgb565(*_test_sprite_pixel(x, y)))
+    return pixels
+
+
 def make_test_sprite():
     """Returns one packable entry dict for the procedural test sprite --
     see pack()'s own docstring for the dict shape every asset type (sprite
     today, audio later) is expected to produce."""
-    pixels = bytearray()
-    for y in range(TEST_SPRITE_H):
-        for x in range(TEST_SPRITE_W):
-            r, g, b = _test_sprite_pixel(x, y)
-            pixels += struct.pack("<H", rgb565(r, g, b))
+    pixels = b"".join(struct.pack("<H", c) for c in _test_sprite_pixels_565())
     key = rgb565(*TEST_SPRITE_COLOR_KEY)
     return {
         "name": "test_sprite",
         "asset_type": ASSET_TYPE_SPRITE,
         "type_meta": _sprite_type_meta(TEST_SPRITE_W, TEST_SPRITE_H, key),
-        "data": bytes(pixels),
+        "data": pixels,
     }
+
+
+def make_indexed_test_sprite():
+    """Returns 'test_sprite' as ASSET_TYPE_SPRITE_INDEXED instead of raw
+    RGB565 -- the same pixel data make_test_sprite() packs, run through
+    quantize_rgb565(), so --indexed's output is provably the same image,
+    losslessly re-encoded, not a different sprite."""
+    key = rgb565(*TEST_SPRITE_COLOR_KEY)
+    palette, frames = quantize_rgb565([_test_sprite_pixels_565()], key)
+    return make_indexed_asset("test_sprite", TEST_SPRITE_W, TEST_SPRITE_H,
+                               frames, palette, has_color_key=True)
+
+
+def _shift_pixels_565(pixels565, width, height, shift):
+    """Rotates each row `shift` columns to the right (wrapping), so frame
+    `shift` of the animation fixture is visibly different from frame 0
+    without inventing any new colours -- the point of this fixture is
+    proving frame addressing, not exercising a bigger palette."""
+    out = list(pixels565)
+    s = shift % width
+    if s == 0:
+        return out
+    for y in range(height):
+        row = pixels565[y * width:(y + 1) * width]
+        out[y * width:(y + 1) * width] = row[-s:] + row[:-s]
+    return out
+
+
+def make_test_sprite_anim(frame_count):
+    """Returns 'test_sprite_anim' as an N-frame ASSET_TYPE_SPRITE_INDEXED
+    fixture: the test sprite blob, shifted one pixel right per frame, so a
+    reader can tell frame 0 from frame 1 (and prove frame k really starts
+    at k*width*height) without a second hand-drawn image."""
+    base = _test_sprite_pixels_565()
+    key = rgb565(*TEST_SPRITE_COLOR_KEY)
+    frames565 = [_shift_pixels_565(base, TEST_SPRITE_W, TEST_SPRITE_H, k)
+                 for k in range(frame_count)]
+    palette, frames = quantize_rgb565(frames565, key)
+    return make_indexed_asset("test_sprite_anim", TEST_SPRITE_W,
+                               TEST_SPRITE_H, frames, palette,
+                               has_color_key=True)
 
 
 # --------------------------------------------------------------------------
@@ -449,13 +605,21 @@ def pack(assets):
 def _describe(asset: dict) -> str:
     """One summary line for the --out report below. Branches on
     asset_type, same as hakoniwaos/src/assets.cpp's own decode step does --
-    today that only ever means ASSET_TYPE_SPRITE, but a future audio entry
-    should describe itself here too rather than fall through to nothing."""
+    today that means ASSET_TYPE_SPRITE or ASSET_TYPE_SPRITE_INDEXED, but a
+    future audio entry should describe itself here too rather than fall
+    through to nothing."""
     if asset["asset_type"] == ASSET_TYPE_SPRITE:
         width, height, color_key, has_key, _ = struct.unpack(
             "<HHHBB", asset["type_meta"])
         key_desc = f"key=0x{color_key:04X}" if has_key else "no color key"
         return f"{asset['name']}: sprite {width}x{height} {key_desc}"
+    if asset["asset_type"] == ASSET_TYPE_SPRITE_INDEXED:
+        width, height, frame_count, palette_count_minus_1, flags = \
+            struct.unpack("<HHHBB", asset["type_meta"])
+        key_desc = "key=palette[0]" if flags & 0x01 else "no color key"
+        return (f"{asset['name']}: indexed sprite {width}x{height} "
+                f"{frame_count} frame(s) {palette_count_minus_1 + 1}-colour "
+                f"palette {key_desc}")
     return f"{asset['name']}: asset_type={asset['asset_type']} " \
            f"({len(asset['data'])} bytes)"
 
@@ -470,12 +634,23 @@ def main(argv=None) -> int:
     p.add_argument("--png", action="append", default=[], metavar="NAME=PATH[:RRGGBB]",
                     help="include a sprite decoded from a PNG file, with an "
                          "optional hex colour key; may be given more than once")
+    p.add_argument("--indexed", action="store_true",
+                    help="emit --test-sprite as ASSET_TYPE_SPRITE_INDEXED "
+                         "instead of raw RGB565")
+    p.add_argument("--frames", type=int, default=1,
+                    help="with --indexed and a value greater than 1, also "
+                         "emit 'test_sprite_anim' with this many frames "
+                         "(the blob shifted one pixel right per frame), as "
+                         "an animation fixture")
     p.add_argument("-o", "--out", required=True, help="output .kfpack path")
     args = p.parse_args(argv)
 
     assets = []
     if args.test_sprite:
-        assets.append(make_test_sprite())
+        assets.append(make_indexed_test_sprite() if args.indexed
+                      else make_test_sprite())
+        if args.indexed and args.frames > 1:
+            assets.append(make_test_sprite_anim(args.frames))
 
     for spec in args.png:
         if "=" not in spec:

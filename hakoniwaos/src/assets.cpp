@@ -195,11 +195,13 @@ kf_result kf_assets_init(void) {
 
         /* The only place kf_asset_type is branched on: everything above
          * this line already validated and stored the entry regardless of
-         * what type it turns out to be. Unrecognised types (today, that
-         * is anything other than SPRITE -- AUDIO_CLIP has no decoder yet)
-         * simply get no type-specific view built; the row still exists in
-         * the table, ready for a future decoder to read the same
-         * data_offset/data_bytes/type_meta this one leaves in place. */
+         * what type it turns out to be. Unrecognised types (today, that is
+         * AUDIO_CLIP -- it has no decoder yet) simply get no type-specific
+         * view built; the row still exists in the table, ready for a future
+         * decoder to read the same data_offset/data_bytes/type_meta this one
+         * leaves in place. Both sprite types -- SPRITE and SPRITE_INDEXED --
+         * decode into the same kf_sprite shape below; kf_assets_get() checks
+         * for either. */
         if (row.type == KF_ASSET_TYPE_SPRITE) {
             const uint16_t width = read_u16(row.type_meta + 0);
             const uint16_t height = read_u16(row.type_meta + 2);
@@ -222,6 +224,54 @@ kf_result kf_assets_init(void) {
             row.sprite.height = height;
             row.sprite.color_key = color_key;
             row.sprite.has_color_key = has_color_key;
+            row.sprite.frame_count = 1u;
+            row.sprite.format = KF_SPRITE_FORMAT_RGB565;
+        } else if (row.type == KF_ASSET_TYPE_SPRITE_INDEXED) {
+            const uint16_t width = read_u16(row.type_meta + 0);
+            const uint16_t height = read_u16(row.type_meta + 2);
+            const uint16_t frame_count = read_u16(row.type_meta + 4);
+            const uint16_t palette_count =
+                static_cast<uint16_t>(row.type_meta[6]) + 1u;
+            const bool has_color_key = (row.type_meta[7] & 0x01u) != 0u;
+
+            KF_ASSERT(frame_count >= 1u,
+                      "indexed sprite '%s': frame_count is 0 -- every sprite "
+                      "has at least one frame",
+                      row.name);
+
+            /* Palette first, zero-padded to 4 so the index data behind it
+             * starts aligned -- see tools/kf_pack_assets.py's own payload
+             * description. */
+            const uint32_t palette_bytes =
+                static_cast<uint32_t>(palette_count) * 2u;
+            const uint32_t palette_padded = (palette_bytes + 3u) & ~3u;
+            const uint64_t index_bytes = static_cast<uint64_t>(frame_count) *
+                                          static_cast<uint64_t>(width) *
+                                          static_cast<uint64_t>(height);
+            const uint64_t expected_bytes = palette_padded + index_bytes;
+            KF_ASSERT(data_bytes == expected_bytes,
+                      "indexed sprite '%s': data_bytes (%" PRIu32
+                      ") does not match palette + frames*w*h (%llu) -- "
+                      "corrupt pack",
+                      row.name, data_bytes,
+                      static_cast<unsigned long long>(expected_bytes));
+
+            row.sprite.pixels = nullptr;
+            row.sprite.palette =
+                reinterpret_cast<const kf_color *>(base + data_offset);
+            row.sprite.indices = base + data_offset + palette_padded;
+            row.sprite.width = width;
+            row.sprite.height = height;
+            row.sprite.frame_count = frame_count;
+            row.sprite.palette_count = palette_count;
+            row.sprite.has_color_key = has_color_key;
+            /* Mirrors the key colour onto the sprite so a caller that only
+             * knows about kf_sprite::color_key still reads something true.
+             * The blitter never uses it for an indexed sprite -- it compares
+             * KF_SPRITE_KEY_INDEX against the index byte instead, which is
+             * cheaper and cannot disagree with the palette. */
+            row.sprite.color_key = row.sprite.palette[KF_SPRITE_KEY_INDEX];
+            row.sprite.format = KF_SPRITE_FORMAT_INDEXED8;
         }
 
         g_entry_count++;
@@ -235,7 +285,8 @@ kf_result kf_assets_init(void) {
 
 const kf_sprite *kf_assets_get(const char *name) {
     const AssetEntry *e = find_entry(name);
-    if (e == nullptr || e->type != KF_ASSET_TYPE_SPRITE) {
+    if (e == nullptr || (e->type != KF_ASSET_TYPE_SPRITE &&
+                          e->type != KF_ASSET_TYPE_SPRITE_INDEXED)) {
         return nullptr;
     }
     return &e->sprite;

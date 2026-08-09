@@ -199,6 +199,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
         KF_CREATURE_DEMO_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/creature_demo/assets.kfpack"
     )
 
+    # Same reasoning, same mechanism, one entry above: run_indexed_asset_
+    # check() (headless_main.cpp) is the only reader, via the same runtime
+    # kf_host_assets_set_pack_path() override it restores before returning.
+    # examples/hello_sprite/assets_indexed.kfpack is a permanent, checked-in
+    # fixture -- ASSET_TYPE_SPRITE_INDEXED's 'test_sprite' (1 frame) and
+    # 'test_sprite_anim' (3 frames) -- not the default pack every other test
+    # keeps mounting untouched.
+    target_compile_definitions(kamiframe-headless PRIVATE
+        KF_INDEXED_FIXTURE_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets_indexed.kfpack"
+    )
+
     # Golden-frame test. Runs the real firmware for 300 frames and checks the
     # rendered output byte for byte, via an FNV-1a hash of every presented
     # framebuffer.
@@ -638,6 +649,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # See headless_main.cpp's run_asset_check().
     add_test(NAME asset_pipeline_check
              COMMAND kamiframe-headless --verify-assets)
+
+    # Proves ASSET_TYPE_SPRITE_INDEXED (the animated-indexed-sprites plan's
+    # Task 1) decodes -- palette, frame count, contiguous frames -- and, the
+    # point of the whole format, that expanding the indices through the
+    # palette reproduces the RGB565 test_sprite byte for byte. Mounts the
+    # indexed fixture (examples/hello_sprite/assets_indexed.kfpack) through
+    # the RUNTIME override and restores the default, so it never disturbs
+    # the golden-checksum tests above. See headless_main.cpp's
+    # run_indexed_asset_check().
+    add_test(NAME indexed_asset_check
+             COMMAND kamiframe-headless --verify-indexed-assets)
 
     # Proves kf_blit_mirrored() (Task 3b): a fully on-screen mirrored blit
     # reverses the sprite's columns, colour-key skip still works mirrored,
