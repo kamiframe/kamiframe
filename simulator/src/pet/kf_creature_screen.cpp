@@ -291,6 +291,30 @@ kf_creature g_creature;
 kf_rect g_previous = {0, 0, 0, 0};
 bool g_up = false;
 
+/* Whether the pet was an egg as of the LAST kf_creature_screen_frame()
+ * call that actually looked -- i.e. whether the per-frame block below
+ * that gates kf_creature_update() behind pet->stage == KF_PET_STAGE_EGG
+ * ran its bob branch or its wander branch last time. Starts true: kf_
+ * creature_screen_init() always runs right after a fresh kf_pet_session_
+ * init(), and a fresh pet is always an egg (kf/pet.h's kf_pet_init()), so
+ * the very first frame is never a transition.
+ *
+ * Exists solely to detect the transition INTO the egg stage -- see the
+ * re-centre this drives, just below the egg gate in kf_creature_screen_
+ * frame() -- not the transition out of it, which needs nothing extra:
+ * kf_creature_update() simply resuming from wherever the egg was frozen
+ * is already correct (kf_creature_init()'s own comment on the ordinary
+ * "just hatched" case covers that, and this file's per-frame block above
+ * it already explains why). The ordinary path -- boot as an egg, hatch,
+ * grow up, never revisit EGG again -- never sets this back to true after
+ * the first frame, so it never fires there. The one path that DOES is
+ * kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_EGG, ...)
+ * (sdl_debug_window.cpp's "Egg" stage-jump button): that can land on a
+ * pet that was, a moment ago, a CHILD or TEEN that had wandered all over
+ * the field, and g_creature.x/y do not get reset just because pet->stage
+ * did -- see the re-centre comment below for why that matters. */
+bool g_was_egg = true;
+
 /* How many poops are actually painted on screen right now -- NOT
  * pet->poop_count, which the mess-drawing code below compares this
  * against every frame precisely so it can tell "the count changed since
@@ -517,7 +541,7 @@ void handle_care_buttons(const kf_pet_state *pet, uint32_t pressed) {
  * guide is a development affordance the HUD will displace, not a
  * permanent fixture. Nothing else in this file draws into that band today
  * except this. */
-constexpr const char *kGuideLabels[KF_PET_CARE_ACTION_COUNT + 1u] = {
+constexpr const char *kGuideLabels[5] = {
     "1:FEED", "2:PLAY", "3:REST", "4:BATH", "5:FLUSH",
 };
 
@@ -594,18 +618,80 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
      * directly by run_creature_pose_check(), and still what a future
      * non-screen caller, e.g. a debug bridge or a different front end,
      * would get if it asked) -- this screen has just stopped being the
-     * caller that ever asks it about a dead pet. pet->dead is terminal
-     * (kf/pet.h's own comment: nothing ever clears it), so there is no
-     * "un-dying" case to handle here, only "just died" (paint once) and
-     * "already dead" (paint nothing further, below). */
+     * caller that ever asks it about a dead pet.
+     *
+     * pet->dead is terminal FROM CORE'S OWN PERSPECTIVE -- kf/pet.h's
+     * comment on the field says nothing IN THAT FILE ever clears it, and
+     * that "a new creature is a new kf_pet_init()" is the honest way to
+     * describe what reviving would otherwise look like: Core's position is
+     * that there is no un-dying, only starting over. That is true of
+     * kf/pet.cpp, but it is NOT true of this binary: kf_pet_session_debug_
+     * reset() (the Reset button) and kf_pet_session_debug_jump_to_stage()
+     * (the stage-jump buttons, sdl_debug_window.cpp) both call kf_pet_
+     * init() directly on THIS SAME kf_pet_state instance, on THIS SAME
+     * running screen, which sets state->dead back to false without this
+     * screen ever losing focus or re-entering. From here, that is
+     * indistinguishable from un-dying: pet->dead, the exact flag this
+     * function polls every frame, really does go from true back to false
+     * while the screen stays up. So there IS a case to handle beyond
+     * "just died" and "already dead" -- see the block just below this one,
+     * which is exactly that case. */
     if (pet->dead) {
         if (!g_drawn_dead) {
             kf_fill_rect(g_previous, kBackground); /* erase wherever the
                                                       * creature last stood */
             draw_shrine_scene();
             g_drawn_dead = true;
+            /* Deliberately NOT touching g_drawn_poops or the mess row
+             * (y=[232,244), see kPoopY0/kPoopY1 above) here: whatever
+             * mess was on screen the moment the pet died stays exactly
+             * as it was, painted right alongside the shrine. This is a
+             * decision, not an oversight the spec happens not to
+             * contradict -- "Death without a player holds on the last
+             * creature's scene" (this comment's own header) reads most
+             * honestly as the WHOLE scene, mess included, not a version
+             * of it quietly tidied up the moment the creature dies. A
+             * shrine standing in an otherwise-swept field would tell a
+             * gentler story than the one that actually happened, and for
+             * a creature whose neglect-driven death this mess is often
+             * physical evidence of, that is the wrong story to tell.
+             * Nothing else needs to change to get this: the mess-drawing
+             * block further down never runs at all once this function
+             * returns early below, so whatever was last painted simply
+             * persists -- the same "do nothing, let it stand" mechanism
+             * that already makes the shrine itself static once drawn. */
         }
         return;
+    }
+
+    /* Revive: g_drawn_dead is still true from a shrine painted on a
+     * previous frame, but pet->dead just read false above -- one of the
+     * two callers described in the block comment above flipped it back.
+     * Left alone, g_drawn_dead would stay true forever (nothing else ever
+     * clears it), so the shrine would sit painted at the field's centre
+     * -- x=[96,144), y=[106,154), see centered_in_field()/
+     * kShrinePlaceholderSize above -- on top of whatever this function
+     * draws below for the rest of this pet's life, until the next
+     * kf_creature_screen_enter() (a screen switch away and back)
+     * happened to wipe it first.
+     *
+     * The fix is the field repaint kf_creature_screen_enter() already
+     * does on every screen entry, run here instead because a revive is
+     * not a screen entry -- Home stays the active screen the whole time,
+     * so nothing else is going to call that function for us. One
+     * kf_fill_rect(kField, ...) is exactly one dirty rectangle (kField is
+     * one rect by construction), and everything the rest of this frame
+     * draws -- the creature, and mess if any is waiting -- lands inside
+     * that same rectangle and merges into it rather than adding a second
+     * one (kf/framebuffer.h's kf_fb_mark_dirty() comment), so this still
+     * costs exactly the "1" a normal frame already spends on the creature
+     * -- see this file's own per-frame dirty-rect accounting further
+     * down. That holds for THIS transition frame; it is not a per-frame
+     * cost, because g_drawn_dead is immediately set false below and this
+     * block does not run again until the pet dies and revives once more. */
+    if (g_drawn_dead) {
+        kf_fill_rect(kField, kBackground);
+        g_drawn_dead = false;
     }
 
     /* Task 6: read this frame's debounced button edges the same way
@@ -652,12 +738,46 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
      * "just hatched" transition to handle because the creature was already
      * sitting on a real, previously-chosen wander target the whole time
      * (kf_creature_init() picks one at construction, long before the pet
-     * could ever have hatched). */
+     * could ever have hatched).
+     *
+     * That "exactly where kf_creature_init() put them" guarantee is true
+     * at boot and false after kf_pet_session_debug_jump_to_stage(
+     * KF_PET_STAGE_EGG, ...) (sdl_debug_window.cpp's "Egg" button) lands
+     * on a pet that had been wandering: the jump resets pet->stage, but
+     * nothing resets g_creature.x/y, which simply stay wherever the
+     * wander last left them -- anywhere in the field, not necessarily the
+     * centre. Left alone, that produces two real bugs, not one merely
+     * cosmetic one: an off-centre bobbing egg (wrong, but harmless), and
+     * -- for a creature that had wandered close enough to the field's
+     * bottom edge -- a bobbed draw rect whose y1 can reach 262, past
+     * kField's own y1 of 260, breaking the "this file only ever draws
+     * into y=[0,260) per frame" invariant this file's own header comment
+     * states as a hard rule, not a guideline.
+     *
+     * Fixed by re-centring, not by clamping the bobbed rect to kField:
+     * clamping would stop the overflow but leave the OTHER bug -- an egg
+     * sitting wherever the previous creature happened to wander to, not
+     * "in one place" the way the project owner asked for -- exactly as
+     * wrong as it was before, just no longer crashing the invariant.
+     * Re-centring fixes both defects with the one call that already
+     * defines what "the egg's place" means (kf_creature_init(), used at
+     * boot for the exact same purpose), rather than inventing a second,
+     * weaker rule that only prevents the drawing bug and quietly leaves
+     * the design bug in place. g_was_egg (above) is what lets this run
+     * exactly once per transition, not every frame the pet stays an egg:
+     * re-centring on every bob frame would fight kf_creature_screen_
+     * debug_egg_bob_offset_y()'s own promise that offset 0 always means
+     * "exactly where kf_creature_bounds() says", by moving that baseline
+     * out from under a check mid-run. */
     if (pet->stage == KF_PET_STAGE_EGG) {
+        if (!g_was_egg) {
+            kf_creature_init(&g_creature, kField);
+        }
         g_egg_bob_elapsed_ms += dt_ms;
     } else {
         kf_creature_update(&g_creature, kField, dt_ms);
     }
+    g_was_egg = (pet->stage == KF_PET_STAGE_EGG);
 
     /* Erase where it was, draw where it is. Two dirty rectangles at most:
      * one when the creature did not move this frame, since the erase below
