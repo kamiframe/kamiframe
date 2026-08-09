@@ -10,12 +10,13 @@
  * change. On the ESP32 a FreeRTOS task will do the same.
  *
  * Usage:
- *     kamiframe-sim [--scale N] [--frames N]
+ *     kamiframe-sim [--scale N] [--frames N] [--pack PATH]
  */
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "host_assets.h"
 #include "sdl_debug_window.h"
 #include "sdl_shared.h"
 
@@ -79,6 +80,12 @@ int main(int argc, char *argv[]) {
      * experience, and accepts the same lack of coordination as a known cost
      * of asking for it explicitly. */
     kf_demo_mode mode = KF_DEMO_NONE;
+    /* nullptr means "no override" -- kf_host_assets_set_pack_path(nullptr)
+     * below is a no-op in that case, and kf_hal_assets_mount() falls
+     * through to the compiled-in default exactly as it does today. Points
+     * into argv, which outlives this whole function, so no copy is needed
+     * before the set-pack-path call below reads it. */
+    const char *pack_path = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
@@ -90,15 +97,33 @@ int main(int argc, char *argv[]) {
             max_frames = std::atol(argv[++i]);
         } else if (std::strcmp(argv[i], "--stress") == 0) {
             mode = KF_DEMO_FULLSCREEN;
+        } else if (std::strcmp(argv[i], "--pack") == 0 && i + 1 < argc) {
+            /* Loads a different .kfpack at runtime -- e.g. a creature
+             * roster built by tools/kf_ingest_sprites.py -- without
+             * touching KF_ASSET_PACK (the CMake cache variable
+             * examples/hello_sprite/assets.kfpack is baked in from,
+             * simulator/CMakeLists.txt) or recompiling. Deliberately does
+             * NOT change kamiframe-headless or any ctest target: this flag
+             * only exists on this binary's argv, and
+             * kf_host_assets_set_pack_path() is only ever called from
+             * here -- see host_assets.h's own comment on why the override
+             * has to be a desktop-only, opt-in call rather than something
+             * Core (or the default path) can reach. */
+            pack_path = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
-            std::printf("kamiframe-sim [--scale N] [--frames N] [--stress]\n"
-                        "  --stress  scrolling tilemap + 12 sprites, every "
-                        "pixel redrawn every frame\n");
+            std::printf(
+                "kamiframe-sim [--scale N] [--frames N] [--stress] "
+                "[--pack PATH]\n"
+                "  --stress     scrolling tilemap + 12 sprites, every "
+                "pixel redrawn every frame\n"
+                "  --pack PATH  load this .kfpack instead of the compiled-"
+                "in default\n");
             return 0;
         }
     }
 
     kf_sdl_state().scale = scale;
+    kf_host_assets_set_pack_path(pack_path);
 
     kf_app_init(mode);
 

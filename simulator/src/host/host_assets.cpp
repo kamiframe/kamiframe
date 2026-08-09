@@ -41,13 +41,26 @@
  * safe, including running several at once -- there is nothing here for
  * concurrent tests to collide over the way concurrent writers to the same
  * save directory would.
+ *
+ * Runtime override, unlike the default above: kf_host_assets_set_pack_path()
+ * (host_assets.h) lets kamiframe-sim's `--pack <path>` flag point an
+ * already-built binary at a different .kfpack without a recompile -- see
+ * that header's own comment for why this has to live here rather than
+ * behind kf_hal_assets_mount()'s own `pack_path` parameter (Core always
+ * calls that with nullptr; it never chooses a path itself). Storage for the
+ * override is a fixed buffer, not std::string, so this file's only
+ * allocation stays the pack-file read below -- an override is set once,
+ * early, from a C-string argv already owns for the life of the process, so
+ * there is nothing here that needs dynamic growth.
  */
 
 #include "kf/hal/assets.h"
 
 #include "kf/hal/log.h"
+#include "host_assets.h"
 
 #include <cstdio>
+#include <cstring>
 
 #ifndef KF_HOST_DEFAULT_ASSET_PACK_PATH
 #error "KF_HOST_DEFAULT_ASSET_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
@@ -61,11 +74,25 @@ uint8_t *g_buf = nullptr;
 size_t g_size = 0u;
 bool g_up = false;
 
+constexpr size_t kOverridePathMax = 1024u;
+char g_override_path[kOverridePathMax] = {};
+
 } // namespace
+
+void kf_host_assets_set_pack_path(const char *path) {
+    if (path == nullptr || path[0] == '\0') {
+        g_override_path[0] = '\0';
+        return;
+    }
+    std::strncpy(g_override_path, path, kOverridePathMax - 1u);
+    g_override_path[kOverridePathMax - 1u] = '\0';
+}
 
 kf_result kf_hal_assets_mount(const char *pack_path) {
     const char *path = (pack_path != nullptr && pack_path[0] != '\0')
                             ? pack_path
+                        : (g_override_path[0] != '\0')
+                            ? g_override_path
                             : KF_HOST_DEFAULT_ASSET_PACK_PATH;
 
     std::FILE *f = std::fopen(path, "rb");
