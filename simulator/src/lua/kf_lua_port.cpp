@@ -137,6 +137,26 @@ int lua_pet_dirtiness(lua_State *L) {
     return 1;
 }
 
+/* Illness, readable from a script. neglect_seconds is exposed raw rather
+ * than as a "distress level" enum because where the thresholds sit is
+ * config: a script that wants three bands can compute them, and one that
+ * wants five is not blocked by a choice made here. */
+int lua_pet_sick(lua_State *L) {
+    lua_pushboolean(L, kf_pet_session_state()->sick ? 1 : 0);
+    return 1;
+}
+
+int lua_pet_dead(lua_State *L) {
+    lua_pushboolean(L, kf_pet_session_state()->dead ? 1 : 0);
+    return 1;
+}
+
+int lua_pet_neglect_seconds(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->neglect_seconds));
+    return 1;
+}
+
 int lua_pet_save(lua_State *L) {
     (void)L;
     kf_pet_session_save();
@@ -233,6 +253,9 @@ const luaL_Reg kKfPetFuncs[] = {
     {"clean", lua_pet_clean},
     {"poops", lua_pet_poops},
     {"dirtiness", lua_pet_dirtiness},
+    {"sick", lua_pet_sick},
+    {"dead", lua_pet_dead},
+    {"neglect_seconds", lua_pet_neglect_seconds},
     {"save", lua_pet_save},
     {"stage", lua_pet_stage},
     {"teen_form", lua_pet_teen_form},

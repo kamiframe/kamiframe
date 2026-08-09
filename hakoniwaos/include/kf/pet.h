@@ -219,6 +219,14 @@ typedef struct {
     uint32_t sick_decay_multiplier_percent;
     uint32_t sick_happiness_drain_mp_per_hour;
 
+    /* Accumulated neglect at which the creature dies. ZERO MEANS IT NEVER
+     * DOES -- the same sentinel shape poop_interval_seconds == 0 uses for
+     * "no mess". That is an off switch for permanent death, a product
+     * decision Chris may want for a gentler mode, and it is also what lets
+     * a check raise a badly-treated creature to adulthood without modelling
+     * the token care it would otherwise need to survive. */
+    uint32_t sickness_death_seconds;
+
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
     uint32_t child_duration_seconds;
@@ -295,6 +303,12 @@ typedef struct {
      * threshold flickering in and out of illness every frame, and it
      * cannot be recomputed from the accumulator alone. */
     bool sick;
+
+    /* Whether this creature has died. Terminal: nothing in this file ever
+     * clears it, and there is no revival action anywhere, by design. A new
+     * creature is a new kf_pet_init(), which is the honest way to say what
+     * has happened. */
+    bool dead;
 
     /* The wall-clock time this state was last advanced to. Saved
      * alongside the needs (see kf_pet_save()) so a reload can compute
@@ -467,17 +481,18 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
  * misread rather than merely missing a field, and to version 5 with mess
  * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count`,
- * `seconds_until_next_poop` and `dirtiness_mp` were added, and to version 6
+ * `seconds_until_next_poop` and `dirtiness_mp` were added, to version 6
  * with sickness (docs/superpowers/plans/2026-08-09-sickness-and-death.md):
  * `neglect_seconds` and `sick` were added -- a version-5 save has no
  * accumulated neglect to fall back to that would not silently un-sicken a
  * creature that was ill at save time, so it is refused rather than guessed
- * at. A save from an earlier version is refused by kf_pet_load_and_advance()'s
+ * at -- and to version 7, in the same plan, with death: `dead` was added.
+ * A save from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
  * code, an explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 88u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 89u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

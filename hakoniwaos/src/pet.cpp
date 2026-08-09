@@ -61,15 +61,20 @@ constexpr const char *TAG = "pet";
  * to 3 with ADR 0023 (personality traits), to 4 with the evolution-tree
  * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
  * comment), to 5 with mess (poop_count, seconds_until_next_poop and
- * dirtiness_mp added), and to 6 with sickness (neglect_seconds and sick
+ * dirtiness_mp added), to 6 with sickness (neglect_seconds and sick
  * added) -- a version-5 save has no notion of accumulated neglect at all,
  * so there is no honest default to fill in for it (zero would silently
  * un-sicken a creature that was ill the moment it was saved); refusing the
  * load and falling back to a fresh pet is the same accepted cost the
- * version-4/5 bumps already took, not a new one. kf_pet_deserialize()
- * refuses to load anything written by a different version rather than
- * guessing at a layout that changed, see unpack() below. */
-constexpr uint8_t kSaveVersion = 6;
+ * version-4/5 bumps already took, not a new one -- and to 7 with death
+ * (dead added). A second bump in the same branch is correct and cheap: a
+ * save written between the sickness and death work is a real file on a
+ * real developer's disk with a genuinely different layout, and versions
+ * exist precisely so that is refused rather than misread.
+ * kf_pet_deserialize() refuses to load anything written by a different
+ * version rather than guessing at a layout that changed, see unpack()
+ * below. */
+constexpr uint8_t kSaveVersion = 7;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -296,6 +301,13 @@ void accumulate_personality(kf_pet_state *state, const kf_pet_config *config,
  * about stages other than the current one. */
 void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
                           uint32_t segment) {
+    if (state->dead) {
+        /* Nothing decays, nothing accumulates, no mess arrives. The same
+         * shape as the egg exemption below and for a comparable reason:
+         * there is no simulation left to run. */
+        return;
+    }
+
     if (state->stage == KF_PET_STAGE_EGG) {
         /* No care needed as an egg -- see kf/pet.h's header comment and
          * kf_pet_init(): needs stay at whatever they were (full, for a
@@ -453,6 +465,19 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
         } else if (state->neglect_seconds == 0u) {
             state->sick = false;
         }
+
+        if (config->sickness_death_seconds > 0u) {
+            if (state->neglect_seconds > config->sickness_death_seconds) {
+                /* Capped, so an abandoned creature's counter cannot drift
+                 * off toward saturation and take a correspondingly absurd
+                 * amount of care to walk back if it is somehow revived by a
+                 * future feature. */
+                state->neglect_seconds = config->sickness_death_seconds;
+            }
+            if (state->neglect_seconds >= config->sickness_death_seconds) {
+                state->dead = true;
+            }
+        }
     }
 }
 
@@ -522,6 +547,7 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u32(out, off, state->dirtiness_mp);
     put_u32(out, off, state->neglect_seconds);
     put_u8(out, off, state->sick ? 1u : 0u);
+    put_u8(out, off, state->dead ? 1u : 0u);
     put_u8(out, off, state->last_advanced.valid ? 1u : 0u);
     put_i64(out, off, state->last_advanced.epoch_seconds);
     put_u8(out, off, static_cast<uint8_t>(state->stage));
@@ -573,6 +599,7 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->dirtiness_mp = get_u32(in, off);
     state->neglect_seconds = get_u32(in, off);
     state->sick = get_u8(in, off) != 0u;
+    state->dead = get_u8(in, off) != 0u;
     state->last_advanced.valid = get_u8(in, off) != 0u;
     state->last_advanced.epoch_seconds = get_i64(in, off);
     const uint8_t stage_byte = get_u8(in, off);
@@ -660,6 +687,12 @@ kf_pet_config kf_pet_default_config(void) {
     c.sick_decay_multiplier_percent = 200u;
     c.sick_happiness_drain_mp_per_hour = 20000u;
 
+    /* A full day of accumulated neglect, on top of the three hours that
+     * made it ill -- twenty-one hours of visible, escalating distress
+     * before the end. Tuning number, and the one here most worth being
+     * generous with: every death should feel deserved. */
+    c.sickness_death_seconds = 86400u;
+
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers
      * later, just make it configurable," so these are a starting point
@@ -686,6 +719,7 @@ void kf_pet_init(kf_pet_state *state) {
     state->dirtiness_mp = 0u;
     state->neglect_seconds = 0u;
     state->sick = false;
+    state->dead = false;
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
     state->stage = KF_PET_STAGE_EGG;
@@ -718,6 +752,10 @@ void kf_pet_init(kf_pet_state *state) {
 
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
                      uint32_t elapsed_seconds) {
+    if (state->dead) {
+        return;
+    }
+
     uint32_t remaining = elapsed_seconds;
 
     /* Bounded by the number of remaining life stages (at most 4: egg,
@@ -762,6 +800,9 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
 }
 
 void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config) {
+    if (state->dead) {
+        return;
+    }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
@@ -784,6 +825,9 @@ void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config) {
 }
 
 void kf_pet_play(kf_pet_state *state) {
+    if (state->dead) {
+        return;
+    }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
@@ -791,6 +835,9 @@ void kf_pet_play(kf_pet_state *state) {
 }
 
 void kf_pet_rest(kf_pet_state *state) {
+    if (state->dead) {
+        return;
+    }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
@@ -798,6 +845,9 @@ void kf_pet_rest(kf_pet_state *state) {
 }
 
 void kf_pet_clean(kf_pet_state *state) {
+    if (state->dead) {
+        return;
+    }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }

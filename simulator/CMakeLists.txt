@@ -317,6 +317,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_sickness_check
              COMMAND kamiframe-headless --verify-pet-sickness)
 
+    # Proves death: sustained critical neglect (neglect_seconds reaching
+    # sickness_death_seconds) is fatal, and is heavily telegraphed -- a real
+    # window between falling ill and dying, not a surprise. Once dead,
+    # nothing decays, no stage transition happens, and care actions do not
+    # even count as care. sickness_death_seconds == 0 is the off switch
+    # (the same sentinel shape poop_interval_seconds == 0 uses for "no
+    # mess") and a creature that has never been touched at all does not die
+    # of it either -- see headless_main.cpp's run_pet_death_check().
+    add_test(NAME pet_death_check
+             COMMAND kamiframe-headless --verify-pet-death)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read

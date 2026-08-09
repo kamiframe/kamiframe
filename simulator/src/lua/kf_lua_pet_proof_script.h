@@ -9,7 +9,7 @@
  * which runs these scripts back to back against the SAME continuing pet
  * session.
  *
- * Five scripts, not one, because they prove different things and mixing
+ * Six scripts, not one, because they prove different things and mixing
  * them into a single kf.report() call would need to encode multiple values
  * into one integer:
  *
@@ -61,6 +61,17 @@
  *       reached kf_pet_clean() -- the same "mutate, then check the live
  *       C++ state independently" proof the care script uses, applied to
  *       the fourth care action.
+ *
+ *   kKfLuaPetHealthProofScriptSource  Reports pet.sick(), pet.dead() and
+ *       pet.neglect_seconds() (docs/superpowers/plans/2026-08-09-sickness-
+ *       and-death.md) packed into one integer (flags * 10000000 +
+ *       neglect_seconds, flags = sick*1 + dead*2 -- neglect_seconds is
+ *       capped at sickness_death_seconds, comfortably under 10000000 for
+ *       any config this project ships). Touches nothing; run after the
+ *       session has already been cared for at least once (mess/clean above
+ *       leaves it that way), then left alone long enough to fall ill, the
+ *       same "mutate elsewhere, then check the live C++ state
+ *       independently" proof every other script here uses.
  */
 
 #ifndef KF_LUA_PET_PROOF_SCRIPT_H
@@ -128,5 +139,22 @@ kf.log("pet clean proof script loaded")
 
 inline constexpr const char *kKfLuaPetCleanProofScriptChunkName =
     "=pet_clean_proof_script";
+
+inline constexpr const char *kKfLuaPetHealthProofScriptSource = R"lua(
+local kSick = 1
+local kDead = 2
+
+function on_frame(dt_ms)
+    local flags = 0
+    if pet.sick() then flags = flags + kSick end
+    if pet.dead() then flags = flags + kDead end
+    kf.report(flags * 10000000 + pet.neglect_seconds())
+end
+
+kf.log("pet health proof script loaded")
+)lua";
+
+inline constexpr const char *kKfLuaPetHealthProofScriptChunkName =
+    "=pet_health_proof_script";
 
 #endif /* KF_LUA_PET_PROOF_SCRIPT_H */

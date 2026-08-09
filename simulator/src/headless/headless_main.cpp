@@ -1472,6 +1472,86 @@ int run_pet_sickness_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Death is real, and it is the end of that creature. It is also heavily
+ * telegraphed: the accumulator that made it ill keeps climbing for most of
+ * a day afterwards, and the screen has both thresholds to escalate
+ * against. Every death should feel deserved -- the care-loop spec's
+ * section 7 rejects sudden death for exactly that reason. */
+int run_pet_death_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    check(config.sickness_death_seconds > config.sickness_onset_seconds,
+          "there is a real window between falling ill and dying -- a death "
+          "with no warning is the one thing this must never be");
+
+    kf_pet_state pet{};
+    kf_pet_init(&pet);
+    pet.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&pet, &config);
+
+    /* Bad, then ill. Two segments, for the both-ends-sampling reason given
+     * at the top of run_pet_sickness_check(). */
+    apply_stage_segment_for_test(&pet, &config, 4u * 3600u);
+    apply_stage_segment_for_test(&pet, &config, config.sickness_onset_seconds);
+    check(pet.sick, "ill first");
+    check(!pet.dead, "and still alive by a long way");
+
+    /* Abandoned right through the window. */
+    apply_stage_segment_for_test(&pet, &config, config.sickness_death_seconds);
+    check(pet.dead, "sustained critical neglect is fatal");
+
+    /* Dead is dead. Neither time nor care moves it. */
+    const kf_pet_millipercent hunger_at_death = pet.hunger_mp;
+    const kf_pet_stage stage_at_death = pet.stage;
+    const uint32_t care_at_death = pet.care_actions_taken;
+    kf_pet_advance(&pet, &config, 7u * 86400u);
+    kf_pet_feed(&pet, &config);
+    kf_pet_play(&pet);
+    kf_pet_rest(&pet);
+    kf_pet_clean(&pet);
+    check(pet.dead, "a week of care does not bring it back");
+    check(pet.hunger_mp == hunger_at_death, "nothing decays after death");
+    check(pet.stage == stage_at_death, "and it does not keep growing up");
+    check(pet.care_actions_taken == care_at_death,
+          "care aimed at a dead creature does not count as care -- it must "
+          "not be able to move it off the dust path posthumously");
+
+    /* The off switch: zero means it cannot die, the same sentinel shape
+     * poop_interval_seconds == 0 already uses for "no mess". */
+    kf_pet_config immortal = kf_pet_default_config();
+    immortal.sickness_death_seconds = 0u;
+
+    kf_pet_state survivor{};
+    kf_pet_init(&survivor);
+    survivor.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&survivor, &immortal);
+    apply_stage_segment_for_test(&survivor, &immortal, 4u * 3600u);
+    apply_stage_segment_for_test(&survivor, &immortal, 30u * 86400u);
+    check(survivor.sick, "still gets ill");
+    check(!survivor.dead, "but a zero death threshold means it cannot die");
+
+    /* And the never-touched creature still walks its own path. */
+    kf_pet_state untouched{};
+    kf_pet_init(&untouched);
+    untouched.stage = KF_PET_STAGE_CHILD;
+    apply_stage_segment_for_test(&untouched, &config, 4u * 3600u);
+    apply_stage_segment_for_test(&untouched, &config, 30u * 86400u);
+    check(!untouched.dead,
+          "a creature that has never been touched does not die of it -- it "
+          "is on the dust path, which takes a whole childhood to walk");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -1938,6 +2018,39 @@ int run_lua_pet_check() {
           "script itself reported");
     kf_lua_port_shutdown();
 
+    /* Stage 5: illness. The session has been fed by the care stage above,
+     * which matters -- an untouched creature is exempt from the accumulator
+     * entirely, so without that earlier care this stage would prove nothing
+     * but that two zeroes match. It is asserted rather than assumed.
+     *
+     * The creature was just cleaned, so this has to drive it back down: no
+     * care at all, and hours of it. 120 frames of 300000ms is 36000
+     * simulated seconds -- ten hours, well past the three-hour onset even
+     * after the first stretch nets zero. */
+    constexpr uint32_t kStage5DtMs = 300000u;
+    constexpr long kStage5Frames = 120;
+    check(kf_pet_session_state()->care_actions_taken > 0u,
+          "the session has been cared for at least once by now, which is "
+          "what makes it eligible to fall ill at all");
+    check(kf_lua_port_init(kKfLuaPetHealthProofScriptSource,
+                            kKfLuaPetHealthProofScriptChunkName),
+          "stage 5 (health) proof script loaded");
+    for (long i = 0; i < kStage5Frames; ++i) {
+        kf_pet_session_frame(kStage5DtMs);
+        kf_lua_port_frame(kStage5DtMs);
+    }
+    const kf_pet_state *live_ill = kf_pet_session_state();
+    check(live_ill->sick && live_ill->neglect_seconds > 0u,
+          "the live session really did fall ill over stage 5 -- without "
+          "this the comparison below would pass on zeroes");
+    const int64_t expected_health =
+        (live_ill->sick ? 1 : 0) * 10000000 + (live_ill->dead ? 2 : 0) * 10000000 +
+        static_cast<int64_t>(live_ill->neglect_seconds);
+    check(kf_lua_port_last_report() == expected_health,
+          "pet.sick(), pet.dead() and pet.neglect_seconds() read via Lua "
+          "match the live C++ state exactly");
+    kf_lua_port_shutdown();
+
     kf_pet_session_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();
@@ -2219,6 +2332,7 @@ int main(int argc, char *argv[]) {
     bool verify_mess = false;
     bool verify_dirtiness = false;
     bool verify_pet_sickness = false;
+    bool verify_pet_death = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2263,6 +2377,8 @@ int main(int argc, char *argv[]) {
             verify_dirtiness = true;
         } else if (std::strcmp(argv[i], "--verify-pet-sickness") == 0) {
             verify_pet_sickness = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-death") == 0) {
+            verify_pet_death = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2291,6 +2407,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-mess\n"
                         "kamiframe-headless --verify-dirtiness\n"
                         "kamiframe-headless --verify-pet-sickness\n"
+                        "kamiframe-headless --verify-pet-death\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2354,6 +2471,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_sickness) {
         return run_pet_sickness_check();
+    }
+
+    if (verify_pet_death) {
+        return run_pet_death_check();
     }
 
     if (verify_lua_pet) {
