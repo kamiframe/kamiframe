@@ -2273,6 +2273,39 @@ int run_lua_pet_check() {
           "match the live C++ state exactly");
     kf_lua_port_shutdown();
 
+    /* Stage 6: care variations (docs/superpowers/plans/2026-08-09-care-
+     * variations.md), still the same session. The script itself works out
+     * which variation of feeding its own (randomly rolled) pet.base_trait()
+     * is DISLIKED via pet.reaction_to() -- proving that binding too, rather
+     * than assuming C++ and Lua agree on it -- then feeds with exactly that
+     * variation and reports pet.last_reaction()/pet.last_care_action()
+     * packed into one integer. The preference table's own exactly-one-of-
+     * each invariant (run_pet_preferences_check()) guarantees a disliked
+     * variation exists for every possible base_trait, so the reaction is
+     * known to land on DISLIKED specifically, not just "some reaction" --
+     * asserted directly against the live C++ state before comparing, so
+     * this cannot pass on two neutral zeroes the way the mess and health
+     * stages above guard against. */
+    check(kf_lua_port_init(kKfLuaPetReactionProofScriptSource,
+                            kKfLuaPetReactionProofScriptChunkName),
+          "stage 6 (reaction) proof script loaded");
+    kf_pet_session_frame(0u);
+    kf_lua_port_frame(0u);
+    const kf_pet_state *live_reacted = kf_pet_session_state();
+    check(live_reacted->last_reaction == KF_PET_REACTION_DISLIKED,
+          "feeding with the variation this trait dislikes really did record "
+          "DISLIKED -- without this the comparison below could pass on two "
+          "zeroes");
+    const int64_t expected_reaction =
+        static_cast<int64_t>(live_reacted->last_reaction) * 10 +
+        static_cast<int64_t>(live_reacted->last_care_action);
+    check(kf_lua_port_last_report() == expected_reaction,
+          "pet.last_reaction() and pet.last_care_action() read via Lua "
+          "match the live C++ state exactly, and pet.reaction_to() (used by "
+          "the script itself to find the disliked variation) agrees with "
+          "kf_pet_reaction_to() in C++");
+    kf_lua_port_shutdown();
+
     kf_pet_session_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();

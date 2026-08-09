@@ -252,6 +252,43 @@ int lua_pet_dominant_care_trait(lua_State *L) {
     return 1;
 }
 
+/* The reaction to the last care action, and what it was a reaction to.
+ * Integers rather than strings, unlike pet.stage(): a script showing a
+ * reaction is picking a sprite or an animation, not printing a word, and
+ * the cartridge layer owns what "liked" looks like for its creature. */
+int lua_pet_last_reaction(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->last_reaction));
+    return 1;
+}
+
+int lua_pet_last_care_action(lua_State *L) {
+    lua_pushinteger(L, static_cast<lua_Integer>(
+                            kf_pet_session_state()->last_care_action));
+    return 1;
+}
+
+/* pet.reaction_to(trait, action, variation) -- the table itself, queryable
+ * without performing the action. This is what lets a cartridge build a
+ * "what does this one like?" screen, or a test creature explain itself,
+ * without the player having to try everything on a live creature first.
+ *
+ * kf_pet_reaction_to() already clamps out-of-range input to neutral, so a
+ * script passing rubbish gets a dull answer rather than an error -- the
+ * right shape for a cartridge API. luaL_checkinteger still rejects a
+ * non-number outright, which is a script TYPE error rather than a value
+ * error and should surface, unlike the value being out of range. */
+int lua_pet_reaction_to(lua_State *L) {
+    const lua_Integer trait = luaL_checkinteger(L, 1);
+    const lua_Integer action = luaL_checkinteger(L, 2);
+    const lua_Integer variation = luaL_checkinteger(L, 3);
+    lua_pushinteger(L, static_cast<lua_Integer>(kf_pet_reaction_to(
+                            static_cast<uint8_t>(trait),
+                            static_cast<kf_pet_care_action>(action),
+                            static_cast<uint8_t>(variation))));
+    return 1;
+}
+
 const luaL_Reg kKfPetFuncs[] = {
     {"hunger", lua_pet_hunger},
     {"happiness", lua_pet_happiness},
@@ -271,6 +308,9 @@ const luaL_Reg kKfPetFuncs[] = {
     {"adult_branch", lua_pet_adult_branch},
     {"base_trait", lua_pet_base_trait},
     {"dominant_care_trait", lua_pet_dominant_care_trait},
+    {"last_reaction", lua_pet_last_reaction},
+    {"last_care_action", lua_pet_last_care_action},
+    {"reaction_to", lua_pet_reaction_to},
     {nullptr, nullptr},
 };
 

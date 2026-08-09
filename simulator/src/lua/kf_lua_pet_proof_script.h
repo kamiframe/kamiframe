@@ -72,6 +72,23 @@
  *       leaves it that way), then left alone long enough to fall ill, the
  *       same "mutate elsewhere, then check the live C++ state
  *       independently" proof every other script here uses.
+ *
+ *   kKfLuaPetReactionProofScriptSource  Care variations (docs/superpowers/
+ *       plans/2026-08-09-care-variations.md). Works out, IN Lua, which
+ *       variation of feeding this session's own (randomly rolled)
+ *       pet.base_trait() it dislikes -- via pet.reaction_to(), proving that
+ *       binding too rather than assuming C++ and Lua agree on it -- then
+ *       feeds with exactly that variation and reports pet.last_reaction()
+ *       and pet.last_care_action() packed into one integer (reaction * 10 +
+ *       care_action). Deliberately picks the DISLIKED variation rather than
+ *       an arbitrary one: the preference table's own exactly-one-of-each
+ *       invariant (run_pet_preferences_check()) guarantees a disliked
+ *       variation exists for every possible base_trait, so the reaction is
+ *       known to land on a specific nonzero value (KF_PET_REACTION_DISLIKED)
+ *       no matter which trait this session happens to have rolled --
+ *       run_lua_pet_check() asserts that directly against the live C++
+ *       state before comparing, so this cannot pass on two neutral zeroes
+ *       the way the mess and health stages above guard against.
  */
 
 #ifndef KF_LUA_PET_PROOF_SCRIPT_H
@@ -156,5 +173,27 @@ kf.log("pet health proof script loaded")
 
 inline constexpr const char *kKfLuaPetHealthProofScriptChunkName =
     "=pet_health_proof_script";
+
+inline constexpr const char *kKfLuaPetReactionProofScriptSource = R"lua(
+local kFeed = 0
+local kDisliked = 2
+
+function on_frame(dt_ms)
+    local trait = pet.base_trait()
+    local variation = 0
+    for v = 0, 2 do
+        if pet.reaction_to(trait, kFeed, v) == kDisliked then
+            variation = v
+        end
+    end
+    pet.feed(variation)
+    kf.report(pet.last_reaction() * 10 + pet.last_care_action())
+end
+
+kf.log("pet reaction proof script loaded")
+)lua";
+
+inline constexpr const char *kKfLuaPetReactionProofScriptChunkName =
+    "=pet_reaction_proof_script";
 
 #endif /* KF_LUA_PET_PROOF_SCRIPT_H */
