@@ -43,8 +43,17 @@ target_link_libraries(kamiframe_host_common
 # run it from" default -- see that file's own header comment for why. Both
 # kamiframe-sim and kamiframe-headless link kamiframe_host_common, so both
 # get the same default with no per-target duplication.
+#
+# A cache variable rather than a literal so a freshly generated pack can be
+# previewed without overwriting the checked-in example:
+#   cmake -B build -DKF_ASSET_PACK=/abs/path/to/some.kfpack
+# Unset, it is exactly the old hardcoded path, so a plain `cmake -B build`
+# and dev.sh behave as before.
+set(KF_ASSET_PACK "${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack"
+    CACHE FILEPATH "Asset pack the host builds mount by default")
+
 target_compile_definitions(kamiframe_host_common PUBLIC
-    KF_HOST_DEFAULT_ASSET_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack"
+    KF_HOST_DEFAULT_ASSET_PACK_PATH="${KF_ASSET_PACK}"
 )
 
 # ---------------------------------------------------------------------------
