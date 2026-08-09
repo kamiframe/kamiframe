@@ -134,13 +134,17 @@ esptool_py_flash_to_partition(flash "assets"
 ## top-of-file comment: the pet session's debug tools now split across TWO
 ## flags, not one, because they cost very differently --
 ##
-##   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS (advance/reset/age_seconds) is a
-##   handful of instructions on top of code the gameplay path already
-##   links in. Left ON (its default) here, deliberately: it is how
-##   kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT commands below reach the
-##   pet session at all, letting a developer fast-forward a real device's
-##   multi-day decay curve over the serial bridge instead of watching it
-##   do nothing for days (see ADR 0030's "Time control" section).
+##   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS (advance/reset/age_seconds/
+##   jump_to_stage) is a handful of instructions on top of code the
+##   gameplay path already links in. Left ON (its default) here,
+##   deliberately: it is how kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT
+##   commands below reach the pet session at all, letting a developer
+##   fast-forward a real device's multi-day decay curve over the serial
+##   bridge instead of watching it do nothing for days (see ADR 0030's
+##   "Time control" section). jump_to_stage has no KFDBG command of its
+##   own (it is a desktop debug-window control, sdl_debug_window.cpp) --
+##   staying on this flag costs nothing here either, same as the note
+##   below about a bridge-less build.
 ##
 ##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates the scrubbable-timeline
 ##   snapshot ring and kf_pet_session_debug_seek() -- a real static

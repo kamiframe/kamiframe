@@ -127,18 +127,24 @@ void kf_pet_session_shutdown(void);
  * time on its own pet) and not something a real device would ever expose
  * to a player.
  *
- * Split across TWO flags, not one, because the five functions below have
+ * Split across TWO flags, not one, because the six functions below have
  * very different costs:
  *
  *   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates kf_pet_session_debug_
- *   advance()/_reset()/_age_seconds() below -- each a thin wrapper over
- *   kf_pet_advance()/kf_pet_init(), which the gameplay path already links
- *   in; no extra static memory of its own. Cheap enough that the ESP32
- *   build turns this ON: it is how ports/esp32/main/kf_dbg_bridge.cpp's
- *   KFDBG ADVANCE/RESET/MULT commands reach the pet session at all (see
- *   that file, ADR 0030), letting a developer fast-forward a real
- *   device's four-real-day decay curve over a serial link instead of
- *   watching it do nothing for four days.
+ *   advance()/_reset()/_age_seconds()/_jump_to_stage() below -- each a
+ *   thin wrapper over kf_pet_advance()/kf_pet_init(), which the gameplay
+ *   path already links in; no extra static memory of its own. Cheap
+ *   enough that the ESP32 build turns this ON: it is how ports/esp32/
+ *   main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT commands reach the
+ *   pet session at all (see that file, ADR 0030), letting a developer
+ *   fast-forward a real device's four-real-day decay curve over a serial
+ *   link instead of watching it do nothing for four days. _jump_to_stage()
+ *   has no KFDBG command of its own yet -- its only current caller is
+ *   desktop-only (sdl_debug_window.cpp's stage-jump buttons) -- but it
+ *   rides this flag rather than a new one because it costs exactly what
+ *   its three siblings already cost: one kf_pet_init() call and a few
+ *   field writes, nothing this flag's "cheap" half was not already paying
+ *   for.
  *
  *   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates kf_pet_session_debug_seek()
  *   below and the scrubbable-timeline snapshot ring backing it -- the
@@ -159,12 +165,12 @@ void kf_pet_session_shutdown(void);
  *   business linking in any more than it does the snapshot ring, so it
  *   rides the same flag rather than getting a third one of its own.
  *
- * All five are DECLARED unconditionally below, same as everything else
+ * All six are DECLARED unconditionally below, same as everything else
  * in this header, so nothing calling into this file needs to know or
  * care which backend it is, or which of the two flags gates which
  * function below. Whether each is DEFINED depends on its own flag --
  * see kf_pet_session.cpp's top-of-file comment. Desktop/headless get real
- * definitions of all five by default. Calling a function whose flag is
+ * definitions of all six by default. Calling a function whose flag is
  * off for the calling backend is therefore a link error, not
  * silently-wrong behaviour -- the correct outcome, since a function
  * gated off is not meant to be reachable from that backend.
@@ -195,6 +201,55 @@ void kf_pet_session_debug_advance(uint32_t seconds);
  * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
  * header comment. Reachable on ESP32 via KFDBG RESET (ADR 0030). */
 void kf_pet_session_debug_reset(void);
+
+/* Jumps the live pet directly to the START of `stage` -- alive, not sick,
+ * not dead, every need topped up to KF_PET_MILLIPERCENT_MAX, exactly as
+ * kf_pet_session_debug_reset() leaves a fresh egg, except landing on
+ * whichever stage was asked for instead of always Egg. Built for looking
+ * at a life stage's art and care behaviour (Chris: "spawns the creature
+ * at full care stats... and timeline moves to the beginning of each life
+ * stage") without nursing a pet through every real stage first.
+ *
+ * Implemented as kf_pet_init() followed by setting `state.stage` directly,
+ * NOT as kf_pet_advance() walked forward through however many real
+ * stages -- and that is a design decision, not a shortcut. Every input
+ * kf_pet_advance()'s own branch selection would use (care_actions_taken,
+ * care_integral_mp_seconds) would be exactly as fabricated as a hand-set
+ * field if this function drove them, just dressed up as though a pet had
+ * really been raised. THE JUMPED-TO PET HAS NO REAL CARE HISTORY: its
+ * `care_actions_taken` reads 0 (kf_pet_init()'s own default) and its
+ * teen_form/adult_branch are never derived from any care average at all --
+ * they are set directly from `teen_form`/`adult_branch` below, or default
+ * to 0 (the first form) if those are out of range. Branch selection that
+ * ran off a jump's fabricated history would not be meaningless in a
+ * subtle way -- it would be *wrong* in a specific, checkable way (an
+ * untouched creature's care_actions_taken == 0 always drops it into
+ * KF_PET_TEEN_FORM_DUST, see advance_to_next_stage() in kf/pet.cpp), which
+ * is exactly why this function does not attempt it and hands the choice to
+ * the caller instead.
+ *
+ * `teen_form`/`adult_branch` are meaningless before their own branch point
+ * (kf/pet.h's own words) and are therefore only written when `stage` has
+ * passed it: `teen_form` for stage >= KF_PET_STAGE_TEEN, `adult_branch`
+ * for stage == KF_PET_STAGE_ADULT (against kf_pet_adults_in_family() of
+ * whichever `teen_form` was just set, since families do not all have the
+ * same adult count -- see kf/pet.h). Out-of-range input in either -- not
+ * just unset -- falls back to 0 rather than being written raw: 0 is always
+ * a valid family index, and every family has at least one adult, so 0 is
+ * always a valid adult index too, which makes "unset" and "invalid" the
+ * same safe case instead of two to get right separately. `stage` itself is
+ * clamped to KF_PET_STAGE_ADULT if it somehow arrives out of range.
+ *
+ * Also clears the snapshot history (see kf_pet_session_debug_reset()'s own
+ * comment on why): a jump is a fabricated state with no continuity from
+ * whatever the pet was doing a moment before, not a new data point on the
+ * same timeline.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
+ * header comment. No KFDBG command yet; desktop-only caller today is
+ * sdl_debug_window.cpp's stage-jump buttons. */
+void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
+                                         uint8_t adult_branch);
 
 /* Total elapsed pet-age in seconds since this pet's own genesis (the
  * last kf_pet_session_init() or kf_pet_session_debug_reset()) --

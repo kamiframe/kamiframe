@@ -12,12 +12,16 @@
 /* Two flags, not one -- see kf_pet_session.h's "DEBUG ONLY" section
  * header comment for the full reasoning; this is the short version.
  *
- * KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates the three cheap functions
- * (_debug_advance/_debug_reset/_debug_age_seconds) -- thin wrappers over
- * kf_pet_advance()/kf_pet_init() with no static memory of their own.
- * ports/esp32/main/CMakeLists.txt turns this ON: it is the ESP32 build's
- * only way to reach the pet session's debug fast-forward at all, via
- * ports/esp32/main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT (ADR 0030).
+ * KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates the four cheap functions
+ * (_debug_advance/_debug_reset/_debug_age_seconds/_debug_jump_to_stage) --
+ * thin wrappers over kf_pet_advance()/kf_pet_init() with no static memory
+ * of their own. ports/esp32/main/CMakeLists.txt turns this ON: it is the
+ * ESP32 build's only way to reach the pet session's debug fast-forward at
+ * all, via ports/esp32/main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT
+ * (ADR 0030) -- _debug_jump_to_stage() has no KFDBG command of its own
+ * yet and is called only from sdl_debug_window.cpp today, but it rides
+ * this flag rather than a new one because it costs exactly what its three
+ * siblings already cost.
  *
  * KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates _debug_seek() and the
  * scrubbable-timeline snapshot ring backing it -- the genuinely expensive
@@ -301,11 +305,11 @@ void kf_pet_session_shutdown(void) {
     g.ready = false;
 }
 
-/* The cheap trio -- gated on CONTROLS, not TOOLS, per this file's
+/* The cheap quartet -- gated on CONTROLS, not TOOLS, per this file's
  * top-of-file comment. Each calls debug_snapshot_push()/_reset(), defined
  * above under the TOOLS #if/#else pair: the real ring-writer when TOOLS
  * is on, a no-op when it is off (e.g. ESP32: CONTROLS on, TOOLS off) --
- * either way these three don't need to know which. */
+ * either way these four don't need to know which. */
 #if KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
 
 void kf_pet_session_debug_advance(uint32_t seconds) {
@@ -320,6 +324,56 @@ void kf_pet_session_debug_reset(void) {
               "kf_pet_session_debug_reset called before kf_pet_session_init");
     kf_pet_init(&g.state);
     g.pending_ms = 0;
+    debug_snapshot_reset();
+}
+
+void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
+                                         uint8_t adult_branch) {
+    KF_ASSERT(g.ready, "kf_pet_session_debug_jump_to_stage called before "
+                        "kf_pet_session_init");
+
+    /* A save that survived version-checking could in principle carry a
+     * stage byte past ADULT (unpack() already refuses that -- see kf/
+     * pet.cpp -- but this function does not go through unpack(), so it
+     * gets its own defensive clamp rather than trusting the caller). */
+    const kf_pet_stage target =
+        stage > KF_PET_STAGE_ADULT ? KF_PET_STAGE_ADULT : stage;
+
+    /* kf_pet_init() already gives requirement 1 for free -- every need at
+     * KF_PET_MILLIPERCENT_MAX, not sick, not dead, care_integral_mp_seconds
+     * and every other accumulator zeroed -- so this is the exact same
+     * starting point kf_pet_session_debug_reset() uses, just with `stage`
+     * set directly afterward instead of always leaving it at EGG. See this
+     * function's header comment in kf_pet_session.h for why that is
+     * deliberate: walking there via kf_pet_advance() would let Core pick
+     * teen_form/adult_branch from a care history that was never real. */
+    kf_pet_init(&g.state);
+    g.state.stage = target;
+
+    /* Meaningless before their own branch point (kf/pet.h's own words), so
+     * only written once `target` has passed it -- kf_pet_init()'s 0 is
+     * already the right answer otherwise. Out-of-range input (not just
+     * unset) falls back to 0 rather than being written raw -- see the
+     * header comment on why 0 is always a safe fallback for both. */
+    if (target >= KF_PET_STAGE_TEEN) {
+        g.state.teen_form =
+            teen_form < KF_PET_TEEN_FORM_COUNT ? teen_form : 0u;
+    }
+    if (target == KF_PET_STAGE_ADULT) {
+        const uint8_t adults_in_family =
+            kf_pet_adults_in_family(g.state.teen_form);
+        g.state.adult_branch =
+            adult_branch < adults_in_family ? adult_branch : 0u;
+    }
+
+    g.pending_ms = 0;
+    /* Same call kf_pet_session_debug_reset() makes above, for the identical
+     * reason: a jump is a fabricated state with no continuity from whatever
+     * the pet was doing a moment before, not a new point on the same
+     * timeline -- see kf_pet_session_debug_seek()'s own header comment on
+     * what happens when a ring mixes snapshots from two unrelated
+     * timelines in the same age range. Starting a fresh ring here avoids
+     * that entirely rather than risking it. */
     debug_snapshot_reset();
 }
 
