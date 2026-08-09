@@ -10,6 +10,20 @@ firmware or the simulator.
   named sprites (and, later, audio clips) into a `.kfpack` file
   `kf/assets.h` loads at runtime. Supersedes the old `make_test_sprite.py`,
   which is gone.
+- `character_manifest.toml` / `kf_character_manifest.py` -- the declarative
+  list of every creature sprite that needs to exist (roster, poses, sizes),
+  and the shared library every other character-art tool below loads it
+  through. See `docs/character-art-pipeline.md` for the full walkthrough.
+- `kf_prompt_builder.py` -- turns one manifest entry into a text prompt for
+  an image generator, applying the character bible's art direction.
+- `kf_generate_sprites.py` -- drives the manifest through an image
+  generator and writes PNGs. The actual generator call (Pixellab) isn't
+  connected yet; this fails with a clear message until it is, everything
+  else in the file works today.
+- `kf_ingest_sprites.py` -- validates a folder of generated PNGs against
+  the manifest (size, transparency) and packs the valid ones into a
+  `.kfpack`, reusing `kf_pack_assets.py`'s own packer rather than
+  reimplementing the format.
 - `kf_debug.py` -- talk to a real board over USB. Explained below.
 - `kf_debug_selftest.py` -- proves `kf_debug.py` decodes the wire protocol
   correctly, without needing a board plugged in.

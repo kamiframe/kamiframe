@@ -1,0 +1,321 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# The character manifest -- a declarative list of every sprite that needs to
+# exist for the roster, and nothing else. This file has no logic in it; it
+# is read by tools/kf_character_manifest.py, which is the only code that
+# knows how to turn it into an actual list of sprites, prompts, or files.
+#
+# SOURCE OF TRUTH:
+#   - 14-character-bible-v1.md                                    (the
+#     roster, art direction, and the derivation rule -- referred to below as
+#     "the bible")
+#   - docs/superpowers/specs/2026-08-09-core-care-loop-design.md  (the five
+#     code life-stages, the care states, and the 48x48 sprite size -- referred
+#     to below as "the care-loop spec"; see its addendum for how the bible's
+#     three stages map onto the code's five)
+#   - docs/architecture/adr-0033-asset-pipeline.md                (the .kfpack
+#     format this manifest ultimately feeds)
+#
+# NAME VERIFICATION WARNING (bible section 9): every character name in this
+# file, without exception, is an unverified placeholder. `names_unverified`
+# below is `true` for exactly that reason, and every entity also carries its
+# own `name_verified = false`. Do not ship a name from this file without
+# running it through the same trademark search the platform name went
+# through -- the bible names two names it already expects to fail (Hamaru,
+# Marumaru) and notes the whole -maru suffix is occupied by an existing
+# prefectural mascot ecosystem.
+#
+# WHAT THIS FILE DOES NOT DECIDE:
+#   - The creature *class* name (still open, bible section 12).
+#   - Whether the two roster gaps (Cut needs one more, Go needs one or two
+#     more -- bible section 11) get filled. Ten adults are listed because ten
+#     are confirmed; the manifest does not pack bank/demoted concepts.
+#   - Per-stage sprite size overrides. The care-loop spec says these are
+#     *allowed* ("per-stage override allowed so an adult can carry more
+#     presence than a baby") but gives no actual numbers, so every entity
+#     below uses the 48x48 default and the override mechanism goes unused
+#     until someone picks real values.
+#   - What the "egg" and "baby" code stages look like. The bible does not
+#     describe them at all (they predate the bible's three stages -- see the
+#     care-loop spec's addendum), so those two entities below carry no
+#     object/read/quirk text. See tools/kf_prompt_builder.py, which refuses
+#     to invent one and prints a flag instead.
+
+[meta]
+schema_version = 1
+bible_source = "14-character-bible-v1.md"
+care_loop_source = "docs/superpowers/specs/2026-08-09-core-care-loop-design.md"
+pack_format_source = "docs/architecture/adr-0033-asset-pipeline.md"
+names_unverified = true
+
+# Default sprite dimensions, in pixels. Care-loop spec section 9: "Creature
+# sprite size: 48x48 as the base ... A multiple of 8, which suits the
+# blitter." Overridable per entity with an entity-level `size = N`.
+default_size = 48
+
+# Default frame count per state. Overridable per entity with an
+# entity-level `frames = N` (applies to every one of that entity's states).
+default_frames = 1
+
+# The five care-loop states every entity gets by default (care-loop spec
+# section 9: "creature expressions (happy, neutral, objecting, sick,
+# sleeping)"; section 1 art direction: "Expression is carried by the body,
+# not the face" -- these are five distinct POSES, not face swaps).
+# Overridable per entity with an entity-level `states = [...]`; only the
+# "egg" entity below uses that override, because the care-loop spec's own
+# demand-curve table says the egg stage has no decay at all ("never"), so it
+# has nothing to react to yet.
+states = ["happy", "neutral", "objecting", "sick", "sleeping"]
+
+# Shared juvenile ("teen") grammar, bible section 6, printed once here
+# instead of copied into each of the four teens below -- the same "config
+# lives in one place" instinct docs/superpowers/specs/2026-08-09-core-care-loop-design.md
+# applies to its own demand-curve table.
+juvenile_shared_grammar = "Perfectly symmetrical, one unbroken clean line, no marks anywhere, and one oversized feature that is exactly the thing that will wear down later. It over-performs its verb, because it has never done the job before."
+
+# Bible section 3: how a grudge form differs from its normal form. Printed
+# once and applied to every entity with grudge = true below, rather than
+# repeated per creature.
+grudge_grammar = "Same silhouette as the normal form, redrawn badly on purpose: marker pressed too hard so the line is heavier and rougher, edges gone furry/scratchy instead of clean, eyes shrunk down to pinpricks, body turned away from the viewer."
+
+# ---------------------------------------------------------------------------
+# Shared single designs. Bible section 4: baby (bible's own term, which the
+# care-loop spec's addendum maps onto the CODE's "child" stage) is "1,
+# shared by everything". The code's "egg" and "baby" stages sit BEFORE the
+# bible's baby and are not described by the bible at all.
+# ---------------------------------------------------------------------------
+
+[stages.egg]
+stage = "egg"
+kind = "shared"
+name_verified = false
+states = ["idle"]  # see the file-level comment above: no decay, nothing to react to yet
+has_design_brief = false  # the bible is silent on what an egg looks like here
+
+[stages.baby]
+stage = "baby"
+kind = "shared"
+name_verified = false
+# states/frames/size: inherit [meta] defaults (full 5 care states)
+has_design_brief = false  # the bible does not describe this stage either (see addendum: "not in the bible")
+
+[stages.child]
+stage = "child"
+kind = "shared"
+id = "marumaru"
+display_name = "Marumaru"
+name_verified = false
+has_design_brief = true
+object = "none yet -- an uncut blank"
+read = "A smooth, featureless lump with a face. No teeth, no bristles, no edge -- object-shaped, but nothing has been made from it yet."
+quirk = "Tries to do every job and can do none of them."
+note = "The name is literally the Japanese fill-in-the-blank placeholder (equivalent to writing XXX on a form) -- bible section 5. Known trademark risk, accepted knowingly; if verification kills the name the concept survives under a different one."
+
+# ---------------------------------------------------------------------------
+# The four verb-family juveniles ("teen" in code terms). Bible section 6.
+# `object` is deliberately absent: the bible gives each teen a `read` and a
+# behavioural line, but -- unlike the adults -- never states a source
+# object for the juvenile stage itself (section 4 describes the *stage* as
+# "the object after it's been cut into a tool but before it has done
+# anything," not a specific object per family).
+# ---------------------------------------------------------------------------
+
+[[teens]]
+id = "hamaru"
+display_name = "Hamaru"
+family = "cut"
+name_gloss = "edge"
+name_verified = false
+has_design_brief = true
+read = "Slim and upright, with one huge mirror-bright edge running down its front like it was sliced flat on one side."
+quirk = "Tries to cut things that don't need cutting. Has never nicked itself."
+note = "Bible section 9 flags this as the name most likely to fail verification: hamaru is a very common Japanese verb meaning 'to fit into' or 'to be hooked on'."
+
+[[teens]]
+id = "nigimaru"
+display_name = "Nigimaru"
+family = "hold"
+name_gloss = "grip"
+name_verified = false
+has_design_brief = true
+read = "A round creature that is mostly two oversized open hands, held ready at all times."
+quirk = "Grabs at everything that passes. Has never dropped anything, because it has never held anything."
+
+[[teens]]
+id = "tenmaru"
+display_name = "Tenmaru"
+family = "mark"
+name_gloss = "dot"
+name_verified = false
+has_design_brief = true
+read = "Small and pristine, with a single perfectly round dark spot on its underside that it has never once used."
+quirk = "Desperate to leave a mark and too nervous to try."
+
+[[teens]]
+id = "ayumaru"
+display_name = "Ayumaru"
+family = "go"
+name_gloss = "step"
+name_verified = false
+has_design_brief = true
+read = "All legs and almost no body, over-tall, walking constantly and arriving nowhere."
+quirk = "Has never worn through a sole."
+
+# ---------------------------------------------------------------------------
+# The four verb families themselves. Grouping-only, used for gap-count
+# sanity and to link each adult back to its teen -- not a sprite source.
+# Counts and gap notes: bible section 11.
+# ---------------------------------------------------------------------------
+
+[[families]]
+id = "cut"
+verb = "Cut"
+gloss = "separate things"
+teen_id = "hamaru"
+adults = ["chokimaru", "kushimaru"]
+gap_note = "Bible section 11: Cut has 2 adults, needs one more to balance at three."
+
+[[families]]
+id = "hold"
+verb = "Hold"
+gloss = "join or keep things"
+teen_id = "nigimaru"
+adults = ["tomemaru", "ukemaru", "hashimaru"]
+gap_note = ""
+
+[[families]]
+id = "mark"
+verb = "Mark"
+gloss = "record things"
+teen_id = "tenmaru"
+adults = ["inmaru", "shumaru", "keshimaru"]
+gap_note = ""
+
+[[families]]
+id = "go"
+verb = "Go"
+gloss = "cover distance"
+teen_id = "ayumaru"
+adults = ["ippomaru"]
+gap_note = "Bible section 11: Go has 1 adult, needs one or two more to balance at three."
+
+# ---------------------------------------------------------------------------
+# The ten confirmed adults. Bible section 7, in the bible's own order.
+# `grudge = true` unless noted otherwise -- see the per-entity comment on
+# Hokorimaru, the one exception.
+# ---------------------------------------------------------------------------
+
+[[adults]]
+id = "ippomaru"
+display_name = "Ippomaru"
+family = "go"
+name_verified = false
+has_design_brief = true
+object = "One shoe of a pair, the other lost."
+read = "A small hopping creature with exactly one leg, a worn sole for a chin, laces trailing like whiskers."
+quirk = "Fast and restless, and always looks like it's waiting for someone."
+grudge = true
+
+[[adults]]
+id = "chokimaru"
+display_name = "Chokimaru"
+family = "cut"
+name_verified = false
+has_design_brief = true
+object = "Scissors in a sewing box."
+read = "A nervous bird-like thing whose beak is two blades that never quite close. Clacks when anxious."
+quirk = "Accidentally snips the things it likes."
+grudge = true
+
+[[adults]]
+id = "keshimaru"
+display_name = "Keshimaru"
+family = "mark"
+family_heading_note = "Mark, in reverse"
+name_verified = false
+has_design_brief = true
+object = "An eraser worn down to a nub."
+read = "A squat rounded block shedding crumbs constantly."
+quirk = "Gets visibly smaller when you play with it, and slowly regrows while resting."
+grudge = true
+
+[[adults]]
+id = "inmaru"
+display_name = "Inmaru"
+family = "mark"
+name_verified = false
+has_design_brief = true
+object = "A name stamp used on forty years of paperwork."
+read = "A tiny stern salaryman whose head is a cylinder with a carved face on the underside. Deadpan."
+quirk = "Leaves a small red mark wherever he sits."
+grudge = true
+
+[[adults]]
+id = "hashimaru"
+display_name = "Hashimaru"
+family = "hold"
+name_verified = false
+has_design_brief = true
+object = "A mismatched pair of chopsticks."
+read = "Two thin legs of different lengths, walks like a heron."
+quirk = "Can't pick anything up cleanly, and is embarrassed about it."
+grudge = true
+
+[[adults]]
+id = "ukemaru"
+display_name = "Ukemaru"
+family = "hold"
+name_verified = false
+has_design_brief = true
+object = "A leather catching glove gone stiff."
+read = "Big, slow, deeply patient, holds its hands open constantly."
+quirk = "Nobody throws it anything."
+grudge = true
+
+[[adults]]
+id = "tomemaru"
+display_name = "Tomemaru"
+family = "hold"
+name_verified = false
+has_design_brief = true
+object = "A doorstop with nothing left to hold open."
+read = "Wedge-shaped and heavy."
+quirk = "Leans against whatever is nearest at all times, including other creatures, whether they want it or not."
+grudge = true
+
+[[adults]]
+id = "shumaru"
+display_name = "Shumaru"
+family = "mark"
+name_verified = false
+has_design_brief = true
+object = "The dried-out vermilion ink pad. Inmaru's partner object."
+read = "Flat, cracked, completely empty."
+quirk = "Inmaru's marks have been getting fainter for years and neither of them mentions it."
+note = "Pairing note (bible section 7): only makes sense alongside Inmaru. Should be drawn together and probably appear together in the game."
+grudge = true
+
+[[adults]]
+id = "kushimaru"
+display_name = "Kushimaru"
+family = "cut"
+name_verified = false
+has_design_brief = true
+object = "A comb missing half its teeth."
+read = "Grooms other creatures and leaves stripes."
+quirk = "Its help always makes things slightly worse."
+note = "Lore note (bible section 7): the comb is already an unlucky object in Japan by wordplay, because the reading maps onto 'suffering and death'. Arrives with a bad reputation attached, which is usable."
+grudge = true
+
+[[adults]]
+id = "hokorimaru"
+display_name = "Hokorimaru"
+family = ""
+name_verified = false
+has_design_brief = true
+object = "The dust under a bed, left long enough to wake up."
+read = "Grey, drifting, with hair and thread fragments visible inside it."
+quirk = "Belongs to nobody, because it's made of what fell off everyone else."
+note = "Bible sections 7-8: no verb family, no juvenile stage -- the 'never interacted with' branch, reached by never touching a Marumaru at all rather than by care quality. Distinct from a grudge form (a badly-used creature holding a resentment); Hokorimaru is 'a different and sadder thing'. The name is also an accidental pun on 'pride'. grudge = false below is this manifest's assumption, not stated by the bible -- see the report for why."
+grudge = false

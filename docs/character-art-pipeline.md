@@ -1,0 +1,116 @@
+# Regenerating a creature's art, from scratch, with no prior context
+
+This is for whoever has to redo a creature's art someday and has never
+touched this tooling before. It assumes nothing except that you can run a
+command in a terminal.
+
+There are three separate steps, and they're separate on purpose: writing
+down what should exist, generating pictures of it, and turning those
+pictures into the one file the device actually loads. You can redo any one
+of them without touching the other two.
+
+## The three files that matter
+
+- **`tools/character_manifest.toml`** -- the list. Every creature, every
+  pose, every size. Nothing else in this pipeline invents anything; if it's
+  not in here, it doesn't get made.
+- **A folder of PNG files** -- the pictures. One per row in the list,
+  produced by hand, by an artist, or eventually by an AI image generator.
+- **A `.kfpack` file** -- the one thing the device (or the desktop
+  simulator) actually reads. It's every picture from the folder above,
+  glued together into a single binary file the firmware can load in one
+  shot, the way a `.zip` bundles up a folder of files into one.
+
+## Step 1: see what's needed
+
+```
+python3 tools/kf_character_manifest.py stats
+```
+
+This prints how many sprites exist in the list right now, broken down by
+life stage, and flags anything that would break (mainly: a name that's too
+long -- explained below). Nothing here talks to the network or writes a
+file; it just reads the list.
+
+To see the exact filenames expected for one creature:
+
+```
+python3 tools/kf_character_manifest.py list --id chokimaru
+```
+
+That's the naming convention: `<creature>_<pose>_<frame number>`, and
+`_grudge_` inserted before the frame number for the "badly drawn" neglect
+variant (see the character bible, section 3, for what that means). A file
+generated for Chokimaru's happy pose is named `chokimaru_happy_01.png`, full
+stop -- no other file will ever be read for that pose.
+
+## Step 2: get a prompt for the image generator
+
+```
+python3 tools/kf_prompt_builder.py --id chokimaru
+```
+
+This prints a full text description for every pose Chokimaru needs --
+object, personality, the exact body-language note for that pose, and the
+house art style (felt-tip marker look, one exaggerated feature, no face
+expressions, transparent background) that every creature shares. You can
+read this yourself, hand it to an artist, or eventually paste it into an
+image generator.
+
+Useful filters: `--stage adult` (only the ten grown creatures), `--state
+happy` (only one pose across everyone), or `--sprite chokimaru_happy_01`
+(exactly one file's prompt).
+
+**If a prompt says "NO DESIGN BRIEF YET"** -- that's not a bug. Two of the
+five life stages (the very first "egg" and "baby" stages, before a
+creature has picked what it will grow into) aren't described anywhere yet.
+The tool refuses to make something up for them rather than guess. Someone
+needs to decide what those look like before art can be generated for them.
+
+## Step 3: generate the actual pictures
+
+This is the one step that doesn't work yet, on purpose. The plan is to use
+an AI image-generation service (Pixellab) to turn each prompt from Step 2
+into a picture automatically, but that connection isn't wired up in this
+environment. Trying it tells you so, in plain language:
+
+```
+python3 tools/kf_generate_sprites.py -o some_folder --id chokimaru
+```
+
+Until that's connected, get the pictures however you can -- draw them,
+commission them, generate them by hand one at a time -- and save each one
+using the exact filename Step 1 gave you, into one folder. Every picture
+must have a properly transparent background (not a solid color -- an
+actual alpha channel, the same kind of transparency a PNG sticker uses).
+That's what Step 4 checks for.
+
+## Step 4: check the pictures and build the real file
+
+```
+python3 tools/kf_ingest_sprites.py some_folder -o build/roster.kfpack
+```
+
+This looks at every PNG in `some_folder`, checks it against the list from
+Step 1 (right size in pixels, actually transparent where the background
+should be), and reports anything wrong -- a missing file, a picture that's
+the wrong dimensions, one where the artist forgot to remove the
+background. Nothing invalid gets packed silently.
+
+If everything checks out, it writes `build/roster.kfpack` and then
+independently re-reads that exact file to confirm it comes back out
+correctly -- so "it wrote a file" and "the file is actually valid" are two
+different, both-checked things.
+
+You don't need every creature ready at once. Point it at a folder with
+just a few pictures in it (`--id chokimaru` narrows the check to one
+creature) and it will happily pack just those, while still telling you
+what's still missing.
+
+## If something's confusing
+
+Every one of these commands accepts `--help` and will explain its own
+options. If a name in the list looks wrong, don't fix it yourself --
+**every character name in this project is an unverified placeholder**
+(see `character_manifest.toml`'s own top comment) until it's been checked
+for trademark conflicts, which hasn't happened yet.
