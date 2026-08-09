@@ -130,8 +130,8 @@ build/kamiframe-sim --pack examples/creature_demo/assets.kfpack
 
 `examples/creature_demo/` is the first roster slice actually produced this
 way (egg + baby, every state, all three directions). Its `sprites/`
-directory holds the 18 source PNGs (48x48, RGBA); `assets.kfpack` is the
-packed result.
+directory holds 49 source PNGs (48x48, RGBA) as of the third pass (see
+below); `assets.kfpack` is the packed result.
 
 **Second pass (2026-08-09):** the first pass's art read as thin and
 Western-illustration rather than the intended Japanese kawaii look, and the
