@@ -174,6 +174,19 @@ uint32_t saturating_add_u32(uint32_t value, uint32_t add) {
     return sum > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(sum);
 }
 
+/* Scales a decay rate by the sickness multiplier. uint64_t intermediate for
+ * the reason this file's header comment gives: no product here is computed
+ * in uint32_t and hoped for. */
+uint32_t sick_scaled_rate(uint32_t rate_mp_per_hour, bool sick,
+                           const kf_pet_config *config) {
+    if (!sick) {
+        return rate_mp_per_hour;
+    }
+    const uint64_t scaled = static_cast<uint64_t>(rate_mp_per_hour) *
+                             config->sick_decay_multiplier_percent / 100ull;
+    return scaled > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(scaled);
+}
+
 /* Advances `state` past its current (already-complete) stage into the
  * next one, picking a branch and resetting the per-stage accumulators
  * where that applies. Only ever called once kf_pet_advance()'s loop has
@@ -316,10 +329,27 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
             (hunger_before_mp + happiness_before_mp + energy_before_mp) / 3u;
     }
 
-    state->hunger_mp = apply_decay(state->hunger_mp, rates.hunger_mp_per_hour, segment);
-    state->happiness_mp =
-        apply_decay(state->happiness_mp, rates.happiness_mp_per_hour, segment);
-    state->energy_mp = apply_decay(state->energy_mp, rates.energy_mp_per_hour, segment);
+    state->hunger_mp = apply_decay(
+        state->hunger_mp,
+        sick_scaled_rate(rates.hunger_mp_per_hour, state->sick, config),
+        segment);
+    state->happiness_mp = apply_decay(
+        state->happiness_mp,
+        sick_scaled_rate(rates.happiness_mp_per_hour, state->sick, config),
+        segment);
+    state->energy_mp = apply_decay(
+        state->energy_mp,
+        sick_scaled_rate(rates.energy_mp_per_hour, state->sick, config),
+        segment);
+
+    /* The extra happiness drain, on top of the scaled decay above. Routed
+     * through apply_decay() rather than done by hand so it clamps at zero
+     * the same way everything else does. */
+    if (state->sick) {
+        state->happiness_mp =
+            apply_decay(state->happiness_mp,
+                        config->sick_happiness_drain_mp_per_hour, segment);
+    }
 
     if (feeds_branch) {
         state->care_integral_mp_seconds += average_before_mp * segment;
@@ -624,6 +654,11 @@ kf_pet_config kf_pet_default_config(void) {
      * an afternoon out cannot do it from full bars, short enough that a
      * neglected creature shows it the same day. */
     c.sickness_onset_seconds = 3u * 3600u;
+
+    /* Twice the decay, and about a fifth of the happiness bar an hour on
+     * top. Tuning numbers. */
+    c.sick_decay_multiplier_percent = 200u;
+    c.sick_happiness_drain_mp_per_hour = 20000u;
 
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers

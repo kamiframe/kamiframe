@@ -207,6 +207,18 @@ typedef struct {
      * this doubles as how long attentive care takes to cure it. */
     uint32_t sickness_onset_seconds;
 
+    /* What being ill costs. The multiplier is a percentage applied to every
+     * decay rate (100 = unchanged); the drain is happiness lost on top of
+     * it, independent of the stage's own happiness rate.
+     *
+     * Two levers rather than one, because they do different jobs: the
+     * multiplier makes an ill creature harder to keep out of the neglected
+     * condition at all, and the drain makes it visibly miserable even while
+     * the player is keeping every bar topped up. Together they turn
+     * "ignored for an afternoon" into a spiral instead of a plateau. */
+    uint32_t sick_decay_multiplier_percent;
+    uint32_t sick_happiness_drain_mp_per_hour;
+
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
     uint32_t child_duration_seconds;

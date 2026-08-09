@@ -1444,6 +1444,30 @@ int run_pet_sickness_check(void) {
           "a creature that has never known care does not sicken from its "
           "absence -- it is on the dust path instead");
 
+    /* Illness compounds. Two creatures, same stage, same full needs, same
+     * elapsed time -- the only difference between them is that one is ill.
+     * Both are fed once first, because an untouched creature would be
+     * exempt from the accumulator and drift out of the comparison. */
+    kf_pet_state well{};
+    kf_pet_init(&well);
+    well.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&well, &config);
+
+    kf_pet_state ill = well;
+    ill.sick = true;
+
+    apply_stage_segment_for_test(&well, &config, 3600u);
+    apply_stage_segment_for_test(&ill, &config, 3600u);
+
+    check(ill.hunger_mp < well.hunger_mp, "an ill creature gets hungry faster");
+    check(ill.energy_mp < well.energy_mp, "and tires faster");
+    check(ill.happiness_mp < well.happiness_mp,
+          "and is unhappier still -- illness drains happiness on top of the "
+          "faster decay, which is what makes an ignored illness spiral "
+          "rather than merely tick along");
+    check(config.sick_decay_multiplier_percent > 100u,
+          "the multiplier really does make things worse, not better");
+
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
