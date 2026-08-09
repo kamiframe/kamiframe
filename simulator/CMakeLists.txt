@@ -492,4 +492,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # See headless_main.cpp's run_asset_check().
     add_test(NAME asset_pipeline_check
              COMMAND kamiframe-headless --verify-assets)
+
+    # Proves kf_blit_mirrored() (Task 3b): a fully on-screen mirrored blit
+    # reverses the sprite's columns, colour-key skip still works mirrored,
+    # and clipping is mirror-aware in both directions -- a sprite hanging
+    # off the LEFT screen edge loses its trailing (high-index) source
+    # columns rather than its leading ones, and vice versa on the right
+    # edge, because that is what a reversed row actually pushes off-screen.
+    # Also pins the cost-accounting decision that a mirrored blit, having no
+    # memcpy fast path, is always charged to the keyed draw-counter bucket
+    # even when the sprite carries no colour key. See headless_main.cpp's
+    # run_blit_mirror_check() and hakoniwaos/include/kf/blit.h.
+    add_test(NAME blit_mirror_check
+             COMMAND kamiframe-headless --verify-blit-mirror)
 endif()

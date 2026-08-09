@@ -36,6 +36,30 @@ void kf_fill_rect(kf_rect r, kf_color color);
  * a deliberate decision later rather than an accident now. */
 void kf_blit(const kf_sprite *sprite, int16_t x, int16_t y);
 
+/* Draw `sprite` flipped horizontally, top-left still at (x, y): the bounding
+ * box on screen is identical to kf_blit()'s, only the sprite's columns are
+ * read back-to-front. This is the "west is drawn from east" case the
+ * character art plan calls for -- three sprite sets (front, side, back), no
+ * dedicated left-facing art -- not a general sprite-engine feature. It is a
+ * separate function rather than a flag on kf_blit() on purpose: kf_blit()'s
+ * call sites and its golden-frame output stay untouched by construction,
+ * with nothing to check at every call site to prove it, and there is
+ * nowhere for a caller to accidentally pass `true` into a hot path that was
+ * never meant to pay for it.
+ *
+ * Same clipping and colour-key rules as kf_blit(). Clipping is mirror-aware:
+ * a sprite hanging off the left edge loses its right-hand (in source order)
+ * columns rather than its left-hand ones, and vice versa on the right edge,
+ * because that is what actually lands off-screen once the row is reversed.
+ *
+ * No memcpy fast path exists here, even when the sprite has no colour key --
+ * a mirrored row is read back-to-front, which memcpy cannot express -- so
+ * every mirrored blit is charged to the keyed draw-counter bucket regardless
+ * of has_color_key. See kf_draw_count_pixels()'s own comment: the bucket
+ * reflects cost SHAPE (memcpy-able versus per-pixel), not whether a literal
+ * colour key is being tested, and a reversed copy is per-pixel either way. */
+void kf_blit_mirrored(const kf_sprite *sprite, int16_t x, int16_t y);
+
 /* Intersection of two rects. Result may be empty. */
 kf_rect kf_rect_intersect(kf_rect a, kf_rect b);
 

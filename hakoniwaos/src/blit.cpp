@@ -159,3 +159,67 @@ void kf_blit(const kf_sprite *sprite, int16_t x, int16_t y) {
 
     kf_fb_mark_dirty(c);
 }
+
+void kf_blit_mirrored(const kf_sprite *sprite, int16_t x, int16_t y) {
+    KF_ASSERT(sprite != nullptr, "kf_blit_mirrored(nullptr)");
+    KF_ASSERT(sprite->pixels != nullptr, "sprite has no pixels");
+
+    /* Same bounding box and same clip against the screen as kf_blit() --
+     * mirroring changes which columns are read, not where the sprite sits
+     * or how big the clipped region is. */
+    const kf_rect want = {x, y,
+                          clamp16(static_cast<int32_t>(x) + sprite->width,
+                                  INT16_MIN, INT16_MAX),
+                          clamp16(static_cast<int32_t>(y) + sprite->height,
+                                  INT16_MIN, INT16_MAX)};
+    const kf_rect c = kf_rect_intersect(want, kFullScreen);
+    if (kf_rect_is_empty(c)) {
+        return;
+    }
+
+    kf_color *fb = kf_fb_pixels();
+    const int src_y0 = c.y0 - y;
+    const int width = c.x1 - c.x0;
+    const int height = c.y1 - c.y0;
+
+    /* Unmirrored, screen column c.x0 reads source column (c.x0 - x): the
+     * source index climbs together with the screen index. Mirrored, it
+     * falls: screen column s reads source column (x + sprite->width - 1 -
+     * s). At the left edge of the clipped rect (s = c.x0) that is
+     * `src_x_start`; each step right subtracts one from it. This single
+     * value is what makes clipping come out mirror-correct for free: if
+     * the sprite hangs off the LEFT of the screen, c.x0 is pulled in from
+     * `x`, which raises s and so LOWERS src_x_start -- the columns that
+     * drop out of range are the sprite's HIGH-index (trailing) ones, not
+     * its leading ones, which is exactly backwards from kf_blit() and is
+     * the whole point of this function. Clipping off the right edge only
+     * pulls c.x1 in, which does not change src_x_start at all -- it just
+     * shortens how many columns get read, starting from the same
+     * right-hand source column, so the columns that drop out there are the
+     * sprite's LOW-index (leading) ones instead. */
+    const int src_x_start = (x + sprite->width - 1) - c.x0;
+
+    const kf_color key = sprite->color_key;
+    const bool keyed = sprite->has_color_key;
+
+    /* No memcpy fast path, unlike kf_blit(): a mirrored row is read
+     * back-to-front, which memcpy cannot express, so every mirrored row is
+     * a per-pixel loop regardless of has_color_key. That per-pixel shape is
+     * what gets charged here -- see kf_draw_count_pixels()'s own comment on
+     * bucketing by cost shape, not by whether an actual key is tested. */
+    g_counters.keyed_pixels += kf_rect_area(c);
+    for (int row = 0; row < height; ++row) {
+        const kf_color *src =
+            sprite->pixels + (static_cast<size_t>(src_y0 + row) * sprite->width);
+        kf_color *dst =
+            fb + (static_cast<size_t>(c.y0 + row) * KF_DISPLAY_WIDTH) + c.x0;
+        for (int col = 0; col < width; ++col) {
+            const kf_color p = src[src_x_start - col];
+            if (!keyed || p != key) {
+                dst[col] = p;
+            }
+        }
+    }
+
+    kf_fb_mark_dirty(c);
+}

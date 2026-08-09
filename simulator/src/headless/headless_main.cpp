@@ -28,6 +28,7 @@
  *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
  *     kamiframe-headless --verify-assets
+ *     kamiframe-headless --verify-blit-mirror
  *
  * Exit codes:
  *     0  everything asserted held
@@ -37,6 +38,7 @@
 #include "kf/app.h"
 #include "kf/arena.h"
 #include "kf/assets.h"
+#include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/creature.h"
 #include "kf/framebuffer.h"
@@ -2957,6 +2959,176 @@ int run_asset_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves kf_blit_mirrored() (Task 3b): a mirrored blit reverses the sprite's
+ * columns rather than its rows, colour-key skip still works mirrored, and
+ * clipping is mirror-aware -- the subtle part. An unmirrored sprite hanging
+ * off the LEFT screen edge loses its leading (low-index) source columns;
+ * mirrored, the same left-edge clip must lose its TRAILING (high-index)
+ * source columns instead, because those are what a reversed row puts
+ * off-screen, and vice versa on the right edge. See kf/blit.h's own comment
+ * on kf_blit_mirrored() for why. Every pixel in the fixture sprite is a
+ * distinct value so a wrong column landing somewhere else is caught, not
+ * just "something got drawn". */
+int run_blit_mirror_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_arena_init_all();
+    kf_fb_init();
+
+    /* 4 wide x 3 tall, every pixel a distinct value: 0xR0C, row in the high
+     * nibble-ish digit, column in the low one, so a test failure's printed
+     * value says exactly which source pixel landed in the wrong place. */
+    static const kf_color kFixture[3][4] = {
+        {0x1000, 0x1001, 0x1002, 0x1003},
+        {0x2000, 0x2001, 0x2002, 0x2003},
+        {0x3000, 0x3001, 0x3002, 0x3003},
+    };
+    kf_sprite sprite{};
+    sprite.pixels = &kFixture[0][0];
+    sprite.width = 4;
+    sprite.height = 3;
+    sprite.has_color_key = false;
+
+    kf_color *fb = kf_fb_pixels();
+    const kf_color kSentinel = 0xDEAD;
+    /* All the test's coordinates are non-negative, so the size_t cast is
+     * always in range -- this just keeps the index arithmetic in one place
+     * instead of repeating the same static_cast at every framebuffer read
+     * below. */
+    auto px = [&](int screen_x, int screen_y) -> kf_color {
+        return fb[static_cast<size_t>(screen_y) * KF_DISPLAY_WIDTH +
+                   static_cast<size_t>(screen_x)];
+    };
+
+    /* Case 1: fully on-screen, no colour key. Column 0 of the sprite must
+     * land at the RIGHTMOST screen column, column (width-1) at the
+     * leftmost -- the opposite of kf_blit(). */
+    {
+        kf_fill(kSentinel);
+        const int16_t x = 10, y = 10;
+        kf_blit_mirrored(&sprite, x, y);
+        bool all_match = true;
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 4; ++col) {
+                const kf_color got = px(x + col, y + row);
+                const kf_color want = kFixture[row][3 - col];
+                if (got != want) {
+                    KF_LOGE(TAG,
+                            "mirror: on-screen (%d,%d) got %04x, want %04x "
+                            "(source col %d)",
+                            x + col, y + row, got, want, 3 - col);
+                    all_match = false;
+                }
+            }
+        }
+        check(all_match, "fully on-screen mirrored blit reverses columns");
+    }
+
+    /* Case 2: colour key skips the matching pixel, mirrored -- the sentinel
+     * underneath must survive at exactly the screen position the keyed
+     * source pixel would have mirrored to. */
+    {
+        kf_sprite keyed = sprite;
+        keyed.has_color_key = true;
+        keyed.color_key = kFixture[1][1]; /* 0x2001 */
+
+        kf_fill(kSentinel);
+        const int16_t x = 20, y = 20;
+        kf_blit_mirrored(&keyed, x, y);
+
+        /* Source col 1 mirrors to screen col (width-1-1) = 2. */
+        const kf_color at_key = px(x + 2, y + 1);
+        check(at_key == kSentinel,
+              "colour-keyed pixel is skipped mirrored, leaving the "
+              "framebuffer underneath untouched");
+
+        /* A non-keyed neighbour (source col 0 -> screen col 3) still draws. */
+        const kf_color neighbour = px(x + 3, y + 1);
+        check(neighbour == kFixture[1][0],
+              "a non-keyed pixel next to a skipped one still draws mirrored");
+    }
+
+    /* Case 3: clipped off the LEFT screen edge. Naively this looks just like
+     * kf_blit()'s left-clip, but it must keep the sprite's LOW-index source
+     * columns (0..) and drop the HIGH-index ones (they are what a mirrored
+     * row pushes further left, off-screen). */
+    {
+        kf_fill(kSentinel);
+        const int16_t x = -2, y = 30; /* 2 of the 4 columns clipped */
+        kf_blit_mirrored(&sprite, x, y);
+        /* sc(s) = x + width - 1 - s = 1 - s for x=-2, width=4. Visible
+         * screen columns 0..1 read source columns 1..0 -- the sprite's
+         * LOW-index (leading) columns survive, its HIGH-index (trailing)
+         * columns 2..3 are what the mirror pushed off the left edge. */
+        const kf_color s0 = px(0, y);
+        const kf_color s1 = px(1, y);
+        check(s0 == kFixture[0][1],
+              "left-edge clip, mirrored: screen col 0 shows source col 1");
+        check(s1 == kFixture[0][0],
+              "left-edge clip, mirrored: screen col 1 shows source col 0 "
+              "(the source's leading column, which survives the clip)");
+        /* Source columns 2 and 3 (the sprite's trailing columns) must not
+         * have been drawn anywhere -- there is no screen position left of
+         * x=0 to check them against directly, so instead confirm nothing
+         * beyond the two visible columns changed. */
+        const kf_color s2 = px(2, y);
+        check(s2 == kSentinel,
+              "left-edge clip, mirrored: nothing drawn past the clipped "
+              "width");
+    }
+
+    /* Case 4: clipped off the RIGHT screen edge -- the mirror of case 3.
+     * Must keep the sprite's HIGH-index source columns and drop the
+     * LOW-index ones. */
+    {
+        kf_fill(kSentinel);
+        const int16_t x = static_cast<int16_t>(KF_DISPLAY_WIDTH - 2);
+        const int16_t y = 40; /* 2 of the 4 columns clipped */
+        kf_blit_mirrored(&sprite, x, y);
+        /* want.x1 = x+4 = kW+2, clipped to kW, so only screen cols x, x+1
+         * survive. Source col (width-1)=3 mirrors to screen col x, source
+         * col 2 mirrors to screen col x+1. */
+        const kf_color s0 = px(x, y);
+        const kf_color s1 = px(x + 1, y);
+        check(s0 == kFixture[0][3],
+              "right-edge clip, mirrored: leftmost surviving screen col "
+              "shows source col 3, the source's trailing column");
+        check(s1 == kFixture[0][2],
+              "right-edge clip, mirrored: next screen col shows source col "
+              "2, not the source's leading column");
+        const kf_color before = px(x - 1, y);
+        check(before == kSentinel,
+              "right-edge clip, mirrored: nothing drawn before the clipped "
+              "sprite's left edge");
+    }
+
+    /* Case 5: cost accounting. A mirrored blit can never use the memcpy
+     * fast path (a reversed row is not a straight copy), so it must be
+     * charged to the keyed bucket even when the sprite has no colour key --
+     * see kf_draw_count_pixels()'s comment on bucketing by cost shape. */
+    {
+        kf_draw_counters_reset();
+        kf_blit_mirrored(&sprite, 50, 50); /* fully on-screen, unkeyed */
+        const kf_draw_counters counters = kf_draw_counters_get();
+        check(counters.keyed_pixels == 12u && counters.opaque_pixels == 0u,
+              "an unkeyed mirrored blit is still charged to keyed_pixels, "
+              "the per-pixel-cost bucket, not opaque_pixels");
+    }
+
+    if (ok) {
+        KF_LOGI(TAG, "blit-mirror: reversal, colour-key, both clip edges "
+                     "and cost accounting all hold");
+    }
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -2987,6 +3159,7 @@ int main(int argc, char *argv[]) {
     bool verify_screen_nav = false;
     bool verify_lua_creature = false;
     bool verify_assets = false;
+    bool verify_blit_mirror = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -3049,6 +3222,8 @@ int main(int argc, char *argv[]) {
             verify_lua_creature = true;
         } else if (std::strcmp(argv[i], "--verify-assets") == 0) {
             verify_assets = true;
+        } else if (std::strcmp(argv[i], "--verify-blit-mirror") == 0) {
+            verify_blit_mirror = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -3075,7 +3250,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-screen-nav "
                         "[--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua-creature\n"
-                        "kamiframe-headless --verify-assets\n");
+                        "kamiframe-headless --verify-assets\n"
+                        "kamiframe-headless --verify-blit-mirror\n");
             return 0;
         }
     }
@@ -3175,6 +3351,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_assets) {
         return run_asset_check();
+    }
+
+    if (verify_blit_mirror) {
+        return run_blit_mirror_check();
     }
 
     kf_app_init(mode);
