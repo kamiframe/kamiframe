@@ -2276,8 +2276,30 @@ static int run_creature_screen_check(void) {
           "sampling actual pixel content catches the drawing path being "
           "removed");
 
-    /* Two rects: erase the old position, draw the new one. Three 48x48
-     * sprite areas' worth of bytes is generous headroom for that. */
+    /* The creature's own erase-then-draw (kf_fill_rect(g_previous, ...)
+     * then kf_blit()/kf_blit_mirrored()) measures as ONE dirty rectangle in
+     * practice, not two: kSpeedPxPerSec (hakoniwaos/src/creature.cpp) is
+     * slow enough that a single frame's movement is always far smaller
+     * than the 48x48 sprite itself, so the erase rect (g_previous) and the
+     * draw rect (now) always overlap or touch and get unioned by
+     * kf_fb_mark_dirty() (kf/framebuffer.h's own comment) -- confirmed by
+     * the "1 rects" this check actually logs below. The bound stays <=2u
+     * anyway, not <=1u: nothing about kf_fill_rect()/kf_blit()'s contract
+     * GUARANTEES that merge, only this screen's current, slow wander speed
+     * does, so a rect of real headroom stays in the budget rather than a
+     * check that would fail the moment the creature moves faster than one
+     * sprite width per frame. (This check used to measure 2 rects, not 1
+     * -- a redundant kf_fill_rect(kMessBand, kBackground) on the first
+     * frame after every screen entry, over a band that was already
+     * background, added a second, disjoint rectangle that had nothing to
+     * do with the creature at all; see kf_creature_screen.cpp's mess-
+     * drawing comment for the fix.)
+     *
+     * The byte budget below is the same rect's area, not "erase-plus-mess-
+     * band" any more either: three 48x48 sprite areas' worth of bytes is
+     * generous headroom over the ~48x48 (occasionally a pixel or two
+     * larger on each axis, when a frame's step keeps the erase/draw union
+     * just bigger than one bare sprite) area that rect actually covers. */
     check(worst_rects <= 2u, "used more than 2 dirty rects in a frame");
     check(worst_bytes <= 48u * 48u * 2u * 3u,
           "dirtied more bytes in a frame than three 48x48 sprites' worth "
@@ -2563,19 +2585,23 @@ int run_screen_nav_check(unsigned long long expect_checksum,
      * No new sprite/creature drawing has run yet at this exact point --
      * kf_creature_screen_frame() has not been called since re-entering --
      * so EVERY pixel on the panel is still exactly whatever
-     * kf_creature_screen_enter()'s fill just painted, and (0,0), inside
-     * kField, is a faithful sample of it (same reasoning
-     * run_creature_screen_check() uses for its own background_color
-     * sample). Comparing a pixel from inside the reserved band against
-     * that catches the bug directly: if the entry repaint regressed to
-     * kField-only, the band pixel would still be whatever Info left, and
-     * would not match. */
+     * kf_creature_screen_enter()'s fill just painted -- kBackground
+     * (kf_creature_screen.cpp), reproduced here by value rather than
+     * sampled from a second live pixel: sampling (0,0) instead would catch
+     * a REGRESSED entry repaint (kField-only, band pixel still Info's)
+     * exactly as well, but would pass vacuously if kf_creature_screen_
+     * enter()'s fill were removed altogether -- both samples would then
+     * still hold whatever Info left, agree with each other, and this check
+     * would report success while nothing had actually repainted anything.
+     * Comparing against the known constant instead catches that case too:
+     * with no fill at all, the band pixel is Info's leftover colour, which
+     * this fixed value was never going to equal by chance. */
     {
         const kf_color *px = kf_fb_pixels();
-        const kf_color creature_background = px[0];
+        const kf_color kKnownCreatureBackground = KF_RGB(232, 240, 216);
         const kf_color band_pixel =
             px[static_cast<size_t>(280) * KF_DISPLAY_WIDTH + 10u];
-        check(band_pixel == creature_background,
+        check(band_pixel == kKnownCreatureBackground,
               "row 280 (inside the reserved y=[260,320) stats band) still "
               "held Info's leftover pixels after switching back to Home -- "
               "kf_creature_screen_enter() must repaint the whole panel, "

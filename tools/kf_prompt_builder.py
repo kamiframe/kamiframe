@@ -79,6 +79,23 @@ STATE_GUIDANCE = {
     "sleeping": "Eyes shut (still two dots, drawn closed), body settled low and still, a breathing-at-rest posture.",
 }
 
+# The three views a sprite gets asked for: "s" (front), "e" (side), "n"
+# (back) -- SpriteSpec.direction, sourced from tools/kf_character_manifest.py's
+# DIRECTIONS, which in turn mirrors kf_creature_sprite_name()'s
+# direction_token() (hakoniwaos/src/creature.cpp) exactly. No "w" entry here,
+# deliberately: west is the "e" sprite mirrored at draw time (kf/blit.h's
+# kf_blit_mirrored(), driven by simulator/src/pet/kf_creature_screen.cpp's
+# west-first fallback lookup), not a fourth view a generator is ever asked
+# to draw -- a real left-facing sprite is a decision for whoever draws that
+# specific creature, not something this pipeline requests by default. See
+# kf_character_manifest.py's "THE NAMING CONVENTION" comment for the fuller
+# version of this same reasoning.
+DIRECTION_GUIDANCE = {
+    "s": "Front view: the creature faces the viewer head-on, square to camera. Both eyes (or eye-marks) and the mouth are visible and centred.",
+    "e": "Side profile view: the creature is turned fully sideways, facing right, drawn as a clean profile silhouette -- not a 3/4 turn. Only the near eye reads; the exaggerated feature is drawn from whichever angle actually shows it best in profile.",
+    "n": "Back view: the creature faces away from the viewer, showing its back. No face is visible from this angle -- read the pose from posture and outline alone, and carry the exaggerated feature and residue detail wherever they still show from behind.",
+}
+
 _NO_BRIEF = (
     "*** NO DESIGN BRIEF YET ***\n"
     "The character bible does not describe this stage's appearance -- it "
@@ -123,6 +140,11 @@ def build_prompt(spec: SpriteSpec, meta: dict) -> str:
     lines.append("")
     lines.append(f"State: {spec.state}")
     lines.append(STATE_GUIDANCE.get(spec.state, "(no specific guidance for this state)"))
+
+    lines.append("")
+    lines.append(f"Direction: {spec.direction}")
+    lines.append(DIRECTION_GUIDANCE.get(
+        spec.direction, "(no specific guidance for this direction)"))
 
     if spec.variant == "grudge":
         lines.append("")

@@ -125,14 +125,35 @@ pack without recompiling or touching that default, pass it at the command
 line:
 
 ```
-build/simulator/kamiframe-sim --pack examples/creature_demo/assets.kfpack
+build/kamiframe-sim --pack examples/creature_demo/assets.kfpack
 ```
 
 `examples/creature_demo/` is the first roster slice actually produced this
-way (egg + baby, every state, all three directions -- see its own
-directory for the source PNGs and how the pack was built). Nothing about
-`--pack` is specific to that one pack; point it at any `.kfpack` a run of
-`kf_ingest_sprites.py -o` produced.
+way (egg + baby, every state, all three directions). Its `sprites/`
+directory holds the 18 source PNGs (48x48, RGBA); `assets.kfpack` is the
+packed result. How they were made:
+
+- **Egg** (`create_1_direction_object`, no skeleton) came back exactly
+  48x48, no resizing needed. `create_character`'s default humanoid
+  skeleton fights a limbless, faceless egg outright, so the egg used a
+  different Pixellab tool than the baby did.
+- **Baby** (`create_character` for the base `neutral` pose,
+  `create_character_state` for the other four states, so every pose stays
+  visually the same creature) came back 68x68 -- Pixellab's `size`
+  parameter sizes the character, not the canvas, which ships ~40% larger
+  "for room to animate." Downscaled to 48x48 with a uniform resize
+  (`sips -z 48 48`), not a crop: a crop risks clipping a pose that leans
+  or bounces off-centre (`happy`, for one); a resize cannot lose any part
+  of the character.
+- **The three egg sprites (`egg_idle_s_01`/`_e_01`/`_n_01`) are the exact
+  same image file**, deliberately, not a missing-art gap: the egg's own
+  design brief says it has no markings and nothing hints at what's
+  inside, so a plain, rotationally-symmetric egg genuinely looks identical
+  from the front, side, and back. A second or third generation would show
+  nothing a viewer couldn't already see in the first.
+
+Nothing about `--pack` is specific to that one pack; point it at any
+`.kfpack` a run of `kf_ingest_sprites.py -o` produced.
 
 ## If something's confusing
 

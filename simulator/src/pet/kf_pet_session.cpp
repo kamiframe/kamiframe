@@ -19,7 +19,7 @@
  * only way to reach the pet session's debug fast-forward at all, via
  * ports/esp32/main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT (ADR 0030).
  *
- * KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY _debug_seek() and the
+ * KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates _debug_seek() and the
  * scrubbable-timeline snapshot ring backing it -- the genuinely expensive
  * part, kDebugSnapshotCapacity times sizeof(DebugSnapshot) north of 200KB,
  * which has no business being an unconditional static allocation on a
@@ -27,7 +27,10 @@
  * and FreeRTOS itself. This is the same "enforce the device's limits,
  * don't just document them" rule ADR 0006 already applies everywhere else
  * in this codebase. ports/esp32/main/CMakeLists.txt turns this OFF --
- * unchanged from before this file had two flags instead of one.
+ * unchanged from before this file had two flags instead of one. The same
+ * flag also gates _state_mutable_for_test() below (Task 5): not expensive
+ * like the snapshot ring, but the same "no business being reachable from a
+ * real device" status, so it rides this flag rather than a third one.
  *
  * Both default ON (1); every backend other than ESP32 gets the full
  * desktop behaviour with nothing to opt into. When either is 0, every

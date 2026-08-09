@@ -70,6 +70,18 @@ constexpr int16_t kPoopY1 = kPoopY0 + kPoopSize;
 constexpr int16_t kPoopSlotWidth =
     static_cast<int16_t>(kField.x1 / static_cast<int16_t>(KF_PET_MAX_POOPS));
 
+/* Makes the block comment above's "kPoopSlotWidth * KF_PET_MAX_POOPS ==
+ * kField.x1" claim true by construction rather than merely asserted in
+ * prose: kPoopSlotWidth is computed by integer division just above, which
+ * silently floors on a remainder, so a KF_PET_MAX_POOPS that does not
+ * evenly divide kField.x1 would otherwise leave the row short of the
+ * field's full width -- still safe (never overlapping or spilling), just
+ * quietly not what the comment says. This fails the build instead. */
+static_assert(kPoopSlotWidth * static_cast<int16_t>(KF_PET_MAX_POOPS) ==
+                  kField.x1,
+              "kPoopSlotWidth * KF_PET_MAX_POOPS must equal kField.x1 -- "
+              "see the block comment above kPoopSize for why");
+
 /* The whole mess row, used only when the poop count actually changes -- see
  * kf_creature_screen_frame()'s mess-drawing comment for why repainting
  * through this one rect, rather than each poop's own rect standing alone,
@@ -83,8 +95,8 @@ constexpr kf_rect kMessBand = {0, kPoopY0, kField.x1, kPoopY1};
 constexpr kf_color kPoopColor = KF_RGB(92, 64, 51);
 
 /* Where poop number `index` (0-based, < pet->poop_count) sits. Pure
- * function of the index alone -- see kPoopSize's own comment for why that
- * matters. */
+ * function of the index alone -- see the block comment above kPoopSize for
+ * why that matters (Controller amendment A6: no RNG). */
 kf_rect poop_rect(uint8_t index) {
     const int16_t x0 = static_cast<int16_t>(
         index * kPoopSlotWidth + (kPoopSlotWidth - kPoopSize) / 2);
@@ -230,17 +242,33 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
      * not under it. */
     if (pet->poop_count != g_drawn_poops) {
         /* The count changed, or this is the first frame after entry.
-         * Repaint the whole row once: clear the band, then redraw every
-         * currently-active slot. This costs exactly ONE dirty rectangle no
-         * matter how many poops are active -- every poop_rect() is fully
-         * inside kMessBand, which the fill just below already marked
-         * dirty, and a rectangle that overlaps an already-tracked one
-         * merges into it instead of adding a new one (kf/framebuffer.h's
+         * Repaint the row once: redraw every currently-active slot, having
+         * first cleared whatever was there before -- UNLESS g_drawn_poops
+         * is -1, in which case there is nothing to clear. -1 only ever
+         * means "kf_creature_screen_init() or kf_creature_screen_enter()
+         * just ran" (g_drawn_poops's own comment), and both of those
+         * already fill the WHOLE panel (or field) to kBackground right
+         * before setting it -- kMessBand sits entirely inside that fill,
+         * so it is already background pixel for pixel. Clearing it again
+         * here would cost a second, disjoint dirty rectangle (on top of
+         * the one the entry repaint already spent) and 5,760 bytes for a
+         * fill that changes no pixel -- see run_creature_screen_check()'s
+         * worst_rects budget, which this exact redundancy used to eat.
+         * Any other transition (poop_count genuinely grew or shrank while
+         * g_drawn_poops was already a real count) DOES need the clear:
+         * a shrink would otherwise leave stale poops from slots that are
+         * no longer active. This still costs exactly ONE dirty rectangle
+         * no matter how many poops are active -- every poop_rect() is
+         * fully inside kMessBand, which the fill just below already
+         * marked dirty, and a rectangle that overlaps an already-tracked
+         * one merges into it instead of adding a new one (kf/framebuffer.h's
          * kf_fb_mark_dirty() comment). This is the one frame this task's
          * budget does not have to hold at 2 -- it is not part of the
          * steady-state loop the check measures, only the rare frame
          * something about the mess actually changed. */
-        kf_fill_rect(kMessBand, kBackground);
+        if (g_drawn_poops != -1) {
+            kf_fill_rect(kMessBand, kBackground);
+        }
         for (uint8_t i = 0; i < pet->poop_count; ++i) {
             kf_fill_rect(poop_rect(i), kPoopColor);
         }

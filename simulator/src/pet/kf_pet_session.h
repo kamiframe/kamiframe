@@ -140,9 +140,9 @@ void kf_pet_session_shutdown(void);
  *   device's four-real-day decay curve over a serial link instead of
  *   watching it do nothing for four days.
  *
- *   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY kf_pet_session_debug_
- *   seek() below and the scrubbable-timeline snapshot ring backing it --
- *   the genuinely expensive part, kDebugSnapshotCapacity times sizeof
+ *   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates kf_pet_session_debug_seek()
+ *   below and the scrubbable-timeline snapshot ring backing it -- the
+ *   genuinely expensive part, kDebugSnapshotCapacity times sizeof
  *   (DebugSnapshot) north of 200KB of unconditional static memory (see
  *   kf_pet_session.cpp's top-of-file comment). A real device has neither
  *   the SRAM to spare for that nor, so far, a caller for it, so ports/
@@ -153,7 +153,11 @@ void kf_pet_session_shutdown(void);
  *   (ADR 0021) makes jumping an arbitrary amount of pet-time cheap and
  *   safe to call directly, and the default illustrative stage durations
  *   (an hour for an egg, about a week for a full grow-up) are otherwise
- *   much too slow to watch interactively.
+ *   much too slow to watch interactively. The same flag also gates
+ *   kf_pet_session_state_mutable_for_test() further down (Task 5) -- cheap
+ *   in itself, but a test-only reach-into-Core hazard a real device has no
+ *   business linking in any more than it does the snapshot ring, so it
+ *   rides the same flag rather than getting a third one of its own.
  *
  * All four are DECLARED unconditionally below, same as everything else
  * in this header, so nothing calling into this file needs to know or
