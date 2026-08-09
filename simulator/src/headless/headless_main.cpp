@@ -2618,7 +2618,20 @@ static int run_creature_wander_check(void) {
  * real default asset pack (kf_assets_init()), rather than leaving assets
  * uninitialised, so this genuinely exercises the "no creature art in the
  * pack" scenario the fallback exists for, not just an equivalent-looking
- * uninitialised table. */
+ * uninitialised table.
+ *
+ * Forces the pet off KF_PET_STAGE_EGG immediately after kf_creature_
+ * screen_init(), via kf_pet_session_state_mutable_for_test() -- a fresh
+ * kf_pet_session_init() always starts as an egg (kf/pet.h's kf_pet_init()),
+ * and the egg gate (kf_creature_screen.cpp) freezes the creature in place
+ * rather than wandering it. Left at EGG, every one of the 300 frames below
+ * would measure a stationary bobbing egg instead of the wandering creature
+ * this check's dirty-rect/byte budget is actually about -- duplicating
+ * run_creature_screen_egg_check() and leaving the genuinely-moving case
+ * with no guard of its own, which is exactly what happened once the egg
+ * gate landed and this check's own fixture silently stopped noticing. Same
+ * fix, same reasoning, as run_creature_screen_death_check()'s own comment
+ * on why IT forces a non-egg stage before its first frame too. */
 static int run_creature_screen_check(void) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() /
@@ -2645,6 +2658,12 @@ static int run_creature_screen_check(void) {
 
     kf_pet_session_init();
     kf_creature_screen_init();
+
+    /* Not an egg -- see this function's own header comment on why. Set
+     * before the first frame runs, so every one of the 300 frames below
+     * measures the ordinary wander, not the egg's frozen-in-place bob. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->stage = KF_PET_STAGE_CHILD;
 
     /* The background colour, sampled from the framebuffer itself rather
      * than duplicating kf_creature_screen.cpp's private kBackground
@@ -2778,7 +2797,7 @@ static int run_creature_screen_check(void) {
     };
     const size_t non_background_before_mess = count_non_background();
 
-    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    /* `pet` already points at the live state -- forced off EGG above. */
     pet->poop_count = KF_PET_MAX_POOPS;
     kf_creature_screen_frame(33u); /* the frame that draws them */
 
@@ -3233,7 +3252,19 @@ static int run_creature_screen_sprite_check(void) {
  * broken/always-zero wave would pass claim 2 above completely vacuously
  * (zero movement trivially never blows a rect budget) the same way
  * creature_pixel_ever_drawn guards run_creature_screen_check() above
- * against a vacuous "drew nothing" pass. */
+ * against a vacuous "drew nothing" pass. And -- what kf_creature_screen.h's
+ * own comment on kf_creature_screen_debug_egg_bob_offset_y() promises this
+ * accessor is FOR, not just that it moves -- that every value it ever
+ * returns across the run stays within its intended amplitude
+ * (kKnownEggBobAmplitudePx below, kf_creature_screen.cpp's private
+ * kEggBobAmplitudePx reproduced by value, the same cross-file-constant
+ * pattern this file already uses for kKnownPlaceholderColor/kShrine
+ * PlaceholderSize elsewhere): a wave that overshot -- a bad multiplier, an
+ * off-by-one in egg_bob_offset_y()'s quarter-period arithmetic -- would
+ * still pass "nonzero at least once" and could still pass the rect budget
+ * (the budget only cares that consecutive frames don't jump far, not that
+ * the whole wave stays small), so neither of those alone would have caught
+ * an amplitude regression. */
 static int run_creature_screen_egg_check(void) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() /
@@ -3307,8 +3338,17 @@ static int run_creature_screen_egg_check(void) {
           "reserved band on screen entry -- see draw_care_guide() "
           "(kf_creature_screen.cpp)");
 
+    /* kf_creature_screen.cpp's private kEggBobAmplitudePx, reproduced by
+     * value -- see this function's own header comment above for why (same
+     * pattern as kKnownPlaceholderColor/kShrinePlaceholderSize elsewhere in
+     * this file). The wave (egg_bob_offset_y()) is documented never to
+     * exceed this in magnitude; amplitude_ever_exceeded below is what
+     * actually holds it to that promise instead of just trusting it. */
+    constexpr int16_t kKnownEggBobAmplitudePx = 2;
+
     size_t worst_rects = 0;
     bool bob_ever_nonzero = false;
+    bool amplitude_ever_exceeded = false;
     int16_t last_offset = kf_creature_screen_debug_egg_bob_offset_y();
     bool guide_band_ever_touched = false;
     for (int i = 0; i < 600; ++i) {
@@ -3327,6 +3367,10 @@ static int run_creature_screen_egg_check(void) {
         if (offset != 0) {
             bob_ever_nonzero = true;
         }
+        if (offset > kKnownEggBobAmplitudePx ||
+            offset < -kKnownEggBobAmplitudePx) {
+            amplitude_ever_exceeded = true;
+        }
         last_offset = offset;
     }
     (void)last_offset;
@@ -3336,6 +3380,12 @@ static int run_creature_screen_egg_check(void) {
           "frame -- the same budget a wandering creature already holds "
           "to");
     KF_LOGI(TAG, "creature-screen-egg: worst frame %zu rects", worst_rects);
+
+    check(!amplitude_ever_exceeded,
+          "the egg bob offset exceeded its intended amplitude at least "
+          "once across 600 frames -- kf_creature_screen_debug_egg_bob_"
+          "offset_y()'s own header comment (kf_creature_screen.h) promises "
+          "a check can rely on this staying bounded");
 
     check(bob_ever_nonzero,
           "the egg bob offset was 0 for all 600 frames -- either the wave "
