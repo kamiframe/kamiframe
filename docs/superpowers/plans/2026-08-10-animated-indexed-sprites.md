@@ -276,8 +276,16 @@ static int run_indexed_asset_check(void) {
     }
     kf_assets_shutdown();
 
-    /* The indexed fixture. */
-    kf_arena_init_all();
+    /* The indexed fixture. kf_arena_init_all() is NOT called again here --
+     * it panics on a second call (kf/arena.cpp: `KF_ASSERT(!g_initialised,
+     * "kf_arena_init_all called twice")`), and KF_ARENA_ASSETS is not one of
+     * the resettable arenas (only KF_ARENA_SCRATCH is). Mounting a second
+     * pack in the same process just grows the same arena's directory-table
+     * allocation a little further along; kf_assets_shutdown() above already
+     * dropped the first mount's g_up flag so kf_assets_init() below is
+     * legal. Found the hard way while implementing Task 1 -- see
+     * simulator/src/headless/headless_main.cpp's run_indexed_asset_check()
+     * for where this landed. */
     kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
     check(kf_assets_init() == KF_OK, "the indexed fixture pack mounts");
 
@@ -346,8 +354,9 @@ In `hakoniwaos/include/kf/types.h`, replace the `kf_sprite` block:
 ```c
 /* How a sprite's pixels are stored. A property of the DATA, not a request
  * from the caller -- which is why it lives on the sprite rather than being
- * a flag passed to kf_blit(). See kf/blit.h's own comment for why that
- * distinction is what makes this different from kf_blit_mirrored(). */
+ * a flag passed to kf_blit(). Note for Task 1: kf/blit.h does not read this
+ * field yet at that point, and asserts sprite->pixels != nullptr, so an
+ * indexed sprite panics if blit'd before Task 2 lands. */
 typedef enum {
     KF_SPRITE_FORMAT_RGB565 = 0,  /* `pixels` is valid */
     KF_SPRITE_FORMAT_INDEXED8 = 1 /* `indices` + `palette` are valid */
@@ -356,8 +365,12 @@ typedef enum {
 /* The palette slot a colour-keyed indexed sprite reserves for "do not draw
  * this pixel". Fixed at 0 by convention rather than stored per sprite: it
  * costs nothing, it makes the blitter's key test a compare against a
- * compile-time constant, and the packer is what guarantees it (see
- * tools/kf_ingest_sprites.py, which forces the magenta key to index 0). */
+ * compile-time constant, and the packer is what guarantees it. As of Task 1
+ * that means tools/kf_pack_assets.py's quantize_rgb565(), which always
+ * seeds the palette with the key colour at slot 0, plus
+ * make_indexed_asset()'s own check that palette[0] matches the declared
+ * key. tools/kf_ingest_sprites.py has no indexed-sprite support at all yet
+ * -- Task 4 is what gives it this same guarantee. */
 #define KF_SPRITE_KEY_INDEX 0u
 
 /* An immutable sprite, possibly with more than one frame. Pixels live in
@@ -402,9 +415,12 @@ In `hakoniwaos/include/kf/assets.h`, inside `kf_asset_type`, after
      * a large opaque sprite still blits four times faster as raw RGB565,
      * because an un-keyed RGB565 row is a memcpy and an indexed row can
      * never be one. Both are returned by kf_assets_get() as a kf_sprite;
-     * the caller reads ::format if it cares, and kf/blit.h handles either
-     * without being told. See tools/kf_pack_assets.py's format comment for
-     * the type_meta layout and the payload's palette-then-frames shape. */
+     * the caller reads ::format if it cares. As of Task 1, kf/blit.h does
+     * NOT handle indexed sprites -- it asserts sprite->pixels != nullptr,
+     * which an indexed sprite deliberately leaves null. Drawing one panics
+     * until Task 2 teaches the blitter this format. See
+     * tools/kf_pack_assets.py's format comment for the type_meta layout and
+     * the payload's palette-then-frames shape. */
     KF_ASSET_TYPE_SPRITE_INDEXED = 2
 ```
 
@@ -437,8 +453,12 @@ docstring, after the `ASSET_TYPE_AUDIO_CLIP` paragraph:
         When flags bit 0 is set, PALETTE ENTRY 0 IS THE COLOUR KEY and
         index 0 is never drawn. Fixed by convention rather than stored,
         so the blitter compares against a compile-time constant; the
-        producer is what guarantees it (tools/kf_ingest_sprites.py forces
-        the magenta key into slot 0).
+        producer is what guarantees it -- quantize_rgb565() (below), which
+        always seeds the palette with the key colour first, plus
+        make_indexed_asset()'s own check that palette[0] matches the
+        declared color_key. tools/kf_ingest_sprites.py has no indexed-sprite
+        support yet; it will need the same guarantee when Task 4 gives it
+        one.
 
         NO FORMAT VERSION BUMP. This is a new asset_type in the existing
         52-byte directory entry, which is precisely the extension path
@@ -769,7 +789,14 @@ static int run_indexed_blit_check(void) {
     }
     kf_assets_shutdown();
 
-    kf_arena_init_all();
+    /* kf_arena_init_all() is NOT called again here, or anywhere else in this
+     * function -- it panics on a second call (kf/arena.cpp:
+     * `KF_ASSERT(!g_initialised, "kf_arena_init_all called twice")`), and
+     * KF_ARENA_ASSETS is not one of the resettable arenas (only
+     * KF_ARENA_SCRATCH is). One kf_arena_init_all() call at the top of this
+     * function is enough for every kf_assets_shutdown()/kf_assets_init()
+     * remount below -- see run_indexed_asset_check() (Task 1) for where
+     * this was found the hard way. */
     kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
     check(kf_assets_init() == KF_OK, "indexed fixture mounts");
     const kf_sprite *ix = kf_assets_get("test_sprite");
@@ -789,7 +816,6 @@ static int run_indexed_blit_check(void) {
         std::vector<uint8_t> ix_mirror(fb_bytes);
         std::memcpy(ix_mirror.data(), kf_fb_pixels(), fb_bytes);
         kf_assets_shutdown();
-        kf_arena_init_all();
         kf_host_assets_set_pack_path(nullptr);
         check(kf_assets_init() == KF_OK, "default pack remounts");
         const kf_sprite *rgb2 = kf_assets_get("test_sprite");
@@ -801,7 +827,6 @@ static int run_indexed_blit_check(void) {
     }
 
     /* Frames. */
-    kf_arena_init_all();
     kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
     check(kf_assets_init() == KF_OK, "indexed fixture remounts");
     const kf_sprite *anim = kf_assets_get("test_sprite_anim");
@@ -2003,8 +2028,9 @@ nobody mistakes them for oversights.
   version bump: a flags bit plus a sequence table at the front of the payload,
   or one more `kf_asset_type`.
 
-- **It does not raise `KF_ASSETS_MAX_ENTRIES`.** It is 64
-  (`hakoniwaos/include/kf/assets.h:67`), the creature pack uses 49, and this
+- **It does not raise `KF_ASSETS_MAX_ENTRIES`.** It was 64 as this plan was
+  originally written -- since raised; see the addendum immediately below for
+  the current number and where to find it. The creature pack uses 49, and this
   plan leaves it at 49 — collapsing frames into entries is what stops nine-frame
   art from needing 441. But **the full 379-entry roster will not fit**, and that
   is a hard `KF_ASSERT` at mount, not a graceful degradation. Raising it is
