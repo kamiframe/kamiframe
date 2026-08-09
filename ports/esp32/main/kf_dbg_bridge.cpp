@@ -5,8 +5,9 @@
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
  * tasks, the KFDBG command parser, and the command handlers -- PING, SHOT,
- * STATE, SCANLINE, VSYNC, BTN, BTNHOLD, and the time-control trio ADVANCE/
- * RESET/MULT (see "Time control" below).
+ * STATE, SCANLINE, VSYNC, BTN, BTNHOLD, the time-control trio ADVANCE/
+ * RESET/MULT (see "Time control" below), the five care actions FEED/PLAY/
+ * REST/BATH/FLUSH, and JUMP (see "Care actions and stage jump" below).
  *
  * SCANLINE: samples the ILI9341's Get_Scanline register (command 0x45) 64
  * times in a row over SPI and reports the pattern, so a human can judge
@@ -52,6 +53,35 @@
  * loop design, ADR 0021). MULT mirrors sdl_debug_window.cpp's play-speed
  * multiplier: see handle_mult() and app_main.cpp's frame loop for how it
  * is applied.
+ *
+ * Care actions and stage jump: the desktop simulator reaches all five care
+ * actions (feed/play/rest/bath/flush) off number keys 1-5 (sdl_input.cpp)
+ * and a life-stage jump off sdl_debug_window.cpp's own buttons -- neither
+ * had a KFDBG equivalent until this file's FEED/PLAY/REST/BATH/FLUSH/JUMP
+ * handlers below. All six call kf_pet_session_feed()/_play()/_rest()/
+ * _bath()/_flush()/kf_pet_session_debug_jump_to_stage() DIRECTLY, not via
+ * KFDBG BTN's button-injection path, even though a real button press
+ * reaches the four care functions through kf_creature_screen.cpp's
+ * handle_care_buttons(). See handle_feed()'s own comment for the two
+ * reasons (explicit variation vs. hidden per-button
+ * cycling state; sidestepping Core's debounce, which a one-shot BTN
+ * injection cannot reliably clear -- see tools/kf_debug.py's `press`
+ * --hold-ms comment for that specific, already-found bug).
+ *
+ * None of FEED/PLAY/REST/BATH/FLUSH/JUMP are gated behind
+ * KF_DBG_INPUT_INJECT_ENABLE (the narrower flag that turns off BTN/
+ * BTNHOLD specifically -- see kf_dbg_bridge.h). That flag's own purpose is
+ * refusing remote *button* control while keeping PING/SHOT/STATE's
+ * read-only introspection; these six are not button control at all, and
+ * ADR 0031 already established the precedent this follows: ADVANCE/RESET/
+ * MULT stay available whenever the bridge as a whole is on, not narrowed
+ * by that flag, because they are not button injection either. RESET is
+ * already a far more drastic state mutation than any single care action
+ * (a full pet reset vs. one need bumped a little), so gating care/jump
+ * more tightly than RESET while leaving RESET itself ungated would be an
+ * inconsistent line to draw, not a more careful one. Turning off
+ * KF_DBG_BRIDGE_ENABLE entirely removes all of it, same as everything
+ * else in this file.
  *
  * Wire format, confirmed against tools/kf_debug.py and tools/
  * kf_debug_selftest.py (the host side, already written and tested):
@@ -876,6 +906,154 @@ void handle_mult(uint32_t n) {
                           rn > 0 ? static_cast<size_t>(rn) : 0);
 }
 
+/* KFDBG FEED/PLAY/REST/BATH <variation>: fires a care action against the
+ * live pet, called DIRECTLY through kf_pet_session_feed()/_play()/_rest()/
+ * _bath() -- not via KFDBG BTN's button-injection path, even though a real
+ * button press reaches the exact same four functions through
+ * kf_creature_screen.cpp's handle_care_buttons(). Two reasons this is its
+ * own command rather than reusing BTN:
+ *
+ *   1. handle_care_buttons()'s `variation` is an implicit, per-action
+ *      cycling counter (0 -> 1 -> 2 -> 0 -> ...) private to that file,
+ *      there purely as a keyboard-binding convenience (see that function's
+ *      own header comment) -- it is not part of the session API. Driving
+ *      care through BTN injection would force a scripted client to
+ *      reconstruct that hidden counter (how many times has THIS action
+ *      fired since the pet was last reset or jumped?) just to land on a
+ *      specific variation. `kf_pet_feed()` et al.'s own `variation`
+ *      argument is what actually decides whether the creature likes the
+ *      care (kf/pet.h) -- over a scriptable serial link, taking it as an
+ *      explicit argument here is strictly more useful than hiding it
+ *      behind press-count state the caller cannot see or reset
+ *      independently of the pet itself.
+ *   2. A one-shot `KFDBG BTN` mask does not reliably register at all:
+ *      Core's debounce (kDebounceUs, hakoniwaos/src/app.cpp) requires the
+ *      SAME mask across consecutive ~33ms-apart polls before it produces a
+ *      press edge, so BTN's single-poll injection is silently dropped
+ *      unless the host holds it for >=120ms via BTNHOLD (see
+ *      tools/kf_debug.py's `press` command and its own --hold-ms comment
+ *      for the real bug this was found from). Calling kf_pet_session_*()
+ *      directly sidesteps debounce entirely -- correct here because these
+ *      commands exist to exercise the care action's own effect, not
+ *      whether a simulated button press clears Core's debounce filter.
+ *
+ * `variation` is validated by process_command_line() (against
+ * KF_PET_CARE_VARIATION_COUNT, kf/pet.h) before any of these run, so each
+ * is only ever called with an already-in-range value. The ack reports
+ * pet->last_reaction (kf_pet_reaction: 0=liked, 1=neutral, 2=disliked) as
+ * a raw number, same convention KFDBG STATE's `stage`/`base_trait` fields
+ * already use, rather than adding a second copy of kf_creature_screen.cpp's
+ * private reaction_name() text mapping. */
+void handle_feed(uint8_t variation) {
+    kf_pet_session_feed(variation);
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[64];
+    const int n = std::snprintf(content, sizeof content,
+                                 "FEED variation=%u reaction=%u",
+                                 static_cast<unsigned>(variation),
+                                 static_cast<unsigned>(pet->last_reaction));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+void handle_play(uint8_t variation) {
+    kf_pet_session_play(variation);
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[64];
+    const int n = std::snprintf(content, sizeof content,
+                                 "PLAY variation=%u reaction=%u",
+                                 static_cast<unsigned>(variation),
+                                 static_cast<unsigned>(pet->last_reaction));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+void handle_rest(uint8_t variation) {
+    kf_pet_session_rest(variation);
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[64];
+    const int n = std::snprintf(content, sizeof content,
+                                 "REST variation=%u reaction=%u",
+                                 static_cast<unsigned>(variation),
+                                 static_cast<unsigned>(pet->last_reaction));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+void handle_bath(uint8_t variation) {
+    kf_pet_session_bath(variation);
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[64];
+    const int n = std::snprintf(content, sizeof content,
+                                 "BATH variation=%u reaction=%u",
+                                 static_cast<unsigned>(variation),
+                                 static_cast<unsigned>(pet->last_reaction));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+/* KFDBG FLUSH: kf_pet_session_flush() -- clears waiting poops. No
+ * variation argument (kf_pet_flush() takes none) and no reaction reported:
+ * kf_pet_flush() leaves last_reaction/last_care_action exactly as the
+ * previous real care action left them (see hakoniwaos/src/pet.cpp's own
+ * comment), so echoing either here would misattribute someone else's
+ * reaction to a chore that has none of its own -- the same reasoning
+ * kf_creature_screen.cpp's handle_care_buttons() already applies to its
+ * own FLUSH log line. */
+void handle_flush() {
+    kf_pet_session_flush();
+    static const char kMsg[] = "FLUSH";
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<const uint8_t *>(kMsg),
+                          sizeof(kMsg) - 1);
+}
+
+/* KFDBG JUMP <stage> [teen_form] [adult_branch]: kf_pet_session_debug_
+ * jump_to_stage() -- puts the live pet at the START of `stage`, alive and
+ * fully fed, without living through the real stage durations first (an
+ * egg alone is a real hour; the full climb is close to a week -- see
+ * kf_pet_session.h's own comment). Built for exactly the case CLAUDE.md's
+ * task brief spells out: an uncared-for pet dies of neglect partway
+ * through the child stage, and a dead pet is frozen permanently, so
+ * without this a real device can never show later-stage sprites at all.
+ *
+ * `stage` is the raw kf_pet_stage enum value (0=egg .. 4=adult), same
+ * convention KFDBG STATE's `stage` field already uses. `teen_form` and
+ * `adult_branch` are optional and both default to 0 when omitted --
+ * exactly kf_pet_session_debug_jump_to_stage()'s own "unset" behaviour
+ * (see that function's header comment: 0 is always a valid family index
+ * and every family has at least one adult, so 0 is a safe default for
+ * both). `teen_form`'s valid range is [0, KF_PET_TEEN_FORM_DUST]
+ * (kf/pet.h) INCLUSIVE -- KF_PET_TEEN_FORM_DUST is a real, reachable form
+ * (deliberately equal to KF_PET_TEEN_FORM_COUNT, one past the four named
+ * ones), not an error value, so this handler passes it through exactly
+ * like any other in-range input rather than clamping it away; only input
+ * genuinely out of range falls back to 0, inside
+ * kf_pet_session_debug_jump_to_stage() itself. This handler does no range
+ * validation of its own beyond "is it a decimal number" -- the session
+ * function's own out-of-range-falls-back-to-0 contract is already the
+ * complete, correct behaviour, and duplicating it here would just be a
+ * second place for the two to drift apart.
+ *
+ * The ack reports the state that actually resulted (pet->stage/teen_form/
+ * adult_branch, read back AFTER the call), not an echo of the request --
+ * more useful for a scriptable client than the request alone, since
+ * out-of-range teen_form/adult_branch silently fall back to 0 rather than
+ * erroring, and this way a caller sees exactly what landed without a
+ * separate KFDBG STATE round trip. */
+void handle_jump(uint32_t stage, uint32_t teen_form, uint32_t adult_branch) {
+    kf_pet_session_debug_jump_to_stage(static_cast<kf_pet_stage>(stage),
+                                        static_cast<uint8_t>(teen_form),
+                                        static_cast<uint8_t>(adult_branch));
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[80];
+    const int n = std::snprintf(
+        content, sizeof content, "JUMP stage=%d teen_form=%u adult_branch=%u",
+        static_cast<int>(pet->stage), static_cast<unsigned>(pet->teen_form),
+        static_cast<unsigned>(pet->adult_branch));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
 /* --------------------------------------------------------------------------
  * Parsing. Hand-rolled rather than sscanf("KFDBG %15s", ...): a format
  * string's literal-then-%s pattern matches zero or more whitespace where
@@ -914,6 +1092,29 @@ bool parse_decimal(const char *tok, uint32_t *out) {
         return false;
     }
     *out = static_cast<uint32_t>(v);
+    return true;
+}
+
+/* Shared by KFDBG FEED/PLAY/REST/BATH's four otherwise-identical parse
+ * steps: one required decimal token, range-checked against
+ * KF_PET_CARE_VARIATION_COUNT (kf/pet.h) -- Core's own count of how many
+ * ways there are to do each action, not a number this file hardcodes.
+ * Replies with `err` and returns false on any failure, exactly like every
+ * other inline validation in process_command_line() below. */
+bool parse_care_variation(const char *&p, const char *line, uint8_t *out) {
+    char tok[16];
+    uint32_t v = 0;
+    if (!next_token(p, tok, sizeof tok) || !parse_decimal(tok, &v)) {
+        reply_err(line, "needs one decimal variation argument "
+                         "(0..KF_PET_CARE_VARIATION_COUNT-1)");
+        return false;
+    }
+    if (v >= KF_PET_CARE_VARIATION_COUNT) {
+        reply_err(line, "variation out of range "
+                         "(0..KF_PET_CARE_VARIATION_COUNT-1)");
+        return false;
+    }
+    *out = static_cast<uint8_t>(v);
     return true;
 }
 
@@ -1007,6 +1208,61 @@ void process_command_line(const char *line) {
             return;
         }
         handle_vsync(v != 0u);
+    } else if (std::strcmp(tok1, "FEED") == 0) {
+        uint8_t variation = 0;
+        if (!parse_care_variation(p, line, &variation)) {
+            return;
+        }
+        handle_feed(variation);
+    } else if (std::strcmp(tok1, "PLAY") == 0) {
+        uint8_t variation = 0;
+        if (!parse_care_variation(p, line, &variation)) {
+            return;
+        }
+        handle_play(variation);
+    } else if (std::strcmp(tok1, "REST") == 0) {
+        uint8_t variation = 0;
+        if (!parse_care_variation(p, line, &variation)) {
+            return;
+        }
+        handle_rest(variation);
+    } else if (std::strcmp(tok1, "BATH") == 0) {
+        uint8_t variation = 0;
+        if (!parse_care_variation(p, line, &variation)) {
+            return;
+        }
+        handle_bath(variation);
+    } else if (std::strcmp(tok1, "FLUSH") == 0) {
+        handle_flush();
+    } else if (std::strcmp(tok1, "JUMP") == 0) {
+        /* One required arg (stage), two optional (teen_form, adult_branch)
+         * -- both default to 0 when omitted, matching kf_pet_session_
+         * debug_jump_to_stage()'s own "unset" default. See handle_jump()'s
+         * own comment for why no further range validation happens here. */
+        char tok2[16];
+        char tok3[16];
+        char tok4[16];
+        uint32_t stage = 0;
+        uint32_t teen_form = 0;
+        uint32_t adult_branch = 0;
+        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &stage)) {
+            reply_err(line, "KFDBG JUMP needs at least a decimal stage "
+                             "argument (0=egg..4=adult)");
+            return;
+        }
+        if (next_token(p, tok3, sizeof tok3)) {
+            if (!parse_decimal(tok3, &teen_form)) {
+                reply_err(line, "KFDBG JUMP's teen_form argument must be decimal");
+                return;
+            }
+            if (next_token(p, tok4, sizeof tok4)) {
+                if (!parse_decimal(tok4, &adult_branch)) {
+                    reply_err(line, "KFDBG JUMP's adult_branch argument must be decimal");
+                    return;
+                }
+            }
+        }
+        handle_jump(stage, teen_form, adult_branch);
     } else {
         reply_err(line, "unknown KFDBG subcommand");
     }

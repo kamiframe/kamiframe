@@ -135,16 +135,15 @@ void kf_pet_session_shutdown(void);
  *   thin wrapper over kf_pet_advance()/kf_pet_init(), which the gameplay
  *   path already links in; no extra static memory of its own. Cheap
  *   enough that the ESP32 build turns this ON: it is how ports/esp32/
- *   main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT commands reach the
- *   pet session at all (see that file, ADR 0030), letting a developer
- *   fast-forward a real device's four-real-day decay curve over a serial
- *   link instead of watching it do nothing for four days. _jump_to_stage()
- *   has no KFDBG command of its own yet -- its only current caller is
- *   desktop-only (sdl_debug_window.cpp's stage-jump buttons) -- but it
- *   rides this flag rather than a new one because it costs exactly what
- *   its three siblings already cost: one kf_pet_init() call and a few
- *   field writes, nothing this flag's "cheap" half was not already paying
- *   for.
+ *   main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT/JUMP commands reach
+ *   the pet session at all (see that file, and ADR 0030/0031/0034),
+ *   letting a developer fast-forward a real device's four-real-day decay
+ *   curve, or jump straight to a life stage's art, over a serial link
+ *   instead of watching it do nothing for four days or nursing a pet
+ *   through every real stage. _jump_to_stage() rides this flag rather than
+ *   a new one because it costs exactly what its three siblings already
+ *   cost: one kf_pet_init() call and a few field writes, nothing this
+ *   flag's "cheap" half was not already paying for.
  *
  *   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates kf_pet_session_debug_seek()
  *   below and the scrubbable-timeline snapshot ring backing it -- the
@@ -250,7 +249,8 @@ void kf_pet_session_debug_reset(void);
  * same timeline.
  *
  * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
- * header comment. No KFDBG command yet; desktop-only caller today is
+ * header comment. Reachable on ESP32 via KFDBG JUMP (see
+ * kf_dbg_bridge.cpp's handle_jump()); desktop-only caller is
  * sdl_debug_window.cpp's stage-jump buttons. */
 void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
                                          uint8_t adult_branch);

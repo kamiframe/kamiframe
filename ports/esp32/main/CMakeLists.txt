@@ -141,10 +141,10 @@ esptool_py_flash_to_partition(flash "assets"
 ##   commands below reach the pet session at all, letting a developer
 ##   fast-forward a real device's multi-day decay curve over the serial
 ##   bridge instead of watching it do nothing for days (see ADR 0030's
-##   "Time control" section). jump_to_stage has no KFDBG command of its
-##   own (it is a desktop debug-window control, sdl_debug_window.cpp) --
-##   staying on this flag costs nothing here either, same as the note
-##   below about a bridge-less build.
+##   "Time control" section). jump_to_stage now has a KFDBG command too
+##   (KFDBG JUMP -- see kf_dbg_bridge.cpp's handle_jump()), so this flag
+##   staying on is no longer merely harmless, it is load-bearing for that
+##   command as well, not just the other three.
 ##
 ##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates the scrubbable-timeline
 ##   snapshot ring and kf_pet_session_debug_seek() -- a real static

@@ -18,10 +18,10 @@
  * of their own. ports/esp32/main/CMakeLists.txt turns this ON: it is the
  * ESP32 build's only way to reach the pet session's debug fast-forward at
  * all, via ports/esp32/main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT
- * (ADR 0030) -- _debug_jump_to_stage() has no KFDBG command of its own
- * yet and is called only from sdl_debug_window.cpp today, but it rides
+ * (ADR 0030) and KFDBG JUMP (ADR 0034) -- _debug_jump_to_stage() rides
  * this flag rather than a new one because it costs exactly what its three
- * siblings already cost.
+ * siblings already cost, and is now called both from sdl_debug_window.cpp
+ * (desktop) and kf_dbg_bridge.cpp's handle_jump() (ESP32).
  *
  * KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates _debug_seek() and the
  * scrubbable-timeline snapshot ring backing it -- the genuinely expensive
