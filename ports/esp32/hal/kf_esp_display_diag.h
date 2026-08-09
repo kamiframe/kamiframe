@@ -77,14 +77,20 @@ extern "C" {
  * it at, in between that call and kf_esp_display_diag_end_probe().
  *
  * The reply's byte layout is NOT interpreted here. The ILI9341's SPI read
- * protocol is widely documented (and NOT verified against this specific
- * board, for want of a confirmed-correct read yet) to prepend one dummy
- * byte before the real data on a parameter read -- kf_dbg_bridge.cpp's
- * caller assumes byte_count == 3 (1 dummy + 2 data) and slices accordingly,
- * and also computes an alternate no-dummy-byte reading from the same three
- * bytes so a human can tell which framing (if either) looks like a real,
- * advancing scan counter; this function has no opinion on the count and
- * will happily read however many bytes it's asked for. */
+ * protocol is widely documented to prepend one dummy byte before the real
+ * data on a parameter read; a clean 1/2/4MHz sweep against this specific
+ * board has since found that documented framing WRONG for this module --
+ * the real framing has no dummy byte at all (raw[0]/raw[1] is the 10-bit
+ * value). kf_dbg_bridge.cpp's SCANLINE handler still reads byte_count == 3
+ * and computes both framings from the same three bytes (now reporting the
+ * confirmed one under its unprefixed JSON fields and the datasheet's under
+ * the alt_-prefixed ones -- the reverse of this diagnostic's first cut, see
+ * that file's own comment on the swap), so a human can keep comparing both
+ * hypotheses on a future panel this has not been confirmed against; this
+ * function itself has no opinion on the count and will happily read
+ * however many bytes it's asked for -- esp_display.cpp's push_rect() (the
+ * vsync feature this diagnostic justified) asks for only 2, since it only
+ * ever needs the confirmed framing. */
 bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count);
 
 /* Tears down the panel IO/panel esp_display.cpp normally drives writes

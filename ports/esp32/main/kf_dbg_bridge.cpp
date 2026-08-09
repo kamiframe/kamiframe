@@ -5,8 +5,8 @@
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
  * tasks, the KFDBG command parser, and the command handlers -- PING, SHOT,
- * STATE, SCANLINE, BTN, BTNHOLD, and the time-control trio ADVANCE/RESET/
- * MULT (see "Time control" below).
+ * STATE, SCANLINE, VSYNC, BTN, BTNHOLD, and the time-control trio ADVANCE/
+ * RESET/MULT (see "Time control" below).
  *
  * SCANLINE: samples the ILI9341's Get_Scanline register (command 0x45) 64
  * times in a row over SPI and reports the pattern, so a human can judge
@@ -26,7 +26,21 @@
  * kf_esp_display_diag.h for the raw primitive and the begin/end-probe pair
  * this handler drives, and esp_display.cpp's kf_esp_display_diag_begin_
  * probe() for why that rebuild, rather than a second SPI device, is the safe
- * way to get a different clock out of esp_lcd.
+ * way to get a different clock out of esp_lcd. A clean 1/2/4MHz sweep has
+ * since confirmed the ALT framing (no dummy byte) as correct for this panel
+ * -- handle_scanline() below now reports that framing under the unprefixed
+ * fields (value/distinct_values/increases/decreases/...) and the OLD
+ * datasheet framing (1 dummy byte) under the alt_-prefixed ones, the reverse
+ * of this diagnostic's first cut. dummy_bytes_assumed in the JSON reply
+ * always describes the unprefixed fields' framing, so it changed from 1 to
+ * 0 along with the swap.
+ *
+ * VSYNC: the feature this diagnostic exists to justify. `KFDBG VSYNC <0|1>`
+ * toggles esp_display.cpp's push_rect() waiting for the scan to clear a
+ * rectangle before writing it -- see that file's own header comment on the
+ * feature (above push_rect()) for the read-at-40MHz reasoning and the wait
+ * itself, and kf_esp_display_vsync.h for the on/off and stats contract this
+ * file's handle_vsync() and handle_state() are the two ends of.
  *
  * Time control: an egg on this codebase's default config lasts 1 hour and
  * does not decay at all, and post-hatch decay is hours-to-days per need
@@ -72,6 +86,7 @@
 
 #include "kf_dbg_codec.h"
 #include "kf_esp_display_diag.h"
+#include "kf_esp_display_vsync.h"
 #include "kf_panel_profile.h"
 #include "kf_pet_session.h"
 
@@ -392,18 +407,35 @@ void handle_state() {
      * time-control feature ADVANCE/RESET/MULT below make possible. */
     const uint64_t pet_age_s = kf_pet_session_debug_age_seconds();
 
+    /* vsync_*: the beam-racing feature's own runtime setting and its most
+     * recently completed one-second window of stats -- see
+     * kf_esp_display_vsync.h's own comment on kf_esp_display_vsync_get_
+     * stats() for exactly what "most recently completed" means (it does not
+     * decay to zero during an idle pet). Reading these costs nothing beyond
+     * three uint32_t copies out of esp_display.cpp's own file-scope state --
+     * no lock needed, same single-thread reasoning as everything else this
+     * function reads. */
+    const bool vsync_enabled = kf_esp_display_vsync_enabled();
+    uint32_t vsync_rects_written = 0;
+    uint32_t vsync_rects_waited = 0;
+    uint32_t vsync_avg_wait_us = 0;
+    kf_esp_display_vsync_get_stats(&vsync_rects_written, &vsync_rects_waited,
+                                    &vsync_avg_wait_us);
+
     /* Single-line, minified JSON -- see the ADR for the exact key set;
      * field names are not fixed by the protocol spec (tools/kf_debug.py
      * prints whatever keys arrive rather than expecting specific ones), so
      * this is a firmware-side choice, documented once here and in the ADR
      * rather than duplicated in a comment at every field. */
-    char json[384];
+    char json[512];
     const int n = std::snprintf(
         json, sizeof json,
         "{\"stage\":%d,\"hunger_mp\":%lu,\"happiness_mp\":%lu,\"energy_mp\":%lu,"
         "\"base_trait\":%u,\"stage_elapsed_s\":%llu,\"pet_age_s\":%llu,"
         "\"time_multiplier\":%lu,\"heap_free_internal\":%zu,"
-        "\"heap_free_psram\":%zu,\"fps\":%lu.%lu,\"frame_us\":%lu}",
+        "\"heap_free_psram\":%zu,\"fps\":%lu.%lu,\"frame_us\":%lu,"
+        "\"vsync_enabled\":%s,\"vsync_rects_written\":%lu,"
+        "\"vsync_rects_waited\":%lu,\"vsync_avg_wait_us\":%lu}",
         static_cast<int>(pet->stage), static_cast<unsigned long>(pet->hunger_mp),
         static_cast<unsigned long>(pet->happiness_mp),
         static_cast<unsigned long>(pet->energy_mp),
@@ -413,7 +445,11 @@ void handle_state() {
         static_cast<unsigned long>(g_time_multiplier), heap_free_internal,
         heap_free_psram, static_cast<unsigned long>(fps_x10 / 10u),
         static_cast<unsigned long>(fps_x10 % 10u),
-        static_cast<unsigned long>(last->cpu_us));
+        static_cast<unsigned long>(last->cpu_us),
+        vsync_enabled ? "true" : "false",
+        static_cast<unsigned long>(vsync_rects_written),
+        static_cast<unsigned long>(vsync_rects_waited),
+        static_cast<unsigned long>(vsync_avg_wait_us));
 
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
         KF_LOGE(TAG, "STATE: JSON build failed or truncated (n=%d, cap=%zu)", n,
@@ -452,22 +488,24 @@ constexpr int kScanlineReportStride = 5;  /* every 5th sample reported, not all 
 constexpr uint32_t kScanlineDefaultReadHz = 2000000;
 
 struct ScanlineSample {
-    /* value: the ILI9341 datasheet's documented framing for command 0x45 --
-     * one dummy byte (raw[0]), then a 10-bit value MSB-first across
-     * raw[1]/raw[2]. The main stats this command reports (value_min/max,
-     * distinct_values, increases/decreases, changed_between_reads) are all
-     * computed from this field.
+    /* value: the framing a clean 1/2/4MHz sweep confirmed -- NO dummy byte,
+     * raw[0]/raw[1] read MSB-first as the 10-bit value. This is now
+     * "primary" in every sense that matters here: it is what value_min/max,
+     * distinct_values, increases/decreases and changed_between_reads (the
+     * unprefixed fields in the JSON reply) are computed from, and
+     * dummy_bytes_assumed in that reply is 0, describing this field.
      *
-     * alt_value: an alternate framing hypothesis, computed and reported
-     * ALONGSIDE the primary one rather than instead of it -- at the
-     * previous (write-clock) measurement, first_raw_hex was 006300 and the
-     * datasheet framing produced values that plainly were not a scan
-     * counter, and there is still no hardware on hand to confirm which
-     * framing this specific module actually uses even at a corrected read
-     * clock. This one assumes NO dummy byte: raw[0]/raw[1] read as the
-     * 10-bit MSB-first value instead. first_raw_hex in the JSON reply is
-     * reported alongside both so a human can check either hypothesis
-     * against the actual bytes rather than trusting either one blind.
+     * alt_value: the OLD hypothesis this diagnostic originally led with --
+     * the ILI9341 datasheet's documented framing, one dummy byte (raw[0])
+     * then a 10-bit value MSB-first across raw[1]/raw[2]. Confirmed WRONG
+     * for this panel by the same sweep (its byte-boundary artefacts --
+     * runs of 0x00/0x80/0xFF, jumping by ~127 -- never looked like a scan
+     * counter at any of the three clocks tried), but still computed and
+     * reported here, under the alt_-prefixed JSON fields, in case a future
+     * panel profile turns out to need it instead -- see kf_esp_display_
+     * diag.h's own comment on why even the confirmed-correct framing here
+     * is "for THIS module", not proven for every ILI9341-family panel this
+     * codebase might one day support.
      *
      * Both fields are meaningless when ok is false. */
     uint16_t value;
@@ -622,17 +660,17 @@ void handle_scanline(uint32_t read_hz) {
                 have_first_raw = true;
             }
             ok_count++;
-            /* Primary framing: the datasheet's documented 1-dummy-byte,
-             * 10-bit MSB-first value -- masked to 0x03FF (10 bits), not the
-             * 0x01FF (9 bits) an earlier pass at this diagnostic used. That
-             * mask disagreed with the datasheet framing this file's own
-             * struct comment cites, so it is corrected here; see
-             * ScanlineSample's own comment for why an alternate framing is
-             * ALSO computed rather than trusting this one blind. */
+            /* value: the confirmed-correct framing (no dummy byte,
+             * raw[0]/raw[1]) -- see ScanlineSample's own comment for why
+             * this is "value" and not "alt_value" now. alt_value: the OLD
+             * datasheet framing (1 dummy byte, raw[1]/raw[2]), kept for
+             * comparison and for whatever panel profile needs it next.
+             * Both masked to 0x03FF (10 bits, per the datasheet's own
+             * field width). */
             samples[i].value = static_cast<uint16_t>(
-                ((static_cast<uint16_t>(raw[1]) << 8) | raw[2]) & 0x03FFu);
-            samples[i].alt_value = static_cast<uint16_t>(
                 ((static_cast<uint16_t>(raw[0]) << 8) | raw[1]) & 0x03FFu);
+            samples[i].alt_value = static_cast<uint16_t>(
+                ((static_cast<uint16_t>(raw[1]) << 8) | raw[2]) & 0x03FFu);
         } else {
             samples[i].value = 0;
             samples[i].alt_value = 0;
@@ -698,11 +736,14 @@ void handle_scanline(uint32_t read_hz) {
      * (or zero, if every read failed) means the register never budged
      * across the whole run, which is what "reads are not working" looks
      * like from here. value_min/value_max/... are only meaningful when
-     * ok > 0; -1 signals that plainly rather than reporting a misleading 0. */
+     * ok > 0; -1 signals that plainly rather than reporting a misleading 0.
+     * dummy_bytes_assumed is 0, not 1 -- it describes the unprefixed fields
+     * below, which are now the confirmed no-dummy-byte framing; see
+     * ScanlineSample's own comment for the swap and why. */
     const int n = std::snprintf(
         json, kJsonCap,
         "{\"cmd_hex\":\"0x%02x\",\"read_hz\":%lu,\"probe_ok\":%s,"
-        "\"reply_bytes\":%u,\"dummy_bytes_assumed\":1,\"samples\":%d,"
+        "\"reply_bytes\":%u,\"dummy_bytes_assumed\":0,\"samples\":%d,"
         "\"ok\":%d,\"failed\":%d,\"first_raw_hex\":\"%s\",\"sample_stride\":%d,"
         "\"sample_values\":[%s],\"value_min\":%d,\"value_max\":%d,"
         "\"distinct_values\":%d,\"changed_between_reads\":%s,"
@@ -741,6 +782,21 @@ void handle_scanline(uint32_t read_hz) {
 
     kf_dbg_enqueue_reply("json", reinterpret_cast<uint8_t *>(json), static_cast<size_t>(n));
     heap_caps_free(json);
+}
+
+/* KFDBG VSYNC <0|1>: toggles esp_display.cpp's beam-racing wait at runtime
+ * -- see kf_esp_display_vsync.h for the full contract and esp_display.cpp's
+ * push_rect() for what the wait actually does. Takes effect immediately
+ * (the very next push_rect() call reads the new setting; there is nothing
+ * cached per frame to invalidate), which is the point: measure a run with
+ * it on, flip it, measure again, all on the same board, no reflash. */
+void handle_vsync(bool enable) {
+    kf_esp_display_vsync_set_enabled(enable);
+    char content[32];
+    const int n = std::snprintf(content, sizeof content, "VSYNC enabled=%d",
+                                 enable ? 1 : 0);
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
 }
 
 void handle_btn(uint32_t mask) {
@@ -942,6 +998,15 @@ void process_command_line(const char *line) {
             return;
         }
         handle_mult(mult);
+    } else if (std::strcmp(tok1, "VSYNC") == 0) {
+        char tok2[16];
+        uint32_t v = 0;
+        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &v) ||
+            (v != 0u && v != 1u)) {
+            reply_err(line, "KFDBG VSYNC needs one argument, 0 or 1");
+            return;
+        }
+        handle_vsync(v != 0u);
     } else {
         reply_err(line, "unknown KFDBG subcommand");
     }

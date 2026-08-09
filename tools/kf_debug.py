@@ -20,6 +20,8 @@ Wire protocol (fixed; the device side implements the exact same spec):
         KFDBG ADVANCE <seconds>
         KFDBG RESET
         KFDBG MULT <n>
+        KFDBG SCANLINE [read_hz]
+        KFDBG VSYNC <0|1>
 
     Device -> host, a framed block. Ordinary firmware log lines may appear
     interleaved between (never inside) these blocks and are skipped:
@@ -49,6 +51,8 @@ Usage:
     python3 tools/kf_debug.py [--port PORT] mult 64         # 1..256
     python3 tools/kf_debug.py [--port PORT] reset           # back to a fresh egg
     python3 tools/kf_debug.py [--port PORT] watch [--interval 1.0]
+    python3 tools/kf_debug.py [--port PORT] scanline [--read-hz 2000000]
+    python3 tools/kf_debug.py [--port PORT] vsync on|off
 
 See tools/README.md for a plain-language walkthrough.
 """
@@ -617,6 +621,21 @@ def cmd_scanline(link, args):
     human can try 1MHz or 4MHz without reflashing. The screen will visibly
     glitch while this runs -- the firmware tears the panel down and rebuilds
     it, twice -- and that is expected, not a bug.
+
+    A 1/2/4MHz sweep has since confirmed which framing this panel actually
+    uses (no dummy byte), so the unprefixed fields in the reply below
+    (value_min/max, distinct_values, increases/decreases,
+    changed_between_reads) are now THAT framing, not the ILI9341 datasheet's
+    documented one -- the alt_-prefixed fields are the datasheet framing
+    instead, kept for comparison. dummy_bytes_assumed says which is which
+    (0 -- the unprefixed fields assume no dummy byte).
+
+    The firmware makes a good-faith attempt to leave the panel in a clean
+    state afterwards (an extra reset settle delay -- see esp_display.cpp's
+    rebuild_panel_io()), but that fix has not been verified on real
+    hardware. If the screen shows horizontal banding after this command
+    runs, that is the known, expected failure mode -- a power cycle (or
+    just letting the pet redraw a full frame) should clear it.
     """
     command = "KFDBG SCANLINE"
     if args.read_hz is not None:
@@ -649,22 +668,38 @@ def cmd_scanline(link, args):
               "not possible on this module -- either SDO is not wired through, "
               "or it does not respond at this SPI clock.")
     elif distinct <= 1:
-        print("VERDICT: reads succeeded but the value never changed (datasheet "
-              "framing). That is a stuck register, not a scan counter -- not "
-              "usable, at least under that framing.")
+        print("VERDICT: reads succeeded but the value never changed (no-dummy-byte "
+              "framing, the one confirmed correct on this panel). That is a stuck "
+              "register, not a scan counter -- not usable at this read_hz.")
     elif inc > dec * 2:
         print("VERDICT: looks like a real scan counter (it advances and wraps). "
               "Beam-racing may be viable -- the remaining question is whether "
               "avg_read_us is cheap enough to poll within a frame.")
     else:
         print("VERDICT: values change but do not advance consistently under the "
-              "datasheet's documented framing (1 dummy byte, 10-bit value). That "
-              "reads as noise rather than a counter for that framing.")
+              "confirmed no-dummy-byte framing. That reads as noise rather than a "
+              "counter at this read_hz.")
     if alt_distinct > 1 and alt_inc > alt_dec * 2 and not (inc > dec * 2):
-        print("NOTE: the ALTERNATE framing (no dummy byte -- see alt_sample_values) "
-              "looks more like a real, advancing counter than the primary one did. "
-              "Worth trying that framing for real if the primary one above reads "
-              "as noise or stuck.")
+        print("NOTE: the OLD datasheet framing (1 dummy byte -- see "
+              "alt_sample_values) looks more like a real, advancing counter than "
+              "the confirmed one above did at this read_hz. Worth double-checking "
+              "which framing this specific board actually needs.")
+
+
+def cmd_vsync(link, args):
+    """Turn beam-racing on or off: push_rect() waiting for the panel's scan
+    to clear a rectangle before writing it, instead of racing it blind.
+
+    Takes effect on the device's very next write -- no reflash, no reset.
+    Compare `state` (or `watch`) before and after to see the effect: fps and
+    frame_us are the bottom line, and vsync_rects_written/vsync_rects_waited/
+    vsync_avg_wait_us (also in KFDBG STATE) show whether the wait is actually
+    doing anything or costing nothing.
+    """
+    enable = args.setting == "on"
+    payload = _expect(link, f"KFDBG VSYNC {1 if enable else 0}", "ack")
+    print(f"vsync now {'on' if enable else 'off'} -- "
+          f"{payload.decode('utf-8', 'replace')}")
 
 
 def cmd_watch(link, args):
@@ -797,6 +832,12 @@ def build_parser():
     watch.add_argument("--interval", type=float, default=1.0,
                         help="seconds between polls (default: 1.0)")
 
+    vsync = sub.add_parser("vsync", parents=[common],
+                            help="turn beam-racing (wait for the scan before "
+                                 "writing) on or off, default on")
+    vsync.add_argument("setting", choices=["on", "off"],
+                        help="on or off")
+
     return p
 
 
@@ -823,6 +864,8 @@ def main(argv=None):
                 cmd_scanline(link, args)
             elif args.command == "watch":
                 cmd_watch(link, args)
+            elif args.command == "vsync":
+                cmd_vsync(link, args)
     except KfDebugError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

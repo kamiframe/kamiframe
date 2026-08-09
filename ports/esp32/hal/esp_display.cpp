@@ -45,8 +45,10 @@
 
 #include "kf/budget.h"
 #include "kf/hal/log.h"
-#include "kf_dbg_bridge.h" /* KF_DBG_BRIDGE_ENABLE -- gates the MISO/SCANLINE pieces below */
+#include "kf/hal/time.h" /* kf_time_mono_us() -- the vsync wait's clock, see push_rect() */
+#include "kf_dbg_bridge.h" /* KF_DBG_BRIDGE_ENABLE -- gates the MISO/SCANLINE/vsync pieces below */
 #include "kf_esp_display_diag.h"
+#include "kf_esp_display_vsync.h"
 #include "kf_esp_pins.h"
 #include "kf_panel_profile.h"
 
@@ -221,6 +223,47 @@ bool rebuild_panel_io(uint32_t clock_hz) {
     }
 
     esp_lcd_panel_reset(g_panel);
+
+    /* Extra settle time beyond what esp_lcd_panel_reset() itself waits.
+     *
+     * That call's actual work (esp_lcd_panel_st7789.c's panel_st7789_reset(),
+     * the shared handle every profile here goes through -- see this
+     * function's own header comment) toggles the hardware reset line and
+     * waits 10ms low, 10ms high: 20ms total, fixed, regardless of what state
+     * the panel was in before the reset. That is enough for the ILI9341
+     * datasheet's OWN number when reset is applied to a panel that was
+     * already asleep -- true the very first time this function ever runs,
+     * from kf_display_init(), because the controller powers on asleep by
+     * default. It is NOT enough for the datasheet's number when reset is
+     * applied to a panel that was awake and actively displaying -- which is
+     * exactly what happens on the two extra calls KFDBG SCANLINE's probe
+     * makes (kf_esp_display_diag_begin_probe() and _end_probe(), both
+     * calling this same function while the panel was mid-render): the
+     * datasheet documents a full 120ms of settling before the controller can
+     * be trusted to take a Sleep Out command correctly in that case, not
+     * 20ms. send_init_table() below sends roughly twenty short setup
+     * commands before this profile's own Sleep Out (see kf_panel_profile.h's
+     * ILI9341 table, which already budgets 150ms AFTER Sleep Out for the
+     * same datasheet number, correctly) -- but nothing budgeted the 120ms
+     * BEFORE it, on the awake-reset path, which is the confirmed, most
+     * likely explanation for the horizontal banding left on the panel after
+     * a SCANLINE run: the second and third resets in a run undershoot a
+     * datasheet timing requirement the first one happens to satisfy by
+     * accident.
+     *
+     * This one extra wait covers both cases rather than branching on which
+     * reset this is: 120ms is wasted on the cold-boot call (which only
+     * needed the datasheet's shorter already-asleep number), but that cost
+     * is paid exactly once, at startup, not per frame and not per SCANLINE
+     * sample, so it is not worth the extra state tracking a branch would
+     * need. NOT verified against real hardware -- there is none on hand this
+     * session, and this is reasoned from the documented ILI9341 reset/Sleep
+     * Out timing rules, not measured. If banding is still visible after a
+     * SCANLINE run once this is on real hardware, that is the first thing to
+     * re-check; kf_debug.py's `scanline` command says as much in its own
+     * output too, so a human is not left guessing. */
+    vTaskDelay(pdMS_TO_TICKS(120));
+
     if (kPanel.use_builtin_init) {
         esp_lcd_panel_init(g_panel);
     }
@@ -352,6 +395,243 @@ const kf_display_caps *kf_display_get_caps(void) { return &g_caps; }
 
 namespace {
 
+#if KF_DBG_BRIDGE_ENABLE
+
+/* ============================================================================
+ * Beam-racing (KFDBG VSYNC): wait for the panel's own scan-out to clear a
+ * rectangle before writing it, instead of racing it blind. See
+ * kf_esp_display_vsync.h for the KFDBG-facing control surface (on/off, the
+ * stats KFDBG STATE reports) and push_rect() below for where this actually
+ * gets used.
+ *
+ * WHY THIS IS SAFE TO DO ON THE WRITE CLOCK, WHEN THE SCANLINE DIAGNOSTIC
+ * WAS NOT.
+ *
+ * KFDBG SCANLINE rebuilds the whole panel at a slow read clock (2MHz by
+ * default) because the ILI9341's read cycle is only rated to ~150ns
+ * (~6MHz), and the first attempt at reading Get_scanline at the normal
+ * 40MHz write clock came back looking like noise: 5 distinct values, all
+ * sitting on byte boundaries (0x00/0xFF/0x80-ish jumps), values.min_value=0/
+ * max=511 -- the signature of sampling MISO faster than the panel can drive
+ * it, not of a dead register. Rebuilding the panel per frame to get a clean
+ * read is exactly what this feature cannot afford: a full rebuild re-sends
+ * the whole init table and visibly glitches the screen (see
+ * kf_esp_display_diag_begin_probe()'s own comment), nowhere close to a
+ * per-rectangle operation.
+ *
+ * The measurement task this feature was built from re-examined that same
+ * 40MHz data under the ALT framing (no dummy byte -- raw[0]/raw[1] instead
+ * of raw[1]/raw[2], the framing a clean 1/2/4MHz sweep has since confirmed
+ * is the correct one for this panel, all three clocks agreeing: a
+ * monotonic 0..161 counter that wraps, 56 increases against 1 decrease per
+ * 64 samples). The ONE raw sample preserved from that original 40MHz run
+ * (first_raw_hex "006300" -- see kf_dbg_bridge.cpp's ScanlineSample comment)
+ * decodes, under alt framing, to 0x063 = 99: comfortably inside the 0..161
+ * range the slow-clock sweep established, not a byte-boundary artefact.
+ * Under the OLD (datasheet, 1-dummy-byte) framing that same run's distinct
+ * values were all built from raw[2] sitting at 0x00, 0x80 or 0xFF -- three
+ * values, no in-between -- while raw[1] in the one fully-preserved sample
+ * (0x63) was not one of those degenerate values at all. That is consistent
+ * with the LAST byte of a 3-byte transaction being where 40MHz-vs-6MHz
+ * corruption concentrates (each bit shifted out depends on the panel having
+ * caught up from the one before it, so error compounds over the
+ * transaction) and the first two bytes being comparatively clean -- which
+ * is exactly the two bytes alt framing uses, and exactly why this read asks
+ * for 2 bytes, not 3: it never asks the panel for the byte the evidence
+ * says is the unreliable one.
+ *
+ * That is one raw sample, not sixty-four, and there is no hardware on hand
+ * this session to gather more -- said plainly rather than papered over.
+ * Given the evidence available, reading at 40MHz is a defensible bet, not a
+ * proven fact, which is exactly why this whole feature sits behind a
+ * runtime flag (default ON) rather than being unconditionally wired in:
+ * KFDBG VSYNC 0 / `kf_debug.py vsync off`, and the rects_waited/avg_wait_us
+ * fields in KFDBG STATE, are how a human with the real board turns this
+ * from a bet into a measurement.
+ *
+ * WHY NO PANEL REBUILD IS NEEDED HERE, UNLIKE THE DIAGNOSTIC.
+ *
+ * This reads through g_io at whatever clock it is CURRENTLY built for.
+ * push_rect() only ever runs from kf_app_frame(), called after
+ * kf_dbg_bridge_frame() returns each iteration (see app_main.cpp's loop) --
+ * and kf_dbg_bridge_frame() is the only thing that can leave g_io at a
+ * clock other than KF_DISPLAY_SPI_HZ (KFDBG SCANLINE's probe), and it
+ * always restores KF_DISPLAY_SPI_HZ, synchronously, before returning (see
+ * kf_esp_display_diag_end_probe()). So g_io is guaranteed to be at the
+ * normal write clock every time push_rect() runs -- there is no rebuild to
+ * do, and doing one here would cost far more than the read it is trying to
+ * save. */
+
+/* ASSUMPTION, not a measured fact -- said once, here, in the one place this
+ * mapping is derived, per the task that added this feature. The 1/2/4MHz
+ * sweep found the scan counter monotonic over 0..161 (162 distinct values)
+ * before it wraps. The panel is 320 physical scanlines; 162 * 2 = 324, close
+ * enough to 320 that "one count is two scanlines" is the natural read, but
+ * nothing here has confirmed it against a known scan position (e.g. by
+ * writing a specific row and reading back the count that should correspond
+ * to it -- not possible without hardware). If a future measurement shows a
+ * different ratio, or that the mapping is not linear, this is the one
+ * constant and the one function to change; nothing else in this file
+ * encodes the 2 independently. */
+constexpr int kVsyncRowsPerCount = 2;
+
+/* Bounds how long push_rect() will ever block waiting for the scan to clear
+ * a rectangle -- roughly one frame period at 30fps (33ms) would still be
+ * too generous against a 40Hz-ish frame budget; ~12ms is closer to one full
+ * scan lap (measured ~10ms) plus slack, long enough to cover a real wait
+ * and short enough that a stuck or wildly wrong reading degrades to "one
+ * slow frame", never a hang. On timeout, push_rect() writes anyway -- a
+ * torn frame beats a stalled device, every time. */
+constexpr uint32_t kVsyncMaxWaitUs = 12000;
+
+/* True: the safe default. See this feature's task-level writeup for why --
+ * short version, the best evidence available (one re-decoded raw sample,
+ * plus which byte the datasheet-framing corruption pattern implicated) says
+ * 40MHz reads are usable, and the cost of being wrong is bounded (12ms per
+ * write, worst case, never a hang) and immediately visible in KFDBG STATE's
+ * avg_wait_us/rects_waited fields -- which is exactly the point of shipping
+ * this behind a flag instead of leaving it out entirely: turning it off is
+ * one command away the moment real hardware disagrees with this bet. */
+bool g_vsync_enabled = true;
+
+/* Per-second stats for KFDBG STATE -- see kf_esp_display_vsync.h's own
+ * comment on kf_esp_display_vsync_get_stats() for the exact fields and why
+ * "most recently completed window" rather than "the last wall-clock
+ * second". Single-thread, no lock, same reasoning as every other piece of
+ * state in this file and in kf_dbg_bridge.cpp: only ever touched from
+ * push_rect(), on the main frame-loop thread. */
+uint64_t g_vsync_window_start_us = 0;
+uint32_t g_vsync_cur_written = 0;
+uint32_t g_vsync_cur_waited = 0;
+uint64_t g_vsync_cur_wait_us_sum = 0;
+uint32_t g_vsync_last_written = 0;
+uint32_t g_vsync_last_waited = 0;
+uint32_t g_vsync_last_avg_wait_us = 0;
+
+/* Maps a raw Get_scanline count to an approximate scan row -- see
+ * kVsyncRowsPerCount's own comment for why this is an assumption. The only
+ * place this feature turns "count" into "row"; every comparison against a
+ * rectangle's y0/y1 goes through this. */
+inline int kf_vsync_count_to_scan_row(uint16_t count) {
+    return static_cast<int>(count) * kVsyncRowsPerCount;
+}
+
+/* One raw Get_scanline read at whatever clock g_io is currently built for
+ * (the normal write clock, always, by the time push_rect() runs -- see the
+ * header comment above). 2 bytes, not the diagnostic's 3: alt framing
+ * (raw[0]/raw[1], no dummy byte -- see kVsyncRowsPerCount's sibling
+ * comment above and kf_dbg_bridge.cpp's SCANLINE handler, which now treats
+ * this same framing as primary) never looks at a third byte, and not
+ * asking for it is one less byte of transfer time and one less byte the
+ * panel has to get right under this feature's own read-speed bet.
+ *
+ * Returns false (out_row untouched) if the display isn't up or the SPI
+ * transaction itself failed -- treated by every caller as "couldn't tell,
+ * write now" rather than a reason to block, the same fail-open posture
+ * kf_esp_display_diag_read_scanline() takes for the diagnostic. */
+bool kf_vsync_read_scan_row(int *out_row) {
+    if (g_io == nullptr) {
+        return false;
+    }
+    uint8_t raw[2];
+    const esp_err_t err = esp_lcd_panel_io_rx_param(
+        g_io, KF_ESP_DISPLAY_DIAG_CMD_GET_SCANLINE, raw, sizeof raw);
+    if (err != ESP_OK) {
+        return false;
+    }
+    const uint16_t count = static_cast<uint16_t>(
+        ((static_cast<uint16_t>(raw[0]) << 8) | raw[1]) & 0x03FFu);
+    *out_row = kf_vsync_count_to_scan_row(count);
+    return true;
+}
+
+/* Rolls the one-second stats window if needed, then records one push_rect()
+ * call's outcome. Called exactly once per push_rect() invocation,
+ * regardless of whether vsync is enabled -- rects_written is therefore a
+ * write-workload baseline that holds steady whether or not the wait itself
+ * is switched on, which is what lets `kf_debug.py vsync on` / `off` be
+ * compared against each other on KFDBG STATE's fps/frame_us instead of two
+ * differently-shaped workloads.
+ *
+ * Deliberately does not decay g_vsync_last_* back to zero on its own after
+ * a second of silence -- there is no background task ticking this on a
+ * clock of its own, only push_rect() calls, and a genuinely still pet (the
+ * entire point of dirty-rect present: zero bytes when nothing moved) can
+ * leave push_rect() uncalled for seconds at a time. KFDBG STATE keeps
+ * reporting the last window that actually had writes in it, which is a
+ * more useful "is this working" answer than a misleading 0/0/0 the moment
+ * the screen holds still. */
+void kf_vsync_note_rect_written(bool waited, uint32_t wait_us) {
+    const uint64_t now_us = kf_time_mono_us();
+    if (g_vsync_window_start_us == 0) {
+        g_vsync_window_start_us = now_us;
+    } else if (now_us - g_vsync_window_start_us >= 1000000ull) {
+        g_vsync_last_written = g_vsync_cur_written;
+        g_vsync_last_waited = g_vsync_cur_waited;
+        g_vsync_last_avg_wait_us = (g_vsync_cur_waited > 0)
+            ? static_cast<uint32_t>(g_vsync_cur_wait_us_sum / g_vsync_cur_waited)
+            : 0u;
+        g_vsync_cur_written = 0;
+        g_vsync_cur_waited = 0;
+        g_vsync_cur_wait_us_sum = 0;
+        g_vsync_window_start_us = now_us;
+    }
+
+    g_vsync_cur_written++;
+    if (waited) {
+        g_vsync_cur_waited++;
+        g_vsync_cur_wait_us_sum += wait_us;
+    }
+}
+
+/* The one call site push_rect() below makes. Disabled: records the write
+ * and returns immediately, no read at all -- byte-for-byte the behaviour
+ * this codebase had before this feature existed. Enabled: one read; if the
+ * scan has already passed y1 (the common case -- see push_rect()'s own
+ * comment), writes immediately with no wait. Otherwise polls (bounded by
+ * kVsyncMaxWaitUs, see that constant's comment) until either the scan
+ * passes y1, a read fails, or the deadline is reached -- any of which ends
+ * the wait and lets the caller write. taskYIELD() between polls is a
+ * FreeRTOS courtesy, not a correctness requirement: this runs on the main
+ * frame-loop thread at ESP_TASK_MAIN_PRIO (1), the SAME priority
+ * kf_dbg_bridge.cpp's own rx/tx tasks run at (kTaskPriority,
+ * tskIDLE_PRIORITY + 1 -- see that file's own comment on why), so a bare
+ * busy-loop here for up to 12ms would starve them of any chance to run
+ * until FreeRTOS's own tick-based time-slicing intervened; yielding each
+ * iteration lets them in immediately instead of waiting on that. */
+void kf_vsync_prepare_write(int y0, int y1) {
+    if (!g_vsync_enabled) {
+        kf_vsync_note_rect_written(false, 0);
+        return;
+    }
+
+    const uint64_t t_start = kf_time_mono_us();
+    int row = 0;
+    if (!kf_vsync_read_scan_row(&row) || row >= y1) {
+        kf_vsync_note_rect_written(false, 0);
+        return;
+    }
+
+    const uint64_t deadline_us = t_start + kVsyncMaxWaitUs;
+    for (;;) {
+        if (kf_time_mono_us() >= deadline_us) {
+            break; /* bounded wait exceeded -- write anyway */
+        }
+        taskYIELD();
+        if (!kf_vsync_read_scan_row(&row)) {
+            break; /* read failed mid-wait -- couldn't tell, write now */
+        }
+        if (row >= y1) {
+            break; /* scan has passed -- safe to write */
+        }
+    }
+
+    const uint64_t elapsed_us = kf_time_mono_us() - t_start;
+    kf_vsync_note_rect_written(true, static_cast<uint32_t>(elapsed_us));
+}
+
+#endif /* KF_DBG_BRIDGE_ENABLE */
+
 /* Push one rectangle, staging it through the alternating strip buffers.
  *
  * Everything goes through a staging copy, including panels that need no byte
@@ -363,7 +643,15 @@ namespace {
  *
  * Now that only changed pixels are sent, the copy is proportional to what
  * actually moved rather than to the screen, which is what makes paying for it
- * unconditionally the cheaper trade. */
+ * unconditionally the cheaper trade.
+ *
+ * One more thing happens before any of that, when KF_DBG_BRIDGE_ENABLE has
+ * the MISO pin to do it with: kf_vsync_prepare_write() below, once per call
+ * to this function (not once per chunk in the loop further down -- a tall
+ * rectangle spanning several kSwapStripRows chunks gets exactly one scan
+ * check for the whole rectangle, against its full y0..y1 span, not one per
+ * chunk). See that function's own comment, and the ~40-line comment above
+ * it, for what it checks and the evidence behind reading at 40MHz at all. */
 kf_result push_rect(const kf_color *framebuffer, int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
@@ -374,6 +662,10 @@ kf_result push_rect(const kf_color *framebuffer, int x0, int y0, int x1, int y1)
     if (w <= 0 || y1 - y0 <= 0) {
         return KF_OK;
     }
+
+#if KF_DBG_BRIDGE_ENABLE
+    kf_vsync_prepare_write(y0, y1);
+#endif
 
     constexpr int kCapacityPixels = KF_DISPLAY_WIDTH * kSwapStripRows;
     int rows_per_chunk = kCapacityPixels / w;
@@ -593,6 +885,27 @@ void kf_esp_display_diag_end_probe(void) {
                 "more screen updates) until the device is reset",
                 static_cast<unsigned long>(KF_DISPLAY_SPI_HZ));
     }
+}
+
+/* -----------------------------------------------------------------------
+ * KFDBG VSYNC / KFDBG STATE's control surface over the beam-racing feature
+ * -- see kf_esp_display_vsync.h for the contract each of these implements,
+ * and the big comment above push_rect()'s vsync helpers (top of this file)
+ * for the feature itself. Thin wrappers around the file-scope state those
+ * helpers already own; kept here, at the bottom, alongside the SCANLINE
+ * diagnostic's own equivalent wrappers, rather than beside the helpers
+ * themselves, so every extern "C" entry point this file exposes lives in
+ * one place. ----------------------------------------------------------- */
+
+void kf_esp_display_vsync_set_enabled(bool enabled) { g_vsync_enabled = enabled; }
+
+bool kf_esp_display_vsync_enabled(void) { return g_vsync_enabled; }
+
+void kf_esp_display_vsync_get_stats(uint32_t *rects_written, uint32_t *rects_waited,
+                                     uint32_t *avg_wait_us) {
+    *rects_written = g_vsync_last_written;
+    *rects_waited = g_vsync_last_waited;
+    *avg_wait_us = g_vsync_last_avg_wait_us;
 }
 
 #endif /* KF_DBG_BRIDGE_ENABLE */
