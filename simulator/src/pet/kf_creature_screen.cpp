@@ -10,6 +10,7 @@
 #include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/creature.h"
+#include "kf/font.h"
 #include "kf/hal/log.h"
 #include "kf/pet.h"
 
@@ -21,12 +22,19 @@ constexpr const char *TAG = "creature-screen";
 
 /* The bottom 60 rows are reserved for a stats band a later plan adds (see
  * kf_screen_nav.cpp's own comment on kf_pet_screen.cpp staying unreachable
- * rather than deleted) -- this screen only ever DRAWS INTO y=[0,260):
- * kField is where the creature walks, gets erased, and gets redrawn every
- * frame, and nothing below y=260 ever gets sprite or placeholder content
- * from this file. That is a different claim from "this file never touches
- * those rows at all" -- see kScreen and kf_creature_screen_enter() below for
- * the one place it does, and why. */
+ * rather than deleted) -- the creature/mess/shrine drawing this file does
+ * every frame only ever touches y=[0,260): kField is where the creature
+ * walks, gets erased, and gets redrawn every frame, and nothing below
+ * y=260 ever gets sprite, placeholder or mess content from this file. That
+ * is a different claim from "this file never touches those rows at all":
+ * kScreen and kf_creature_screen_enter()'s own comment cover the full-panel
+ * wipe, and kf_creature_screen_enter() ALSO now paints the care-button
+ * guide (draw_care_guide(), below) into this exact band -- a DELIBERATE,
+ * explicitly-temporary exception, not an oversight: see draw_care_guide()'s
+ * own comment for why it is there and why it is going away once the real
+ * stats HUD lands. Both exceptions run once per screen entry, never from
+ * the per-frame path, so neither changes this paragraph's per-FRAME claim
+ * about kField. */
 constexpr kf_rect kField = {0, 0, 240, 260};
 
 /* The full display, used only by kf_creature_screen_enter()'s entry repaint
@@ -105,6 +113,178 @@ kf_rect poop_rect(uint8_t index) {
     const int16_t x0 = static_cast<int16_t>(
         index * kPoopSlotWidth + (kPoopSlotWidth - kPoopSize) / 2);
     return kf_rect{x0, kPoopY0, static_cast<int16_t>(x0 + kPoopSize), kPoopY1};
+}
+
+/* The egg bob: "bob in one place like it's wobbling/squishing every so
+ * often" (the project owner's own words), the buildable half of that ask.
+ * Moving up and down a few pixels needs no new art and no frame
+ * sequencing -- it is pure positioning, an offset applied to where the
+ * egg's sprite (or placeholder rect) is drawn, nothing more. The other
+ * half -- the egg actually SQUISHING, i.e. deforming -- needs different
+ * artwork per frame, and multi-frame animation does not exist anywhere in
+ * this project yet (kf_creature_sprite_name()'s frame token is hardcoded
+ * "01", see kf/creature.h). That half is not attempted here, and is not
+ * faked with a scale transform either -- see this task's own report for
+ * why stretching a static sprite would read as broken art, not squish.
+ *
+ * Integer triangle wave, not a lookup table or a sine call: hakoniwaos/
+ * stays free of floating point AND of trig (see tools/check_no_heap.py and
+ * this file's own comment on why it ships unchanged to the device,
+ * kf_creature_screen.h's header comment), and a triangle wave is exact
+ * integer arithmetic that needs neither. kEggBobPeriodMs is how long one
+ * full up-and-back-down-and-back cycle takes (see egg_bob_offset_y()'s own
+ * comment for the exact shape); kEggBobAmplitudePx is how far off centre
+ * it swings at the extremes -- both small and slow on purpose, an idle
+ * wobble, not a bounce, per the owner's own "every so often" framing.
+ *
+ * Deliberately NOT applied inside kf_creature_update() (hakoniwaos/src/
+ * creature.cpp): that function only knows how to move an (x,y) toward a
+ * target, and the egg's bob is not movement at all, it is a per-frame draw
+ * offset applied on top of a position that (per the wander gate above)
+ * never actually changes while the pet is an egg. Keeping it here, next to
+ * where it's applied, means Core never needs to know the egg wobbles. */
+constexpr uint32_t kEggBobPeriodMs = 3000u;
+constexpr int16_t kEggBobAmplitudePx = 2;
+
+/* kEggBobPeriodMs divided into quarters, for egg_bob_offset_y() below.
+ * static_assert rather than a comment's promise -- see kPoopSlotWidth's own
+ * pattern -- because the wave's zero-at-rest guarantee (this function's own
+ * comment) depends on the period dividing evenly by 4 with nothing left
+ * over. */
+constexpr uint32_t kEggBobQuarterMs = kEggBobPeriodMs / 4u;
+static_assert(kEggBobQuarterMs * 4u == kEggBobPeriodMs,
+              "kEggBobPeriodMs must be a multiple of 4 -- see the block "
+              "comment above egg_bob_offset_y() for why");
+
+/* The offset (in whole pixels, positive means drawn lower on screen) for
+ * an egg that has been idle for `elapsed_ms`. A plain integer triangle
+ * wave, zero-phase-aligned: unlike the more obvious "0 up to amplitude and
+ * back" shape, THIS one is exactly 0 at elapsed_ms == 0 and at every whole
+ * multiple of kEggBobPeriodMs after that -- rising to +kEggBobAmplitudePx
+ * a quarter-period in, back through 0 at the half-period mark, down to
+ * -kEggBobAmplitudePx at three-quarters, and back to 0 to close the cycle.
+ * That zero-at-rest property matters here, not just aesthetically: a fresh
+ * egg (g_egg_bob_elapsed_ms starts at 0u) draws at offset 0 on its very
+ * first frame, exactly where kf_creature_bounds() already says it is --
+ * see kf_creature_screen_debug_bounds()'s own comment on why that debug
+ * accessor deliberately never includes this offset, which only holds
+ * together if frame zero's offset is itself zero. It is also what keeps
+ * run_creature_screen_sprite_check() (headless_main.cpp) correct without
+ * that check needing to know the bob exists at all: every frame it drives
+ * passes dt_ms == 0, so g_egg_bob_elapsed_ms never leaves 0 either, and
+ * this function returns exactly 0 for the whole check -- a "0 up to
+ * amplitude" shape would instead have started that check's sampling
+ * window already 2px off from where the sprite was actually drawn.
+ *
+ * The per-frame CHANGE in this value is what the dirty-rect budget cares
+ * about (see kf_creature_screen_frame()'s own comment where this is
+ * applied): each quarter-segment is linear, so consecutive frames a normal
+ * 33ms tick apart move by at most 1px, nowhere near enough to stop the
+ * erase rect and the draw rect overlapping and merging into one
+ * (kf/framebuffer.h's kf_fb_mark_dirty() comment) -- the same way the
+ * wander's own movement already relies on. */
+int16_t egg_bob_offset_y(uint32_t elapsed_ms) {
+    const uint32_t phase = elapsed_ms % kEggBobPeriodMs;
+    const uint32_t a = static_cast<uint32_t>(kEggBobAmplitudePx);
+    int32_t offset;
+    if (phase < kEggBobQuarterMs) {
+        /* 0 -> +amplitude */
+        offset = static_cast<int32_t>((phase * a) / kEggBobQuarterMs);
+    } else if (phase < 2u * kEggBobQuarterMs) {
+        /* +amplitude -> 0 */
+        offset = static_cast<int32_t>(
+            ((2u * kEggBobQuarterMs - phase) * a) / kEggBobQuarterMs);
+    } else if (phase < 3u * kEggBobQuarterMs) {
+        /* 0 -> -amplitude */
+        offset = -static_cast<int32_t>(
+            ((phase - 2u * kEggBobQuarterMs) * a) / kEggBobQuarterMs);
+    } else {
+        /* -amplitude -> 0 */
+        offset = -static_cast<int32_t>(
+            ((4u * kEggBobQuarterMs - phase) * a) / kEggBobQuarterMs);
+    }
+    return static_cast<int16_t>(offset);
+}
+
+/* How long the current egg has been idle, for egg_bob_offset_y() above.
+ * Accumulated every frame the pet is an egg (see kf_creature_screen_
+ * frame()); harmless to keep ticking across a screen re-entry or even
+ * across an egg hatching and (in some future life) another egg starting --
+ * this is a cosmetic phase with no gameplay meaning and nothing reads it
+ * except the wave above, so there is nothing to get wrong by not resetting
+ * it. */
+uint32_t g_egg_bob_elapsed_ms = 0u;
+
+/* The death scene (spec: docs/superpowers/specs/2026-08-09-core-care-loop-
+ * design.md, "Death without a player holds on the last creature's scene"):
+ * a small roadside shrine, centred in the field, the moment kf_pet_state::
+ * dead becomes true. See kf_creature_screen_frame()'s own comment for why
+ * this is special-cased ahead of the normal pose/sprite pipeline rather
+ * than routed through it. */
+constexpr const char *kShrineSpriteName = "shrine_idle_s_01";
+
+/* The shrine art (tools/character_manifest.toml) is one sprite, one
+ * direction -- a shrine is scenery, not a creature with facings, so unlike
+ * every other sprite this screen draws there is no stage/pose/dir lookup
+ * here at all, just this one fixed name. Sized like the creature's own
+ * 48x48 sprite footprint (hakoniwaos/src/creature.cpp's kSpriteSize is
+ * private to that file, so this is a second, independent constant, not a
+ * shared one -- the two happening to match today is not a claim that they
+ * must stay in lockstep) for the placeholder-rectangle fallback below,
+ * used until the art pipeline actually ships shrine_idle_s_01 -- see
+ * kPlaceholderColor's own comment for why "visible and obviously wrong"
+ * beats "invisible" whenever the pack does not have an asset yet. */
+constexpr int16_t kShrinePlaceholderSize = 48;
+
+/* Whether the shrine scene has been painted onto the panel yet for the
+ * pet's current death. Same "-1 means nothing painted yet" shape as
+ * g_drawn_poops, just boolean instead of a count: there is only ever one
+ * shrine to draw (not zero-to-eight like poops), so "have I drawn it" is
+ * the whole question. Reset to false by kf_creature_screen_enter() (a
+ * screen re-entry wipes the panel, so whatever was there needs repainting
+ * -- Controller amendment A2's reasoning applied to the shrine instead of
+ * mess), which is also what makes a player who leaves the death scene (MENU
+ * to Info) and comes back see the shrine again rather than a blank field. */
+bool g_drawn_dead = false;
+
+/* Centres a `width`x`height` box inside kField, floor-dividing any odd
+ * remainder -- same "deterministic over which side absorbs the leftover
+ * pixel, not fussy about which" reasoning as poop_rect()'s own slot
+ * centring above. Used only for the shrine today; kept general (a size,
+ * not a hardcoded 48) because the real shrine_idle_s_01 sprite's actual
+ * dimensions, once the art pipeline ships it, are very unlikely to be
+ * exactly 48x48. */
+kf_rect centered_in_field(int16_t width, int16_t height) {
+    const int16_t x0 = static_cast<int16_t>(
+        kField.x0 + ((kField.x1 - kField.x0) - width) / 2);
+    const int16_t y0 = static_cast<int16_t>(
+        kField.y0 + ((kField.y1 - kField.y0) - height) / 2);
+    return kf_rect{x0, y0, static_cast<int16_t>(x0 + width),
+                    static_cast<int16_t>(y0 + height)};
+}
+
+/* Draws the shrine, centred in the field: kf_assets_get() directly, NOT
+ * kf_creature_sprite_name() -- see kf_creature_screen_frame()'s own
+ * comment on why the death scene deliberately does not go through the
+ * creature's normal sprite-name/pose machinery at all. Falls back to
+ * kPlaceholderColor, exactly like every other not-yet-in-the-pack sprite
+ * this screen draws, when the art pipeline has not shipped shrine_idle_s_01
+ * yet -- which it may not have: the concurrent art-generation task names
+ * it exactly that, but this code has to handle it being absent gracefully
+ * either way, the same contract every other kf_assets_get() call in this
+ * file already honours. */
+void draw_shrine_scene(void) {
+    const kf_sprite *shrine = kf_assets_get(kShrineSpriteName);
+    if (shrine != nullptr) {
+        const kf_rect r = centered_in_field(
+            static_cast<int16_t>(shrine->width),
+            static_cast<int16_t>(shrine->height));
+        kf_blit(shrine, r.x0, r.y0);
+    } else {
+        const kf_rect r =
+            centered_in_field(kShrinePlaceholderSize, kShrinePlaceholderSize);
+        kf_fill_rect(r, kPlaceholderColor);
+    }
 }
 
 kf_creature g_creature;
@@ -314,6 +494,77 @@ void handle_care_buttons(const kf_pet_state *pet, uint32_t pressed) {
     }
 }
 
+/* The on-screen button guide: the project owner could not tell which key
+ * did what (there is no menu, no icon, nothing on screen -- see
+ * handle_care_buttons()'s own header comment on this being an input
+ * affordance, not a designed UI), and asked for a legible guide. This is
+ * text labels, not pictographic icons: a true icon would need generated
+ * art nobody has made yet, and kf/font.h's bitmap text (ADR 0010) is
+ * already on hand and cheap. One label per care action, same order as
+ * handle_care_buttons() above and the keyboard remap this task also makes
+ * (sdl_input.cpp): feed, play, rest, bath, flush.
+ *
+ * "1:FEED" etc, not "A:FEED" -- these name the KEY a player presses on
+ * THIS keyboard (1-5, per the owner's own request), not the physical
+ * button (KF_BTN_A/UP/DOWN/LEFT/RIGHT). That is correct on a keyboard and
+ * would be wrong on the real device, which has no number keys at all --
+ * this file cannot fix that, and does not try to; see this task's own
+ * report for why the device-facing wording is a design decision for the
+ * project owner, not something to guess at here.
+ *
+ * Lives in the reserved stats band, y=[260,320) (kField's own comment) --
+ * TEMPORARILY: a later plan gives that band to a real stats HUD, and this
+ * guide is a development affordance the HUD will displace, not a
+ * permanent fixture. Nothing else in this file draws into that band today
+ * except this. */
+constexpr const char *kGuideLabels[KF_PET_CARE_ACTION_COUNT + 1u] = {
+    "1:FEED", "2:PLAY", "3:REST", "4:BATH", "5:FLUSH",
+};
+
+/* One slot per label, evenly dividing the field's width -- same
+ * "deterministic, no leftover-pixel surprises" shape as kPoopSlotWidth,
+ * and checked the same way: a static_assert rather than a comment's
+ * promise. KF_PET_CARE_ACTION_COUNT (4, kf/pet.h) covers feed/play/rest/
+ * bath; flush has no kf_pet_care_action of its own (see that enum's own
+ * comment -- flushing is a chore, not a care action with an opinion
+ * attached), so the guide's own fixed count of 5 slots is spelled out
+ * directly rather than derived from a Core constant that does not include
+ * it. */
+constexpr int16_t kGuideSlotWidth =
+    static_cast<int16_t>(kField.x1 / 5);
+static_assert(kGuideSlotWidth * 5 == kField.x1,
+              "kGuideSlotWidth * 5 must equal kField.x1 -- see the block "
+              "comment above kGuideLabels for why");
+
+/* Vertically centred inside the reserved band, not pinned to its top edge
+ * -- purely cosmetic, but a label glued to the seam with the field above
+ * it would read as misplaced rather than intentional. */
+constexpr int16_t kGuideTextY = static_cast<int16_t>(
+    260 + (KF_DISPLAY_HEIGHT - 260 - KF_FONT_CELL_H) / 2);
+
+/* Draws all five labels once. Called only from kf_creature_screen_enter()
+ * -- see kf_creature_screen_frame()'s own comment (the dirty-rect trap)
+ * for why this must never run from the per-frame path: five independent
+ * label rectangles redrawn every frame would blow the whole
+ * KF_MAX_DIRTY_RECTS budget on the guide alone, for a fixture that never
+ * changes after it is first painted. Safe to call from kf_creature_
+ * screen_enter() at no extra rect-count cost: it runs immediately after
+ * that function's own kScreen fill, which already marks the ENTIRE panel
+ * (including this band) dirty as one rectangle, so every kf_text_draw()
+ * call below lands fully inside an already-dirty region and merges into
+ * it (kf/framebuffer.h's kf_fb_mark_dirty() comment) rather than adding
+ * rectangles of its own. */
+void draw_care_guide(void) {
+    for (int i = 0; i < 5; ++i) {
+        const char *label = kGuideLabels[i];
+        const int16_t text_w = kf_text_width(label);
+        const int16_t slot_x0 = static_cast<int16_t>(i * kGuideSlotWidth);
+        const int16_t x = static_cast<int16_t>(
+            slot_x0 + (kGuideSlotWidth - text_w) / 2);
+        kf_text_draw(x, kGuideTextY, label, KF_BLACK, kBackground);
+    }
+}
+
 } // namespace
 
 void kf_creature_screen_init(void) {
@@ -325,6 +576,37 @@ void kf_creature_screen_init(void) {
 void kf_creature_screen_frame(uint32_t dt_ms) {
     if (!g_up) { return; }
     const kf_pet_state *pet = kf_pet_session_state();
+
+    /* The death scene (spec: "Death without a player holds on the last
+     * creature's scene") is NOT a creature pose, and is handled entirely
+     * outside the normal per-frame pipeline below -- no care buttons (Core
+     * already no-ops every kf_pet_feed()/_play()/_rest()/_bath()/kf_pet_
+     * flush() call once state->dead, see hakoniwaos/src/pet.cpp, so this
+     * is a courtesy skip rather than a correctness requirement), no
+     * wander, no mess redraw, and deliberately no call to kf_creature_
+     * pose_for()/kf_creature_sprite_name() at all -- a shrine is scenery,
+     * not something the creature struck a pose as. This is also why
+     * KF_CREATURE_POSE_DEAD's fallback to the sick sprite
+     * (kf_creature_sprite_name(), kf/creature.h) is now unreachable from
+     * this screen: kf_creature_pose_for() is simply never called with
+     * pet->dead true here any more. It stays exactly as it is regardless
+     * -- kf_creature_pose_for() is still correct Core logic (still tested
+     * directly by run_creature_pose_check(), and still what a future
+     * non-screen caller, e.g. a debug bridge or a different front end,
+     * would get if it asked) -- this screen has just stopped being the
+     * caller that ever asks it about a dead pet. pet->dead is terminal
+     * (kf/pet.h's own comment: nothing ever clears it), so there is no
+     * "un-dying" case to handle here, only "just died" (paint once) and
+     * "already dead" (paint nothing further, below). */
+    if (pet->dead) {
+        if (!g_drawn_dead) {
+            kf_fill_rect(g_previous, kBackground); /* erase wherever the
+                                                      * creature last stood */
+            draw_shrine_scene();
+            g_drawn_dead = true;
+        }
+        return;
+    }
 
     /* Task 6: read this frame's debounced button edges the same way
      * kf_screen_nav.cpp reads MENU/B -- kf_app_buttons_pressed() directly,
@@ -350,7 +632,32 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
         g_creature.reaction_hold_ms = 1200u;
     }
 
-    kf_creature_update(&g_creature, kField, dt_ms);
+    /* The egg does not wander -- it sits still, centred in the field,
+     * until it hatches (an egg that strolls across the field reads as
+     * wrong, per the project owner's own reaction to watching it). kf_
+     * creature_update() (hakoniwaos/src/creature.cpp) has no idea what a
+     * life stage is -- it only knows an (x,y), a target, and a field -- and
+     * is deliberately not being taught: bolting a `const kf_pet_state *`
+     * onto a function whose only job is "move toward a target" would make
+     * Core's wander depend on Core's pet simulation for a distinction that
+     * only matters to PRESENTATION (whether to animate at all), when this
+     * screen already has both `pet` and `g_creature` in scope and is a
+     * strictly cleaner seam to decide it in. So the gate lives here: while
+     * pet->stage == KF_PET_STAGE_EGG, kf_creature_update() is simply never
+     * called, which leaves g_creature.x/y exactly where kf_creature_init()
+     * put them -- the field's centre, see that function's own comment --
+     * for as long as the pet stays an egg. The instant it hatches this
+     * resumes calling kf_creature_update() every frame exactly as before;
+     * nothing about the wander itself changes, and there is no special
+     * "just hatched" transition to handle because the creature was already
+     * sitting on a real, previously-chosen wander target the whole time
+     * (kf_creature_init() picks one at construction, long before the pet
+     * could ever have hatched). */
+    if (pet->stage == KF_PET_STAGE_EGG) {
+        g_egg_bob_elapsed_ms += dt_ms;
+    } else {
+        kf_creature_update(&g_creature, kField, dt_ms);
+    }
 
     /* Erase where it was, draw where it is. Two dirty rectangles at most:
      * one when the creature did not move this frame, since the erase below
@@ -432,7 +739,25 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
     bool mirrored = false;
     resolve_sprite(pet, pose, g_creature.dir, &sprite, &mirrored);
 
-    const kf_rect now = kf_creature_bounds(&g_creature);
+    kf_rect now = kf_creature_bounds(&g_creature);
+    if (pet->stage == KF_PET_STAGE_EGG) {
+        /* The bob: shift the DRAWN rect up/down by a few pixels around the
+         * position kf_creature_bounds() reports -- see egg_bob_offset_y()'s
+         * own comment above for the wave itself, and this file's header
+         * comment on kf_creature_screen_debug_bounds() for why that debug
+         * accessor deliberately still returns the UNshifted position: it
+         * exists to expose the wander's own state (kf_creature::x/y),
+         * which the bob never touches, not "wherever the sprite happened
+         * to land on screen this frame". Applied to both g_previous (via
+         * the assignment at the end of this function) and `now` alike, so
+         * next frame's erase always targets exactly where this frame's
+         * draw actually put pixels -- an erase that missed the bob offset
+         * would leave a stray sliver of the old frame behind every time
+         * the offset changed. */
+        const int16_t offset = egg_bob_offset_y(g_egg_bob_elapsed_ms);
+        now.y0 = static_cast<int16_t>(now.y0 + offset);
+        now.y1 = static_cast<int16_t>(now.y1 + offset);
+    }
     if (sprite != nullptr) {
         if (mirrored) {
             kf_blit_mirrored(sprite, now.x0, now.y0);
@@ -467,13 +792,27 @@ void kf_creature_screen_enter(void) {
      * check measures. Said plainly so the byte cost is not mistaken for
      * zero just because the rect cost is.
      *
-     * This does NOT mean the reserved stats band (kField's own comment,
-     * above) becomes this screen's to draw into: kBackground here is
-     * blank fill, covering over whatever Info left behind, not content.
-     * The band stays visually empty -- background colour, nothing drawn on
-     * top of it -- until the stats band that owns it lands. */
+     * The reserved stats band (kField's own comment, above) mostly stays
+     * exactly this blank fill -- background colour, nothing drawn on top
+     * of it -- until the stats band that owns it lands, with ONE
+     * deliberate, explicitly-temporary exception: draw_care_guide() below
+     * paints the button guide into it. That call has to come AFTER this
+     * fill, not before, or the fill would immediately wipe the labels it
+     * just drew. */
     kf_fill_rect(kScreen, kBackground);
+    draw_care_guide();
     g_previous = kf_creature_bounds(&g_creature);
+
+    /* The death scene must be invalidated on entry too, the same reasoning
+     * as g_drawn_poops just below applied to the shrine instead of mess:
+     * the fill just above wiped any shrine that was painted, but does not
+     * touch pet->dead itself, so left alone g_drawn_dead would still read
+     * true and the next kf_creature_screen_frame() would think it had
+     * nothing left to do -- a blank field instead of the shrine, for a
+     * pet that is in fact still dead. This is what makes leaving the death
+     * scene (MENU, to Info) and coming back repaint the shrine rather than
+     * leaving it missing. */
+    g_drawn_dead = false;
 
     /* Mess must be invalidated here too (Controller amendment A2): the
      * fill just above just wiped any poops that were painted on screen,
@@ -505,4 +844,8 @@ void kf_creature_screen_debug_press(uint32_t buttons) {
 
 uint32_t kf_creature_screen_debug_reaction_hold_ms(void) {
     return g_creature.reaction_hold_ms;
+}
+
+int16_t kf_creature_screen_debug_egg_bob_offset_y(void) {
+    return egg_bob_offset_y(g_egg_bob_elapsed_ms);
 }

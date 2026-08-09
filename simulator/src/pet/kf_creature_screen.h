@@ -45,7 +45,15 @@ void kf_creature_screen_init(void);
  * rectangles per frame, by construction -- see kf_screen_nav.h's own
  * per-frame contract for why only the active screen's update runs at all,
  * and headless_main.cpp's run_creature_screen_check() for what pins this
- * budget down. Call once per frame while this screen is the active one. */
+ * budget down. Call once per frame while this screen is the active one.
+ *
+ * Two exceptions to "exactly two", both by construction rather than
+ * accident: while pet->stage == KF_PET_STAGE_EGG the creature does not
+ * wander, only bobs gently in place (still exactly two draw calls -- erase,
+ * then redraw at the bobbed position); once pet->dead, this instead draws
+ * a static shrine once (at most two rects, on the one frame death is first
+ * noticed) and nothing further on every frame after that (zero rects) --
+ * see kf_creature_screen.cpp's own comment on both. */
 void kf_creature_screen_frame(uint32_t dt_ms);
 
 /* Repaints the whole field and forgets wherever the creature was last
@@ -106,6 +114,17 @@ void kf_creature_screen_debug_press(uint32_t buttons);
  * own logic in the test. */
 uint32_t kf_creature_screen_debug_reaction_hold_ms(void);
 
+/* The egg bob's current vertical offset in whole pixels (see
+ * egg_bob_offset_y() in kf_creature_screen.cpp) -- lets a headless check
+ * confirm the wobble is actually moving, and staying within its intended
+ * amplitude, without duplicating the wave's own integer math or reaching
+ * into this file's private elapsed-time counter. Meaningful only while
+ * pet->stage == KF_PET_STAGE_EGG; kf_creature_screen_frame() only ever
+ * applies this offset to what it draws under that same condition, so a
+ * caller reading it for any other stage is reading a number nothing on
+ * screen currently uses. */
+int16_t kf_creature_screen_debug_egg_bob_offset_y(void);
+
 /* Overrides the presentation-only creature's current facing. Takes effect
  * on the very next kf_creature_screen_frame() call and holds until changed
  * again or overwritten by real movement (kf_creature_update() only writes
@@ -116,14 +135,22 @@ uint32_t kf_creature_screen_debug_reaction_hold_ms(void);
  * dwell, or anything else about the creature. */
 void kf_creature_screen_debug_set_direction(kf_creature_direction dir);
 
-/* Where the creature is drawn right now -- exactly kf_creature_bounds() on
- * the private kf_creature this file owns, exposed so a test can sample the
+/* The creature's own wander position -- exactly kf_creature_bounds() on the
+ * private kf_creature this file owns, exposed so a test can sample the
  * right rectangle of the framebuffer without duplicating this file's field
  * geometry or guessing at a bounding box from pixel content alone (content-
  * derived bounds are only as tight as whatever the sprite's own transparent
  * margins happen to be, which is not something a test should have to
  * assume is symmetric). See kf_creature_screen_frame()'s own comment for
- * why this rect is what actually gets erased-then-redrawn each frame. */
+ * why this rect is what actually gets erased-then-redrawn each frame --
+ * for every stage EXCEPT the egg, where it is drawn at a small per-frame
+ * vertical offset from this rect (the bob, see egg_bob_offset_y() and
+ * kf_creature_screen_debug_egg_bob_offset_y() in kf_creature_screen.cpp),
+ * not this rect exactly. This accessor deliberately still reports the
+ * UNshifted position even then: it exists to prove the WANDER itself
+ * (whether the egg gate is holding, whether a later stage's target-seeking
+ * is correct), and the bob is a draw-time-only offset the wander state
+ * never sees or is affected by. */
 kf_rect kf_creature_screen_debug_bounds(void);
 
 #endif /* KF_CREATURE_SCREEN_H */
