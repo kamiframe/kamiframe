@@ -553,6 +553,24 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME creature_screen_death_check
              COMMAND kamiframe-headless --verify-creature-screen-death)
 
+    # Closes a testing gap a review of the stage-jump debug lever found:
+    # every check above either jumps stage without ever rendering a frame
+    # (pet_debug_jump_check) or renders frames without ever jumping (every
+    # other creature_screen_* check here). Two of that review's three
+    # Important defects lived exactly at the seam between the two --
+    # kf_creature_screen.cpp's per-frame code assumed a dead pet stays
+    # dead, and assumed an egg has always been an egg, both of which
+    # kf_pet_session_debug_jump_to_stage() makes routine. This drives both
+    # seams on one fixture: jump to a stage after a death and render (the
+    # shrine must not leak over the revived, living creature), then jump
+    # back to Egg from a creature that had wandered and render (the egg
+    # must re-centre, not draw off-centre or past this screen's own
+    # y=[0,260) invariant). See headless_main.cpp's
+    # run_creature_screen_debug_jump_check().
+    add_test(NAME creature_screen_debug_jump_check
+             COMMAND kamiframe-headless
+                     --verify-creature-screen-debug-jump)
+
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and

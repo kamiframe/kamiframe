@@ -3533,6 +3533,245 @@ static int run_creature_screen_death_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Closes the testing gap a review of the stage-jump debug lever
+ * (kf_pet_session_debug_jump_to_stage(), added for sdl_debug_window.cpp's
+ * stage-jump buttons) found: every check above either jumps stage without
+ * ever rendering a frame afterward (run_pet_debug_jump_check(), which
+ * never touches kf_creature_screen_frame() at all), or renders frames
+ * without ever jumping (every creature_screen_* check above, each built
+ * from either a bare fresh pet or one hand-set field at a time). Neither
+ * shape can catch a bug that only exists at the SEAM between the two --
+ * and two of this task's three Important defects lived exactly there:
+ * kf_creature_screen.cpp's per-frame code assumed a dead pet stays dead,
+ * and assumed an egg has always been an egg, both of which the jump lever
+ * makes routine. This check drives both seams the same fixture, back to
+ * back, on the same live pet:
+ *
+ *   A. Jump to a stage AFTER a death, then render. Before the fix, the
+ *      shrine's own g_drawn_dead flag never got told the revive happened,
+ *      so the shrine stayed painted at the field's centre on top of the
+ *      now-living creature until the next screen re-entry. Proven here by
+ *      confirming the shrine really was painted before the jump (the same
+ *      pixel check run_creature_screen_death_check() already uses), then
+ *      confirming the very next rendered frame's dirty rectangles fully
+ *      cover the shrine's own rect -- proof a repaint actually reached
+ *      that exact region, which is what the fix does (kf_creature_
+ *      screen.cpp's revive check, just below its death branch). Checking
+ *      rect COVERAGE rather than final pixel content is deliberate: the
+ *      shrine and the ordinary placeholder creature share the exact same
+ *      fallback colour (kPlaceholderColor), so a pixel-content check at
+ *      the shrine's old position could pass "by accident" if the revived
+ *      creature happened to be drawn there too, without ever proving a
+ *      repaint happened at all.
+ *
+ *   B. Jump BACK to Egg from a creature that has been wandering (not from
+ *      a fresh boot, where the egg's frozen position and the field's
+ *      centre are the same thing by construction and this bug cannot
+ *      show up). Before the fix, the egg gate froze g_creature.x/y
+ *      wherever the wander had last left them -- anywhere in the field,
+ *      not the centre -- producing an off-centre bobbing egg and, at the
+ *      field's bottom edge, a drawn rect breaking this file's own
+ *      y=[0,260) invariant. Proven here two ways: kf_creature_screen_
+ *      debug_bounds() must read back to EXACTLY the same rect a fresh
+ *      egg starts at (captured once, at the very top of this check,
+ *      before anything has had a chance to move), and no dirty rectangle
+ *      across a further run of bobbing frames may ever cross y=260.
+ *
+ * Reuses ONE fixture for both, in order, rather than two separate ones:
+ * part A's jump target (CHILD, alive) is exactly the wandering, non-egg
+ * state part B's own "from a wandered creature" setup needs anyway, so
+ * running them back to back means part B does not need to re-establish
+ * it from scratch. */
+static int run_creature_screen_debug_jump_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-debug-jump-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init mounts the default "
+                                      "pack (no creature/shrine art in it "
+                                      "yet)");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* Captured once, before anything below ever moves the creature or
+     * changes the pet's stage -- this IS "exactly where a fresh egg
+     * starts", the value part B's jump-back-to-egg re-centre must
+     * reproduce. Same technique run_creature_screen_egg_check() already
+     * uses for its own initial_bounds/final_bounds comparison. */
+    const kf_rect fresh_egg_bounds = kf_creature_screen_debug_bounds();
+    check(!kf_rect_is_empty(fresh_egg_bounds),
+          "kf_creature_screen_debug_bounds() returned an empty rect for a "
+          "freshly-initialised egg");
+
+    /* ---------------------------------------------------------------
+     * Part A: jump to a stage after a death, then render.
+     * --------------------------------------------------------------- */
+
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    /* Not an egg: the egg gate means an egg never wanders in the first
+     * place, which would make "the creature was somewhere other than the
+     * shrine's own rect when it died" true only by luck rather than by
+     * construction. CHILD wanders for real. */
+    pet->stage = KF_PET_STAGE_CHILD;
+    for (int i = 0; i < 30; ++i) {
+        kf_creature_screen_frame(33u);
+    }
+
+    pet->dead = true;
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u); /* the one frame that paints the shrine */
+
+    /* Same known-by-construction placeholder colour and centred rect
+     * run_creature_screen_death_check() already establishes and checks --
+     * see kShrinePlaceholderSize/centered_in_field() in kf_creature_
+     * screen.cpp for the arithmetic this reproduces by value. Confirms
+     * this check's OWN fixture actually reached the state the rest of
+     * part A assumes, before relying on it. */
+    constexpr kf_color kKnownPlaceholderColor = KF_RGB(255, 0, 128);
+    constexpr kf_rect kKnownShrineRect = {96, 106, 144, 154};
+    const kf_color *px = kf_fb_pixels();
+    check(px[130 * KF_DISPLAY_WIDTH + 120] == kKnownPlaceholderColor,
+          "the shrine placeholder was not drawn at the field's centre "
+          "before the jump -- this check's fixture for part A depends on "
+          "it (see run_creature_screen_death_check() for the same "
+          "assertion in isolation)");
+
+    /* The jump: the same effect sdl_debug_window.cpp's "Child" stage-jump
+     * button has on a pet that is currently dead -- kf_pet_session_debug_
+     * jump_to_stage() calls kf_pet_init() internally (kf_pet_session.cpp),
+     * which is one of exactly two places in this binary that ever clears
+     * pet->dead once set (kf_pet_session_debug_reset() is the other). */
+    kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_CHILD, 0u, 0u);
+    check(!kf_pet_session_state()->dead,
+          "kf_pet_session_debug_jump_to_stage() did not clear pet->dead -- "
+          "this check's fixture for part A is broken, not the code under "
+          "test");
+
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u); /* the revive-render frame */
+
+    /* The fix (kf_creature_screen.cpp's revive check, just below its death
+     * branch) repaints the WHOLE field, so this frame's dirty rectangles
+     * must fully cover the shrine's own rect regardless of where the
+     * revived creature ends up being drawn this same frame -- see this
+     * function's own header comment on why rect COVERAGE, not final pixel
+     * content, is what actually distinguishes "repainted" from "the
+     * creature happened to land here too". */
+    const kf_dirty_rects revive_dirty = kf_fb_dirty_rects();
+    bool shrine_rect_repainted = false;
+    for (int r = 0; r < revive_dirty.count; ++r) {
+        const kf_rect &rc = revive_dirty.rects[r];
+        if (rc.x0 <= kKnownShrineRect.x0 && rc.y0 <= kKnownShrineRect.y0 &&
+            rc.x1 >= kKnownShrineRect.x1 && rc.y1 >= kKnownShrineRect.y1) {
+            shrine_rect_repainted = true;
+        }
+    }
+    check(shrine_rect_repainted,
+          "reviving after death did not repaint the shrine's own rect "
+          "(x=[96,144), y=[106,154)) on the very next rendered frame -- "
+          "the shrine would otherwise sit painted over the now-living "
+          "creature until the next kf_creature_screen_enter()");
+
+    KF_LOGI(TAG, "creature-screen-debug-jump: part A (revive after death) "
+                 "repainted the shrine's rect");
+
+    /* ---------------------------------------------------------------
+     * Part B: jump back to Egg from a creature that has wandered.
+     * --------------------------------------------------------------- */
+
+    /* Still CHILD and alive from part A's jump -- wander it further so
+     * there is no doubt it has genuinely moved away from centre before
+     * the jump back to Egg below, the same "prove it actually moved, not
+     * vacuously already where the assertion wants it" reasoning run_
+     * creature_wander_check() and run_creature_screen_egg_check() both
+     * already apply to their own movement claims. */
+    const kf_rect before_more_wander = kf_creature_screen_debug_bounds();
+    for (int i = 0; i < 200; ++i) {
+        kf_creature_screen_frame(33u);
+    }
+    const kf_rect wandered_bounds = kf_creature_screen_debug_bounds();
+    check(wandered_bounds.x0 != before_more_wander.x0 ||
+              wandered_bounds.y0 != before_more_wander.y0,
+          "the creature never moved across 200 further frames of CHILD "
+          "wander -- this check's fixture for part B needs it to have "
+          "genuinely wandered for the jump-back-to-egg re-centre to prove "
+          "anything");
+
+    kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_EGG, 0u, 0u);
+    check(kf_pet_session_state()->stage == KF_PET_STAGE_EGG,
+          "kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_EGG, ...) did "
+          "not land on KF_PET_STAGE_EGG -- this check's fixture for part B "
+          "is broken, not the code under test");
+
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u); /* the re-centre-on-transition frame */
+
+    const kf_rect after_jump_to_egg = kf_creature_screen_debug_bounds();
+    check(after_jump_to_egg.x0 == fresh_egg_bounds.x0 &&
+              after_jump_to_egg.y0 == fresh_egg_bounds.y0 &&
+              after_jump_to_egg.x1 == fresh_egg_bounds.x1 &&
+              after_jump_to_egg.y1 == fresh_egg_bounds.y1,
+          "jumping back to Egg from a wandered creature did not re-centre "
+          "it -- kf_creature_screen_debug_bounds() must read back exactly "
+          "what a fresh egg starts at (see kf_creature_screen.cpp's "
+          "g_was_egg re-centre, just below the egg gate)");
+
+    /* And: across a further run of egg-bobbing frames, no dirty rectangle
+     * may ever cross y=260 -- the invariant this file's own header
+     * comment states as a hard rule, and the exact one an off-centre egg
+     * near the field's bottom edge could break before the re-centre fix.
+     * Position no longer matters here (re-centring makes it always the
+     * same, regardless of where the wander above happened to leave it),
+     * so this holds deterministically rather than depending on having
+     * wandered close enough to the edge by chance. */
+    bool overflowed_field = false;
+    for (int i = 0; i < 200; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        for (int r = 0; r < d.count; ++r) {
+            if (d.rects[r].y1 > 260) {
+                overflowed_field = true;
+            }
+        }
+    }
+    check(!overflowed_field,
+          "a dirty rectangle drawn while the pet was an egg reached past "
+          "y=260 -- see kf_creature_screen.cpp's own y=[0,260) invariant "
+          "and the egg re-centre fix that keeps a jumped-back egg from "
+          "breaking it");
+
+    KF_LOGI(TAG, "creature-screen-debug-jump: part B (jump back to egg) "
+                 "re-centred and stayed within the field");
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -4600,6 +4839,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_screen_input = false;
     bool verify_creature_screen_egg = false;
     bool verify_creature_screen_death = false;
+    bool verify_creature_screen_debug_jump = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -4674,6 +4914,9 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i], "--verify-creature-screen-death") ==
                    0) {
             verify_creature_screen_death = true;
+        } else if (std::strcmp(argv[i],
+                                "--verify-creature-screen-debug-jump") == 0) {
+            verify_creature_screen_debug_jump = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -4716,6 +4959,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-screen-input\n"
                         "kamiframe-headless --verify-creature-screen-egg\n"
                         "kamiframe-headless --verify-creature-screen-death\n"
+                        "kamiframe-headless "
+                        "--verify-creature-screen-debug-jump\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -4828,6 +5073,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen_death) {
         return run_creature_screen_death_check();
+    }
+
+    if (verify_creature_screen_debug_jump) {
+        return run_creature_screen_debug_jump_check();
     }
 
     if (verify_lua_pet) {
