@@ -416,6 +416,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME creature_pose_check
              COMMAND kamiframe-headless --verify-creature-pose)
 
+    # Proves the wander (Task 3): the same seed reproduces the same walk,
+    # the creature never leaves the field across many seeds and a long run,
+    # and it actually moves rather than trivially passing the first two
+    # checks by standing still. See headless_main.cpp's
+    # run_creature_wander_check() and hakoniwaos/include/kf/creature.h's
+    # kf_creature_init()/kf_creature_update()/kf_creature_bounds().
+    add_test(NAME creature_wander_check
+             COMMAND kamiframe-headless --verify-creature-wander)
+
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and

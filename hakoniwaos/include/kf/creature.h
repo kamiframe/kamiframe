@@ -65,6 +65,36 @@ kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
 void kf_creature_sprite_name(kf_pet_stage stage, kf_creature_pose pose,
                              char *out, size_t out_len);
 
+/* Sub-pixel scale for creature positions. Movement is integer maths at 1/16th
+ * of a pixel, the same approach hakoniwaos/src/demo.cpp uses, so a slow walk
+ * is smooth without floating point in Core. */
+#define KF_CREATURE_SUB 16
+
+/* Presentation state for one creature. Not saved -- where the creature
+ * happens to be standing is not worth persisting, and a fresh position on
+ * load is indistinguishable from a remembered one. */
+typedef struct {
+    int32_t x;              /* 1/16th pixels, top-left of the sprite */
+    int32_t y;
+    int32_t target_x;       /* where it has decided to walk to */
+    int32_t target_y;
+    int16_t facing;         /* -1 facing left, +1 facing right */
+    uint32_t dwell_ms;      /* how long it still intends to stand still */
+    uint32_t reaction_hold_ms;
+    uint32_t seen_care_actions; /* to notice when another care action lands */
+} kf_creature;
+
+/* Place the creature in the middle of the field and give it a first idea. */
+void kf_creature_init(kf_creature *c, kf_rect field);
+
+/* Advance one frame's worth of walking about. Pure apart from kf/rng.h, so a
+ * seed reproduces a walk exactly. */
+void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms);
+
+/* Where the sprite currently sits, in whole pixels -- what to blit and what
+ * to mark dirty. */
+kf_rect kf_creature_bounds(const kf_creature *c);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

@@ -21,6 +21,7 @@
  *     kamiframe-headless --verify-pet-preferences
  *     kamiframe-headless --verify-pet-care-variation
  *     kamiframe-headless --verify-creature-pose
+ *     kamiframe-headless --verify-creature-wander
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -1996,6 +1997,75 @@ int run_creature_pose_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Proves the wander itself (Task 3): the same seed produces the same walk
+ * twice, the creature never leaves the field across many seeds and a long
+ * run, and it actually moves rather than trivially passing the first two
+ * checks by standing still forever. See kf/creature.h's kf_creature_init()/
+ * kf_creature_update()/kf_creature_bounds(). */
+static int run_creature_wander_check(void) {
+    const kf_rect field = {0, 0, 240, 200};
+    int failures = 0;
+
+    /* Same seed, same walk -- twice. */
+    kf_creature a;
+    kf_creature b;
+    kf_rng_seed(12345u);
+    kf_creature_init(&a, field);
+    for (int i = 0; i < 600; ++i) { kf_creature_update(&a, field, 33u); }
+    kf_rng_seed(12345u);
+    kf_creature_init(&b, field);
+    for (int i = 0; i < 600; ++i) { kf_creature_update(&b, field, 33u); }
+    if (a.x != b.x || a.y != b.y) {
+        KF_LOGE(TAG, "creature-wander: same seed diverged: (%d,%d) vs (%d,%d)",
+                a.x, a.y, b.x, b.y);
+        ++failures;
+    }
+
+    /* It stays on the field, for a long time, from many seeds. */
+    for (uint32_t seed = 1u; seed <= 50u; ++seed) {
+        kf_creature c;
+        kf_rng_seed(seed);
+        kf_creature_init(&c, field);
+        for (int i = 0; i < 2000; ++i) {
+            kf_creature_update(&c, field, 33u);
+            const kf_rect r = kf_creature_bounds(&c);
+            if (r.x0 < field.x0 || r.y0 < field.y0 || r.x1 > field.x1 ||
+                r.y1 > field.y1) {
+                KF_LOGE(TAG,
+                        "creature-wander: seed %u escaped the field at step "
+                        "%d: (%d,%d,%d,%d)",
+                        seed, i, r.x0, r.y0, r.x1, r.y1);
+                ++failures;
+                break;
+            }
+        }
+    }
+
+    /* It actually moves -- a creature that never walks would pass the two
+     * checks above trivially. */
+    kf_creature d;
+    kf_rng_seed(7u);
+    kf_creature_init(&d, field);
+    const int32_t start_x = d.x;
+    bool moved = false;
+    for (int i = 0; i < 2000 && !moved; ++i) {
+        kf_creature_update(&d, field, 33u);
+        if (d.x != start_x) { moved = true; }
+    }
+    if (!moved) {
+        KF_LOGE(TAG, "creature-wander: never moved in 2000 steps");
+        ++failures;
+    }
+
+    if (failures == 0) {
+        KF_LOGI(TAG,
+                "creature-wander: determinism, bounds and movement all "
+                "hold");
+    }
+    std::printf("%s\n", failures == 0 ? "PASS" : "FAIL");
+    return failures == 0 ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -2836,6 +2906,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_preferences = false;
     bool verify_pet_care_variation = false;
     bool verify_creature_pose = false;
+    bool verify_creature_wander = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2888,6 +2959,8 @@ int main(int argc, char *argv[]) {
             verify_pet_care_variation = true;
         } else if (std::strcmp(argv[i], "--verify-creature-pose") == 0) {
             verify_creature_pose = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-wander") == 0) {
+            verify_creature_wander = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2920,6 +2993,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-pet-care-variation\n"
                         "kamiframe-headless --verify-creature-pose\n"
+                        "kamiframe-headless --verify-creature-wander\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2999,6 +3073,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_pose) {
         return run_creature_pose_check();
+    }
+
+    if (verify_creature_wander) {
+        return run_creature_wander_check();
     }
 
     if (verify_lua_pet) {
