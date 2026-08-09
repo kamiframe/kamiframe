@@ -52,8 +52,8 @@ python3 tools/kf_prompt_builder.py --id chokimaru
 
 This prints a full text description for every pose Chokimaru needs --
 object, personality, the exact body-language note for that pose, and the
-house art style (felt-tip marker look, one exaggerated feature, no face
-expressions, transparent background) that every creature shares. You can
+house art style (Tamagotchi-style pixel art, one exaggerated feature, no
+face expressions, transparent background) that every creature shares. You can
 read this yourself, hand it to an artist, or eventually paste it into an
 image generator.
 

@@ -41,8 +41,22 @@ from kf_character_manifest import (
 # Bible section 3 ("The house style" + "The frozen-frame rule" + "Sprite
 # size"), condensed into instructions rather than quoted as prose. Applied
 # to every sprite, unconditionally.
+#
+# DELIBERATE DEVIATION FROM THE BIBLE (Chris, 2026-08-09): the bible's
+# section 3 describes the medium as felt-tip marker on paper -- hand-wobble
+# in the line, the look of a drawing. That reads as an instruction to
+# imitate a hand-drawn medium, which an image generator answers with soft,
+# wobbly, anti-aliased edges. At 48x48 that is the wrong output regardless
+# of how good the drawing is. The medium below is stated as pixel art
+# instead, in the terms a sprite generator actually responds to.
+#
+# Only the MEDIUM changed. Every rule under it -- two dots and a mouth, one
+# exaggerated feature, one residue detail, the frozen-frame rule, the
+# half-size silhouette test -- is the bible's and is unchanged, because
+# those are design rules and hold in any medium.
 STYLE_BLOCK = """House style -- every sprite, no exceptions:
-- Felt-tip marker on paper: flat fills, visible hand-wobble in the line. No gradients, no shading, no soft rendering.
+- A Tamagotchi-style creature sprite, drawn as pixel art. Chunky and readable at a glance, more mascot than monster.
+- Flat blocks of solid color with clean, hard pixel edges and a dark outline. A small palette. No gradients, no anti-aliasing, no soft or painterly rendering, no sketched or hand-drawn line.
 - The face is two dots and a mouth, nothing more. Expression comes from the BODY POSE, never the face.
 - Exactly one feature exaggerated absurdly (a huge lip, a single tooth, a giant nose -- whatever this creature's read calls for).
 - Deliberate asymmetry: lopsided eyes, one arm, something sticking out of the top. Avoid mirror symmetry.

@@ -77,7 +77,13 @@ juvenile_shared_grammar = "Perfectly symmetrical, one unbroken clean line, no ma
 # Bible section 3: how a grudge form differs from its normal form. Printed
 # once and applied to every entity with grudge = true below, rather than
 # repeated per creature.
-grudge_grammar = "Same silhouette as the normal form, redrawn badly on purpose: marker pressed too hard so the line is heavier and rougher, edges gone furry/scratchy instead of clean, eyes shrunk down to pinpricks, body turned away from the viewer."
+#
+# Restated in pixel-art terms for the same reason the house style was (see
+# the DELIBERATE DEVIATION note in tools/kf_prompt_builder.py): the bible
+# describes the grudge form as marker pressed too hard, which only means
+# anything if the medium is a marker. What it is FOR -- the same creature,
+# redrawn badly, turned away from you -- is unchanged.
+grudge_grammar = "Same silhouette as the normal form, redrawn badly on purpose: the outline broken and uneven with stray loose pixels stranded along the edge, fills patchy and slightly off-register so the color does not sit properly inside the outline, eyes shrunk down to single pixels, body turned away from the viewer."
 
 # ---------------------------------------------------------------------------
 # Shared single designs. Bible section 4: baby (bible's own term, which the
