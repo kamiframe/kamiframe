@@ -1,15 +1,19 @@
 # ports/esp32
 
-**Real ESP32 HAL backends -- display, input, time (now DS3231-backed, see
+**Real ESP32 HAL backends -- display, input, time (DS3231-backed, see
 ADR 0026), memory, entropy, logging, storage, power -- all compiling and
 linking clean against the real ESP-IDF v6.0.2 toolchain, driving the real
 `kf_app_init()`/`kf_app_frame()` loop from `kf/app.h`, with a real,
-NVS-backed `kf_pet_session` ticking alongside it (ADR 0025). Not yet run
-against real hardware -- parts arrive 2026-08-07. Still not running LVGL or
-Lua -- see ADR 0025 for exactly why not, and ADR 0020 for why the pet
-session itself waited this long.** See ADR 0019 for the hello-world this
-was built on top of, ADR 0020 for the HAL backends, ADR 0025 for the pet
-session, and ADR 0026 for the DS3231 real-time clock driver.
+NVS-backed `kf_pet_session` ticking alongside it (ADR 0025). LVGL and Lua
+are both up (ADR 0027, ADR 0028), and a real hardware session on 2026-08-08
+put the pet screen on real glass for the first time -- see "What ADR 0027
+added" below for what that found and fixed, and `main/app_main.cpp`'s own
+header comment for exactly what is and is not confirmed as a result. Lua is
+present and not crashing through that same session; whether the demo
+creature is actually driving what the screen shows is a separate, still-open
+question -- same place has the details.** See ADR 0019 for the hello-world
+this was built on top of, ADR 0020 for the HAL backends, ADR 0025 for the
+pet session, and ADR 0026 for the DS3231 real-time clock driver.
 
 This directory used to be a documented skeleton, never compiled. It now
 builds and boots: `idf.py build` produces a real `kamiframe-firmware.elf`/
@@ -177,6 +181,131 @@ These are already true and need to stay true:
   same 1MB app partition -- 73% still free. Still not run against a
   physical DS3231 -- see ADR 0026's own "Not yet done" section.
 
+## What ADR 0027 added
+
+- `kamiframe_lvgl_port`, a real ESP-IDF component wrapping the exact same
+  portable glue desktop already builds (`kf_lvgl_pool.cpp`,
+  `kf_lvgl_display.cpp`, `kf_pet_screen.cpp`, `kf_screen_nav.cpp`, and the
+  rest) by relative path -- one canonical file, not a fork. `app_main.cpp`
+  now drives `kf_lvgl_port_init()`/`kf_screen_nav_init()` at boot and pet
+  session -> screen nav -> LVGL pump every frame, and `KF_DEMO_SPRITE` is
+  gone (`KF_DEMO_NONE`) now that LVGL owns the framebuffer.
+- Three real build failures were found and fixed, not guessed at: LVGL's own
+  build system tries to self-register as an ESP-IDF component when fetched
+  from inside one that's already registering; ESP-IDF's early
+  "requirements scan" pass runs component `CMakeLists.txt` code in a mode
+  that breaks `FetchContent`; two ARM-only LVGL `.S` files aren't
+  assembly-safe outside an ARM toolchain and were never compiled on desktop
+  at all.
+- **Confirmed on real hardware, 2026-08-08.** The pet screen is on real
+  glass. First flash was not clean: a DMA race in the display driver's own
+  byte-swap path duplicated bands and dropped the top of the frame, unsent
+  dirty rectangles kept re-transmitting unchanged frames, and the D-pad
+  could not move focus off Feed. All three were found by watching the real
+  board, not by reasoning about the code, and all three are fixed -- see
+  "What ADR 0032 added" below for what came after.
+
+## What ADR 0028 added
+
+- A real ESP-IDF component for Lua itself (`ports/esp32/components/lua`),
+  compiling `cmake/fetch_lua.cmake`'s own source list into a real
+  `liblua.a` rather than linking the desktop build's `lua_core` target --
+  the latter built clean but failed to LINK (`__wrap_longjmp` never pulled
+  in, because a plain CMake target is invisible to the machinery that
+  orders an ESP-IDF link line).
+- `-DLUA_32BITS`: this toolchain's C++ translation units never see
+  `LLONG_MAX`, so `lua_Integer`/`lua_Number` are 32-bit on ESP32 (desktop
+  keeps 64-bit `lua_Integer`). Every value `pet.*`/`kf.*` pass today fits
+  comfortably; a future 64-bit value would silently truncate instead of
+  erroring.
+- `app_main.cpp` calls `kf_lua_port_init()`/`_frame()`/`_shutdown()` in the
+  same order, for the same reasons, `sdl_main.cpp` already does, loading the
+  real demo creature script (ADR 0018) unforked.
+- **Present and not crashing on real hardware**, confirmed by the same
+  2026-08-08 session: this firmware, Lua linked in, stayed up through the
+  LVGL and KFDBG work that followed. **Not confirmed:** whether the demo
+  creature's own `pet.feed()`/`play()`/`rest()` calls actually reach and
+  move the live `kf_pet_state` the pet screen reads. Nobody has
+  independently watched that link happen yet.
+
+## What ADR 0029 added
+
+- `kf_panel_profile.h`: everything that differs between panel modules
+  (init sequence, byte order, inversion, window gap) becomes data, not a
+  hardcoded ST7789 assumption. `esp_display.cpp` now knows how to drive a
+  240x320 SPI panel and not which one.
+- Byte order earned its own field because it's the one quirk `esp_lcd`
+  doesn't hide: RGB565 goes on the wire high-byte-first, `esp_lcd`
+  byte-swaps commands but not colour data, and the ST7789 masks this with a
+  register the ILI9341 has no equivalent of. Confirmed on hardware with
+  full-screen fills: red showed blue, green showed pink, blue showed green
+  -- a plain byte swap and nothing else.
+- Defaults to the ILI9341 (the bring-up panel that actually works), not the
+  ST7789 (the intended primary, which arrived faulty) -- deliberately: a
+  default that produces a black screen on the only working board is a bad
+  default however defensible on paper.
+- **Confirmed by the same 2026-08-08 hardware session as ADR 0027/0028** --
+  this is the driver that put the pet screen on glass.
+
+## What ADR 0030 added
+
+- The device half of the KFDBG serial debug bridge
+  (`kf_dbg_bridge.{h,cpp}`, `kf_dbg_codec.{h,cpp}`): a low-priority FreeRTOS
+  task pair reads and writes the console UART, so `tools/kf_debug.py` can
+  pull a screenshot, read live pet state, or press buttons remotely, over
+  the exact same UART `idf.py monitor` already uses.
+- Command parsing runs on the main frame-loop thread, because
+  `kf_fb_pixels()`/`kf_pet_session_state()` aren't safe to read from a
+  second thread while the frame loop writes them; only the slow
+  encode-and-transmit half runs on the background tasks.
+- The codec (RLE, base64, CRC32) has zero ESP-IDF dependency and was
+  checked against known-answer vectors and the real host-side
+  `tools/kf_debug.py` before a byte of it ran near the firmware.
+- **Confirmed on real hardware the same day it landed** -- this is the tool
+  the rest of the 2026-08-08 session used to drive and observe the board
+  (screenshots, button presses, state reads), and it is how the LVGL
+  focus bug and the panel's scanline behaviour (below) were found.
+
+## What ADR 0031 added
+
+- Three new KFDBG commands -- `ADVANCE <seconds>`, `RESET`, `MULT <n>` --
+  giving the device the same time control the desktop debug window has had
+  all along, because the shipped decay rates (four real days for hunger to
+  empty) make watching a real board impractical otherwise.
+- Split `KF_PET_SESSION_ENABLE_DEBUG_TOOLS` into two flags: the cheap trio
+  (`_advance`/`_reset`/`_age_seconds`, no extra static memory) is on for
+  ESP32; the 200KB+ scrubbable-timeline ring (`_seek()`) stays
+  desktop/headless only.
+- `MULT` scales only the pet session's own per-frame delta, never LVGL's
+  tick or Lua's frame delta -- mirroring `sdl_main.cpp` exactly, so
+  animation playback and script frame timing don't silently speed up with
+  pet time.
+- **Exercised on real hardware** as part of `tools/kf_panel.py`, the desktop
+  control panel built the same day -- driving it for real is what found the
+  D-pad focus bug and the fast-click debounce bug fixed alongside it.
+
+## What ADR 0032 added
+
+- No driver decision changed here; this documents what was tried against
+  real tearing and what it means for panel selection. Once the pet was
+  rendering on real hardware, three flicker faults were found and fixed
+  (the DMA race, the dirty-rectangle fix, and an idempotent-widget-update
+  fix). What's left is genuine tearing: the panel scans its own memory out
+  to the glass on its own clock, uncoordinated with our writes.
+- The ILI9341 module in use has no TE (tearing-effect) pin -- confirmed
+  against the manufacturer's schematic. `KFDBG SCANLINE`, a new command,
+  polls the panel's `Get_scanline` register instead: measured on hardware
+  at three clock speeds, a real monotonic, wrapping counter, ~96Hz refresh,
+  and a reply framing with no dummy byte (contrary to the datasheet's own
+  reading).
+- A scanline-wait was built and tried on hardware. It made no measurable
+  difference to the flicker and is now defaulted off -- the code stays, for
+  a future panel that answers reads more cleanly, or exposes TE outright.
+- **Decision for the real board:** prefer a panel that can synchronise with
+  the host -- RGB parallel first, SPI with TE second, SPI with SDO (this
+  module's tier) third. Panels with none of these still work; they simply
+  tear on fast-moving content.
+
 ## What ADR 0033 added
 
 - A real partition table (`partitions.csv`), replacing ESP-IDF's default
@@ -214,17 +343,32 @@ These are already true and need to stay true:
 
 ## What still has to be written
 
-- Porting LVGL, then Lua, onto ESP-IDF -- each real, separate work, most
-  likely each its own `EXTRA_COMPONENT_DIRS` entry and its own ADR, once
-  there's real hardware to debug them against. The pet session itself
-  (ADR 0025) no longer waits on either.
+- **Confirming the demo creature is actually driving the pet screen**, not
+  just present and not crashing. This is ADR 0028's own named gap: nobody
+  has independently watched `pet.feed()`/`play()`/`rest()`, called from
+  Lua, reach the live `kf_pet_state` the pet screen already reads on real
+  hardware.
+- **`esp_partition_mmap()` returning readable sprite pixels off real
+  flash.** ADR 0033's asset pipeline is build-verified only -- nothing has
+  read a mapped byte on a real ESP32-S3 yet. This is the single biggest
+  open question left in this port; see `main/app_main.cpp`'s own header
+  comment.
 - A caller for `kf_time_set_wall()` in production -- ADR 0026 implemented
   the write-through correctly, but nothing (no settings screen, no NTP
   sync) actually calls it yet, so a DS3231 that lost its seed still needs
   a human re-running the bring-up diagnostic to recover, not an in-app fix.
-- The real hardware bring-up pass: flash an actual board, confirm every pin
-  in `kf_esp_pins.h`, measure the real achievable SPI clock (see below), and
-  confirm the DS3231 driver added in ADR 0026 actually talks to a real chip.
+- A panel that can synchronise with the host, if full-screen animation ever
+  matters -- ADR 0032's own conclusion. Both panels on hand today (the
+  ILI9341 in use and the ST7789 intended as primary) tear on fast-moving
+  content, and fixing that means a different panel, not a change to this
+  driver.
+- A real OTA client -- the partition table (ADR 0033) already reserves two
+  app slots for it, but no code calls `esp_https_ota` or anything like it
+  yet.
+- Replacing the faulty ST7789 reference panel and re-measuring against it.
+  Everything panel-specific confirmed so far -- byte order, SPI clock,
+  tearing behaviour -- was measured on the ILI9341 stand-in, not the
+  intended primary.
 
 ## The number checked first at bring-up, and its answer
 

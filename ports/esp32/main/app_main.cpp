@@ -30,16 +30,52 @@
  * the identical reason.
  *
  * ============================================================================
- *  WHAT THIS DOES NOT DO, AND WHY -- read before assuming more than this
- *  slice claims.
+ *  WHAT HAS RUN ON HARDWARE, AND WHAT HAS NOT -- read before assuming more,
+ *  or less, than this slice claims. This section used to say none of it had
+ *  been flashed; a real hardware session on 2026-08-08 made that stale, so
+ *  read what follows precisely -- some of this is now confirmed, some of it
+ *  is still a clean cross-compile, and the two should not be blurred.
  *
- *  NONE OF THIS HAS RUN ON HARDWARE. Every slice above is a clean
- *  cross-compile and link against ESP-IDF v6.0.2, nothing more. The pet
- *  screen has never been seen on glass, the demo creature script has never
- *  been observed driving anything on-device, and the panel profile this
- *  build defaults to is correct according to the bring-up diagnostic rather
- *  than according to this firmware. Treat the first flash as a test, not a
- *  formality.
+ *  THE PET SCREEN HAS BEEN SEEN ON GLASS. That same session flashed this
+ *  LVGL+pet-screen build to a real ESP32-S3 with the ILI9341 bring-up panel
+ *  and drove it. It did not work first try, and every one of the following
+ *  was a real bug found only by watching the real board, invisible on
+ *  desktop: a DMA race in the display driver's byte-swap path duplicated
+ *  bands and dropped the top of the frame; unchanged frames were being
+ *  re-sent every tick until dirty rectangles were honoured; and the D-pad
+ *  could not move focus off Feed, because a comment's claim about LVGL's
+ *  default key handling was wrong and nobody had checked it against LVGL's
+ *  own source until then. What remains is tearing on content that genuinely
+ *  changes -- the ILI9341 module on hand exposes no TE line, a
+ *  scanline-polling workaround was built and measured on real hardware, and
+ *  it did not help (ADR 0032). Tearing is accepted, not fixed; choosing a
+ *  panel that can synchronise with the host is now a stated criterion for
+ *  the real board, not an assumption.
+ *
+ *  LUA IS PRESENT AND NOT CRASHING ON DEVICE. The same firmware, Lua linked
+ *  in and the demo creature script running its own frame calls, stayed up
+ *  through the whole session above -- screenshots pulled over KFDBG, buttons
+ *  pressed, state queried, the display driver fixed and reflashed more than
+ *  once. None of that would have kept working through a Lua init crash.
+ *  What that does NOT confirm: nobody has independently watched the demo
+ *  creature's own choices -- pet.feed()/play()/rest() called FROM Lua --
+ *  reach the same live kf_pet_state the pet screen reads. Presence and
+ *  non-crashing is verified; the creature actually driving observable
+ *  behaviour on-device is not. Treat that link as open until someone
+ *  watches it happen.
+ *
+ *  THE PANEL PROFILE THIS BUILD DEFAULTS TO (ILI9341) IS THE ONE THE SESSION
+ *  ABOVE ACTUALLY DROVE -- "correct per the bring-up diagnostic" and
+ *  "correct per this firmware" used to be two different claims; they are
+ *  the same claim now.
+ *
+ *  ESP_PARTITION_MMAP() HAS NEVER BEEN CONFIRMED ON REAL FLASH, AND THIS IS
+ *  THE BIGGEST OPEN QUESTION ON THIS LIST. ADR 0033 gave this port a real
+ *  partition table and an asset pack (`.kfpack`) mounted by mapping the
+ *  `assets` partition directly rather than copying it into PSRAM, but that
+ *  work is build-verified only -- nobody has read a mapped sprite byte off
+ *  a real chip yet. If a sprite comes back wrong, or the mapping call itself
+ *  faults, on the next flash, look here first.
  *
  *  The pet screen needs no Lua: kf_pet_screen.cpp only reads
  *  kf_pet_session_state() and calls kf_pet_session_feed()/play()/rest(),
@@ -47,14 +83,11 @@
  *  fault should degrade the creature's behaviour, not blank the screen --
  *  which is worth knowing when reading a first-flash failure.
  *
- *  kf_time_wall() IS backed by a real DS3231 (ADR 0026), and unlike the rest
- *  of this list that part is hardware-verified: the bring-up diagnostic
- *  confirmed the clock advancing across a genuine power cut on coin-cell
- *  power. So kf_pet_session_init()'s offline fast-forward has something real
- *  to fast-forward across, on a board with the cell fitted.
- *
- *  Still not reached: no partition table beyond ESP-IDF's default
- *  single-app layout, so there is nowhere for assets to live yet.
+ *  kf_time_wall() IS backed by a real DS3231 (ADR 0026), hardware-verified
+ *  since before the session above: the bring-up diagnostic confirmed the
+ *  clock advancing across a genuine power cut on coin-cell power. So
+ *  kf_pet_session_init()'s offline fast-forward has something real to
+ *  fast-forward across, on a board with the cell fitted.
  * ============================================================================
  */
 
