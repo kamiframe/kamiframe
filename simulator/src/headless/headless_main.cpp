@@ -18,6 +18,7 @@
  *     kamiframe-headless --verify-pet-personality
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
+ *     kamiframe-headless --verify-demand-curve
  *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
  *     kamiframe-headless --verify-assets
@@ -181,6 +182,20 @@ int run_storage_power_check() {
     return ok ? 0 : 1;
 }
 
+/* Test helper: zeroes every stage's decay rates, not just one. Several
+ * checks below want needs held perfectly constant across a stage (or a
+ * whole life spanning several stages) so the expected value is exact
+ * arithmetic rather than something that has to duplicate apply_decay()'s
+ * own math -- since the demand-curve plan (2026-08-09) made rates per-stage
+ * instead of one flat set for the whole life, "zero decay" now means
+ * zeroing every row of the table, not three fields. */
+kf_pet_config zero_all_stage_rates(kf_pet_config config) {
+    for (unsigned s = 0; s < KF_PET_STAGE_COUNT; ++s) {
+        config.stage_rates[s] = {0u, 0u, 0u};
+    }
+    return config;
+}
+
 /* Proves the pet simulation framework's offline fast-forward mechanism --
  * not just the decay maths in isolation, but the actual save/sleep/reload
  * path a real device goes through -- behaves identically to a single direct
@@ -237,15 +252,17 @@ int run_pet_check() {
         state.stage = KF_PET_STAGE_BABY;
 
         kf_pet_advance(&state, &config, 3600u);
+        const kf_pet_stage_rates &baby_rates =
+            config.stage_rates[KF_PET_STAGE_BABY];
         check(state.hunger_mp ==
-                  KF_PET_MILLIPERCENT_MAX - config.hunger_decay_mp_per_hour,
+                  KF_PET_MILLIPERCENT_MAX - baby_rates.hunger_mp_per_hour,
               "hunger decays by exactly the configured rate over one hour");
-        check(state.happiness_mp == KF_PET_MILLIPERCENT_MAX -
-                                         config.happiness_decay_mp_per_hour,
+        check(state.happiness_mp ==
+                  KF_PET_MILLIPERCENT_MAX - baby_rates.happiness_mp_per_hour,
               "happiness decays by exactly the configured rate over one "
               "hour");
         check(state.energy_mp ==
-                  KF_PET_MILLIPERCENT_MAX - config.energy_decay_mp_per_hour,
+                  KF_PET_MILLIPERCENT_MAX - baby_rates.energy_mp_per_hour,
               "energy decays by exactly the configured rate over one hour");
     }
 
@@ -446,11 +463,13 @@ int run_pet_stage_check() {
         check(state.stage_elapsed_seconds == kIntoBabySeconds,
               "the leftover time after hatching is credited to the new "
               "stage, not dropped or double-counted");
-        check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX -
-                                      static_cast<kf_pet_millipercent>(
-                                          static_cast<uint64_t>(
-                                              config.hunger_decay_mp_per_hour) *
-                                          kIntoBabySeconds / 3600ull),
+        check(state.hunger_mp ==
+                  KF_PET_MILLIPERCENT_MAX -
+                      static_cast<kf_pet_millipercent>(
+                          static_cast<uint64_t>(
+                              config.stage_rates[KF_PET_STAGE_BABY]
+                                  .hunger_mp_per_hour) *
+                          kIntoBabySeconds / 3600ull),
               "decay resumes correctly for the leftover time once past the "
               "egg stage, using the same closed-form rate math as ordinary "
               "decay");
@@ -493,10 +512,7 @@ int run_pet_stage_check() {
      * (branch_count == KF_PET_TEEN_FORM_COUNT == 3): neglected lands on
      * band 0, mediocre on band 1, well-cared-for on band 2. */
     {
-        kf_pet_config zero_decay = config;
-        zero_decay.hunger_decay_mp_per_hour = 0u;
-        zero_decay.happiness_decay_mp_per_hour = 0u;
-        zero_decay.energy_decay_mp_per_hour = 0u;
+        kf_pet_config zero_decay = zero_all_stage_rates(config);
         zero_decay.child_duration_seconds = 1000u;
 
         const kf_pet_millipercent kNeglected = 10000u;   /* 10% -> band 0 */
@@ -547,10 +563,7 @@ int run_pet_stage_check() {
      * a second advance() call afterwards keeps accumulating time without
      * erroring, looping, or picking another branch. */
     {
-        kf_pet_config zero_decay = config;
-        zero_decay.hunger_decay_mp_per_hour = 0u;
-        zero_decay.happiness_decay_mp_per_hour = 0u;
-        zero_decay.energy_decay_mp_per_hour = 0u;
+        kf_pet_config zero_decay = zero_all_stage_rates(config);
         zero_decay.egg_duration_seconds = 100u;
         zero_decay.baby_duration_seconds = 100u;
         zero_decay.child_duration_seconds = 1000u;
@@ -771,10 +784,7 @@ int run_pet_personality_check() {
      * per accumulate_personality()'s own header comment) isolate this
      * from both decay math and the halving math below. */
     {
-        kf_pet_config zero_decay_no_halving = config;
-        zero_decay_no_halving.hunger_decay_mp_per_hour = 0u;
-        zero_decay_no_halving.happiness_decay_mp_per_hour = 0u;
-        zero_decay_no_halving.energy_decay_mp_per_hour = 0u;
+        kf_pet_config zero_decay_no_halving = zero_all_stage_rates(config);
         zero_decay_no_halving.personality_recency_half_life_seconds = 0u;
         zero_decay_no_halving.baby_duration_seconds = 1000u;
         zero_decay_no_halving.child_duration_seconds = 500u;
@@ -816,10 +826,7 @@ int run_pet_personality_check() {
      * holds the need constant so the expected accumulator value is exact
      * arithmetic, not an approximation. */
     {
-        kf_pet_config cfg = config;
-        cfg.hunger_decay_mp_per_hour = 0u;
-        cfg.happiness_decay_mp_per_hour = 0u;
-        cfg.energy_decay_mp_per_hour = 0u;
+        kf_pet_config cfg = zero_all_stage_rates(config);
         cfg.personality_recency_half_life_seconds = 1000u;
         cfg.baby_duration_seconds = 1'000'000u; /* stay in Baby throughout */
 
@@ -993,6 +1000,56 @@ int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
                 static_cast<unsigned long long>(checksum), expect_checksum);
         ok = false;
     }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Proves decay is per-stage, not uniform. The specific assertion is that a
+ * baby empties far faster than an adult over the SAME elapsed time -- the
+ * exact rates are config and will be tuned, but "a baby is more demanding
+ * than an adult" is the behaviour this whole plan exists to create, and it
+ * should fail loudly if a future edit flattens the table again. */
+int run_pet_demand_curve_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    check(config.stage_rates[KF_PET_STAGE_EGG].hunger_mp_per_hour == 0u,
+          "an egg does not get hungry");
+    check(config.stage_rates[KF_PET_STAGE_BABY].hunger_mp_per_hour >
+              config.stage_rates[KF_PET_STAGE_ADULT].hunger_mp_per_hour * 4u,
+          "a baby is at least 4x as demanding as an adult");
+
+    /* Same elapsed time, two stages, compared directly. */
+    kf_pet_state baby{};
+    kf_pet_init(&baby);
+    baby.stage = KF_PET_STAGE_BABY;
+
+    kf_pet_state adult{};
+    kf_pet_init(&adult);
+    adult.stage = KF_PET_STAGE_ADULT;
+
+    constexpr uint32_t kOneHour = 3600u;
+    apply_stage_segment_for_test(&baby, &config, kOneHour);
+    apply_stage_segment_for_test(&adult, &config, kOneHour);
+
+    check(baby.hunger_mp < adult.hunger_mp,
+          "after one hour the baby is hungrier than the adult");
+    check(baby.hunger_mp < 40000u,
+          "after one hour a baby has lost more than half its hunger bar");
+    check(adult.hunger_mp > 90000u,
+          "after one hour an adult has barely moved");
+
+    KF_LOGI(TAG, "demand curve: baby hunger %u, adult hunger %u after 1h",
+            static_cast<unsigned>(baby.hunger_mp),
+            static_cast<unsigned>(adult.hunger_mp));
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -1746,6 +1803,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_personality = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
+    bool verify_demand_curve = false;
     bool verify_screen_nav = false;
     bool verify_lua_creature = false;
     bool verify_assets = false;
@@ -1783,6 +1841,8 @@ int main(int argc, char *argv[]) {
             g_dump_path = argv[++i];
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
             verify_pet_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-demand-curve") == 0) {
+            verify_demand_curve = true;
         } else if (std::strcmp(argv[i], "--verify-screen-nav") == 0) {
             verify_screen_nav = true;
         } else if (std::strcmp(argv[i], "--verify-lua-creature") == 0) {
@@ -1801,6 +1861,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
+                        "kamiframe-headless --verify-demand-curve\n"
                         "kamiframe-headless --verify-screen-nav "
                         "[--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua-creature\n"
@@ -1848,6 +1909,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_screen) {
         return run_pet_screen_check(expect_checksum, have_expect);
+    }
+
+    if (verify_demand_curve) {
+        return run_pet_demand_curve_check();
     }
 
     if (verify_screen_nav) {

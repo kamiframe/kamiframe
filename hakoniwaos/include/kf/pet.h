@@ -83,6 +83,11 @@ typedef enum {
     KF_PET_STAGE_ADULT = 4,
 } kf_pet_stage;
 
+/* Number of life stages, for sizing per-stage tables. Kept next to the enum
+ * so the two cannot drift: adding a stage without widening the tables that
+ * index by it would read past the end of every one of them. */
+#define KF_PET_STAGE_COUNT 5u
+
 /* Tree shape, per Chris's design: 3 teen types, each branching to 2 adult
  * forms (6 adults total). Both are compile-time constants, not config --
  * unlike stage durations and decay rates, the SHAPE of the evolution tree
@@ -108,10 +113,25 @@ typedef enum {
  * tuning -- Chris's own words on stage timing: "I'll decide exact numbers
  * later, just make it configurable." Adult has no duration field: it is
  * terminal in this slice, nothing to time. */
+/* Decay rates for one life stage, in millipercent per hour.
+ *
+ * Per-stage rather than one set for the whole life because demand IS the
+ * game: a baby that needs attention every half hour and an adult you check
+ * on a few times a day are the same creature at different points, and a
+ * single rate cannot express both. See
+ * docs/superpowers/specs/2026-08-09-core-care-loop-design.md section 2. */
 typedef struct {
-    uint32_t hunger_decay_mp_per_hour;
-    uint32_t happiness_decay_mp_per_hour;
-    uint32_t energy_decay_mp_per_hour;
+    uint32_t hunger_mp_per_hour;
+    uint32_t happiness_mp_per_hour;
+    uint32_t energy_mp_per_hour;
+} kf_pet_stage_rates;
+
+typedef struct {
+    /* Indexed by kf_pet_stage. The EGG row is all zeroes and is never read
+     * -- apply_stage_segment() returns early for eggs -- but it is present
+     * so the table can be indexed by stage without an offset, which is one
+     * fewer thing to get wrong. */
+    kf_pet_stage_rates stage_rates[KF_PET_STAGE_COUNT];
 
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
@@ -261,6 +281,15 @@ void kf_pet_init(kf_pet_state *state);
  * arbitrary elapsed value and no HAL in the picture at all. */
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
                      uint32_t elapsed_seconds);
+
+/* Test seam: applies exactly one decay segment at the pet's CURRENT stage,
+ * without the stage-transition logic kf_pet_advance() wraps around it.
+ * Exists so a test can compare two stages over identical elapsed time
+ * without constructing two whole life histories. Not for gameplay use --
+ * kf_pet_advance() is the real entry point. */
+void apply_stage_segment_for_test(kf_pet_state *state,
+                                   const kf_pet_config *config,
+                                   uint32_t segment_seconds);
 
 /* Care actions. Each raises its need by a fixed amount and clamps at
  * KF_PET_MILLIPERCENT_MAX -- feeding an already-full pet does nothing

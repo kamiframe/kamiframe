@@ -251,6 +251,17 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
         return;
     }
 
+    /* Indexed directly by stage -- the enum's values are 0..4 by definition
+     * (kf/pet.h) and KF_PET_STAGE_COUNT sits next to it to keep them in
+     * step. Clamped anyway: a corrupted save that survived the version
+     * check should degrade to the gentlest rates, not read off the end of
+     * the table. */
+    unsigned stage_index = static_cast<unsigned>(state->stage);
+    if (stage_index >= KF_PET_STAGE_COUNT) {
+        stage_index = KF_PET_STAGE_ADULT;
+    }
+    const kf_pet_stage_rates &rates = config->stage_rates[stage_index];
+
     const uint64_t hunger_before_mp = state->hunger_mp;
     const uint64_t happiness_before_mp = state->happiness_mp;
     const uint64_t energy_before_mp = state->energy_mp;
@@ -262,12 +273,10 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
             (hunger_before_mp + happiness_before_mp + energy_before_mp) / 3u;
     }
 
-    state->hunger_mp =
-        apply_decay(state->hunger_mp, config->hunger_decay_mp_per_hour, segment);
-    state->happiness_mp = apply_decay(state->happiness_mp,
-                                       config->happiness_decay_mp_per_hour, segment);
-    state->energy_mp =
-        apply_decay(state->energy_mp, config->energy_decay_mp_per_hour, segment);
+    state->hunger_mp = apply_decay(state->hunger_mp, rates.hunger_mp_per_hour, segment);
+    state->happiness_mp =
+        apply_decay(state->happiness_mp, rates.happiness_mp_per_hour, segment);
+    state->energy_mp = apply_decay(state->energy_mp, rates.energy_mp_per_hour, segment);
 
     if (feeds_branch) {
         state->care_integral_mp_seconds += average_before_mp * segment;
@@ -416,9 +425,21 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
 
 kf_pet_config kf_pet_default_config(void) {
     kf_pet_config c{};
-    c.hunger_decay_mp_per_hour = 1042u;    /* ~4.0 days, full to empty */
-    c.happiness_decay_mp_per_hour = 694u;  /* ~6.0 days */
-    c.energy_decay_mp_per_hour = 521u;     /* ~8.0 days */
+    /* Per-stage demand. Derived in
+     * docs/superpowers/plans/2026-08-09-demand-curve.md: "needs attention"
+     * is dropping to 70%, "critical" is reaching zero, and the three needs
+     * keep the 1 : 0.67 : 0.5 ratio the old flat defaults used, so hunger
+     * bites first and energy last.
+     *
+     * These are the numbers most likely to be wrong after a week of living
+     * with a real pet. They are here, together, in one table, precisely so
+     * that tuning them is editing five rows rather than hunting through
+     * logic. */
+    c.stage_rates[KF_PET_STAGE_EGG] = {0u, 0u, 0u};          /* never decays */
+    c.stage_rates[KF_PET_STAGE_BABY] = {66000u, 44000u, 33000u};  /* ~30 min */
+    c.stage_rates[KF_PET_STAGE_CHILD] = {33000u, 22000u, 16000u}; /* ~1 h */
+    c.stage_rates[KF_PET_STAGE_TEEN] = {16000u, 11000u, 8000u};   /* ~2 h */
+    c.stage_rates[KF_PET_STAGE_ADULT] = {8000u, 5500u, 4000u};    /* ~4 h */
 
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers
@@ -546,6 +567,12 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state) {
         best_index = 2u;
     }
     return best_index;
+}
+
+void apply_stage_segment_for_test(kf_pet_state *state,
+                                   const kf_pet_config *config,
+                                   uint32_t segment_seconds) {
+    apply_stage_segment(state, config, segment_seconds);
 }
 
 kf_result kf_pet_save(const kf_pet_state *state) {

@@ -315,6 +315,13 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless --verify-pet-screen
                      --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
 
+    # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
+    # empties far faster than an adult over the same elapsed time. See
+    # headless_main.cpp's run_pet_demand_curve_check() and
+    # docs/superpowers/plans/2026-08-09-demand-curve.md.
+    add_test(NAME pet_demand_curve_check
+             COMMAND kamiframe-headless --verify-demand-curve)
+
     # Proves the menu/screen navigation mechanism (ADR 0022): Home is
     # active at boot, kf_screen_nav_debug_advance() (the same effect as a
     # real MENU press) moves to Info and its rendering is deterministic,
