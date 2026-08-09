@@ -177,6 +177,19 @@ a neglected creature grows into something visibly different.
   poop, flies, stink lines. Sprites to be generated; the asset pipeline to
   carry them is being built in parallel.
 
+**Creature sprite size: 48x48 as the base**, a fifth of the screen's width
+and about a sixth of its height — roughly the proportion Tamagotchi Uni
+gives its creature. A multiple of 8, which suits the blitter. Per-stage
+override allowed so an adult can carry more presence than a baby.
+
+At 48x48 a frame is 4.5KB, so the 10MB asset budget holds thousands of
+frames. Size is a design choice here, not a constraint.
+
+This forces a layout pass on the pet screen. Three stat bars and their
+labels currently take most of the vertical space; with real art the
+creature should be what the eye goes to, which likely means the needs
+become compact icons or a single row rather than three full-width bars.
+
 ## 10. Decisions and what was rejected
 
 | Decision | Rejected alternative | Why |
