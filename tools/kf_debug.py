@@ -618,8 +618,30 @@ def build_parser():
                             help="simulate a button press")
     press.add_argument("buttons",
                         help="comma-separated button names, e.g. UP,A")
-    press.add_argument("--hold-ms", type=int, default=0,
-                        help="hold the button(s) for this many milliseconds")
+    # Default 120ms, NOT 0, and the reason is a real bug found on hardware.
+    #
+    # `KFDBG BTN` injects a one-shot mask that applies to exactly one
+    # kf_input_poll() call and then clears itself. Core debounces buttons
+    # (kDebounceUs = 8000 in hakoniwaos/src/app.cpp): a value must read the
+    # SAME across consecutive polls, at least 8ms apart, before it becomes
+    # the stable state and produces a press edge. Polls happen once per
+    # frame, ~33ms apart.
+    #
+    # So a one-shot injection can never register. Poll N sees the button and
+    # starts a debounce candidate; poll N+1, 33ms later, sees zero because
+    # the mask already cleared, and the candidate resets. The button is
+    # acknowledged over the wire and then silently discarded -- which is
+    # exactly what it looked like: `ack: BTN mask=64` followed by a screen
+    # that did not change.
+    #
+    # 120ms spans roughly four frames, so the mask is present for several
+    # consecutive polls and debounce resolves normally. It is also a
+    # realistic human press, which is what this flag is simulating.
+    press.add_argument("--hold-ms", type=int, default=120,
+                        help="hold the button(s) for this many milliseconds "
+                             "(default 120; must exceed core's 8ms debounce "
+                             "across consecutive frame polls, so 0 will "
+                             "NOT register)")
 
     watch = sub.add_parser("watch", parents=[common],
                             help="print device state repeatedly")
