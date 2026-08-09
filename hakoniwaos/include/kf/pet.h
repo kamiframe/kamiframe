@@ -121,6 +121,12 @@ typedef enum {
  * creature, not undefined behaviour. */
 uint8_t kf_pet_adults_in_family(uint8_t teen_form);
 
+/* The dust form. NOT one of the four verb families -- deliberately equal to
+ * KF_PET_TEEN_FORM_COUNT so it sits just past them, and so any loop over the
+ * families skips it. Reached only by the never-interacted condition; see
+ * kf_pet_state::care_actions_taken. */
+#define KF_PET_TEEN_FORM_DUST KF_PET_TEEN_FORM_COUNT
+
 /* Base-trait table size (ADR 0023), same compile-time-constant treatment
  * as the two above and for the same reason: this is the SHAPE of the
  * table (how many slots exist), not a tuning value. Six placeholder base
@@ -273,6 +279,14 @@ typedef struct {
     uint32_t care_recency_window_seconds;
 
     uint8_t base_trait; /* [0, KF_PET_BASE_TRAIT_COUNT), set once at init */
+
+    /* How many care actions this creature has EVER received. Not a rate, not
+     * decayed, never reset: the only question it answers is "has anyone ever
+     * touched this at all", which is what separates a neglected creature
+     * (cared for badly) from an abandoned one (never cared for). Saturates
+     * rather than wrapping -- the difference between 0 and 1 is the only one
+     * that matters. */
+    uint32_t care_actions_taken;
 } kf_pet_state;
 
 /* A fresh pet: every need full, stage KF_PET_STAGE_EGG, every branch
@@ -338,13 +352,18 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * through kf_store_write(&state, sizeof(state)) -- struct layout is not a
  * promise two different compilers (this project builds with both GCC and
  * MSVC) are obliged to keep identically. Bumped to version 2 with ADR
- * 0021 (life stages/evolution) and to version 3 with ADR 0023
- * (personality traits): a save from an earlier version is refused by
- * kf_pet_load_and_advance()'s unpack() step and falls back to a fresh
- * pet, exactly the behaviour ADR 0015 already established for any
- * unrecognised version -- no migration code, an explicit, accepted cost. */
+ * 0021 (life stages/evolution), to version 3 with ADR 0023 (personality
+ * traits), and to version 4 with the evolution-tree reconciliation
+ * (docs/superpowers/plans/2026-08-09-evolution-tree-reconciliation.md):
+ * `care_actions_taken` was added and the valid range of `teen_form` grew to
+ * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
+ * misread rather than merely missing a field. A save from an earlier
+ * version is refused by kf_pet_load_and_advance()'s unpack() step and falls
+ * back to a fresh pet, exactly the behaviour ADR 0015 already established
+ * for any unrecognised version -- no migration code, an explicit, accepted
+ * cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 70u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 74u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

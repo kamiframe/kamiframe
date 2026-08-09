@@ -142,22 +142,32 @@ constexpr lv_palette_t kPreBranchColor[3] = {
     LV_PALETTE_GREEN,  /* child */
 };
 
-/* One colour per teen_form (KF_PET_TEEN_FORM_COUNT == 4: Cut, Hold, Mark,
- * Go, per the character bible's section 6), chosen once at the Child->Teen
- * transition and read from then on -- see kf/pet.h's kf_pet_state comment.
- * Placeholder colours standing in for real art, same status as every other
- * number in this file that isn't final. */
-constexpr lv_palette_t kTeenColor[KF_PET_TEEN_FORM_COUNT] = {
+/* One colour per teen_form, sized KF_PET_TEEN_FORM_COUNT + 1: the four verb
+ * families (Cut, Hold, Mark, Go, per the character bible's section 6) PLUS
+ * one extra row at index KF_PET_TEEN_FORM_DUST (== KF_PET_TEEN_FORM_COUNT,
+ * kf/pet.h) for the dust form -- a real, reachable teen_form value (the
+ * never-interacted path to Hokorimaru, bible section 8), not an
+ * out-of-range sentinel, so it needs a real slot here or this indexes past
+ * the array the moment a neglected pet reaches Teen. Chosen once at the
+ * Child->Teen transition and read from then on -- see kf/pet.h's
+ * kf_pet_state comment. Placeholder colours standing in for real art, same
+ * status as every other number in this file that isn't final. */
+constexpr lv_palette_t kTeenColor[KF_PET_TEEN_FORM_COUNT + 1u] = {
     LV_PALETTE_BLUE,   /* Cut */
     LV_PALETTE_PURPLE, /* Hold */
     LV_PALETTE_CYAN,   /* Mark */
     LV_PALETTE_ORANGE, /* Go */
+    LV_PALETTE_GREY,   /* dust (Hokorimaru) -- "grey, drifting" per the bible */
 };
 
 /* One colour per (teen_form, adult_branch) pair, sized
- * [KF_PET_TEEN_FORM_COUNT][KF_PET_ADULT_BRANCH_MAX]. Rows are RAGGED because
- * families are: Cut has 2 adults, Hold and Mark have 3, Go has 1 (character
- * bible section 11) -- kf_pet_adults_in_family() is the actual per-family
+ * [KF_PET_TEEN_FORM_COUNT + 1][KF_PET_ADULT_BRANCH_MAX] for the same reason
+ * kTeenColor above grew an extra row: KF_PET_TEEN_FORM_DUST is a real,
+ * reachable teen_form value once a pet is never interacted with, not just
+ * an out-of-range sentinel kf_pet_adults_in_family() degrades gracefully
+ * for. Rows are RAGGED because families are: Cut has 2 adults, Hold and
+ * Mark have 3, Go has 1, dust has exactly 1 (Hokorimaru) (character bible
+ * sections 8 and 11) -- kf_pet_adults_in_family() is the actual per-family
  * count, and adult_branch is always < that count, so a short family's unused
  * trailing slots here are unreachable by construction, not meaningful data.
  * They're filled with the family's own teen colour (kTeenColor above)
@@ -168,7 +178,7 @@ constexpr lv_palette_t kTeenColor[KF_PET_TEEN_FORM_COUNT] = {
  * Column 0 of every row deliberately matches that family's teen colour --
  * adult_branch 0 keeps the teen's own hue, later columns are variants --
  * same rough-hue-family reasoning as before this table grew a Go row. */
-constexpr lv_palette_t kAdultColor[KF_PET_TEEN_FORM_COUNT]
+constexpr lv_palette_t kAdultColor[KF_PET_TEEN_FORM_COUNT + 1u]
                                    [KF_PET_ADULT_BRANCH_MAX] = {
     /* Cut: 2 real adults, 1 unreachable pad slot. */
     {LV_PALETTE_BLUE, LV_PALETTE_LIGHT_BLUE, LV_PALETTE_BLUE},
@@ -178,6 +188,8 @@ constexpr lv_palette_t kAdultColor[KF_PET_TEEN_FORM_COUNT]
     {LV_PALETTE_CYAN, LV_PALETTE_TEAL, LV_PALETTE_LIGHT_BLUE},
     /* Go: 1 real adult, 2 unreachable pad slots. */
     {LV_PALETTE_ORANGE, LV_PALETTE_ORANGE, LV_PALETTE_ORANGE},
+    /* Dust: 1 real adult (Hokorimaru), 2 unreachable pad slots. */
+    {LV_PALETTE_GREY, LV_PALETTE_GREY, LV_PALETTE_GREY},
 };
 
 struct BlobStyle {

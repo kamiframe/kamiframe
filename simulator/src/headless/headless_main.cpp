@@ -543,6 +543,13 @@ int run_pet_stage_check() {
             state.hunger_mp = c.level;
             state.happiness_mp = c.level;
             state.energy_mp = c.level;
+            /* This check is about select_branch()'s quality-band math, not
+             * the never-touched condition (that's run_hokorimaru_check()'s
+             * job) -- even "neglected" here means poorly cared for, not
+             * never cared for, so care_actions_taken must be nonzero or
+             * every case below would collapse onto KF_PET_TEEN_FORM_DUST
+             * regardless of the care level being tested. */
+            state.care_actions_taken = 1u;
 
             kf_pet_advance(&state, &zero_decay,
                             zero_decay.child_duration_seconds);
@@ -579,6 +586,10 @@ int run_pet_stage_check() {
         state.hunger_mp = 80000u; /* 80%, held constant by zero decay */
         state.happiness_mp = 80000u;
         state.energy_mp = 80000u;
+        /* Same reasoning as check 4: this is testing the branch-selection
+         * arithmetic across a whole lifecycle, not the never-touched
+         * condition, so it must not collapse onto KF_PET_TEEN_FORM_DUST. */
+        state.care_actions_taken = 1u;
 
         constexpr uint32_t kLeftoverInAdult = 50u;
         const uint32_t total_elapsed = zero_decay.egg_duration_seconds +
@@ -1102,6 +1113,73 @@ int run_evolution_tree_shape_check(void) {
             static_cast<unsigned>(KF_PET_TEEN_FORM_COUNT),
             static_cast<unsigned>(total),
             static_cast<unsigned>(KF_PET_ADULT_BRANCH_MAX));
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Advances `state` from a fresh egg all the way through Baby and Child and
+ * into Teen, using `config`'s OWN stage durations rather than hardcoded
+ * seconds -- so this stays correct however egg/baby/child_duration_seconds
+ * are tuned later, the same "derive from config, don't hardcode" discipline
+ * run_pet_stage_check() already follows elsewhere in this file. */
+void advance_to_teen_for_test(kf_pet_state *state, const kf_pet_config *config) {
+    const uint32_t total_to_teen = config->egg_duration_seconds +
+                                    config->baby_duration_seconds +
+                                    config->child_duration_seconds;
+    kf_pet_advance(state, config, total_to_teen);
+}
+
+/* Hokorimaru is what a creature becomes when it is never touched at all --
+ * character bible section 8. This is deliberately a DIFFERENT condition from
+ * the care-quality average every other branch uses: a badly-cared-for
+ * creature holds a grudge, an untouched one gathers dust, and the bible is
+ * explicit that those are different and sadder things. */
+int run_hokorimaru_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* Never touched: straight through to the dust form. */
+    kf_pet_state neglected{};
+    kf_pet_init(&neglected);
+    check(neglected.care_actions_taken == 0u, "a fresh pet has taken no care");
+    advance_to_teen_for_test(&neglected, &config);
+    check(neglected.teen_form == KF_PET_TEEN_FORM_DUST,
+          "a never-touched creature becomes the dust form");
+
+    /* Touched even once: an ordinary family. */
+    kf_pet_state touched{};
+    kf_pet_init(&touched);
+    kf_pet_feed(&touched);
+    check(touched.care_actions_taken == 1u, "feeding counts as care");
+    advance_to_teen_for_test(&touched, &config);
+    check(touched.teen_form != KF_PET_TEEN_FORM_DUST,
+          "one care action is enough to avoid the dust form");
+    check(touched.teen_form < KF_PET_TEEN_FORM_COUNT,
+          "a cared-for creature lands in one of the four families");
+
+    /* The dust form has exactly one adult -- kf_pet_adults_in_family()
+     * returns 1 for out-of-range input, and KF_PET_TEEN_FORM_DUST is
+     * out-of-range by construction (it equals KF_PET_TEEN_FORM_COUNT). This
+     * is being relied on deliberately here, not by accident. */
+    {
+        kf_pet_state dust = neglected;
+        kf_pet_advance(&dust, &config, config.teen_duration_seconds);
+        check(dust.stage == KF_PET_STAGE_ADULT,
+              "the dust form completes Teen into Adult the same as any "
+              "other family");
+        check(dust.adult_branch == 0u,
+              "the dust form's single adult lands on branch 0, relying "
+              "deliberately on kf_pet_adults_in_family()'s out-of-range "
+              "return of 1 for KF_PET_TEEN_FORM_DUST");
+    }
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -1853,6 +1931,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet = false;
     bool verify_pet_stage = false;
     bool verify_tree_shape = false;
+    bool verify_hokorimaru = false;
     bool verify_pet_personality = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
@@ -1888,6 +1967,8 @@ int main(int argc, char *argv[]) {
             verify_pet_stage = true;
         } else if (std::strcmp(argv[i], "--verify-tree-shape") == 0) {
             verify_tree_shape = true;
+        } else if (std::strcmp(argv[i], "--verify-hokorimaru") == 0) {
+            verify_hokorimaru = true;
         } else if (std::strcmp(argv[i], "--verify-pet-personality") == 0) {
             verify_pet_personality = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
@@ -1913,6 +1994,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet\n"
                         "kamiframe-headless --verify-pet-stage\n"
                         "kamiframe-headless --verify-tree-shape\n"
+                        "kamiframe-headless --verify-hokorimaru\n"
                         "kamiframe-headless --verify-pet-personality\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
@@ -1957,6 +2039,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_tree_shape) {
         return run_evolution_tree_shape_check();
+    }
+
+    if (verify_hokorimaru) {
+        return run_hokorimaru_check();
     }
 
     if (verify_pet_personality) {

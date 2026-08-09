@@ -57,11 +57,13 @@ namespace {
 
 constexpr const char *TAG = "pet";
 
-/* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution)
- * and to 3 with ADR 0023 (personality traits) -- kf_pet_deserialize()
- * refuses to load anything written by a different version rather than
- * guessing at a layout that changed, see unpack() below. */
-constexpr uint8_t kSaveVersion = 3;
+/* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution),
+ * to 3 with ADR 0023 (personality traits), and to 4 with the evolution-tree
+ * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
+ * comment) -- kf_pet_deserialize() refuses to load anything written by a
+ * different version rather than guessing at a layout that changed, see
+ * unpack() below. */
+constexpr uint8_t kSaveVersion = 4;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -161,12 +163,25 @@ void advance_to_next_stage(kf_pet_state *state) {
         state->stage = KF_PET_STAGE_CHILD;
         break;
     case KF_PET_STAGE_CHILD:
-        state->teen_form =
-            select_branch(state->care_integral_mp_seconds,
-                          state->stage_elapsed_seconds, KF_PET_TEEN_FORM_COUNT);
+        /* Never touched -> dust, regardless of what the care average says.
+         * Checked BEFORE the ordinary branch selection because it is not a
+         * quality judgement: an untouched creature has no care history to
+         * grade, and grading it anyway would land it in whichever family
+         * zero care happens to map to. See character bible section 8. */
+        if (state->care_actions_taken == 0u) {
+            state->teen_form = KF_PET_TEEN_FORM_DUST;
+        } else {
+            state->teen_form = select_branch(state->care_integral_mp_seconds,
+                                              state->stage_elapsed_seconds,
+                                              KF_PET_TEEN_FORM_COUNT);
+        }
         state->stage = KF_PET_STAGE_TEEN;
         break;
     case KF_PET_STAGE_TEEN:
+        /* kf_pet_adults_in_family() returns 1 for out-of-range input, and
+         * KF_PET_TEEN_FORM_DUST is out-of-range by construction (it equals
+         * KF_PET_TEEN_FORM_COUNT) -- relied on deliberately here to give the
+         * dust form exactly its one adult (Hokorimaru), not by accident. */
         state->adult_branch = select_branch(
             state->care_integral_mp_seconds, state->stage_elapsed_seconds,
             kf_pet_adults_in_family(state->teen_form));
@@ -362,6 +377,7 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u64(out, off, state->energy_integral_mp_seconds);
     put_u32(out, off, state->care_recency_window_seconds);
     put_u8(out, off, state->base_trait);
+    put_u32(out, off, state->care_actions_taken);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -421,6 +437,7 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
         return false;
     }
     state->base_trait = base_trait_byte;
+    state->care_actions_taken = get_u32(in, off);
     return true;
 }
 
@@ -498,6 +515,8 @@ void kf_pet_init(kf_pet_state *state) {
      * kf_rng consumer, not a new one it introduces. */
     state->base_trait =
         static_cast<uint8_t>(kf_rng_below(KF_PET_BASE_TRAIT_COUNT));
+
+    state->care_actions_taken = 0u;
 }
 
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
@@ -546,14 +565,23 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
 }
 
 void kf_pet_feed(kf_pet_state *state) {
+    if (state->care_actions_taken < UINT32_MAX) {
+        state->care_actions_taken++;
+    }
     state->hunger_mp = clamp_add(state->hunger_mp, kCareBoostMp);
 }
 
 void kf_pet_play(kf_pet_state *state) {
+    if (state->care_actions_taken < UINT32_MAX) {
+        state->care_actions_taken++;
+    }
     state->happiness_mp = clamp_add(state->happiness_mp, kCareBoostMp);
 }
 
 void kf_pet_rest(kf_pet_state *state) {
+    if (state->care_actions_taken < UINT32_MAX) {
+        state->care_actions_taken++;
+    }
     state->energy_mp = clamp_add(state->energy_mp, kCareBoostMp);
 }
 

@@ -272,6 +272,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME evolution_tree_shape_check
              COMMAND kamiframe-headless --verify-tree-shape)
 
+    # Proves the never-interacted path to Hokorimaru (character bible section
+    # 8): a creature that has never received a single care action becomes the
+    # dust form at the Child->Teen transition, regardless of what the
+    # care-quality average would otherwise say -- deliberately a different
+    # condition from every other branch. A creature touched even once lands
+    # in an ordinary verb family instead. See headless_main.cpp's
+    # run_hokorimaru_check().
+    add_test(NAME hokorimaru_check
+             COMMAND kamiframe-headless --verify-hokorimaru)
+
     # Proves the personality-traits mechanic (ADR 0023): base_trait rolled
     # once via kf_rng_below() and fixed for the pet's whole life, the three
     # care-derived accumulators building whole-life rather than resetting
