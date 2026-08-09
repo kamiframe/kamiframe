@@ -173,6 +173,52 @@ bool is_neglected(const kf_pet_state *state, const kf_pet_config *config) {
            state->dirtiness_mp >= config->neglect_dirtiness_mp;
 }
 
+/* How many seconds into a segment of `segment` seconds this creature first
+ * falls below a need threshold -- or `segment` if it never does. Called
+ * BEFORE any decay is applied, on the segment's starting values.
+ *
+ * Exact rather than sampled, because the needs decay linearly at a known
+ * rate, so the crossing point is one division instead of a search. That
+ * precision is the entire reason this function exists: a device left in a
+ * drawer overnight starts its segment with a healthy creature and ends it
+ * with an empty one, and anything that merely inspects the two ends
+ * concludes half the night was fine when in truth the needs ran out within
+ * a few hours. Sampling was tried first and got exactly that wrong.
+ *
+ * Mess is deliberately NOT handled here -- see the caller. Poop count and
+ * dirtiness climb rather than fall, and dirtiness's rate steps up with
+ * every poop that lands, so there is no single closed-form crossing to
+ * solve for.
+ *
+ * `effective_rate` is the three needs' rates AFTER the sickness multiplier
+ * and drain, in hunger/happiness/energy order -- the rate actually applied
+ * to this segment, not the stage's nominal one, or an ill creature's
+ * crossing would be computed as later than it really is. */
+uint32_t seconds_until_need_neglect(const kf_pet_state *state,
+                                     const kf_pet_config *config,
+                                     const uint32_t effective_rate[3],
+                                     uint32_t segment) {
+    const uint32_t need[3] = {state->hunger_mp, state->happiness_mp,
+                               state->energy_mp};
+    uint32_t earliest = segment;
+    for (unsigned i = 0u; i < 3u; ++i) {
+        if (need[i] <= config->neglect_need_mp) {
+            return 0u; /* already there before this segment started */
+        }
+        if (effective_rate[i] == 0u) {
+            continue; /* a stage that does not decay this need at all */
+        }
+        const uint64_t crossing =
+            (static_cast<uint64_t>(need[i] - config->neglect_need_mp) *
+             3600ull) /
+            effective_rate[i];
+        if (crossing < earliest) {
+            earliest = static_cast<uint32_t>(crossing);
+        }
+    }
+    return earliest;
+}
+
 /* Adds `add` to a saturating uint32_t counter. */
 uint32_t saturating_add_u32(uint32_t value, uint32_t add) {
     const uint64_t sum = static_cast<uint64_t>(value) + add;
@@ -334,6 +380,18 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
     const uint64_t energy_before_mp = state->energy_mp;
     const bool neglected_before = is_neglected(state, config);
 
+    /* Where in this segment the needs run out, computed from the rates
+     * actually applied below (sickness included) and from the values as
+     * they are right now, before any of this segment's decay. */
+    const uint32_t effective_rate[3] = {
+        sick_scaled_rate(rates.hunger_mp_per_hour, state->sick, config),
+        saturating_add_u32(
+            sick_scaled_rate(rates.happiness_mp_per_hour, state->sick, config),
+            state->sick ? config->sick_happiness_drain_mp_per_hour : 0u),
+        sick_scaled_rate(rates.energy_mp_per_hour, state->sick, config)};
+    const uint32_t need_neglect_at =
+        seconds_until_need_neglect(state, config, effective_rate, segment);
+
     const bool feeds_branch = stage_feeds_a_branch_choice(state->stage);
     uint64_t average_before_mp = 0u;
     if (feeds_branch) {
@@ -426,16 +484,32 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
                             happiness_before_mp, energy_before_mp);
 
     /* Neglect, and the illness it turns into. Evaluated LAST in the
-     * segment, and sampled at BOTH ends of it.
+     * segment, because a segment may be a fortnight and what matters is
+     * what happened DURING it, not what was true when it began.
      *
-     * Both ends, because neither alone survives offline fast-forward: a
-     * week in a drawer begins with a healthy creature, so sampling only the
-     * start would call that week fine, and sampling only the end would call
-     * a fortnight that soured in its final hour a fortnight of neglect.
-     * Each end counting for half is the trapezoid rule -- two comparisons,
-     * no loop, and an error bounded by the segment rather than growing with
-     * it. A segment that starts healthy and ends badly therefore nets
-     * exactly zero, which is the correct reading of "half of it was fine".
+     * How much of the segment counts as neglect, in three cases:
+     *
+     *   Already neglected when the segment began -- all of it. Exact, not
+     *   an approximation: nothing recovers inside a segment. Needs only
+     *   decay here and mess only grows, so a creature that starts a segment
+     *   in trouble is in trouble for the whole of it. Care happens between
+     *   segments, never within one.
+     *
+     *   The needs ran out partway through -- from that moment on. The
+     *   crossing point is solved for exactly (seconds_until_need_neglect()
+     *   above) rather than sampled, because sampling is what gets the
+     *   overnight-in-a-drawer case wrong: full at one end, empty at the
+     *   other, and any end-sampling rule calls that half a night of neglect
+     *   when the needs actually ran out in the first few hours.
+     *
+     *   Only the mess went critical -- half the segment. The one estimate
+     *   left, because dirtiness has no closed-form crossing (its rate steps
+     *   up with every poop that lands). It is also the least consequential:
+     *   by the time filth alone is critical, the needs are long gone and
+     *   the branch above has already claimed the segment.
+     *
+     * Whatever is left over counts as care, and works the accumulator back
+     * down at the same rate it went up.
      *
      * A creature that has never been cared for is exempt from all of it.
      * The character bible's dust form is what total absence of interaction
@@ -447,10 +521,11 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
 
         uint32_t neglected_for = 0u;
         if (neglected_before) {
-            neglected_for += segment / 2u;
-        }
-        if (neglected_after) {
-            neglected_for += segment - (segment / 2u);
+            neglected_for = segment;
+        } else if (need_neglect_at < segment) {
+            neglected_for = segment - need_neglect_at;
+        } else if (neglected_after) {
+            neglected_for = segment / 2u;
         }
         const uint32_t cared_for = segment - neglected_for;
 
@@ -777,6 +852,16 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
             apply_stage_segment(state, config, segment);
             state->stage_elapsed_seconds += segment;
             remaining -= segment;
+
+            if (state->dead) {
+                /* Died inside that segment. Stop here rather than let the
+                 * loop carry on spending the remaining time and walk the
+                 * creature through a stage transition it did not live to
+                 * see -- the branch it would be handed comes from a care
+                 * average over time that never happened. The segment it
+                 * died in is already fully credited above. */
+                return;
+            }
         }
 
         if (state->stage_elapsed_seconds >= duration) {

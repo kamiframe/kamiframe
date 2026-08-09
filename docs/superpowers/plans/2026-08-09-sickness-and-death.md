@@ -38,7 +38,17 @@ void apply_stage_segment_for_test(kf_pet_state *state,
 
 Read this section before Task 1. All four are load bearing.
 
-### The neglect condition is sampled at BOTH ends of a segment
+### CORRECTION, after implementation: both-ends sampling was wrong
+
+**The rule described immediately below shipped and was then replaced.** It is left here because the reasoning that led to it is worth seeing alongside what was wrong with it.
+
+Sampling both ends and splitting the difference underestimates badly, for a reason the note below misses entirely: the neglect condition is a *threshold* on a value that decays, not a linear quantity in its own right. A creature left in a drawer for a day starts full and ends empty, so the trapezoid credits half a day — but the needs actually ran out about three hours in, so five sixths of that day was neglect. In practice a cared-for creature could be abandoned for a full day and come back perfectly healthy, which is the exact scenario the feature exists for.
+
+What shipped instead solves for the crossing point exactly. The needs decay linearly at a known rate, so the moment a need falls below the threshold is one division, not a search. Three cases: already neglected at the segment's start credits all of it (exact — nothing recovers inside a segment, since care only happens between them); the needs running out partway credits from that moment; and mess alone going critical falls back to half the segment, the one estimate left, because dirtiness has no closed-form crossing when its rate steps up with every poop.
+
+See `seconds_until_need_neglect()` in `pet.cpp` for the implementation and the full reasoning.
+
+### The superseded rule: the neglect condition is sampled at BOTH ends of a segment
 
 `apply_stage_segment()` receives a segment that may be one frame or a fortnight. The care integral samples the needs at the *start* of its segment and documents that as a deliberate left-Riemann approximation.
 

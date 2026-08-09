@@ -1383,13 +1383,17 @@ int run_pet_sickness_check(void) {
     check(!pet.sick, "a fresh creature is not sick");
     check(pet.neglect_seconds == 0u, "and has accumulated no neglect");
 
-    /* Four hours: healthy at the start, hungry and messy by the end. Half
-     * credited, half refunded -- nets zero, by design. */
+    /* Four hours from full. The needs cross the neglect threshold about
+     * two and three quarter hours in, so roughly an hour and a quarter of
+     * this counts as neglect -- against nearly three hours of the creature
+     * being fine, which works the accumulator back down faster than the
+     * tail end pushes it up. Net zero, from a starting point of zero. */
     apply_stage_segment_for_test(&pet, &config, 4u * 3600u);
     check(pet.neglect_seconds == 0u,
-          "a stretch that only goes bad at the end nets no neglect");
+          "a stretch that is mostly fine does not leave the creature owing "
+          "anything");
 
-    /* Two more hours, bad at both ends this time. */
+    /* Two more hours. The needs are already empty, so all of it counts. */
     apply_stage_segment_for_test(&pet, &config, 2u * 3600u);
     check(pet.neglect_seconds > 0u,
           "neglect accumulates once things are already bad");
@@ -1443,6 +1447,24 @@ int run_pet_sickness_check(void) {
     check(untouched.neglect_seconds == 0u && !untouched.sick,
           "a creature that has never known care does not sicken from its "
           "absence -- it is on the dust path instead");
+
+    /* The case this whole mechanic exists for: the device spent a day in a
+     * drawer. ONE kf_pet_advance() call, one segment, a creature that was
+     * full when it went in and empty when it came out.
+     *
+     * This is the check that matters most and the one easiest to lose. The
+     * needs bottom out a few hours in, so the overwhelming majority of that
+     * day was neglect -- and a creature that can be abandoned for a day
+     * with no consequence has no care loop worth the name. */
+    kf_pet_state drawer{};
+    kf_pet_init(&drawer);
+    drawer.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&drawer, &config);
+    kf_pet_advance(&drawer, &config, 86400u);
+    check(drawer.sick, "a day in a drawer makes a cared-for creature ill");
+    check(drawer.neglect_seconds > 12u * 3600u,
+          "and most of that day counts as neglect, not half of it -- the "
+          "needs were gone long before the halfway mark");
 
     /* Illness compounds. Two creatures, same stage, same full needs, same
      * elapsed time -- the only difference between them is that one is ill.
@@ -1523,6 +1545,20 @@ int run_pet_death_check(void) {
     check(pet.care_actions_taken == care_at_death,
           "care aimed at a dead creature does not count as care -- it must "
           "not be able to move it off the dust path posthumously");
+
+    /* Dying partway through a single advance stops the creature there. A
+     * child stage runs two days; three days of abandonment kills it inside
+     * the first, and it must not go on to be handed a teen form afterwards
+     * -- the branch it would receive comes from a care average covering
+     * time it did not live through. */
+    kf_pet_state cut_short{};
+    kf_pet_init(&cut_short);
+    cut_short.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&cut_short, &config);
+    kf_pet_advance(&cut_short, &config, 3u * 86400u);
+    check(cut_short.dead, "three days of abandonment is fatal");
+    check(cut_short.stage == KF_PET_STAGE_CHILD,
+          "and the creature does not evolve in the same call that killed it");
 
     /* The off switch: zero means it cannot die, the same sentinel shape
      * poop_interval_seconds == 0 already uses for "no mess". */
