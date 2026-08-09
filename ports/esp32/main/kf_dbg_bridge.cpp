@@ -16,10 +16,17 @@
  * confirmed against the manufacturer's schematic, so polling this register
  * is the only remaining way to find out. handle_scanline() below is
  * measurement only -- it does not wait for, or act on, a scanline value
- * anywhere; see kf_esp_display_diag.h for the one raw SPI primitive it
- * calls, and esp_display.cpp's kf_display_init() for why the read happens
- * at the same SPI clock the display's own writes use rather than a
- * separate, slower one.
+ * anywhere. It reads at a genuinely slow clock (2MHz by default, `KFDBG
+ * SCANLINE <read_hz>` to override), NOT the 40MHz write clock every frame
+ * uses -- the ILI9341's read cycle is only rated to about 6MHz, and reading
+ * that much too fast is the confirmed, already-measured explanation for why
+ * the first attempt at this diagnostic came back looking like noise. Getting
+ * a slower clock means tearing down and rebuilding the one esp_lcd panel IO
+ * handle around the sampling loop and rebuilding it back afterwards -- see
+ * kf_esp_display_diag.h for the raw primitive and the begin/end-probe pair
+ * this handler drives, and esp_display.cpp's kf_esp_display_diag_begin_
+ * probe() for why that rebuild, rather than a second SPI device, is the safe
+ * way to get a different clock out of esp_lcd.
  *
  * Time control: an egg on this codebase's default config lasts 1 hour and
  * does not decay at all, and post-hatch decay is hours-to-days per need
@@ -431,19 +438,156 @@ constexpr int kScanlineSampleCount = 64;
 constexpr size_t kScanlineReplyBytes = 3; /* 1 assumed dummy byte + 2 data bytes -- see kf_esp_display_diag.h */
 constexpr int kScanlineReportStride = 5;  /* every 5th sample reported, not all 64 -- representative, keeps the reply small */
 
+/* Default read clock for `KFDBG SCANLINE` with no argument. The ILI9341's
+ * read cycle is roughly 150ns per the datasheet -- about 6MHz max -- and
+ * the write clock this bus normally runs at (KF_DISPLAY_SPI_HZ, 40MHz) is
+ * 6-20x past that: the concrete, already-measured explanation for why the
+ * first SCANLINE run (at the write clock) came back as runs of all-zero and
+ * all-one bytes jumping by exactly 127, the classic signature of sampling
+ * MISO too fast rather than of a real scan counter. 2MHz sits comfortably
+ * under the ~6MHz ceiling. `KFDBG SCANLINE <read_hz>` (see
+ * process_command_line() below) overrides this from the host, so a human
+ * can try 1MHz or 4MHz without a firmware rebuild -- see
+ * tools/kf_debug.py's `scanline --read-hz`. */
+constexpr uint32_t kScanlineDefaultReadHz = 2000000;
+
 struct ScanlineSample {
-    uint16_t value;   /* meaningless when ok is false */
+    /* value: the ILI9341 datasheet's documented framing for command 0x45 --
+     * one dummy byte (raw[0]), then a 10-bit value MSB-first across
+     * raw[1]/raw[2]. The main stats this command reports (value_min/max,
+     * distinct_values, increases/decreases, changed_between_reads) are all
+     * computed from this field.
+     *
+     * alt_value: an alternate framing hypothesis, computed and reported
+     * ALONGSIDE the primary one rather than instead of it -- at the
+     * previous (write-clock) measurement, first_raw_hex was 006300 and the
+     * datasheet framing produced values that plainly were not a scan
+     * counter, and there is still no hardware on hand to confirm which
+     * framing this specific module actually uses even at a corrected read
+     * clock. This one assumes NO dummy byte: raw[0]/raw[1] read as the
+     * 10-bit MSB-first value instead. first_raw_hex in the JSON reply is
+     * reported alongside both so a human can check either hypothesis
+     * against the actual bytes rather than trusting either one blind.
+     *
+     * Both fields are meaningless when ok is false. */
+    uint16_t value;
+    uint16_t alt_value;
     uint32_t read_us;
     bool ok;
 };
 
-void handle_scanline() {
+/* The stats this command reports about one value stream: how far it ranges,
+ * how many distinct values it took, and whether it trends up or down.
+ * Shared by the primary and alternate framings (scanline_accumulate() below
+ * fills one of these for each) so there is exactly one place this
+ * accumulation logic can be wrong, not two near-identical copies of it. */
+struct ScanlineStats {
+    uint16_t value_min = 0;
+    uint16_t value_max = 0;
+    bool have_range = false;
+    int distinct_count = 0;
+    int increases = 0;
+    int decreases = 0;
+};
+
+/* One pass over `samples`, extracting whichever framing (samples[i].value
+ * when use_alt is false, samples[i].alt_value when true) and folding it
+ * into *out. O(n^2) in kScanlineSampleCount for the distinct-value count,
+ * same as before this function was split out -- 64 samples, so the total
+ * work is trivial either way. */
+void scanline_accumulate(const ScanlineSample *samples, int count, bool use_alt,
+                          ScanlineStats *out) {
+    bool have_prev = false;
+    uint16_t prev = 0;
+    for (int i = 0; i < count; ++i) {
+        if (!samples[i].ok) {
+            continue;
+        }
+        const uint16_t v = use_alt ? samples[i].alt_value : samples[i].value;
+
+        if (!out->have_range) {
+            out->value_min = v;
+            out->value_max = v;
+            out->have_range = true;
+        } else {
+            if (v < out->value_min) out->value_min = v;
+            if (v > out->value_max) out->value_max = v;
+        }
+
+        bool seen_before = false;
+        for (int j = 0; j < i; ++j) {
+            if (!samples[j].ok) {
+                continue;
+            }
+            const uint16_t pv = use_alt ? samples[j].alt_value : samples[j].value;
+            if (pv == v) {
+                seen_before = true;
+                break;
+            }
+        }
+        if (!seen_before) {
+            out->distinct_count++;
+        }
+
+        if (have_prev) {
+            if (v > prev) {
+                out->increases++;
+            } else if (v < prev) {
+                out->decreases++;
+            }
+        }
+        prev = v;
+        have_prev = true;
+    }
+}
+
+/* Builds the "every Nth sample, -1 for a failed one" representative array
+ * this command reports, for whichever framing use_alt selects, into `out`
+ * (capacity `cap`). Factored out so it can run twice (primary framing,
+ * alternate framing) without duplicating the snprintf/bounds-check
+ * bookkeeping. */
+void scanline_build_sample_array(const ScanlineSample *samples, int count, bool use_alt,
+                                  char *out, size_t cap) {
+    size_t off = 0;
+    out[0] = '\0';
+    for (int i = 0; i < count; i += kScanlineReportStride) {
+        char item[16];
+        const uint16_t v = use_alt ? samples[i].alt_value : samples[i].value;
+        const int item_n = samples[i].ok
+            ? std::snprintf(item, sizeof item, "%s%u", off == 0 ? "" : ",",
+                             static_cast<unsigned>(v))
+            : std::snprintf(item, sizeof item, "%s-1", off == 0 ? "" : ",");
+        if (item_n > 0 && off + static_cast<size_t>(item_n) < cap) {
+            std::memcpy(out + off, item, static_cast<size_t>(item_n));
+            off += static_cast<size_t>(item_n);
+            out[off] = '\0';
+        }
+    }
+}
+
+void handle_scanline(uint32_t read_hz) {
     ScanlineSample *samples = static_cast<ScanlineSample *>(
         heap_caps_malloc(sizeof(ScanlineSample) * kScanlineSampleCount, MALLOC_CAP_SPIRAM));
     if (samples == nullptr) {
         KF_LOGE(TAG, "SCANLINE: out of PSRAM for %d samples", kScanlineSampleCount);
         reply_err("KFDBG SCANLINE", "out of memory sampling the scanline register");
         return;
+    }
+
+    /* Tear the write panel down and rebuild it at read_hz -- see
+     * kf_esp_display_diag_begin_probe()'s own comment (esp_display.cpp) for
+     * the full mechanics, and this file's own header comment for why doing
+     * that here, on the frame-loop thread, is safe: nothing else draws
+     * concurrently. A failed rebuild is NOT treated as a reason to skip the
+     * sampling loop below -- kf_esp_display_diag_read_scanline() already
+     * returns false cleanly whenever g_io is null, so the loop just records
+     * 64 failures, which is itself the finding, reported via probe_ok and
+     * failed==64 below rather than by silently returning early. */
+    const bool probe_ok = kf_esp_display_diag_begin_probe(read_hz);
+    if (!probe_ok) {
+        KF_LOGE(TAG, "SCANLINE: could not rebuild the panel at %lu Hz for the "
+                     "probe -- every sample below will report failure",
+                static_cast<unsigned long>(read_hz));
     }
 
     int ok_count = 0;
@@ -478,105 +622,68 @@ void handle_scanline() {
                 have_first_raw = true;
             }
             ok_count++;
-            /* Bytes [1] and [2], big-endian, masked to 9 bits (0..479, a
-             * generous superset of this 320-line panel's real range) --
-             * byte [0] is treated as the ILI9341 SPI read protocol's
-             * customary dummy byte. UNVERIFIED without hardware; see
-             * kf_esp_display_diag.h's own comment. first_raw_hex in the
-             * reply below is exactly so a human can sanity-check this
-             * slicing against a real capture rather than trust it blind. */
+            /* Primary framing: the datasheet's documented 1-dummy-byte,
+             * 10-bit MSB-first value -- masked to 0x03FF (10 bits), not the
+             * 0x01FF (9 bits) an earlier pass at this diagnostic used. That
+             * mask disagreed with the datasheet framing this file's own
+             * struct comment cites, so it is corrected here; see
+             * ScanlineSample's own comment for why an alternate framing is
+             * ALSO computed rather than trusting this one blind. */
             samples[i].value = static_cast<uint16_t>(
-                ((static_cast<uint16_t>(raw[1]) << 8) | raw[2]) & 0x01FFu);
+                ((static_cast<uint16_t>(raw[1]) << 8) | raw[2]) & 0x03FFu);
+            samples[i].alt_value = static_cast<uint16_t>(
+                ((static_cast<uint16_t>(raw[0]) << 8) | raw[1]) & 0x03FFu);
         } else {
             samples[i].value = 0;
+            samples[i].alt_value = 0;
         }
     }
 
-    uint16_t value_min = 0;
-    uint16_t value_max = 0;
-    bool have_range = false;
-    int distinct_count = 0;
-    int increases = 0;
-    int decreases = 0;
-    bool have_prev = false;
-    uint16_t prev = 0;
+    /* Restore the write clock unconditionally, and BEFORE any further
+     * allocation below can fail and return early -- every remaining return
+     * path in this function has therefore already put the panel back,
+     * regardless of how the rest of the JSON build goes. See kf_esp_
+     * display_diag_end_probe()'s own comment for what it means if this
+     * restore itself fails (g_panel left null, degrading to no display
+     * updates rather than a crash or a hang). */
+    kf_esp_display_diag_end_probe();
 
-    for (int i = 0; i < kScanlineSampleCount; ++i) {
-        if (!samples[i].ok) {
-            continue;
-        }
-        const uint16_t v = samples[i].value;
-
-        if (!have_range) {
-            value_min = v;
-            value_max = v;
-            have_range = true;
-        } else {
-            if (v < value_min) value_min = v;
-            if (v > value_max) value_max = v;
-        }
-
-        bool seen_before = false;
-        for (int j = 0; j < i; ++j) {
-            if (samples[j].ok && samples[j].value == v) {
-                seen_before = true;
-                break;
-            }
-        }
-        if (!seen_before) {
-            distinct_count++;
-        }
-
-        if (have_prev) {
-            if (v > prev) {
-                increases++;
-            } else if (v < prev) {
-                decreases++;
-            }
-        }
-        prev = v;
-        have_prev = true;
-    }
+    ScanlineStats primary{};
+    ScanlineStats alt{};
+    scanline_accumulate(samples, kScanlineSampleCount, /*use_alt=*/false, &primary);
+    scanline_accumulate(samples, kScanlineSampleCount, /*use_alt=*/true, &alt);
 
     const uint32_t avg_us = static_cast<uint32_t>(total_us / kScanlineSampleCount);
 
-    /* The representative "sample_values" array: every Nth sample, -1 for
-     * any that failed, so the array's element count stays predictable
-     * (kScanlineSampleCount / kScanlineReportStride, rounded up) regardless
-     * of how many reads failed. Built into its own PSRAM buffer first,
-     * then dropped into the main JSON below as one %s -- keeps the JSON
-     * build a single readable snprintf, the same style every other
-     * handler in this file uses. */
+    /* The representative sample arrays: every Nth sample, -1 for any that
+     * failed, one per framing. Built into their own PSRAM buffers first,
+     * then dropped into the main JSON below as two %s -- keeps the JSON
+     * build a single readable snprintf, the same style every other handler
+     * in this file uses. */
     constexpr size_t kSampleArrayCap = 256;
     char *sample_array = static_cast<char *>(heap_caps_malloc(kSampleArrayCap, MALLOC_CAP_SPIRAM));
-    if (sample_array == nullptr) {
+    char *alt_sample_array = static_cast<char *>(heap_caps_malloc(kSampleArrayCap, MALLOC_CAP_SPIRAM));
+    if (sample_array == nullptr || alt_sample_array == nullptr) {
+        if (sample_array != nullptr) heap_caps_free(sample_array);
+        if (alt_sample_array != nullptr) heap_caps_free(alt_sample_array);
         heap_caps_free(samples);
-        KF_LOGE(TAG, "SCANLINE: out of PSRAM for the sample array");
+        KF_LOGE(TAG, "SCANLINE: out of PSRAM for the sample arrays");
         reply_err("KFDBG SCANLINE", "out of memory formatting result");
         return;
     }
-    size_t sample_off = 0;
-    sample_array[0] = '\0';
-    for (int i = 0; i < kScanlineSampleCount; i += kScanlineReportStride) {
-        char item[16];
-        const int item_n = samples[i].ok
-            ? std::snprintf(item, sizeof item, "%s%u", sample_off == 0 ? "" : ",",
-                             static_cast<unsigned>(samples[i].value))
-            : std::snprintf(item, sizeof item, "%s-1", sample_off == 0 ? "" : ",");
-        if (item_n > 0 && sample_off + static_cast<size_t>(item_n) < kSampleArrayCap) {
-            std::memcpy(sample_array + sample_off, item, static_cast<size_t>(item_n));
-            sample_off += static_cast<size_t>(item_n);
-            sample_array[sample_off] = '\0';
-        }
-    }
+    scanline_build_sample_array(samples, kScanlineSampleCount, /*use_alt=*/false,
+                                 sample_array, kSampleArrayCap);
+    scanline_build_sample_array(samples, kScanlineSampleCount, /*use_alt=*/true,
+                                 alt_sample_array, kSampleArrayCap);
 
     char first_raw_hex[8];
     std::snprintf(first_raw_hex, sizeof first_raw_hex, "%02x%02x%02x", first_raw[0],
                   first_raw[1], first_raw[2]);
 
-    constexpr size_t kJsonCap = 1024;
+    constexpr size_t kJsonCap = 1536; /* was 1024; grown for the alt_* fields below */
     char *json = static_cast<char *>(heap_caps_malloc(kJsonCap, MALLOC_CAP_SPIRAM));
     if (json == nullptr) {
+        heap_caps_free(alt_sample_array);
         heap_caps_free(sample_array);
         heap_caps_free(samples);
         KF_LOGE(TAG, "SCANLINE: out of PSRAM for the JSON reply");
@@ -584,30 +691,44 @@ void handle_scanline() {
         return;
     }
 
-    /* changed_between_reads: distinct_count > 1 among the OK samples --
-     * exactly one distinct value (or zero, if every read failed) means the
-     * register never budged across the whole run, which is what "reads are
-     * not working" looks like from here (see this command's own doc).
-     * value_min/value_max/... are only meaningful when ok > 0; -1 signals
-     * that plainly rather than reporting a misleading 0. */
+    /* read_hz: the clock actually asked of kf_esp_display_diag_begin_probe()
+     * above, whether or not the rebuild at that clock succeeded -- probe_ok
+     * says which. changed_between_reads / alt_changed_between_reads:
+     * distinct_count > 1 among the OK samples -- exactly one distinct value
+     * (or zero, if every read failed) means the register never budged
+     * across the whole run, which is what "reads are not working" looks
+     * like from here. value_min/value_max/... are only meaningful when
+     * ok > 0; -1 signals that plainly rather than reporting a misleading 0. */
     const int n = std::snprintf(
         json, kJsonCap,
-        "{\"cmd_hex\":\"0x%02x\",\"read_hz\":%lu,\"reply_bytes\":%u,"
-        "\"dummy_bytes_assumed\":1,\"samples\":%d,\"ok\":%d,\"failed\":%d,"
-        "\"first_raw_hex\":\"%s\",\"sample_stride\":%d,\"sample_values\":[%s],"
-        "\"value_min\":%d,\"value_max\":%d,\"distinct_values\":%d,"
-        "\"changed_between_reads\":%s,\"increases\":%d,\"decreases\":%d,"
+        "{\"cmd_hex\":\"0x%02x\",\"read_hz\":%lu,\"probe_ok\":%s,"
+        "\"reply_bytes\":%u,\"dummy_bytes_assumed\":1,\"samples\":%d,"
+        "\"ok\":%d,\"failed\":%d,\"first_raw_hex\":\"%s\",\"sample_stride\":%d,"
+        "\"sample_values\":[%s],\"value_min\":%d,\"value_max\":%d,"
+        "\"distinct_values\":%d,\"changed_between_reads\":%s,"
+        "\"increases\":%d,\"decreases\":%d,"
+        "\"alt_sample_values\":[%s],\"alt_value_min\":%d,\"alt_value_max\":%d,"
+        "\"alt_distinct_values\":%d,\"alt_changed_between_reads\":%s,"
+        "\"alt_increases\":%d,\"alt_decreases\":%d,"
         "\"avg_read_us\":%lu,\"min_read_us\":%lu,\"max_read_us\":%lu}",
         static_cast<unsigned>(KF_ESP_DISPLAY_DIAG_CMD_GET_SCANLINE),
-        static_cast<unsigned long>(kf_esp_display_diag_read_hz()),
+        static_cast<unsigned long>(read_hz), probe_ok ? "true" : "false",
         static_cast<unsigned>(kScanlineReplyBytes), kScanlineSampleCount, ok_count,
         kScanlineSampleCount - ok_count, first_raw_hex, kScanlineReportStride,
-        sample_array, have_range ? static_cast<int>(value_min) : -1,
-        have_range ? static_cast<int>(value_max) : -1, distinct_count,
-        (distinct_count > 1) ? "true" : "false", increases, decreases,
+        sample_array,
+        primary.have_range ? static_cast<int>(primary.value_min) : -1,
+        primary.have_range ? static_cast<int>(primary.value_max) : -1,
+        primary.distinct_count, (primary.distinct_count > 1) ? "true" : "false",
+        primary.increases, primary.decreases,
+        alt_sample_array,
+        alt.have_range ? static_cast<int>(alt.value_min) : -1,
+        alt.have_range ? static_cast<int>(alt.value_max) : -1,
+        alt.distinct_count, (alt.distinct_count > 1) ? "true" : "false",
+        alt.increases, alt.decreases,
         static_cast<unsigned long>(avg_us), static_cast<unsigned long>(min_us),
         static_cast<unsigned long>(max_us));
 
+    heap_caps_free(alt_sample_array);
     heap_caps_free(sample_array);
     heap_caps_free(samples);
 
@@ -761,7 +882,20 @@ void process_command_line(const char *line) {
     } else if (std::strcmp(tok1, "STATE") == 0) {
         handle_state();
     } else if (std::strcmp(tok1, "SCANLINE") == 0) {
-        handle_scanline();
+        /* Optional trailing arg: a decimal read clock in Hz, so a human can
+         * try 1MHz or 4MHz from the host without a firmware rebuild -- see
+         * kScanlineDefaultReadHz's own comment for why 2MHz is the default
+         * when this is omitted. */
+        char tok2[16];
+        uint32_t read_hz = kScanlineDefaultReadHz;
+        if (next_token(p, tok2, sizeof tok2)) {
+            if (!parse_decimal(tok2, &read_hz) || read_hz == 0) {
+                reply_err(line, "KFDBG SCANLINE's optional read_hz must be a "
+                                 "positive decimal number of Hz");
+                return;
+            }
+        }
+        handle_scanline(read_hz);
     } else if (std::strcmp(tok1, "BTN") == 0) {
         char tok2[16];
         uint32_t mask = 0;

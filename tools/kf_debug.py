@@ -609,8 +609,21 @@ def cmd_scanline(link, args):
     Answers one question: can this display tell us when it is safe to write?
     It has no TE pin, so polling Get_scanline (0x45) is the only candidate,
     and nobody knows whether this module answers reads at all.
+
+    The device reads at a slow, dedicated clock for the duration of this
+    probe (2MHz by default -- the ILI9341's read cycle is only rated to
+    about 6MHz, well under the 40MHz the display normally writes at), not
+    the display's own write clock. --read-hz overrides that from here, so a
+    human can try 1MHz or 4MHz without reflashing. The screen will visibly
+    glitch while this runs -- the firmware tears the panel down and rebuilds
+    it, twice -- and that is expected, not a bug.
     """
-    payload = _expect(link, "KFDBG SCANLINE", "json", timeout=15.0)
+    command = "KFDBG SCANLINE"
+    if args.read_hz is not None:
+        if args.read_hz <= 0:
+            raise KfDebugError("--read-hz must be a positive number of Hz")
+        command += f" {args.read_hz}"
+    payload = _expect(link, command, "json", timeout=15.0)
     text = payload.decode("utf-8", "replace")
     if args.json:
         print(text)
@@ -624,21 +637,34 @@ def cmd_scanline(link, args):
         print(f"  {k}: {d[k]}")
     distinct = d.get("distinct_values", 0)
     inc, dec = d.get("increases", 0), d.get("decreases", 0)
+    alt_distinct = d.get("alt_distinct_values", 0)
+    alt_inc, alt_dec = d.get("alt_increases", 0), d.get("alt_decreases", 0)
     print()
+    if not d.get("probe_ok", True):
+        print("NOTE: the device could not even rebuild the panel at the requested "
+              "read_hz -- the reads below failed for that reason, not because the "
+              "register itself is unusable. See the device's serial log.")
     if d.get("ok", 0) == 0:
         print("VERDICT: the panel did not answer a single read. Beam-racing is "
               "not possible on this module -- either SDO is not wired through, "
               "or it does not respond at this SPI clock.")
     elif distinct <= 1:
-        print("VERDICT: reads succeeded but the value never changed. That is a "
-              "stuck register, not a scan counter -- not usable.")
+        print("VERDICT: reads succeeded but the value never changed (datasheet "
+              "framing). That is a stuck register, not a scan counter -- not "
+              "usable, at least under that framing.")
     elif inc > dec * 2:
         print("VERDICT: looks like a real scan counter (it advances and wraps). "
               "Beam-racing may be viable -- the remaining question is whether "
               "avg_read_us is cheap enough to poll within a frame.")
     else:
-        print("VERDICT: values change but do not advance consistently. That "
-              "reads as noise rather than a counter -- not usable.")
+        print("VERDICT: values change but do not advance consistently under the "
+              "datasheet's documented framing (1 dummy byte, 10-bit value). That "
+              "reads as noise rather than a counter for that framing.")
+    if alt_distinct > 1 and alt_inc > alt_dec * 2 and not (inc > dec * 2):
+        print("NOTE: the ALTERNATE framing (no dummy byte -- see alt_sample_values) "
+              "looks more like a real, advancing counter than the primary one did. "
+              "Worth trying that framing for real if the primary one above reads "
+              "as noise or stuck.")
 
 
 def cmd_watch(link, args):
@@ -758,6 +784,13 @@ def build_parser():
                                     "scan position (beam-racing feasibility)")
     scanline.add_argument("--json", action="store_true",
                            help="print the raw JSON instead of a summary")
+    scanline.add_argument("--read-hz", type=int, default=None,
+                           help="SPI clock to read the scanline register at, "
+                                "in Hz (default: the firmware's own default, "
+                                "2MHz). The ILI9341's read cycle is roughly "
+                                "150ns (~6MHz max) per the datasheet, so "
+                                "values much above that are expected to look "
+                                "like noise again.")
 
     watch = sub.add_parser("watch", parents=[common],
                             help="print device state repeatedly")

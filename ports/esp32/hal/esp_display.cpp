@@ -138,6 +138,101 @@ void send_init_table(const kf_panel_profile &panel) {
     }
 }
 
+/* Tears down the current panel IO/panel (if any) and rebuilds both at
+ * clock_hz, re-sending the panel's init table so the controller ends up in
+ * exactly the same known state regardless of which clock it was built at.
+ *
+ * The ONE place that creates g_io/g_panel: kf_display_init() below calls it
+ * once, at KF_DISPLAY_SPI_HZ, for the normal write path. The KFDBG SCANLINE
+ * probe (near the bottom of this file, under KF_DBG_BRIDGE_ENABLE) calls it
+ * twice more, at a slow read clock and back, to get a genuinely slower read
+ * without a second SPI device fighting over the shared CS pin -- see
+ * kf_esp_display_diag_begin_probe()'s own comment for why that is the only
+ * safe way to do it. Having exactly one function build these handles is
+ * what keeps the write path and the probe path from drifting out of sync
+ * with each other.
+ *
+ * Mirrors ports/esp32-bringup/main/bringup_main.cpp's bring_panel_up(),
+ * which does this same dance and is known to work on real hardware --
+ * follow that structure if this ever needs to change.
+ *
+ * Returns false on failure. Whatever this function deleted before the
+ * failing call stays deleted: esp_lcd_new_panel_io_spi() and esp_lcd_new_
+ * panel_st7789() both leave their out-param untouched when they fail, and
+ * this function had already nulled it going in. A false return therefore
+ * can mean g_io and/or g_panel are null afterwards -- every caller must
+ * treat that as "the display may now be down" rather than assume either
+ * handle is still valid. kf_display_present() already tolerates
+ * g_panel == nullptr (returns KF_ERR_UNAVAILABLE instead of dereferencing
+ * it); every caller of this function relies on that guard as the safety
+ * net for a failed rebuild. */
+bool rebuild_panel_io(uint32_t clock_hz) {
+    if (g_panel != nullptr) {
+        esp_lcd_panel_del(g_panel);
+        g_panel = nullptr;
+    }
+    if (g_io != nullptr) {
+        esp_lcd_panel_io_del(g_io);
+        g_io = nullptr;
+    }
+
+    esp_lcd_panel_io_spi_config_t io_config{};
+    io_config.cs_gpio_num = KF_ESP_PIN_LCD_CS;
+    io_config.dc_gpio_num = KF_ESP_PIN_LCD_DC;
+    io_config.spi_mode = 0;
+    io_config.pclk_hz = clock_hz;
+    io_config.trans_queue_depth = 10;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
+    /* flags left at their default (all zero): dc_cmd_level = 0, dc_data_level
+     * = 1, the standard "DC low = command, DC high = data" wiring these panels
+     * use -- confirmed against esp_lcd_panel_io_spi.c rather than assumed.
+     * Unchanged by which clock is in use. */
+
+    esp_err_t err = esp_lcd_new_panel_io_spi(
+        static_cast<esp_lcd_spi_bus_handle_t>(kSpiHost), &io_config, &g_io);
+    if (err != ESP_OK) {
+        KF_LOGE(TAG, "esp_lcd_new_panel_io_spi failed at %lu Hz: %d",
+                static_cast<unsigned long>(clock_hz), err);
+        return false;
+    }
+
+    esp_lcd_panel_dev_config_t panel_config{};
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    /* Only consulted on the built-in-init path: it is what makes
+     * esp_lcd_panel_init() set RAMCTRL's little-endian bit. On a panel with
+     * big_endian_fb the swap happens in present() instead, and this is
+     * ignored because esp_lcd_panel_init() is never called. */
+    panel_config.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
+    panel_config.bits_per_pixel = 16;
+    panel_config.reset_gpio_num = KF_ESP_PIN_LCD_RST;
+    panel_config.flags.reset_active_high = 0;
+
+    /* esp_lcd_new_panel_st7789() supplies the handle for every panel here,
+     * including the ILI9341. That is not a mistake: the handle only provides
+     * the generic draw_bitmap/reset/invert plumbing, and the controller-
+     * specific part is whether esp_lcd_panel_init() is allowed to run --
+     * which is exactly what use_builtin_init decides. */
+    err = esp_lcd_new_panel_st7789(g_io, &panel_config, &g_panel);
+    if (err != ESP_OK) {
+        KF_LOGE(TAG, "esp_lcd_new_panel_st7789 failed at %lu Hz: %d",
+                static_cast<unsigned long>(clock_hz), err);
+        return false;
+    }
+
+    esp_lcd_panel_reset(g_panel);
+    if (kPanel.use_builtin_init) {
+        esp_lcd_panel_init(g_panel);
+    }
+    send_init_table(kPanel);
+    esp_lcd_panel_invert_color(g_panel, kPanel.invert);
+    if (kPanel.x_gap != 0 || kPanel.y_gap != 0) {
+        esp_lcd_panel_set_gap(g_panel, kPanel.x_gap, kPanel.y_gap);
+    }
+    esp_lcd_panel_disp_on_off(g_panel, true);
+    return true;
+}
+
 } // namespace
 
 kf_result kf_display_init(void) {
@@ -197,57 +292,13 @@ kf_result kf_display_init(void) {
     }
     g_spi_bus_initialized = true;
 
-    esp_lcd_panel_io_spi_config_t io_config{};
-    io_config.cs_gpio_num = KF_ESP_PIN_LCD_CS;
-    io_config.dc_gpio_num = KF_ESP_PIN_LCD_DC;
-    io_config.spi_mode = 0;
-    io_config.pclk_hz = KF_DISPLAY_SPI_HZ;
-    io_config.trans_queue_depth = 10;
-    io_config.lcd_cmd_bits = 8;
-    io_config.lcd_param_bits = 8;
-    /* flags left at their default (all zero): dc_cmd_level = 0, dc_data_level
-     * = 1, the standard "DC low = command, DC high = data" wiring these panels
-     * use -- confirmed against esp_lcd_panel_io_spi.c rather than assumed. */
-
-    err = esp_lcd_new_panel_io_spi(
-        static_cast<esp_lcd_spi_bus_handle_t>(kSpiHost), &io_config, &g_io);
-    if (err != ESP_OK) {
-        KF_LOGE(TAG, "esp_lcd_new_panel_io_spi failed: %d", err);
+    /* Builds g_io and g_panel at the normal write clock and sends the
+     * panel's init table -- see rebuild_panel_io()'s own comment for why
+     * this is the one function that does that, shared with the KFDBG
+     * SCANLINE probe's temporary rebuild at a slow read clock and back. */
+    if (!rebuild_panel_io(KF_DISPLAY_SPI_HZ)) {
         return KF_ERR_IO;
     }
-
-    esp_lcd_panel_dev_config_t panel_config{};
-    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
-    /* Only consulted on the built-in-init path: it is what makes
-     * esp_lcd_panel_init() set RAMCTRL's little-endian bit. On a panel with
-     * big_endian_fb the swap happens in present() instead, and this is
-     * ignored because esp_lcd_panel_init() is never called. */
-    panel_config.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
-    panel_config.bits_per_pixel = 16;
-    panel_config.reset_gpio_num = KF_ESP_PIN_LCD_RST;
-    panel_config.flags.reset_active_high = 0;
-
-    /* esp_lcd_new_panel_st7789() supplies the handle for every panel here,
-     * including the ILI9341. That is not a mistake: the handle only provides
-     * the generic draw_bitmap/reset/invert plumbing, and the controller-
-     * specific part is whether esp_lcd_panel_init() is allowed to run --
-     * which is exactly what use_builtin_init decides. */
-    err = esp_lcd_new_panel_st7789(g_io, &panel_config, &g_panel);
-    if (err != ESP_OK) {
-        KF_LOGE(TAG, "esp_lcd_new_panel_st7789 failed: %d", err);
-        return KF_ERR_IO;
-    }
-
-    esp_lcd_panel_reset(g_panel);
-    if (kPanel.use_builtin_init) {
-        esp_lcd_panel_init(g_panel);
-    }
-    send_init_table(kPanel);
-    esp_lcd_panel_invert_color(g_panel, kPanel.invert);
-    if (kPanel.x_gap != 0 || kPanel.y_gap != 0) {
-        esp_lcd_panel_set_gap(g_panel, kPanel.x_gap, kPanel.y_gap);
-    }
-    esp_lcd_panel_disp_on_off(g_panel, true);
 
     if (kPanel.big_endian_fb) {
         constexpr size_t kStripBytes = static_cast<size_t>(KF_DISPLAY_WIDTH) *
@@ -450,38 +501,10 @@ void kf_display_shutdown(void) {
 
 /* KFDBG SCANLINE's one raw primitive -- see kf_esp_display_diag.h for the
  * full contract and kf_dbg_bridge.cpp's handle_scanline() for the sampling
- * loop and statistics built on top of it.
- *
- * Reuses g_io, the SAME esp_lcd_panel_io_handle_t kf_display_present() sends
- * frames through, at the SAME clock (KF_DISPLAY_SPI_HZ) writes use -- not a
- * separate, slower device. That was the plan going in, and it was dropped
- * for a concrete, verified reason rather than time pressure: esp_lcd hangs
- * every transaction (tx_param, tx_color, and rx_param alike) off ONE
- * spi_device_handle_t per esp_lcd_panel_io_handle_t, with the clock fixed at
- * creation (esp_lcd_panel_io_spi_config_t::pclk_hz) -- there is no
- * per-transaction clock override anywhere in esp_lcd_panel_io_spi.c. Getting
- * a genuinely slower read clock therefore means a SECOND SPI device, and a
- * second device sharing this display's CS pin (GPIO10, SPI2's own IOMUX CS0
- * pin) is not safe on ESP-IDF's driver: spi_bus_add_device() assigns each
- * device its own cs_id and calls spicommon_cs_initialize(), which -- for
- * any device that is not cs_id 0 on the IOMUX pin -- calls
- * gpio_matrix_output(cs_io_num, spics_out[cs_id], ...), REASSIGNING which
- * signal drives that physical pin. Add a temporary slow-clock device for a
- * SCANLINE run and its gpio_matrix_output() call steals GPIO10's routing
- * from the write device's own CS0 signal; remove it afterward and
- * spicommon_cs_free_io() calls gpio_output_disable() on the pin, leaving
- * NEITHER device's CS connected. Either way the display's write path breaks
- * until g_io (and, since g_panel holds a pointer into it, g_panel too) is
- * torn down and rebuilt from scratch -- confirmed by reading spi_common.c's
- * spicommon_cs_initialize()/spicommon_cs_free_io(), not assumed. That is
- * "forcing it" in exactly the sense the task that added this diagnostic
- * asked not to: a real fix exists (delete and recreate g_io and g_panel,
- * replaying the whole init table, for the duration of a read burst) but it
- * is untested with no hardware on hand to test it against, and a broken
- * write path is a far worse failure mode for a build that is supposed to
- * keep rendering exactly as before. Reading at the write clock is the safe
- * choice; if the numbers KFDBG SCANLINE reports look like garbage, that is
- * itself the finding -- see kf_esp_display_diag_read_hz()'s own comment. */
+ * loop and statistics built on top of it. Reads through g_io at whatever
+ * clock it is CURRENTLY configured for -- kf_esp_display_diag_begin_probe()
+ * below is what changes that clock for the duration of a SCANLINE run, so
+ * this function itself never needs to know or care which clock is active. */
 bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
     if (g_io == nullptr) {
         return false;
@@ -491,10 +514,85 @@ bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
     return err == ESP_OK;
 }
 
-uint32_t kf_esp_display_diag_read_hz(void) {
-    /* Exactly the write clock -- see kf_esp_display_diag_read_scanline()'s
-     * own comment for why a separate, slower one was not built. */
-    return KF_DISPLAY_SPI_HZ;
+/* Tears down the write panel IO/panel and rebuilds them at read_hz, so
+ * kf_esp_display_diag_read_scanline() above reads at a clock the ILI9341's
+ * ~150ns read cycle (about 6MHz max, per the datasheet) can actually keep
+ * up with, instead of the 40MHz write clock every draw_bitmap() call uses --
+ * 6-20x too fast, and the concrete, already-measured explanation for why the
+ * first SCANLINE run at the write clock came back looking like noise (runs
+ * of all-zero/all-one bytes jumping by exactly 127: the classic signature of
+ * sampling MISO too fast, not of a real counter).
+ *
+ * A second, slower esp_lcd_panel_io_handle_t sharing this display's CS pin
+ * was the plan going in, and was rejected for a concrete, verified reason,
+ * not time pressure: esp_lcd hangs every transaction off ONE
+ * spi_device_handle_t per IO handle, with the clock fixed at creation --
+ * there is no per-transaction clock override anywhere in esp_lcd_panel_io_
+ * spi.c. And ESP-IDF's spi_bus_add_device() reassigns a shared CS pin's
+ * GPIO-matrix routing to whichever device was added last
+ * (spicommon_cs_initialize() in spi_common.c): adding a second device on
+ * GPIO10 (this display's CS) steals the write device's own CS0 signal, and
+ * removing the temporary device again leaves NEITHER device's CS connected
+ * (spicommon_cs_free_io() calls gpio_output_disable() on the pin).
+ * Confirmed by reading spi_common.c, not assumed.
+ *
+ * The way through instead of around: there is only ever one IO handle,
+ * g_io, and this function tears it down and rebuilds it -- via
+ * rebuild_panel_io(), the SAME function kf_display_init() itself uses for
+ * the normal write clock, so the two paths cannot drift apart -- at
+ * read_hz instead. kf_esp_display_diag_end_probe() below rebuilds it back
+ * at KF_DISPLAY_SPI_HZ once the probe is done. Both directions re-send the
+ * panel's full init table, so the controller is never left in a state
+ * neither clock configured it for.
+ *
+ * Runs on the frame-loop thread, inside kf_dbg_bridge_frame() -- see
+ * kf_dbg_bridge.h's own "WHY A BACKGROUND TASK" comment for that thread
+ * model: kf_dbg_bridge_frame() runs, and returns, before kf_app_frame()
+ * ever touches g_panel again for the same iteration, and nothing else in
+ * this codebase calls into g_io/g_panel from any other thread. That is what
+ * makes tearing them down here, synchronously, safe -- confirmed by reading
+ * that file's comment, not assumed. The screen WILL visibly glitch for the
+ * duration of a SCANLINE run: the panel is reset and re-initialised twice,
+ * once at read_hz and once back at KF_DISPLAY_SPI_HZ. That is expected, not
+ * a bug -- kf_dbg_bridge.cpp's handle_scanline() says as much in its own
+ * reply text too, so it is not mistaken for a new one on the wire.
+ *
+ * Returns false if the rebuild at read_hz failed -- see rebuild_panel_io()'s
+ * own comment for what that leaves g_io/g_panel as. The caller (handle_
+ * scanline()) does not treat that as a reason to skip the sampling loop:
+ * kf_esp_display_diag_read_scanline() above already returns false cleanly
+ * whenever g_io is null, so a failed begin_probe() just means every sample
+ * fails, which is itself a reportable result rather than a crash. */
+bool kf_esp_display_diag_begin_probe(uint32_t read_hz) {
+    return rebuild_panel_io(read_hz);
+}
+
+/* Restores normal operation after a SCANLINE probe: rebuilds g_io/g_panel
+ * at KF_DISPLAY_SPI_HZ, the clock kf_display_present() and every other
+ * frame's draw_bitmap() calls expect. Called unconditionally by handle_
+ * scanline(), even when kf_esp_display_diag_begin_probe() itself failed, so
+ * a probe that could not even get INTO its slow clock still gets a chance
+ * to come back OUT to the normal one, rather than being left however
+ * begin_probe() left it.
+ *
+ * If this rebuild ALSO fails -- both attempts failing on the same physical
+ * bus, likely for the same underlying reason (a bad wire), is a real
+ * possibility worth naming here rather than a purely theoretical one --
+ * g_io and g_panel are left null. That is the safe failure mode this whole
+ * design is built around: kf_display_present() already checks
+ * `g_panel == nullptr` at its own top and returns KF_ERR_UNAVAILABLE rather
+ * than dereferencing it, so the degraded result is "no more display updates
+ * until the next boot," logged loudly here so it reads as a clear failure
+ * rather than a silent hang -- never a crash. */
+void kf_esp_display_diag_end_probe(void) {
+    if (!rebuild_panel_io(KF_DISPLAY_SPI_HZ)) {
+        KF_LOGE(TAG,
+                "SCANLINE: could not restore the display panel at %lu Hz after "
+                "the probe -- g_panel is now null, so every kf_display_present() "
+                "call will return KF_ERR_UNAVAILABLE (no crash, no hang, just no "
+                "more screen updates) until the device is reset",
+                static_cast<unsigned long>(KF_DISPLAY_SPI_HZ));
+    }
 }
 
 #endif /* KF_DBG_BRIDGE_ENABLE */

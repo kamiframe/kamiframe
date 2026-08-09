@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * One raw SPI primitive, for one caller: kf_dbg_bridge.cpp's KFDBG SCANLINE
+ * Raw SPI plumbing, for one caller: kf_dbg_bridge.cpp's KFDBG SCANLINE
  * handler, which exists to answer a single question -- is beam-racing
  * (delaying a write until the panel's own scan-out has passed the rectangle
  * about to be touched) even possible on this module. The panel's 18-pin flex
  * carries no tearing-effect (TE) pin, confirmed against the manufacturer's
  * schematic, so the only remaining way to find out is polling the ILI9341's
  * Get_Scanline register (command 0x45) and seeing whether the replies make
- * sense. This header is the plumbing that makes one such read possible; it
- * does not interpret the result or decide anything -- see kf_dbg_bridge.cpp
- * for the sampling loop, the statistics, and the JSON it reports.
+ * sense. This header is the plumbing that makes such a read possible, at
+ * whatever clock the caller asks for; it does not interpret the result or
+ * decide anything -- see kf_dbg_bridge.cpp for the sampling loop, the
+ * statistics, and the JSON it reports.
  *
  * Intentionally its OWN tiny header rather than new entries in
  * kf/hal/display.h (hakoniwaos/): that interface is the cross-platform HAL
@@ -23,10 +24,14 @@
  * concerns.
  *
  * esp_display.cpp owns g_io, the one esp_lcd_panel_io_handle_t this reads
- * through -- see that file's kf_display_init() for why a genuinely slower,
- * separate read clock was reasoned about and deliberately NOT built (the
- * CS-pin-sharing hazard documented there), and why this reads at the same
- * clock the display's own writes use instead.
+ * through, and rebuild_panel_io(), the one function that can (re)create it.
+ * A genuinely slower, separate read clock was reasoned about and rejected in
+ * an earlier pass at this diagnostic -- adding a second SPI device sharing
+ * this display's CS pin corrupts BOTH devices' CS routing on ESP-IDF's
+ * driver; see kf_esp_display_diag_begin_probe()'s own comment in
+ * esp_display.cpp for the confirmed mechanics. The fix that earlier pass
+ * didn't build is the one below: tear the one IO handle down and rebuild it
+ * at a slow clock for the duration of a probe, then rebuild it back.
  */
 
 #ifndef KF_ESP_DISPLAY_DIAG_H
@@ -66,26 +71,48 @@ extern "C" {
  * to treat a false return as one failed sample, not a reason to stop the
  * run (see kf_dbg_bridge.cpp's handle_scanline()).
  *
+ * Reads at whatever clock g_io is CURRENTLY built for in esp_display.cpp --
+ * KF_DISPLAY_SPI_HZ (the normal write clock) outside of a SCANLINE probe,
+ * or whatever kf_esp_display_diag_begin_probe() below most recently built
+ * it at, in between that call and kf_esp_display_diag_end_probe().
+ *
  * The reply's byte layout is NOT interpreted here. The ILI9341's SPI read
  * protocol is widely documented (and NOT verified against this specific
- * board, for want of hardware) to prepend one dummy byte before the real
- * data on a parameter read -- kf_dbg_bridge.cpp's caller assumes byte_count
- * == 3 (1 dummy + 2 data) and slices accordingly; this function has no
- * opinion on the count and will happily read however many bytes it's
- * asked for. */
+ * board, for want of a confirmed-correct read yet) to prepend one dummy
+ * byte before the real data on a parameter read -- kf_dbg_bridge.cpp's
+ * caller assumes byte_count == 3 (1 dummy + 2 data) and slices accordingly,
+ * and also computes an alternate no-dummy-byte reading from the same three
+ * bytes so a human can tell which framing (if either) looks like a real,
+ * advancing scan counter; this function has no opinion on the count and
+ * will happily read however many bytes it's asked for. */
 bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count);
 
-/* The SPI clock kf_esp_display_diag_read_scanline() actually reads at, in
- * Hz, so a diagnostic reporting it doesn't have to duplicate the decision.
- * Today this returns exactly KF_DISPLAY_SPI_HZ -- the same clock writes
- * use. See kf_display_init()'s MISO comment in esp_display.cpp for why a
- * separate, slower, named read clock was the plan going in and was NOT
- * built: it would need a second SPI device sharing this display's CS pin,
- * and ESP-IDF's driver reassigns a shared CS pin's GPIO-matrix routing to
- * whichever device was added last, breaking the survivor's own CS the
- * moment the temporary one is torn down -- confirmed by reading
- * spi_common.c, not assumed. */
-uint32_t kf_esp_display_diag_read_hz(void);
+/* Tears down the panel IO/panel esp_display.cpp normally drives writes
+ * through and rebuilds both at read_hz, re-sending the panel's init table
+ * so the controller is in a known state at the new clock before any reads
+ * are attempted. Every kf_esp_display_diag_read_scanline() call after this
+ * (until kf_esp_display_diag_end_probe() below) reads at read_hz instead of
+ * the normal write clock -- see that function's own comment in
+ * esp_display.cpp for the full mechanics, the CS-pin hazard this sidesteps,
+ * and the thread-safety argument for why doing this mid-frame is safe.
+ *
+ * Returns false if the rebuild itself failed. The caller is expected to
+ * proceed with its sampling loop regardless -- every read will simply fail,
+ * which is itself a reportable result -- and to call
+ * kf_esp_display_diag_end_probe() afterwards unconditionally either way. */
+bool kf_esp_display_diag_begin_probe(uint32_t read_hz);
+
+/* The other half of kf_esp_display_diag_begin_probe(): rebuilds the panel
+ * IO/panel back at KF_DISPLAY_SPI_HZ, the normal write clock, and re-sends
+ * the init table. Must be called exactly once after every
+ * kf_esp_display_diag_begin_probe() call, even if that call returned false,
+ * so a probe always attempts to leave the display usable again. If this
+ * rebuild also fails, the display is left with no panel at all
+ * (kf_display_present() already tolerates that -- see its own
+ * g_panel == nullptr check -- so the failure mode is "no more screen
+ * updates," not a crash); see this function's own comment in
+ * esp_display.cpp for why that is the safe degradation to pick here. */
+void kf_esp_display_diag_end_probe(void);
 
 #endif /* KF_DBG_BRIDGE_ENABLE */
 
