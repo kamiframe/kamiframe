@@ -17,6 +17,9 @@ Wire protocol (fixed; the device side implements the exact same spec):
         KFDBG STATE
         KFDBG BTN <mask>
         KFDBG BTNHOLD <mask> <ms>
+        KFDBG ADVANCE <seconds>
+        KFDBG RESET
+        KFDBG MULT <n>
 
     Device -> host, a framed block. Ordinary firmware log lines may appear
     interleaved between (never inside) these blocks and are skipped:
@@ -42,6 +45,9 @@ Usage:
     python3 tools/kf_debug.py [--port PORT] shot [--out FILE.png]   # default: ~/Downloads
     python3 tools/kf_debug.py [--port PORT] state [--json]
     python3 tools/kf_debug.py [--port PORT] press UP,A [--hold-ms 300]
+    python3 tools/kf_debug.py [--port PORT] advance 1d      # or 30s, 5m, 2h, 1w
+    python3 tools/kf_debug.py [--port PORT] mult 64         # 1..256
+    python3 tools/kf_debug.py [--port PORT] reset           # back to a fresh egg
     python3 tools/kf_debug.py [--port PORT] watch [--interval 1.0]
 
 See tools/README.md for a plain-language walkthrough.
@@ -533,6 +539,31 @@ def cmd_state(link, args):
     _print_state_line(payload, args.json)
 
 
+# Suffixes so "skip a day" is `advance 1d` rather than `advance 86400`. The
+# bare-number case stays seconds, so nothing that already worked breaks.
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_duration(text):
+    """'90' -> 90, '5m' -> 300, '1d' -> 86400, '2w' -> 1209600."""
+    t = text.strip().lower()
+    if not t:
+        raise KfDebugError("empty duration")
+    unit = 1
+    if t[-1] in _DURATION_UNITS:
+        unit = _DURATION_UNITS[t[-1]]
+        t = t[:-1]
+    try:
+        value = float(t)
+    except ValueError:
+        raise KfDebugError(
+            f"could not read '{text}' as a duration. Use plain seconds, or a "
+            "suffix: 30s, 5m, 2h, 1d, 1w.") from None
+    if value <= 0:
+        raise KfDebugError("duration must be positive")
+    return int(value * unit)
+
+
 def cmd_press(link, args):
     mask = parse_buttons(args.buttons)
     if args.hold_ms:
@@ -542,6 +573,34 @@ def cmd_press(link, args):
     payload = _expect(link, command, "ack")
     note = payload.decode("utf-8", "replace")
     print(f"ack{': ' + note if note else ''}")
+
+
+def cmd_advance(link, args):
+    """Jump the pet forward in time.
+
+    Exists because the pet is otherwise untestable on hardware: an egg lasts
+    an hour and does not decay at all, and after hatching hunger falls at
+    1042 mp/hour -- four real days from full to empty. Watching a board for
+    an hour shows you roughly 1% of one bar moving.
+    """
+    seconds = parse_duration(args.duration)
+    payload = _expect(link, f"KFDBG ADVANCE {seconds}", "ack")
+    print(f"advanced {seconds}s ({args.duration}) -- "
+          f"{payload.decode('utf-8', 'replace')}")
+
+
+def cmd_reset(link, args):
+    payload = _expect(link, "KFDBG RESET", "ack")
+    print(f"reset to a fresh egg -- {payload.decode('utf-8', 'replace')}")
+
+
+def cmd_mult(link, args):
+    if not 1 <= args.factor <= 256:
+        raise KfDebugError(
+            f"time multiplier must be between 1 and 256, got {args.factor}")
+    payload = _expect(link, f"KFDBG MULT {args.factor}", "ack")
+    print(f"time multiplier now {args.factor}x -- "
+          f"{payload.decode('utf-8', 'replace')}")
 
 
 def cmd_watch(link, args):
@@ -643,6 +702,19 @@ def build_parser():
                              "across consecutive frame polls, so 0 will "
                              "NOT register)")
 
+    advance = sub.add_parser("advance", parents=[common],
+                              help="jump the pet forward in time")
+    advance.add_argument("duration",
+                          help="seconds, or with a suffix: 30s, 5m, 2h, 1d, 1w")
+
+    sub.add_parser("reset", parents=[common],
+                    help="reset the pet to a fresh egg")
+
+    mult = sub.add_parser("mult", parents=[common],
+                           help="set the pet's time multiplier (1-256)")
+    mult.add_argument("factor", type=int,
+                       help="1 is normal speed, 256 is the fastest")
+
     watch = sub.add_parser("watch", parents=[common],
                             help="print device state repeatedly")
     watch.add_argument("--interval", type=float, default=1.0,
@@ -664,6 +736,12 @@ def main(argv=None):
                 cmd_state(link, args)
             elif args.command == "press":
                 cmd_press(link, args)
+            elif args.command == "advance":
+                cmd_advance(link, args)
+            elif args.command == "reset":
+                cmd_reset(link, args)
+            elif args.command == "mult":
+                cmd_mult(link, args)
             elif args.command == "watch":
                 cmd_watch(link, args)
     except KfDebugError as e:
