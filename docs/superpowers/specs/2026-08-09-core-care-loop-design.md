@@ -247,3 +247,20 @@ Three consequences for whoever implements this:
 
 Changing the tree means bumping the save format version, since `teen_form`
 and `adult_branch` are stored.
+
+### Resolved, 2026-08-09: the bible's shape wins
+
+Chris: "Just go with the character bible's branch shape. keep egg and baby
+regardless."
+
+So the tree becomes:
+
+- **Five stages stay.** Egg and baby are kept regardless of the bible not
+  naming them.
+- **Four teen forms**, one per verb family: Cut, Hold, Mark, Go.
+- **Adults per family are uneven** and will change as the roster fills: Cut 2,
+  Hold 3, Mark 3, Go 1. The code carries a per-family count table, not one
+  constant, so adding the creatures the bible's section 11 still wants is a
+  data edit rather than a breaking change.
+- **Hokorimaru is reached by never interacting at all**, which is a different
+  condition from the care-quality average every other branch uses.
