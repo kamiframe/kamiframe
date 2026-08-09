@@ -379,9 +379,8 @@ Local time is set once in the device's global settings and every creature on
 it shares that. This settles the timezone half of sleep — Core carries a UTC
 offset from config, and nothing per-egg.
 
-The other half of sleep is still open (see the previous addendum): what the
-drowsy/settle interaction means offline, where there is no player to settle
-anything.
+The other half of sleep is settled too, as of later the same day — see "Sleep,
+settled" at the end of this addendum.
 
 ### Egg and baby have designs now
 
@@ -394,3 +393,81 @@ shorthand. Shared by every creature.
 **Marumaru, at the CHILD stage, remains the first form that is actually its
 own thing.** Both new designs are placeholders in the sense that the bible
 does not describe either stage; neither is an attempt to invent bible content.
+
+### Sleep, settled
+
+The earlier addendum ("why sleep is not the next thing built") stopped because
+the drowsy/settle interaction has no meaning offline. Chris's answer removes
+the problem rather than solving it: **the creature falls asleep by itself.**
+Settling it is optional decoration on top, not the mechanism sleep depends on.
+That makes the live and offline rules the same rule, which is what unblocked
+this.
+
+**Night is 22:00 to 07:00 local**, using the device-wide UTC offset decided
+above. Generic on purpose for now. The eventual intent is that the device
+learns the real zone by itself — over BLE from a phone, or WiFi — so nobody
+ever sets a clock; that is future work, not this build.
+
+**Falling asleep is automatic.** At bedtime the creature gets drowsy, and if
+nothing happens it plops down where it stands and sleeps. Offline, that is all
+that happens, which is why offline needs no separate rule.
+
+**Being put to bed is the optional interaction.** The drowsy state is the
+signal that this is available: while drowsy, the creature can be brought to
+bedding and tucked in. It is a nicety, not a duty — skipping it costs nothing
+beyond the late-night deficit below.
+
+**Waking up is entirely the creature's own.** In the morning it wakes, gets
+itself out of bed, and puts the bedding away. The player is never required to
+do anything to end sleep, which is what stops "asleep forever" from being a
+reachable state.
+
+**A late night costs deficits, paid the next day.** Staying up past bedtime
+keeps draining, so the following day starts in a hole that needs extra care to
+climb out of. This is what makes bedtime matter without punishing anyone who
+simply is not holding the device at 22:00.
+
+**Waking it deliberately is allowed and costs happiness.** The original
+punished you for leaving the light on; this is the same idea, kept small.
+
+**The neglect clock pauses while asleep, but the needs do not.** These are two
+different things and the distinction is the point: `neglect_seconds` — the
+accumulator that drives sickness and death — does not advance while the
+creature sleeps, so nobody is punished for it sleeping. Hunger and the rest
+keep decaying normally, so you wake up to a creature that wants something.
+There is something to do in the morning, and it still cannot kill you overnight.
+
+**Consequence, and Chris's answer to it.** Because nights do not accrue
+neglect, sickness and death arrive on roughly fifteen hours a day rather than
+twenty-four. Chris's decision: **compress it, so a waking day still costs a
+full day's worth.**
+
+Two corrections to how this was first framed, both established by reading the
+code rather than reasoning about it:
+
+*Hokorimaru is not affected and needs no compensation.* The dust branch is
+selected from `care_integral_mp_seconds / stage_elapsed_seconds`
+(`pet.cpp:328`) — an average of need levels across the whole child stage. The
+needs keep decaying while the creature sleeps and the stage clock keeps
+running, so that average never notices the neglect clock stopping. Only
+sickness and death, the two things `neglect_seconds` drives, change at all.
+
+*The compression belongs in the thresholds, not the accrual.* Cut
+`sickness_onset_seconds` and `sickness_death_seconds` by the waking fraction;
+do not multiply the rate at which `neglect_seconds` climbs. Two reasons. The
+accumulator is part of the save format and is read straight out in the debug
+timeline, so it should keep meaning literal seconds spent neglected and awake.
+More importantly, neglect *recovers* as well as accrues — `pet.cpp:610`
+subtracts time spent cared-for back off it — so scaling only the accrual would
+make the creature harsher in a direction nobody asked for, while moving the
+thresholds scales both directions at once.
+
+Build it as a single named constant. The late-night deficit above and this
+compression both land on the same waking day, and whether their combined
+pressure feels right is a thing to feel rather than derive.
+
+**Noted for later, not now: sleeping by actual darkness.** The target hardware
+carries an ambient light sensor, so the creature could settle when it is really
+dark — a cloth over it, a drawer, lights out. Chris wants this eventually. It
+needs a simulator fallback, since a desktop has no such sensor, and it is a
+larger build than the clock-driven version. Clock first.
