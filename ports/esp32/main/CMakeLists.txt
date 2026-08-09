@@ -44,6 +44,14 @@
 ## backends above already use for ../hal/ -- one canonical copy of the file,
 ## not a fork.
 ##
+## kf_creature_screen.cpp (Task 4 of the pet-screen plan), added right next
+## to kf_pet_session.cpp for the identical reason: one file, one dependency
+## on kf_pet_session.h (already this component's own neighbour) plus
+## hakoniwaos's kf/creature.h and kf/blit.h, no LVGL and no third-party
+## library of its own -- it is app_main.cpp's kf_screen_nav_init() that
+## reaches it (via kamiframe_lvgl_port's kf_screen_nav.cpp), not this file
+## directly, the same indirection sdl_main.cpp uses on desktop.
+##
 ## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0028): same relative-path pattern as
 ## kf_pet_session.cpp above -- these two files have no third-party library of
 ## their own, only Lua itself does, which is why Lua earns the "lua" REQUIRES
@@ -84,6 +92,7 @@ idf_component_register(
         ../hal/esp_power.cpp
         ../hal/esp_assets.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
+        ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../simulator/src/lua/kf_lua_alloc.cpp
         ../../../simulator/src/lua/kf_lua_port.cpp
         kf_dbg_bridge.cpp

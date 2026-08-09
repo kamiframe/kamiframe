@@ -51,14 +51,25 @@ kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
                                       uint32_t reaction_hold_ms);
 
 /* Which way the creature is facing, for sprite selection. Four facing
- * directions are served by three sprite sets: S is the front, toward the
- * viewer; E is the side; N is the back, away from the viewer. West is the
- * E sprite mirrored at draw time, so there is deliberately no W value here
- * -- see kf_creature_sprite_name(). */
+ * directions, served by three sprite SETS: S is the front, toward the
+ * viewer; E is the side; N is the back, away from the viewer. W is the
+ * other side -- but it is not a fourth sprite set, and it is not always a
+ * mirror either. Mirroring is a capability, not a rule: some creatures ship
+ * real hand-drawn "_w_" art and some do not, and whoever draws the sprite
+ * for a given facing is the one making that call, not this file. The
+ * caller resolving a name for KF_CREATURE_DIR_W (simulator/src/pet/
+ * kf_creature_screen.cpp today) asks the pack for the "_w_" sprite first,
+ * and only draws the "_e_" sprite mirrored when the pack has no west art of
+ * its own -- see kf_creature_sprite_name()'s own comment for the naming
+ * half of that and kf/blit.h's kf_blit_mirrored() for the drawing half.
+ * (An earlier version of this comment said W deliberately did not exist at
+ * all; that was true before any west-facing art existed to ask for, and is
+ * superseded now that it might.) */
 typedef enum {
     KF_CREATURE_DIR_S = 0,
     KF_CREATURE_DIR_E,
     KF_CREATURE_DIR_N,
+    KF_CREATURE_DIR_W,
     KF_CREATURE_DIR_COUNT
 } kf_creature_direction;
 
@@ -100,7 +111,13 @@ typedef struct {
     int32_t y;
     int32_t target_x;       /* where it has decided to walk to */
     int32_t target_y;
-    int16_t facing;         /* -1 facing left, +1 facing right */
+    kf_creature_direction dir; /* which way it's currently facing -- see
+                                 * kf_creature_direction above. Updated only
+                                 * on frames where the creature actually
+                                 * moves (kf_creature_update()); it holds
+                                 * its last value through a whole dwell
+                                 * rather than snapping to some default the
+                                 * instant it stops. */
     uint32_t dwell_ms;      /* how long it still intends to stand still */
     uint32_t reaction_hold_ms;
     uint32_t seen_care_actions; /* to notice when another care action lands */

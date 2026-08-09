@@ -254,18 +254,30 @@ extern "C" void app_main(void) {
          * while-loop shape on desktop.
          *
          * real_dt_ms * multiplier feeds ONLY kf_pet_session_frame() --
-         * see this loop's header comment above. Every other 0 argument
-         * below still means "use your own real-elapsed-time tracking"
-         * (see kf_pet_session.h, kf_lvgl_port.h, kf_lua_port.h).
+         * see this loop's header comment above. Every 0 argument below
+         * still means "use your own real-elapsed-time tracking" (see
+         * kf_lvgl_port.h, kf_lua_port.h). kf_screen_nav_frame() is the one
+         * exception: it has no internal real-time tracker of its own (the
+         * creature screen's wander just advances by whatever dt_ms it is
+         * handed), so it gets real_dt_ms directly, UN-multiplied -- the
+         * creature's walk is presentation, not pet decay, and stays
+         * real-time the same way LVGL's tick and Lua's frame delta do.
          *
          * Ordering matches sdl_main.cpp's frame-ordering comment exactly,
          * for the same two reasons. kf_pet_session_frame() and
          * kf_screen_nav_frame() both run BEFORE kf_lvgl_port_pump(), so the
          * active screen has this frame's numbers pushed into its widgets
-         * before pump's lv_timer_handler() redraws and flushes -- otherwise
-         * the screen is permanently one frame behind. And the pet session
-         * runs before kf_lua_port_frame(), so the script's pet.hunger() and
-         * friends see this frame's elapsed time already applied. */
+         * (or, for the creature screen, drawn) before pump's lv_timer_
+         * handler() redraws and flushes -- otherwise an LVGL screen would be
+         * permanently one frame behind. kf_lvgl_port_pump() itself is
+         * guarded by kf_screen_nav_wants_lvgl(): calling it while the
+         * creature screen (which draws straight into the framebuffer, not
+         * through LVGL) is active would run LVGL's timer handler over a
+         * widget tree nothing is looking at -- see kf_screen_nav.h's own
+         * comment on that predicate for the actual hazard this avoids, not
+         * just the wasted work. And the pet session runs before kf_lua_
+         * port_frame(), so the script's pet.hunger() and friends see this
+         * frame's elapsed time already applied. */
         const uint64_t now_us = kf_time_mono_us();
         const uint32_t real_dt_ms =
             last_frame_us == 0u
@@ -275,8 +287,10 @@ extern "C" void app_main(void) {
         const uint32_t multiplier = kf_dbg_time_multiplier();
 
         kf_pet_session_frame(real_dt_ms * multiplier);
-        kf_screen_nav_frame();
-        kf_lvgl_port_pump(0);
+        kf_screen_nav_frame(real_dt_ms);
+        if (kf_screen_nav_wants_lvgl()) {
+            kf_lvgl_port_pump(0);
+        }
 
         /* kf_lua_port_frame(0): same "0 means real elapsed time" convention
          * as kf_pet_session_frame() would use without a multiplier, tracked

@@ -22,6 +22,7 @@
  *     kamiframe-headless --verify-pet-care-variation
  *     kamiframe-headless --verify-creature-pose
  *     kamiframe-headless --verify-creature-wander
+ *     kamiframe-headless --verify-creature-screen
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -58,6 +59,7 @@
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_port.h"
 #include "../lua/kf_lua_proof_script.h"
+#include "../pet/kf_creature_screen.h"
 #include "../pet/kf_pet_session.h"
 #include "headless_probe.h"
 
@@ -2091,9 +2093,18 @@ static int run_creature_wander_check(void) {
     kf_rng_seed(12345u);
     kf_creature_init(&b, field);
     for (int i = 0; i < 600; ++i) { kf_creature_update(&b, field, 33u); }
-    if (a.x != b.x || a.y != b.y) {
-        KF_LOGE(TAG, "creature-wander: same seed diverged: (%d,%d) vs (%d,%d)",
-                a.x, a.y, b.x, b.y);
+    /* dir is compared too, not just x/y: it is written from
+     * direction_for_delta() (hakoniwaos/src/creature.cpp), a pure function
+     * of state already covered by the position check above, so any
+     * divergence here would mean dir itself depends on something outside
+     * that -- uninitialised memory, most plausibly -- that this test would
+     * otherwise never catch. */
+    if (a.x != b.x || a.y != b.y || a.dir != b.dir) {
+        KF_LOGE(TAG,
+                "creature-wander: same seed diverged: (%d,%d,dir=%d) vs "
+                "(%d,%d,dir=%d)",
+                a.x, a.y, static_cast<int>(a.dir), b.x, b.y,
+                static_cast<int>(b.dir));
         ++failures;
     }
 
@@ -2140,6 +2151,101 @@ static int run_creature_wander_check(void) {
     }
     std::printf("%s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
+}
+
+/* Proves the pet screen's ownership switch (Task 4) stays inside its
+ * dirty-rect budget: at most 2 rectangles a frame (erase the creature's
+ * previous position, draw its new one -- see kf_creature_screen.h) and at
+ * most three 48x48 sprite areas' worth of bytes, generous headroom over
+ * the two areas an erase-then-draw frame actually touches. Also proves the
+ * budget is not being met VACUOUSLY, by drawing nothing: the default asset
+ * pack has no creature art (examples/hello_sprite/assets.kfpack carries
+ * exactly one sprite, "test_sprite"), so every kf_assets_get() lookup
+ * kf_creature_screen_frame() makes returns null and it falls back to a
+ * placeholder rectangle (kf_creature_screen.cpp's kPlaceholderColor) --
+ * this asserts that placeholder rectangle really was dirtied, not just
+ * that IF something were dirtied it would be small.
+ *
+ * Bypasses kf_app_frame()/kf_screen_nav.cpp entirely -- this is a
+ * rendering-cost check on kf_creature_screen_frame() itself, not on screen
+ * switching (see run_screen_nav_check() for that one). Same isolated-per-
+ * PID storage directory trick as run_pet_screen_check() below, for the
+ * same reason: kf_pet_session_init() needs somewhere to read/write that
+ * will not collide with another test running at the same time. Mounts the
+ * real default asset pack (kf_assets_init()), rather than leaving assets
+ * uninitialised, so this genuinely exercises the "no creature art in the
+ * pack" scenario the fallback exists for, not just an equivalent-looking
+ * uninitialised table. */
+static int run_creature_screen_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init mounts the default "
+                                      "pack (no creature art in it yet)");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    size_t worst_rects = 0;
+    size_t worst_bytes = 0;
+    bool creature_rect_ever_dirtied = false;
+    for (int i = 0; i < 300; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (d.count > 0) {
+            creature_rect_ever_dirtied = true;
+        }
+        if (static_cast<size_t>(d.count) > worst_rects) {
+            worst_rects = static_cast<size_t>(d.count);
+        }
+        const size_t bytes = kf_fb_dirty_bytes();
+        if (bytes > worst_bytes) {
+            worst_bytes = bytes;
+        }
+    }
+
+    check(creature_rect_ever_dirtied,
+          "the creature's rectangle was never dirtied across 300 frames -- "
+          "drawing nothing (the vacuous case A3's placeholder rule exists "
+          "to prevent) would also pass the rect/byte budget below, so this "
+          "has to be checked separately");
+
+    /* Two rects: erase the old position, draw the new one. Three 48x48
+     * sprite areas' worth of bytes is generous headroom for that. */
+    check(worst_rects <= 2u, "used more than 2 dirty rects in a frame");
+    check(worst_bytes <= 48u * 48u * 2u * 3u,
+          "dirtied more bytes in a frame than three 48x48 sprites' worth "
+          "-- too much for the erase-then-draw budget");
+
+    KF_LOGI(TAG, "creature-screen: worst frame %zu rects, %zu bytes",
+            worst_rects, worst_bytes);
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
 }
 
 int run_pet_screen_check(unsigned long long expect_checksum,
@@ -2277,13 +2383,22 @@ int run_screen_nav_check(unsigned long long expect_checksum,
      * iteration the same way the interactive build's loop does, even
      * though nothing here presses a real button -- proving the per-frame
      * "call the active screen's update()" path, not just the switch
-     * itself. */
+     * itself. kf_lvgl_port_pump() is guarded by kf_screen_nav_wants_lvgl(),
+     * the same as sdl_main.cpp/app_main.cpp: Home is the creature screen
+     * now (Task 4) and draws straight into the framebuffer, so pumping
+     * LVGL while it is active would run lv_timer_handler() over whatever
+     * LVGL's own default screen happens to be -- still invalidated from
+     * lv_init(), since nothing has ever loaded a real LVGL screen yet at
+     * this point -- and its flush would overwrite every pixel the creature
+     * screen just drew, defeating this whole loop. */
     constexpr uint32_t kFixedDtMs =
         static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
     for (int i = 0; i < 30; ++i) {
         kf_pet_session_frame(kFixedDtMs);
-        kf_screen_nav_frame();
-        kf_lvgl_port_pump(kFixedDtMs);
+        kf_screen_nav_frame(kFixedDtMs);
+        if (kf_screen_nav_wants_lvgl()) {
+            kf_lvgl_port_pump(kFixedDtMs);
+        }
     }
     check(kf_screen_nav_debug_index() == 0,
           "still on Home after 30 quiet frames (nothing should have "
@@ -2299,8 +2414,10 @@ int run_screen_nav_check(unsigned long long expect_checksum,
 
     for (int i = 0; i < 30; ++i) {
         kf_pet_session_frame(kFixedDtMs);
-        kf_screen_nav_frame();
-        kf_lvgl_port_pump(kFixedDtMs);
+        kf_screen_nav_frame(kFixedDtMs);
+        if (kf_screen_nav_wants_lvgl()) {
+            kf_lvgl_port_pump(kFixedDtMs);
+        }
     }
 
     /* Checksummed with Info on screen -- the same FNV-1a-over-the-
@@ -3153,6 +3270,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_care_variation = false;
     bool verify_creature_pose = false;
     bool verify_creature_wander = false;
+    bool verify_creature_screen = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -3208,6 +3326,8 @@ int main(int argc, char *argv[]) {
             verify_creature_pose = true;
         } else if (std::strcmp(argv[i], "--verify-creature-wander") == 0) {
             verify_creature_wander = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen") == 0) {
+            verify_creature_screen = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -3243,6 +3363,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-care-variation\n"
                         "kamiframe-headless --verify-creature-pose\n"
                         "kamiframe-headless --verify-creature-wander\n"
+                        "kamiframe-headless --verify-creature-screen\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -3327,6 +3448,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_wander) {
         return run_creature_wander_check();
+    }
+
+    if (verify_creature_screen) {
+        return run_creature_screen_check();
     }
 
     if (verify_lua_pet) {

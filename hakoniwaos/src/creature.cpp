@@ -78,13 +78,17 @@ const char *pose_name(kf_creature_pose pose) {
     }
 }
 
-/* "s"/"e"/"n" -- see kf_creature_direction in kf/creature.h for what each
- * one means and why there is no "w". An out-of-range value falls back to
- * "s", the front-facing sprite, rather than reading past the enum. */
+/* "s"/"e"/"n"/"w" -- see kf_creature_direction in kf/creature.h for what
+ * each one means, including why "w" is a real token here even though the
+ * manifest may or may not have real art behind it for a given creature (the
+ * caller's job, not this function's -- see kf_creature_direction's own
+ * comment). An out-of-range value falls back to "s", the front-facing
+ * sprite, rather than reading past the enum. */
 const char *direction_token(kf_creature_direction dir) {
     switch (dir) {
     case KF_CREATURE_DIR_E: return "e";
     case KF_CREATURE_DIR_N: return "n";
+    case KF_CREATURE_DIR_W: return "w";
     case KF_CREATURE_DIR_S:
     default: return "s";
     }
@@ -132,11 +136,17 @@ int32_t field_span(int16_t lo, int16_t hi) {
     return span > 0 ? span : 0;
 }
 
-/* Pick a new spot inside the field and face towards it. kf_rng_below(span+1)
- * is uniform over [0, span], so the top-left corner lands anywhere from the
- * field's lo edge up to (hi - kSpriteSize) inclusive -- the far edge lands
- * on hi at most, never past it, which is what keeps kf_creature_bounds()
- * inside the half-open field rect (kf/types.h) even at the extreme case. */
+/* Pick a new spot inside the field. kf_rng_below(span+1) is uniform over
+ * [0, span], so the top-left corner lands anywhere from the field's lo edge
+ * up to (hi - kSpriteSize) inclusive -- the far edge lands on hi at most,
+ * never past it, which is what keeps kf_creature_bounds() inside the
+ * half-open field rect (kf/types.h) even at the extreme case.
+ *
+ * Deliberately does not touch c->dir: which way the creature FACES is a
+ * property of which way it is actually walking THIS frame, decided in
+ * kf_creature_update() once movement toward whatever target this function
+ * picked is under way -- not of the moment the target was chosen, which can
+ * sit several dwell-frames before the first step ever taken toward it. */
 void choose_target(kf_creature *c, kf_rect field) {
     const int32_t sx = field_span(field.x0, field.x1);
     const int32_t sy = field_span(field.y0, field.y1);
@@ -144,7 +154,24 @@ void choose_target(kf_creature *c, kf_rect field) {
                   KF_CREATURE_SUB;
     c->target_y = ((int32_t)field.y0 + (int32_t)kf_rng_below((uint32_t)sy + 1u)) *
                   KF_CREATURE_SUB;
-    c->facing = (c->target_x < c->x) ? (int16_t)-1 : (int16_t)1;
+}
+
+/* Which way (dx, dy) points, as a facing direction: the axis with the
+ * larger magnitude wins, N/S for vertical and E/W for horizontal. A tie
+ * (equal magnitude on both axes, including the degenerate 0,0 case) goes to
+ * the horizontal axis -- arbitrary, but it has to pick one, and there is no
+ * more principled reason to prefer N/S over E/W here than the reverse.
+ * Shared by kf_creature_init() (the very first facing, before any frame of
+ * movement has happened) and kf_creature_update()'s movement branch (every
+ * facing after that, always computed from that frame's actual travel --
+ * see kf_creature::dir's own comment in kf/creature.h). */
+kf_creature_direction direction_for_delta(int32_t dx, int32_t dy) {
+    const int32_t abs_dx = dx < 0 ? -dx : dx;
+    const int32_t abs_dy = dy < 0 ? -dy : dy;
+    if (abs_dy > abs_dx) {
+        return (dy < 0) ? KF_CREATURE_DIR_N : KF_CREATURE_DIR_S;
+    }
+    return (dx < 0) ? KF_CREATURE_DIR_W : KF_CREATURE_DIR_E;
 }
 
 } // namespace
@@ -155,11 +182,20 @@ void kf_creature_init(kf_creature *c, kf_rect field) {
            KF_CREATURE_SUB;
     c->y = ((int32_t)field.y0 + field_span(field.y0, field.y1) / 2) *
            KF_CREATURE_SUB;
-    c->facing = 1;
     c->dwell_ms = kDwellMinMs;
     c->reaction_hold_ms = 0u;
     c->seen_care_actions = 0u;
     choose_target(c, field);
+    /* c->dir has to be a defined value from the moment this returns --
+     * kDwellMinMs is never 0, so a fresh creature sits through its first
+     * dwell before kf_creature_update()'s movement branch would otherwise
+     * ever get a chance to set it, and that dwell is exactly the window a
+     * boot screenshot is most likely to catch. Facing toward the target
+     * already chosen above, via the same axis-dominance rule
+     * kf_creature_update() uses every frame after this one, means that
+     * window shows a genuinely correct facing rather than an arbitrary
+     * placeholder waiting to be overwritten. */
+    c->dir = direction_for_delta(c->target_x - c->x, c->target_y - c->y);
 }
 
 void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms) {
@@ -180,6 +216,25 @@ void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms) {
         ((int32_t)dt_ms * kSpeedPxPerSec * KF_CREATURE_SUB) / 1000;
     if (step <= 0) { return; }
 
+    const int32_t dx = c->target_x - c->x;
+    const int32_t dy = c->target_y - c->y;
+
+    /* Facing is a property of THIS frame's actual travel -- computed here,
+     * from the distance still remaining before the movement below consumes
+     * it, not from wherever the creature ends up. On arrival both deltas
+     * are zero, and recomputing from a (0,0) delta would snap the sprite to
+     * direction_for_delta()'s horizontal tie-break (east) every single time
+     * the creature stops walking, which is wrong -- see kf_creature::dir's
+     * own comment in kf/creature.h for why it has to hold its last value
+     * through the dwell instead. Guarding on dx/dy being nonzero, rather
+     * than on `arrived` (computed below), also covers the rare case where a
+     * freshly chosen target lands exactly on the creature's current spot:
+     * there is no real movement to face at all that frame, so dir is left
+     * exactly as it was. */
+    if (dx != 0 || dy != 0) {
+        c->dir = direction_for_delta(dx, dy);
+    }
+
     /* Never overshoot: whenever the remaining distance on an axis is within
      * one step, snap straight to the target instead of adding/subtracting
      * step and passing it. That is what keeps an arbitrarily large dt_ms
@@ -187,12 +242,10 @@ void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms) {
      * bounds (choose_target()), and every intermediate position is either
      * strictly closer to it or exactly it, never past it. */
     bool arrived = true;
-    const int32_t dx = c->target_x - c->x;
     if (dx > step)       { c->x += step; arrived = false; }
     else if (dx < -step) { c->x -= step; arrived = false; }
     else                 { c->x = c->target_x; }
 
-    const int32_t dy = c->target_y - c->y;
     if (dy > step)       { c->y += step; arrived = false; }
     else if (dy < -step) { c->y -= step; arrived = false; }
     else                 { c->y = c->target_y; }

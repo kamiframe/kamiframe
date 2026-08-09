@@ -23,29 +23,63 @@
 #ifndef KF_SCREEN_NAV_H
 #define KF_SCREEN_NAV_H
 
+#include <cstdint>
+
 /* Brings up every screen this build knows about (currently: Home, Info)
  * and loads Home first. Call once, after kf_lvgl_port_init() and
  * kf_pet_session_init() -- both screens' init functions need the pet
- * session ready the same way kf_pet_screen_init() always has. Replaces a
- * direct kf_pet_screen_init() call in sdl_main.cpp; nothing outside this
- * file should call kf_pet_screen_init()/kf_pet_info_screen_init() directly
- * any more, except headless_main.cpp's own pet_screen_check, which
- * deliberately keeps exercising kf_pet_screen.cpp in isolation the way it
- * always has (see that file's own comment) and is unaffected by anything
- * in this file. */
+ * session ready the same way kf_pet_screen_init() always has.
+ *
+ * Home is the creature screen now (Task 4 of the pet-screen plan;
+ * simulator/src/pet/kf_creature_screen.h) -- it draws straight into the
+ * framebuffer, not through LVGL, so it does not replace a direct
+ * kf_pet_screen_init() call in sdl_main.cpp the way Info's kf_pet_info_
+ * screen_init() does. kf_pet_screen.cpp (the old LVGL Home: needs bars +
+ * care-action buttons) is UNREACHABLE from a running build through this
+ * file now, on purpose, not by accident of something getting missed --
+ * see this file's own kf_screen_nav_init() comment for why it still
+ * exists and is still exercised, just not from here. Nothing outside this
+ * file should call kf_pet_screen_init()/kf_pet_info_screen_init()/kf_
+ * creature_screen_init() directly, except headless_main.cpp's own pet_
+ * screen_check and creature_screen_check, which deliberately keep
+ * exercising each screen in isolation the way pet_screen_check always
+ * has (see that file's own comments) and are unaffected by anything in
+ * this file. */
 void kf_screen_nav_init(void);
 
 /* Reads this frame's MENU/B edges and switches screens if either fired,
- * then calls whichever screen is now active's own *_update() function --
- * only the active one; the inactive screen's widgets sit untouched until
- * it is shown again, the same "why redraw what nobody can see" reasoning
- * kf_pet_screen.h's own per-frame contract already follows. Call once per
- * frame, in the exact same slot sdl_main.cpp used to call
- * kf_pet_screen_update() directly -- after kf_pet_session_frame() has
- * applied this frame's elapsed time, before kf_lvgl_port_pump() redraws
- * and flushes. See ADR 0017's frame-ordering note, still the same
- * requirement now that a second screen exists. */
-void kf_screen_nav_frame(void);
+ * then calls whichever screen is now active's own per-frame function --
+ * only the active one; the inactive screen sits untouched until it is
+ * shown again, the same "why redraw what nobody can see" reasoning kf_pet_
+ * screen.h's own per-frame contract already follows. `dt_ms` is passed
+ * straight through to the active screen's update -- Home (the creature
+ * screen) needs it to advance the wander by a real amount of time and
+ * nothing else here supplies it; Info ignores it, matching kf_pet_info_
+ * screen_update()'s existing no-argument shape. Call once per frame, in
+ * the exact same slot sdl_main.cpp used to call kf_pet_screen_update()
+ * directly -- after kf_pet_session_frame() has applied this frame's
+ * elapsed time, before kf_lvgl_port_pump() redraws and flushes. See ADR
+ * 0017's frame-ordering note, still the same requirement now that a
+ * second screen exists. See also kf_screen_nav_wants_lvgl() below: the
+ * caller must guard its own kf_lvgl_port_pump() call with it, since
+ * pumping LVGL while a non-LVGL screen is active would render nothing
+ * useful and cost a frame's worth of LVGL bookkeeping for it. */
+void kf_screen_nav_frame(uint32_t dt_ms);
+
+/* Whether the currently active screen wants kf_lvgl_port_pump() called
+ * this frame at all -- true for any screen with an LVGL root (Info,
+ * today), false for one that draws straight into the framebuffer itself
+ * (Home, the creature screen). Callers (sdl_main.cpp, ports/esp32/main/
+ * app_main.cpp) must guard their kf_lvgl_port_pump() call with this:
+ * pumping LVGL while Home is active would run lv_timer_handler() over an
+ * empty widget tree for no benefit, and -- the actual hazard, not just
+ * waste -- risks LVGL's own idle "nothing changed" fast path deciding
+ * there is nothing to flush and never repainting Info's stale pixels the
+ * next time IT becomes active. See kf_screen_nav.cpp's load() for the
+ * other half of that hazard (the one this predicate alone does not cover)
+ * and docs/architecture/adr-0017-pet-screen.md:143-188 for the failure
+ * shape both exist to prevent. */
+bool kf_screen_nav_wants_lvgl(void);
 
 /* ---------------------------------------------------------------------
  * DEBUG/TEST ONLY below this line, the same status kf_pet_session.h's own

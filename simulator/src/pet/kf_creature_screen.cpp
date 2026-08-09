@@ -1,0 +1,169 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright the Kamiframe contributors. */
+
+#include "kf_creature_screen.h"
+
+#include "kf_pet_session.h"
+
+#include "kf/assets.h"
+#include "kf/blit.h"
+#include "kf/creature.h"
+#include "kf/pet.h"
+
+#include <cstring>
+
+namespace {
+
+/* The bottom 60 rows are reserved for a stats band a later plan adds (see
+ * kf_screen_nav.cpp's own comment on kf_pet_screen.cpp staying unreachable
+ * rather than deleted) -- this screen only ever touches y=[0,260), so
+ * nothing here draws into, or needs to know anything about, that reserved
+ * strip. kf_fb_init() already clears the whole framebuffer to black at
+ * boot, so leaving the reserved strip untouched means it stays black until
+ * something actually owns it, rather than this file painting over territory
+ * that is not its business. */
+constexpr kf_rect kField = {0, 0, 240, 260};
+constexpr kf_color kBackground = KF_RGB(232, 240, 216);
+
+/* Stands in for a creature sprite the asset pack does not have yet -- the
+ * checked-in default pack (examples/hello_sprite/assets.kfpack) carries
+ * exactly one sprite, "test_sprite", so every kf_creature_sprite_name()
+ * lookup this screen makes returns nullptr from kf_assets_get() today, on
+ * every stage/pose/direction, on both desktop and the device. Drawing
+ * nothing in that case would make the screen look BROKEN rather than
+ * unfinished, and would make the dirty-rect budget test below pass
+ * vacuously (no draw, no dirty rectangle, nothing to measure) -- see
+ * run_creature_screen_check()'s own comment. So: visible and obviously
+ * wrong beats invisible and indistinguishable from a rendering bug, the
+ * same reasoning kf_creature_sprite_name() already applies to the DEAD pose
+ * falling back to the sick sprite (kf/creature.h). Hot pink, deliberately
+ * nothing any finished creature art would plausibly ship in -- it reads as
+ * "placeholder" on sight, the same way a missing-texture checkerboard does
+ * in other engines. Disappears the moment the pack carries real creature
+ * sprites; nothing else about this file changes when that happens. */
+constexpr kf_color kPlaceholderColor = KF_RGB(255, 0, 128);
+
+kf_creature g_creature;
+kf_rect g_previous = {0, 0, 0, 0};
+bool g_up = false;
+
+/* Remembers the outcome of the last sprite resolution (Controller amendment
+ * A4: west-first lookup) so a creature with no west art pays one strcmp per
+ * frame, not two failed kf_assets_get() lookups. `requested_name` is the
+ * name actually asked for FIRST -- the "_w_" name when facing west, the
+ * plain per-direction name otherwise -- which is also the only thing that
+ * can legitimately change frame to frame (the pet's stage/pose/direction),
+ * so comparing against it is exactly "did the thing that could change the
+ * answer actually change". kf_assets_get()'s own contract (kf/assets.h)
+ * is what makes caching the resolved pointer itself safe: valid for the
+ * remainder of the program once it is non-null. */
+struct SpriteCache {
+    char requested_name[32] = {};
+    const kf_sprite *sprite = nullptr;
+    bool mirrored = false;
+    bool valid = false;
+};
+SpriteCache g_sprite_cache;
+
+/* Resolves the sprite (and whether to draw it mirrored) for this pet's
+ * current pose and the creature's current facing, applying the west-first
+ * fallback: ask the pack for real "_w_" art first, and only draw the "_e_"
+ * sprite mirrored when the pack does not have any -- see kf/creature.h's
+ * kf_creature_direction comment and kf/blit.h's kf_blit_mirrored() for the
+ * two halves of why. Non-west directions have no fallback at all: build the
+ * name, look it up, done. Falls all the way through to nullptr (handled by
+ * the caller via the placeholder colour, above) when nothing resolves. */
+void resolve_sprite(const kf_pet_state *pet, kf_creature_pose pose,
+                     kf_creature_direction dir, const kf_sprite **out_sprite,
+                     bool *out_mirrored) {
+    char name[32];
+    kf_creature_sprite_name(pet, pose, dir, name, sizeof(name));
+
+    if (g_sprite_cache.valid &&
+        std::strcmp(name, g_sprite_cache.requested_name) == 0) {
+        *out_sprite = g_sprite_cache.sprite;
+        *out_mirrored = g_sprite_cache.mirrored;
+        return;
+    }
+
+    const kf_sprite *sprite = kf_assets_get(name);
+    bool mirrored = false;
+    if (sprite == nullptr && dir == KF_CREATURE_DIR_W) {
+        char east_name[32];
+        kf_creature_sprite_name(pet, pose, KF_CREATURE_DIR_E, east_name,
+                                sizeof(east_name));
+        sprite = kf_assets_get(east_name);
+        mirrored = (sprite != nullptr);
+    }
+
+    std::strncpy(g_sprite_cache.requested_name, name,
+                 sizeof(g_sprite_cache.requested_name) - 1u);
+    g_sprite_cache.requested_name[sizeof(g_sprite_cache.requested_name) - 1u] =
+        '\0';
+    g_sprite_cache.sprite = sprite;
+    g_sprite_cache.mirrored = mirrored;
+    g_sprite_cache.valid = true;
+
+    *out_sprite = sprite;
+    *out_mirrored = mirrored;
+}
+
+} // namespace
+
+void kf_creature_screen_init(void) {
+    kf_creature_init(&g_creature, kField);
+    kf_creature_screen_enter();
+    g_up = true;
+}
+
+void kf_creature_screen_frame(uint32_t dt_ms) {
+    if (!g_up) { return; }
+    const kf_pet_state *pet = kf_pet_session_state();
+
+    /* Notice a care action that happened since last frame and start the
+     * reaction showing on the body. seen_care_actions/reaction_hold_ms live
+     * on the presentation-only kf_creature, not on the pet itself -- see
+     * kf/creature.h's own comment on why kf_pet_state::last_reaction being
+     * sticky needs a caller-owned countdown on top of it. */
+    if (pet->care_actions_taken != g_creature.seen_care_actions) {
+        g_creature.seen_care_actions = pet->care_actions_taken;
+        g_creature.reaction_hold_ms = 1200u;
+    }
+
+    kf_creature_update(&g_creature, kField, dt_ms);
+
+    /* Erase where it was, draw where it is. Two dirty rectangles at most:
+     * one when the creature did not move this frame, since the erase below
+     * and the draw further down then touch the exact same rectangle and
+     * merge into one (see kf/framebuffer.h's own comment on
+     * kf_fb_mark_dirty()) -- both marked by kf_fill_rect()/kf_blit()/
+     * kf_blit_mirrored() themselves. See run_creature_screen_check() for
+     * what pins this budget down. */
+    kf_fill_rect(g_previous, kBackground);
+
+    const kf_creature_pose pose =
+        kf_creature_pose_for(pet, g_creature.reaction_hold_ms);
+    const kf_sprite *sprite = nullptr;
+    bool mirrored = false;
+    resolve_sprite(pet, pose, g_creature.dir, &sprite, &mirrored);
+
+    const kf_rect now = kf_creature_bounds(&g_creature);
+    if (sprite != nullptr) {
+        if (mirrored) {
+            kf_blit_mirrored(sprite, now.x0, now.y0);
+        } else {
+            kf_blit(sprite, now.x0, now.y0);
+        }
+    } else {
+        /* No art in the pack for this pet yet -- see kPlaceholderColor's
+         * own comment above for why this draws something obviously wrong
+         * rather than nothing at all. */
+        kf_fill_rect(now, kPlaceholderColor);
+    }
+    g_previous = now;
+}
+
+void kf_creature_screen_enter(void) {
+    kf_fill_rect(kField, kBackground);
+    g_previous = kf_creature_bounds(&g_creature);
+}

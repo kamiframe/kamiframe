@@ -72,9 +72,20 @@ target_compile_definitions(kamiframe_host_common PUBLIC
 # has it wired up. Built before both the LVGL and Lua port glue below,
 # because kamiframe_lvgl_port's pet screen (ADR 0017) and
 # kamiframe_lua_port's pet.* binding (ADR 0016) both link against it.
+#
+# kf_creature_screen.cpp (Task 4 of the pet-screen plan) lives here too,
+# alongside kf_pet_session.cpp, rather than inside kamiframe_lvgl_port
+# below even though its only current caller (kf_screen_nav.cpp) lives
+# there: it has no LVGL dependency of its own -- it draws through kf/
+# blit.h straight into the framebuffer -- only a dependency on this
+# library's own kf_pet_session.h, and kamiframe_lvgl_port already links
+# this library PUBLIC, so putting it here keeps the dependency arrow
+# pointing the direction it actually runs (creature screen depended ON,
+# never depending on LVGL) instead of the reverse.
 # ---------------------------------------------------------------------------
 add_library(kamiframe_pet_port STATIC
     src/pet/kf_pet_session.cpp
+    src/pet/kf_creature_screen.cpp
 )
 target_include_directories(kamiframe_pet_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)
@@ -424,6 +435,18 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # kf_creature_init()/kf_creature_update()/kf_creature_bounds().
     add_test(NAME creature_wander_check
              COMMAND kamiframe-headless --verify-creature-wander)
+
+    # Proves the pet screen's ownership switch (Task 4 of the pet-screen
+    # plan) stays inside its dirty-rect budget -- at most 2 rectangles a
+    # frame (erase the creature's previous position, draw its new one) and
+    # a generous byte cap on top of that -- and that the budget is not met
+    # vacuously by drawing nothing: the default asset pack has no creature
+    # art yet, so this also pins down the placeholder-rectangle fallback
+    # that keeps the screen visibly (if not correctly) drawing something
+    # regardless. See headless_main.cpp's run_creature_screen_check() and
+    # simulator/src/pet/kf_creature_screen.h.
+    add_test(NAME creature_screen_check
+             COMMAND kamiframe-headless --verify-creature-screen)
 
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See

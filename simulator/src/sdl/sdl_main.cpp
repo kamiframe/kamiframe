@@ -65,15 +65,19 @@ void update_title(uint64_t frame) {
 int main(int argc, char *argv[]) {
     int scale = 3;
     long max_frames = 0; /* 0 = run until quit */
-    /* KF_DEMO_NONE, not KF_DEMO_SPRITE: the interactive build's default is
-     * the real pet screen now (ADR 0017), and KF_DEMO_SPRITE's bouncing
-     * sprite draws into the exact same framebuffer LVGL owns with no
-     * coordination between the two -- see kf/demo.h's own comment on
-     * KF_DEMO_NONE for what that looked like in practice. --stress below
-     * still opts into KF_DEMO_FULLSCREEN deliberately; it is a stress tool
-     * for the custom engine, not the everyday interactive experience, and
-     * accepts the same lack of coordination as a known cost of asking for
-     * it explicitly. */
+    /* KF_DEMO_NONE, not KF_DEMO_SPRITE: the interactive build's Home screen
+     * draws its own creature straight into the framebuffer now (Task 4 of
+     * the pet-screen plan, kf_creature_screen.cpp) -- not LVGL, but the
+     * exact same coordination hazard KF_DEMO_NONE was already added to
+     * prevent for LVGL's Home screen still applies here unchanged: whatever
+     * KF_DEMO_SPRITE's bouncing placeholder sprite drew would fight the
+     * creature screen for the same pixels with no coordination between the
+     * two -- see kf/demo.h's own comment on KF_DEMO_NONE for what that
+     * looked like in practice when it was LVGL on the other side instead.
+     * --stress below still opts into KF_DEMO_FULLSCREEN deliberately; it is
+     * a stress tool for the custom engine, not the everyday interactive
+     * experience, and accepts the same lack of coordination as a known cost
+     * of asking for it explicitly. */
     kf_demo_mode mode = KF_DEMO_NONE;
 
     for (int i = 1; i < argc; ++i) {
@@ -181,22 +185,35 @@ int main(int argc, char *argv[]) {
         /* kf_pet_session_frame() and kf_screen_nav_frame() both run
          * BEFORE kf_lvgl_port_pump(): the session needs to have applied
          * this frame's elapsed time before the active screen reads it,
-         * and the screen needs to have pushed that into its widgets
-         * before pump's lv_timer_handler() call redraws and flushes --
-         * otherwise the screen would always be showing last frame's
-         * numbers, one frame behind. A button press this frame is
-         * handled INSIDE pump (LVGL processes input during
-         * lv_timer_handler()), so its effect shows up starting next
-         * frame's update -- one frame of input lag, imperceptible at
-         * this frame rate. kf_screen_nav_frame() itself reads MENU/B
-         * straight from kf_app_buttons_pressed() (ADR 0022), which
-         * kf_app_frame() -- the while-condition above -- has already
+         * and the screen needs to have pushed that into its widgets (or,
+         * for the creature screen, drawn it) before pump's lv_timer_
+         * handler() call redraws and flushes -- otherwise an LVGL screen
+         * would always be showing last frame's numbers, one frame behind.
+         * A button press this frame is handled INSIDE pump (LVGL processes
+         * input during lv_timer_handler()), so its effect shows up
+         * starting next frame's update -- one frame of input lag,
+         * imperceptible at this frame rate. kf_screen_nav_frame() itself
+         * reads MENU/B straight from kf_app_buttons_pressed() (ADR 0022),
+         * which kf_app_frame() -- the while-condition above -- has already
          * refreshed for this frame by the time we get here, so a screen
-         * switch this frame is NOT subject to that same one-frame lag. */
+         * switch this frame is NOT subject to that same one-frame lag.
+         *
+         * kf_screen_nav_frame() gets the real, un-multiplied elapsed time
+         * -- the creature's wander is presentation, not pet decay, so it
+         * stays real-time exactly the way LVGL's own tick and Lua's frame
+         * delta already do (see this function's header comment on why the
+         * multiplier applies only to the pet session). kf_lvgl_port_pump()
+         * is guarded by kf_screen_nav_wants_lvgl(): calling it while the
+         * creature screen is active would run lv_timer_handler() over an
+         * LVGL widget tree nothing is looking at, for no benefit -- see
+         * kf_screen_nav.h's own comment on that predicate for the actual
+         * hazard, not just the waste. */
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_sdl_debug_window_frame();
-        kf_screen_nav_frame();
-        kf_lvgl_port_pump(0);
+        kf_screen_nav_frame(real_dt_ms);
+        if (kf_screen_nav_wants_lvgl()) {
+            kf_lvgl_port_pump(0);
+        }
         kf_lua_port_frame(0);
         update_title(static_cast<uint64_t>(frames));
         frames++;
