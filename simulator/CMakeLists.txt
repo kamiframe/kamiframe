@@ -184,6 +184,21 @@ if(KAMIFRAME_BUILD_HEADLESS)
     set_target_properties(kamiframe-headless PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
+    # An absolute, source-tree-relative path to the demo creature pack, baked
+    # in at configure time -- the same reasoning KF_HOST_DEFAULT_ASSET_PACK_
+    # PATH above gets, and for the same reason: a relative path would break
+    # the moment ctest's working directory is not the repo root, which is not
+    # a promise it makes. PRIVATE and on this target alone, not KF_ASSET_PACK
+    # or kamiframe_host_common's shared define -- this is not a new default
+    # pack, only run_creature_screen_sprite_check() (headless_main.cpp) ever
+    # reads this macro, via a runtime kf_host_assets_set_pack_path() override
+    # it restores before returning, exactly the mechanism host_assets.h's own
+    # header comment describes and the same one kamiframe-sim's `--pack` flag
+    # already uses. Every other test keeps mounting the untouched default.
+    target_compile_definitions(kamiframe-headless PRIVATE
+        KF_CREATURE_DEMO_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/creature_demo/assets.kfpack"
+    )
+
     # Golden-frame test. Runs the real firmware for 300 frames and checks the
     # rendered output byte for byte, via an FNV-1a hash of every presented
     # framebuffer.
@@ -447,6 +462,25 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # simulator/src/pet/kf_creature_screen.h.
     add_test(NAME creature_screen_check
              COMMAND kamiframe-headless --verify-creature-screen)
+
+    # Closes the coverage gap resolve_sprite() (kf_creature_screen.cpp) used
+    # to record in its own comment: every OTHER test here mounts the
+    # asset-less default pack, so kf_assets_get() always returns nullptr and
+    # only the placeholder-colour branch ever ran -- kf_blit(),
+    # kf_blit_mirrored(), and the "_w_"-not-found -> mirrored "_e_" fallback
+    # were never exercised through the real drawing path. This check points
+    # the runtime pack override at examples/creature_demo/assets.kfpack (the
+    # demo roster from the art-naming task: egg_idle_{s,e,n}_01, no "_w_"),
+    # drives kf_creature_screen_frame() through S/E/N/W with the facing
+    # forced via kf_creature_screen_debug_set_direction(), and asserts real
+    # sprite pixels are drawn (not the placeholder colour) and that the W
+    # case is the E sprite's pixels mirrored column-for-column, not merely
+    # "something non-background". Does not touch KF_ASSET_PACK or the
+    # golden-checksum tests above -- see headless_main.cpp's
+    # run_creature_screen_sprite_check() and this file's own
+    # KF_CREATURE_DEMO_PACK_PATH comment above.
+    add_test(NAME creature_screen_sprite_check
+             COMMAND kamiframe-headless --verify-creature-screen-sprites)
 
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See

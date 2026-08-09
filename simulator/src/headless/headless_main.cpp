@@ -23,6 +23,7 @@
  *     kamiframe-headless --verify-creature-pose
  *     kamiframe-headless --verify-creature-wander
  *     kamiframe-headless --verify-creature-screen
+ *     kamiframe-headless --verify-creature-screen-sprites
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -49,6 +50,7 @@
 #include "kf/hal/time.h"
 #include "kf/pet.h"
 #include "kf/rng.h"
+#include "../host/host_assets.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
 #include "../lvgl/kf_lvgl_port.h"
@@ -63,6 +65,7 @@
 #include "../pet/kf_pet_session.h"
 #include "headless_probe.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -76,6 +79,14 @@
 #else
 #include <unistd.h>
 #define KF_GETPID getpid
+#endif
+
+/* run_creature_screen_sprite_check()'s own asset pack -- see simulator/
+ * CMakeLists.txt's KF_CREATURE_DEMO_PACK_PATH comment for why this is a
+ * compile-time define private to this target rather than a new default
+ * (KF_ASSET_PACK) every other test would also inherit. */
+#ifndef KF_CREATURE_DEMO_PACK_PATH
+#error "KF_CREATURE_DEMO_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
 #endif
 
 extern "C" void kf_host_entropy_pin(uint32_t value);
@@ -2381,6 +2392,239 @@ static int run_creature_screen_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Closes the coverage gap resolve_sprite() (kf_creature_screen.cpp) used to
+ * record in its own comment: every check above (including run_creature_
+ * screen_check() just above this one) mounts the checked-in DEFAULT asset
+ * pack, which has no creature art at all, so every kf_assets_get() call
+ * that function makes returns nullptr there and only the placeholder-
+ * colour fallback ever runs -- kf_blit(), kf_blit_mirrored(), and the
+ * "_w_"-not-found -> mirrored "_e_" fallback are never exercised through
+ * the real drawing path by anything else in this file.
+ *
+ * This check points the runtime pack override (kf_host_assets_set_pack_
+ * path(), host_assets.h) at examples/creature_demo/assets.kfpack instead --
+ * the real (if placeholder-tier) egg art the art-naming task generated,
+ * egg_idle_{s,e,n}_01 and no "_w_" -- restoring the override to the
+ * default before returning so nothing later in this process inherits it.
+ * Deliberately does NOT touch KF_ASSET_PACK or examples/hello_sprite/
+ * assets.kfpack: headless_determinism, headless_fullscreen and asset_
+ * pipeline_check checksum rendered output (or the pack file itself)
+ * against that untouched default and would fail legitimately if either
+ * moved -- see simulator/CMakeLists.txt's KF_CREATURE_DEMO_PACK_PATH
+ * comment for the compile-time path this reads.
+ *
+ * A fresh pet is stage EGG (kf_pet_init(), kf/pet.h) by default, which the
+ * egg's single-state, three-direction design (kf_creature_sprite_name()
+ * collapsing every pose to "egg_idle_<dir>_01") makes the simplest fixture
+ * here -- no need to advance the pet through any stage first, and
+ * poop_count starts at 0, so the mess-drawing path never adds anything
+ * else to the panel to confuse the pixel sampling below.
+ *
+ * Drives the creature's facing directly via kf_creature_screen_debug_set_
+ * direction() rather than waiting on the wander's own RNG to visit every
+ * direction eventually. Every kf_creature_screen_frame() call below passes
+ * dt_ms == 0, so kf_creature_update() (hakoniwaos/src/creature.cpp) never
+ * recomputes ::dir out from under the forced value (it returns immediately
+ * on dt_ms == 0, touching neither position nor facing) -- which also means
+ * the creature's on-screen position never changes across this whole check,
+ * so kf_creature_screen_debug_bounds() is sampled once and reused: it is
+ * the exact rectangle kf_blit()/kf_blit_mirrored() draw into for every
+ * direction below, not a bounding box inferred from pixel content (which
+ * would only be as tight as this particular sprite's transparent margins
+ * happen to be, and is not something a test should assume is symmetric). */
+static int run_creature_screen_sprite_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-sprites-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    check(kf_assets_init() == KF_OK,
+          "kf_assets_init mounts examples/creature_demo/assets.kfpack");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* Same reasoning as run_creature_screen_check()'s own background_color
+     * sample: kf_creature_screen_init() calls kf_creature_screen_enter(),
+     * which paints the whole panel this colour before anything else runs,
+     * so any pixel is a faithful sample at this exact point. */
+    const kf_color background_color = kf_fb_pixels()[0];
+
+    /* Fixed for the whole check -- see this function's own header comment
+     * for why the creature never moves from here. */
+    const kf_rect creature_rect = kf_creature_screen_debug_bounds();
+    check(!kf_rect_is_empty(creature_rect),
+          "kf_creature_screen_debug_bounds() returned an empty rect");
+
+    /* egg_idle_s_01 et al. are drawn via kf_blit()'s colour-key skip, not a
+     * flat kf_fill_rect() -- see kf_ingest_sprites.py's alpha-to-colour-key
+     * resolution in the art-naming report -- so a real sprite's rect will
+     * contain more than one non-background colour. kPlaceholderColor
+     * (kf_creature_screen.cpp) is a flat kf_fill_rect() over the whole
+     * creature rect instead: every pixel in it is this ONE colour and
+     * nothing else. Reproduced here by value, the same "mirror a private
+     * constant across a file boundary" pattern headless_main.cpp already
+     * uses for kBackground in run_screen_nav_check() above. */
+    constexpr kf_color kKnownPlaceholderColor = KF_RGB(255, 0, 128);
+
+    /* True if creature_rect holds at least one pixel that is neither
+     * background nor the known placeholder colour -- the "genuinely more
+     * than one flat fill" signature real sprite art has and kPlaceholder-
+     * Color's single kf_fill_rect() cannot. Must be called before the NEXT
+     * draw erases creature_rect's contents. */
+    auto has_real_sprite_content = [&]() -> bool {
+        const kf_color *px = kf_fb_pixels();
+        for (int16_t y = creature_rect.y0; y < creature_rect.y1; ++y) {
+            const kf_color *row =
+                px + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
+            for (int16_t x = creature_rect.x0; x < creature_rect.x1; ++x) {
+                if (row[x] != background_color &&
+                    row[x] != kKnownPlaceholderColor) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    /* Copies creature_rect's current pixels out before the next draw
+     * overwrites them -- row-major, for the mirrored-pixel comparison
+     * further down. */
+    auto snapshot = [&]() -> std::vector<kf_color> {
+        const kf_color *px = kf_fb_pixels();
+        const size_t w =
+            static_cast<size_t>(creature_rect.x1 - creature_rect.x0);
+        const size_t h =
+            static_cast<size_t>(creature_rect.y1 - creature_rect.y0);
+        std::vector<kf_color> out(w * h);
+        for (size_t row = 0; row < h; ++row) {
+            const kf_color *src =
+                px + static_cast<size_t>(
+                         creature_rect.y0 + static_cast<int16_t>(row)) *
+                         KF_DISPLAY_WIDTH +
+                static_cast<size_t>(creature_rect.x0);
+            std::copy(src, src + w, out.begin() + static_cast<long>(row * w));
+        }
+        return out;
+    };
+
+    /* Forces `want_dir` and draws one frame -- dt_ms == 0 (see this
+     * function's own header comment for why). */
+    auto draw = [&](kf_creature_direction want_dir) {
+        kf_creature_screen_debug_set_direction(want_dir);
+        kf_creature_screen_frame(0u);
+    };
+
+    /* S, E and N: a known sprite name (egg_idle_<dir>_01) resolves and
+     * kf_blit()'s real pixels, not the placeholder colour -- three of
+     * resolve_sprite()'s non-null branches (S and N repeat the "found on
+     * first try" branch E also takes; the point is proving the direction
+     * actually reaches the pack, not enumerating branches redundantly). */
+    draw(KF_CREATURE_DIR_S);
+    check(has_real_sprite_content(),
+          "facing S drew only background and/or the placeholder colour -- "
+          "egg_idle_s_01 should have resolved from examples/creature_demo/"
+          "assets.kfpack and kf_blit()'d real sprite pixels");
+
+    /* Same direction again, immediately: exercises resolve_sprite()'s
+     * cache-hit branch (SpriteCache::valid, matching requested_name) --
+     * every OTHER check in this file only ever hits that branch with a
+     * cached nullptr, since their pack has no creature art to find. */
+    draw(KF_CREATURE_DIR_S);
+    check(has_real_sprite_content(),
+          "facing S a second time in a row (the cache-hit path) drew only "
+          "background and/or the placeholder colour");
+
+    draw(KF_CREATURE_DIR_N);
+    check(has_real_sprite_content(),
+          "facing N drew only background and/or the placeholder colour -- "
+          "egg_idle_n_01 should have resolved and drawn real sprite "
+          "pixels");
+
+    draw(KF_CREATURE_DIR_E);
+    check(has_real_sprite_content(),
+          "facing E drew only background and/or the placeholder colour -- "
+          "egg_idle_e_01 should have resolved and drawn real sprite "
+          "pixels");
+    const std::vector<kf_color> east_pixels = snapshot();
+
+    /* W: the demo pack ships no egg_idle_w_01, so this is resolve_sprite()'s
+     * west-first-fallback branch -- kf_assets_get("egg_idle_w_01") misses,
+     * then kf_assets_get("egg_idle_e_01") hits and `mirrored` is set,
+     * exercising kf_blit_mirrored() for the first time anywhere in this
+     * file's whole test suite. */
+    draw(KF_CREATURE_DIR_W);
+    check(has_real_sprite_content(),
+          "facing W drew only background and/or the placeholder colour -- "
+          "with no egg_idle_w_01 in the pack this should have fallen back "
+          "to egg_idle_e_01 drawn mirrored");
+    const std::vector<kf_color> west_pixels = snapshot();
+
+    /* Both snapshots cover the exact same fixed creature_rect (the
+     * creature never moved -- see this function's own header comment), so
+     * kf_blit_mirrored()'s W-fallback output must be E's own pixels
+     * reversed column-for-column across that whole rect, including
+     * whatever colour-keyed (transparent) columns fall inside it: kf/
+     * blit.h's own comment says the bounding box is identical to kf_blit()'s
+     * and only the columns are read back-to-front, and a colour-keyed
+     * source column leaves the framebuffer's background pixel underneath
+     * untouched at both its normal and its mirrored screen position, so
+     * this equality has to hold there too, not only across the visible
+     * silhouette. */
+    const size_t w = static_cast<size_t>(creature_rect.x1 - creature_rect.x0);
+    const size_t h = static_cast<size_t>(creature_rect.y1 - creature_rect.y0);
+    bool mirrored_ok = east_pixels.size() == west_pixels.size();
+    for (size_t y = 0; mirrored_ok && y < h; ++y) {
+        for (size_t x = 0; x < w; ++x) {
+            if (east_pixels[y * w + x] != west_pixels[y * w + (w - 1u - x)]) {
+                mirrored_ok = false;
+                break;
+            }
+        }
+    }
+    check(mirrored_ok,
+          "facing W's pixels are not facing E's pixels reversed "
+          "column-for-column across the creature's rect -- the west "
+          "fallback should draw egg_idle_e_01 via kf_blit_mirrored(), not "
+          "kf_blit() or any other transform");
+
+    KF_LOGI(TAG,
+            "creature-screen-sprites: S/E/N resolved real sprite pixels, W "
+            "fell back to E mirrored");
+
+    /* Restore the default before shutdown -- see this function's own
+     * header comment for why, even though nothing else runs in this
+     * process after this check returns today. */
+    kf_host_assets_set_pack_path(nullptr);
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -3442,6 +3686,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_pose = false;
     bool verify_creature_wander = false;
     bool verify_creature_screen = false;
+    bool verify_creature_screen_sprites = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -3499,6 +3744,9 @@ int main(int argc, char *argv[]) {
             verify_creature_wander = true;
         } else if (std::strcmp(argv[i], "--verify-creature-screen") == 0) {
             verify_creature_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen-sprites") ==
+                   0) {
+            verify_creature_screen_sprites = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -3535,6 +3783,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-pose\n"
                         "kamiframe-headless --verify-creature-wander\n"
                         "kamiframe-headless --verify-creature-screen\n"
+                        "kamiframe-headless --verify-creature-screen-sprites\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -3623,6 +3872,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen) {
         return run_creature_screen_check();
+    }
+
+    if (verify_creature_screen_sprites) {
+        return run_creature_screen_sprite_check();
     }
 
     if (verify_lua_pet) {
