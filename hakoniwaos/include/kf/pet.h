@@ -190,6 +190,23 @@ typedef struct {
     uint32_t dirtiness_rise_mp_per_hour;
     uint32_t dirtiness_rise_per_poop_mp_per_hour;
 
+    /* What counts as neglect. A need at or below neglect_need_mp, more than
+     * neglect_poop_count poops waiting, or dirtiness at or above
+     * neglect_dirtiness_mp -- any one of the three is enough.
+     *
+     * Three separate channels rather than one blended score, because the
+     * player has to be able to work out WHICH thing they are getting wrong,
+     * and a blend of "somewhat hungry and somewhat filthy" tells them
+     * nothing they can act on. */
+    kf_pet_millipercent neglect_need_mp;
+    kf_pet_millipercent neglect_dirtiness_mp;
+    uint8_t neglect_poop_count;
+
+    /* How much accumulated neglect turns into sickness. The accumulator
+     * falls again at the same rate while the creature is looked after, so
+     * this doubles as how long attentive care takes to cure it. */
+    uint32_t sickness_onset_seconds;
+
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
     uint32_t child_duration_seconds;
@@ -245,6 +262,27 @@ typedef struct {
      * decay direction of its own -- it only goes up, and only cleaning
      * brings it down. */
     kf_pet_millipercent dirtiness_mp;
+
+    /* Seconds of accumulated neglect. Rises while the creature is in a
+     * neglected condition and falls at the same rate while it is not -- so
+     * one press of every button does not wipe out a day of damage, and a
+     * creature that has been badly treated takes proportionally longer to
+     * nurse back.
+     *
+     * ONE accumulator drives all three states: illness at
+     * sickness_onset_seconds, death at sickness_death_seconds, and the
+     * escalating distress the screen shows between them. Three separate
+     * timers would have to be kept consistent with each other; this cannot
+     * disagree with itself. */
+    uint32_t neglect_seconds;
+
+    /* Whether the creature is currently ill. Stored rather than derived
+     * from neglect_seconds, because the thresholds are asymmetric on
+     * purpose: it falls ill at sickness_onset_seconds but only recovers at
+     * zero. That hysteresis is what stops a creature hovering at the
+     * threshold flickering in and out of illness every frame, and it
+     * cannot be recomputed from the accumulator alone. */
+    bool sick;
 
     /* The wall-clock time this state was last advanced to. Saved
      * alongside the needs (see kf_pet_save()) so a reload can compute
@@ -417,13 +455,17 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
  * misread rather than merely missing a field, and to version 5 with mess
  * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count`,
- * `seconds_until_next_poop` and `dirtiness_mp` were added. A save from an
- * earlier version is refused by kf_pet_load_and_advance()'s unpack() step
- * and falls back to a fresh pet, exactly the behaviour ADR 0015 already
- * established for any unrecognised version -- no migration code, an
- * explicit, accepted cost. */
+ * `seconds_until_next_poop` and `dirtiness_mp` were added, and to version 6
+ * with sickness (docs/superpowers/plans/2026-08-09-sickness-and-death.md):
+ * `neglect_seconds` and `sick` were added -- a version-5 save has no
+ * accumulated neglect to fall back to that would not silently un-sicken a
+ * creature that was ill at save time, so it is refused rather than guessed
+ * at. A save from an earlier version is refused by kf_pet_load_and_advance()'s
+ * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
+ * 0015 already established for any unrecognised version -- no migration
+ * code, an explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 83u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 88u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

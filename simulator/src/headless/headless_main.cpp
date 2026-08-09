@@ -1352,6 +1352,102 @@ int run_pet_dirtiness_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Sickness is a STATE, not a stat -- there is no sickness bar, and nothing
+ * the player presses is "the medicine button". It is what sustained neglect
+ * turns into, and the way out is the same care that would have prevented
+ * it. See the care-loop spec's section 7.
+ *
+ * Every sequence below uses at least two segments to reach illness, which
+ * is not padding: neglect is sampled at both ends of a segment and each end
+ * counts for half, so a single long segment that starts from a healthy
+ * creature nets exactly zero. One call to make things bad, then one that is
+ * bad at both ends. */
+int run_pet_sickness_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* Cared for once, then abandoned. The feed matters: an untouched
+     * creature is on the dust path and deliberately never sickens, so
+     * without it nothing below happens at all. */
+    kf_pet_state pet{};
+    kf_pet_init(&pet);
+    pet.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&pet, &config);
+    check(!pet.sick, "a fresh creature is not sick");
+    check(pet.neglect_seconds == 0u, "and has accumulated no neglect");
+
+    /* Four hours: healthy at the start, hungry and messy by the end. Half
+     * credited, half refunded -- nets zero, by design. */
+    apply_stage_segment_for_test(&pet, &config, 4u * 3600u);
+    check(pet.neglect_seconds == 0u,
+          "a stretch that only goes bad at the end nets no neglect");
+
+    /* Two more hours, bad at both ends this time. */
+    apply_stage_segment_for_test(&pet, &config, 2u * 3600u);
+    check(pet.neglect_seconds > 0u,
+          "neglect accumulates once things are already bad");
+    check(!pet.sick, "but two hours of it is not yet illness");
+
+    /* Past the onset threshold. */
+    apply_stage_segment_for_test(&pet, &config, config.sickness_onset_seconds);
+    check(pet.sick, "sustained neglect makes the creature sick");
+
+    /* One round of every button does not undo it. That is the whole point
+     * of curing through care rather than through a medicine action. */
+    kf_pet_feed(&pet, &config);
+    kf_pet_play(&pet);
+    kf_pet_rest(&pet);
+    kf_pet_clean(&pet);
+    check(pet.sick, "a single round of care does not cure it on the spot");
+
+    /* Sustained care does. Sixty ten-minute stretches of being properly
+     * looked after -- comfortably more than the accumulated neglect, since
+     * what is being checked is that recovery HAPPENS, not the exact rate. */
+    for (int i = 0; i < 60; ++i) {
+        kf_pet_feed(&pet, &config);
+        kf_pet_play(&pet);
+        kf_pet_rest(&pet);
+        kf_pet_clean(&pet);
+        apply_stage_segment_for_test(&pet, &config, 600u);
+    }
+    check(pet.neglect_seconds == 0u, "attentive care works the clock back down");
+    check(!pet.sick, "and the creature recovers");
+
+    /* Filth alone is enough, with every need full -- mess is a real neglect
+     * channel, not decoration on top of the three bars. */
+    kf_pet_state filthy{};
+    kf_pet_init(&filthy);
+    filthy.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&filthy, &config);
+    filthy.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+    filthy.poop_count = KF_PET_MAX_POOPS;
+    apply_stage_segment_for_test(&filthy, &config, 600u);
+    check(filthy.neglect_seconds > 0u,
+          "filth counts as neglect even with the needs untouched");
+
+    /* Never touched at all: the dust path, not the sick path. */
+    kf_pet_state untouched{};
+    kf_pet_init(&untouched);
+    untouched.stage = KF_PET_STAGE_CHILD;
+    apply_stage_segment_for_test(&untouched, &config, 4u * 3600u);
+    apply_stage_segment_for_test(&untouched, &config,
+                                  config.sickness_onset_seconds * 4u);
+    check(untouched.care_actions_taken == 0u, "still never touched");
+    check(untouched.neglect_seconds == 0u && !untouched.sick,
+          "a creature that has never known care does not sicken from its "
+          "absence -- it is on the dust path instead");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -2098,6 +2194,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_personality = false;
     bool verify_mess = false;
     bool verify_dirtiness = false;
+    bool verify_pet_sickness = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2140,6 +2237,8 @@ int main(int argc, char *argv[]) {
             verify_mess = true;
         } else if (std::strcmp(argv[i], "--verify-dirtiness") == 0) {
             verify_dirtiness = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-sickness") == 0) {
+            verify_pet_sickness = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2167,6 +2266,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-personality\n"
                         "kamiframe-headless --verify-mess\n"
                         "kamiframe-headless --verify-dirtiness\n"
+                        "kamiframe-headless --verify-pet-sickness\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2226,6 +2326,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_dirtiness) {
         return run_pet_dirtiness_check();
+    }
+
+    if (verify_pet_sickness) {
+        return run_pet_sickness_check();
     }
 
     if (verify_lua_pet) {

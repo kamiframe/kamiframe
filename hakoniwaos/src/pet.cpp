@@ -60,11 +60,16 @@ constexpr const char *TAG = "pet";
 /* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution),
  * to 3 with ADR 0023 (personality traits), to 4 with the evolution-tree
  * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
- * comment), and to 5 with mess (poop_count, seconds_until_next_poop and
- * dirtiness_mp added) -- kf_pet_deserialize() refuses to load anything
- * written by a different version rather than guessing at a layout that
- * changed, see unpack() below. */
-constexpr uint8_t kSaveVersion = 5;
+ * comment), to 5 with mess (poop_count, seconds_until_next_poop and
+ * dirtiness_mp added), and to 6 with sickness (neglect_seconds and sick
+ * added) -- a version-5 save has no notion of accumulated neglect at all,
+ * so there is no honest default to fill in for it (zero would silently
+ * un-sicken a creature that was ill the moment it was saved); refusing the
+ * load and falling back to a fresh pet is the same accepted cost the
+ * version-4/5 bumps already took, not a new one. kf_pet_deserialize()
+ * refuses to load anything written by a different version rather than
+ * guessing at a layout that changed, see unpack() below. */
+constexpr uint8_t kSaveVersion = 6;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -149,6 +154,24 @@ uint8_t select_branch(uint64_t care_integral_mp_seconds,
         band = branch_count - 1u; /* average_mp == MAX lands exactly on the top edge */
     }
     return static_cast<uint8_t>(band);
+}
+
+/* Whether the creature is in a neglected condition right now. A pure read
+ * of the state, deliberately: nothing is stored, so there is no second copy
+ * of "is it neglected" that can drift out of step with the fields it comes
+ * from. */
+bool is_neglected(const kf_pet_state *state, const kf_pet_config *config) {
+    return state->hunger_mp <= config->neglect_need_mp ||
+           state->happiness_mp <= config->neglect_need_mp ||
+           state->energy_mp <= config->neglect_need_mp ||
+           state->poop_count > config->neglect_poop_count ||
+           state->dirtiness_mp >= config->neglect_dirtiness_mp;
+}
+
+/* Adds `add` to a saturating uint32_t counter. */
+uint32_t saturating_add_u32(uint32_t value, uint32_t add) {
+    const uint64_t sum = static_cast<uint64_t>(value) + add;
+    return sum > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(sum);
 }
 
 /* Advances `state` past its current (already-complete) stage into the
@@ -284,6 +307,7 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
     const uint64_t hunger_before_mp = state->hunger_mp;
     const uint64_t happiness_before_mp = state->happiness_mp;
     const uint64_t energy_before_mp = state->energy_mp;
+    const bool neglected_before = is_neglected(state, config);
 
     const bool feeds_branch = stage_feeds_a_branch_choice(state->stage);
     uint64_t average_before_mp = 0u;
@@ -358,6 +382,48 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
 
     accumulate_personality(state, config, segment, hunger_before_mp,
                             happiness_before_mp, energy_before_mp);
+
+    /* Neglect, and the illness it turns into. Evaluated LAST in the
+     * segment, and sampled at BOTH ends of it.
+     *
+     * Both ends, because neither alone survives offline fast-forward: a
+     * week in a drawer begins with a healthy creature, so sampling only the
+     * start would call that week fine, and sampling only the end would call
+     * a fortnight that soured in its final hour a fortnight of neglect.
+     * Each end counting for half is the trapezoid rule -- two comparisons,
+     * no loop, and an error bounded by the segment rather than growing with
+     * it. A segment that starts healthy and ends badly therefore nets
+     * exactly zero, which is the correct reading of "half of it was fine".
+     *
+     * A creature that has never been cared for is exempt from all of it.
+     * The character bible's dust form is what total absence of interaction
+     * produces, and it takes a full childhood to reach; illness would kill
+     * that creature days before it got there. It is the creature that has
+     * known care and then lost it that sickens. */
+    if (state->care_actions_taken > 0u) {
+        const bool neglected_after = is_neglected(state, config);
+
+        uint32_t neglected_for = 0u;
+        if (neglected_before) {
+            neglected_for += segment / 2u;
+        }
+        if (neglected_after) {
+            neglected_for += segment - (segment / 2u);
+        }
+        const uint32_t cared_for = segment - neglected_for;
+
+        state->neglect_seconds =
+            saturating_add_u32(state->neglect_seconds, neglected_for);
+        state->neglect_seconds = state->neglect_seconds > cared_for
+                                      ? state->neglect_seconds - cared_for
+                                      : 0u;
+
+        if (state->neglect_seconds >= config->sickness_onset_seconds) {
+            state->sick = true;
+        } else if (state->neglect_seconds == 0u) {
+            state->sick = false;
+        }
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -424,6 +490,8 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u8(out, off, state->poop_count);
     put_u32(out, off, state->seconds_until_next_poop);
     put_u32(out, off, state->dirtiness_mp);
+    put_u32(out, off, state->neglect_seconds);
+    put_u8(out, off, state->sick ? 1u : 0u);
     put_u8(out, off, state->last_advanced.valid ? 1u : 0u);
     put_i64(out, off, state->last_advanced.epoch_seconds);
     put_u8(out, off, static_cast<uint8_t>(state->stage));
@@ -473,6 +541,8 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->poop_count = get_u8(in, off);
     state->seconds_until_next_poop = get_u32(in, off);
     state->dirtiness_mp = get_u32(in, off);
+    state->neglect_seconds = get_u32(in, off);
+    state->sick = get_u8(in, off) != 0u;
     state->last_advanced.valid = get_u8(in, off) != 0u;
     state->last_advanced.epoch_seconds = get_i64(in, off);
     const uint8_t stage_byte = get_u8(in, off);
@@ -541,6 +611,20 @@ kf_pet_config kf_pet_default_config(void) {
     c.dirtiness_rise_mp_per_hour = 4000u;
     c.dirtiness_rise_per_poop_mp_per_hour = 2500u;
 
+    /* A need at 10% or below, six poops down, or dirtiness past the stink
+     * threshold. The dirtiness figure is deliberately the same place the
+     * stink lines appear (KF_PET_DIRTY_STINK_MP): what the player can see
+     * is what is hurting the creature, rather than an invisible second
+     * threshold they would have to infer. */
+    c.neglect_need_mp = 10000u;
+    c.neglect_dirtiness_mp = KF_PET_DIRTY_STINK_MP;
+    c.neglect_poop_count = 6u;
+
+    /* Three hours of neglect to fall ill. Tuning number: long enough that
+     * an afternoon out cannot do it from full bars, short enough that a
+     * neglected creature shows it the same day. */
+    c.sickness_onset_seconds = 3u * 3600u;
+
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers
      * later, just make it configurable," so these are a starting point
@@ -565,6 +649,8 @@ void kf_pet_init(kf_pet_state *state) {
     state->poop_count = 0u;
     state->seconds_until_next_poop = 0u;  /* set on first advance */
     state->dirtiness_mp = 0u;
+    state->neglect_seconds = 0u;
+    state->sick = false;
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
     state->stage = KF_PET_STAGE_EGG;

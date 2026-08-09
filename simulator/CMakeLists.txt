@@ -306,6 +306,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_dirtiness_check
              COMMAND kamiframe-headless --verify-dirtiness)
 
+    # Proves sickness (the care-loop spec's section 7): sustained neglect
+    # (a need at or below neglect_need_mp, too many poops waiting, or
+    # dirtiness past the stink threshold) accumulates into neglect_seconds,
+    # crossing sickness_onset_seconds sets sick, and only returning to zero
+    # clears it -- a single round of care does not cure it on the spot.
+    # A creature that has never received a single care action is exempt
+    # (the dust path, not the sick path). See headless_main.cpp's
+    # run_pet_sickness_check().
+    add_test(NAME pet_sickness_check
+             COMMAND kamiframe-headless --verify-pet-sickness)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
