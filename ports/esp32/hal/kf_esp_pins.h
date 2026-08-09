@@ -64,9 +64,17 @@ extern "C" {
 #endif
 
 /* -------------------------------------------------------------------------
- * Display: ST7789 over SPI (SPI2_HOST). No MISO -- this panel is write-only,
- * and leaving MISO unset (-1) tells the SPI driver not to reserve a pin for
- * it. See esp_display.cpp.
+ * Display: ST7789 or ILI9341 over SPI (SPI2_HOST).
+ *
+ * "No MISO -- this panel is write-only" lived here through Phase 1b and was
+ * true of exactly one of the two panels this project supports. The
+ * Waveshare ST7789 genuinely has no data-out pin. The HiLetgo ILI9341 that
+ * is actually on the bench (see below) is not write-only at all -- it has a
+ * real SDO pin, unused until KFDBG SCANLINE (2026-08-08) needed it to
+ * investigate whether beam-racing is possible on this panel, at which point
+ * it got wired to GPIO6. See KF_ESP_PIN_LCD_MISO below for the pin itself
+ * and the collision it creates, and esp_display.cpp's kf_display_init() for
+ * why the bus only reserves it when KF_DBG_BRIDGE_ENABLE is on.
  *
  * These wires are the same for every 240x320 SPI module this project
  * supports -- what differs between controllers is the init sequence,
@@ -102,6 +110,26 @@ extern "C" {
 #define KF_ESP_PIN_LCD_DC   GPIO_NUM_7
 #define KF_ESP_PIN_LCD_RST  GPIO_NUM_8
 #define KF_ESP_PIN_LCD_BL   GPIO_NUM_6
+
+/* SDO(MISO), wired 2026-08-08 for the KFDBG SCANLINE diagnostic (see
+ * ports/esp32/main/kf_dbg_bridge.cpp and esp_display.cpp's kf_display_init())
+ * -- confirmed against the manufacturer's schematic that this is the module's
+ * only data-out line; there is no separate tearing-effect (TE) pin on this
+ * board's 18-pin flex to wire instead.
+ *
+ * KF_ESP_PIN_LCD_MISO IS KF_ESP_PIN_LCD_BL, above. Same GPIO, deliberately
+ * defined twice with different names, and that collision is real on paper.
+ * It is harmless on THIS board only because the module's own LED pin is
+ * wired straight to 3V3 -- see the display block's header comment -- so
+ * nothing today actually drives GPIO6 through the backlight path; esp_
+ * display.cpp's kf_display_init() knows this and skips configuring GPIO6 as
+ * a backlight output whenever KF_DBG_BRIDGE_ENABLE has claimed it as MISO,
+ * specifically so the two never fight over the pin electrically. The day
+ * real GPIO or PWM backlight control gets wired up for real, one of these
+ * two names has to move to a different free pin FIRST -- there isn't one
+ * spare on this layout (see this file's own "19 of 23" accounting above),
+ * which is itself worth knowing before that day arrives. */
+#define KF_ESP_PIN_LCD_MISO GPIO_NUM_6
 
 /* -------------------------------------------------------------------------
  * Buttons. Active-low: each button ties its GPIO to GND when pressed, and

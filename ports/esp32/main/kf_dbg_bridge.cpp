@@ -5,8 +5,21 @@
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
  * tasks, the KFDBG command parser, and the command handlers -- PING, SHOT,
- * STATE, BTN, BTNHOLD, and the time-control trio ADVANCE/RESET/MULT (see
- * "Time control" below).
+ * STATE, SCANLINE, BTN, BTNHOLD, and the time-control trio ADVANCE/RESET/
+ * MULT (see "Time control" below).
+ *
+ * SCANLINE: samples the ILI9341's Get_Scanline register (command 0x45) 64
+ * times in a row over SPI and reports the pattern, so a human can judge
+ * whether beam-racing -- delaying a write until the panel's own scan-out has
+ * passed the rectangle about to be touched -- is worth building on this
+ * module. This board's 18-pin display flex has no tearing-effect (TE) pin,
+ * confirmed against the manufacturer's schematic, so polling this register
+ * is the only remaining way to find out. handle_scanline() below is
+ * measurement only -- it does not wait for, or act on, a scanline value
+ * anywhere; see kf_esp_display_diag.h for the one raw SPI primitive it
+ * calls, and esp_display.cpp's kf_display_init() for why the read happens
+ * at the same SPI clock the display's own writes use rather than a
+ * separate, slower one.
  *
  * Time control: an egg on this codebase's default config lasts 1 hour and
  * does not decay at all, and post-hatch decay is hours-to-days per need
@@ -51,6 +64,7 @@
 #if KF_DBG_BRIDGE_ENABLE
 
 #include "kf_dbg_codec.h"
+#include "kf_esp_display_diag.h"
 #include "kf_panel_profile.h"
 #include "kf_pet_session.h"
 
@@ -405,6 +419,209 @@ void handle_state() {
                           static_cast<size_t>(n));
 }
 
+/* KFDBG SCANLINE -- see this file's own header comment for what this is
+ * investigating and why. Every allocation here is PSRAM, not stack, same
+ * discipline handle_shot() already uses for its own bulk buffer: this runs
+ * on the main frame-loop thread, sharing its one ~3.5KB stack
+ * (CONFIG_ESP_MAIN_TASK_STACK_SIZE) with kf_app_frame(), LVGL and Lua, and
+ * 64 samples plus a JSON reply is enough bytes that putting it there rather
+ * than on the heap would be the kind of thing that works in testing and
+ * overflows the day something else on that stack gets a little deeper. */
+constexpr int kScanlineSampleCount = 64;
+constexpr size_t kScanlineReplyBytes = 3; /* 1 assumed dummy byte + 2 data bytes -- see kf_esp_display_diag.h */
+constexpr int kScanlineReportStride = 5;  /* every 5th sample reported, not all 64 -- representative, keeps the reply small */
+
+struct ScanlineSample {
+    uint16_t value;   /* meaningless when ok is false */
+    uint32_t read_us;
+    bool ok;
+};
+
+void handle_scanline() {
+    ScanlineSample *samples = static_cast<ScanlineSample *>(
+        heap_caps_malloc(sizeof(ScanlineSample) * kScanlineSampleCount, MALLOC_CAP_SPIRAM));
+    if (samples == nullptr) {
+        KF_LOGE(TAG, "SCANLINE: out of PSRAM for %d samples", kScanlineSampleCount);
+        reply_err("KFDBG SCANLINE", "out of memory sampling the scanline register");
+        return;
+    }
+
+    int ok_count = 0;
+    uint64_t total_us = 0;
+    uint32_t min_us = 0;
+    uint32_t max_us = 0;
+    uint8_t first_raw[kScanlineReplyBytes] = {0, 0, 0};
+    bool have_first_raw = false;
+
+    for (int i = 0; i < kScanlineSampleCount; ++i) {
+        uint8_t raw[kScanlineReplyBytes];
+        const uint64_t t0 = kf_time_mono_us();
+        const bool got = kf_esp_display_diag_read_scanline(raw, kScanlineReplyBytes);
+        const uint64_t t1 = kf_time_mono_us();
+        const uint32_t us = static_cast<uint32_t>(t1 - t0);
+
+        samples[i].ok = got;
+        samples[i].read_us = us;
+        total_us += us;
+        if (i == 0 || us < min_us) {
+            min_us = us;
+        }
+        if (i == 0 || us > max_us) {
+            max_us = us;
+        }
+
+        if (got) {
+            if (!have_first_raw) {
+                first_raw[0] = raw[0];
+                first_raw[1] = raw[1];
+                first_raw[2] = raw[2];
+                have_first_raw = true;
+            }
+            ok_count++;
+            /* Bytes [1] and [2], big-endian, masked to 9 bits (0..479, a
+             * generous superset of this 320-line panel's real range) --
+             * byte [0] is treated as the ILI9341 SPI read protocol's
+             * customary dummy byte. UNVERIFIED without hardware; see
+             * kf_esp_display_diag.h's own comment. first_raw_hex in the
+             * reply below is exactly so a human can sanity-check this
+             * slicing against a real capture rather than trust it blind. */
+            samples[i].value = static_cast<uint16_t>(
+                ((static_cast<uint16_t>(raw[1]) << 8) | raw[2]) & 0x01FFu);
+        } else {
+            samples[i].value = 0;
+        }
+    }
+
+    uint16_t value_min = 0;
+    uint16_t value_max = 0;
+    bool have_range = false;
+    int distinct_count = 0;
+    int increases = 0;
+    int decreases = 0;
+    bool have_prev = false;
+    uint16_t prev = 0;
+
+    for (int i = 0; i < kScanlineSampleCount; ++i) {
+        if (!samples[i].ok) {
+            continue;
+        }
+        const uint16_t v = samples[i].value;
+
+        if (!have_range) {
+            value_min = v;
+            value_max = v;
+            have_range = true;
+        } else {
+            if (v < value_min) value_min = v;
+            if (v > value_max) value_max = v;
+        }
+
+        bool seen_before = false;
+        for (int j = 0; j < i; ++j) {
+            if (samples[j].ok && samples[j].value == v) {
+                seen_before = true;
+                break;
+            }
+        }
+        if (!seen_before) {
+            distinct_count++;
+        }
+
+        if (have_prev) {
+            if (v > prev) {
+                increases++;
+            } else if (v < prev) {
+                decreases++;
+            }
+        }
+        prev = v;
+        have_prev = true;
+    }
+
+    const uint32_t avg_us = static_cast<uint32_t>(total_us / kScanlineSampleCount);
+
+    /* The representative "sample_values" array: every Nth sample, -1 for
+     * any that failed, so the array's element count stays predictable
+     * (kScanlineSampleCount / kScanlineReportStride, rounded up) regardless
+     * of how many reads failed. Built into its own PSRAM buffer first,
+     * then dropped into the main JSON below as one %s -- keeps the JSON
+     * build a single readable snprintf, the same style every other
+     * handler in this file uses. */
+    constexpr size_t kSampleArrayCap = 256;
+    char *sample_array = static_cast<char *>(heap_caps_malloc(kSampleArrayCap, MALLOC_CAP_SPIRAM));
+    if (sample_array == nullptr) {
+        heap_caps_free(samples);
+        KF_LOGE(TAG, "SCANLINE: out of PSRAM for the sample array");
+        reply_err("KFDBG SCANLINE", "out of memory formatting result");
+        return;
+    }
+    size_t sample_off = 0;
+    sample_array[0] = '\0';
+    for (int i = 0; i < kScanlineSampleCount; i += kScanlineReportStride) {
+        char item[16];
+        const int item_n = samples[i].ok
+            ? std::snprintf(item, sizeof item, "%s%u", sample_off == 0 ? "" : ",",
+                             static_cast<unsigned>(samples[i].value))
+            : std::snprintf(item, sizeof item, "%s-1", sample_off == 0 ? "" : ",");
+        if (item_n > 0 && sample_off + static_cast<size_t>(item_n) < kSampleArrayCap) {
+            std::memcpy(sample_array + sample_off, item, static_cast<size_t>(item_n));
+            sample_off += static_cast<size_t>(item_n);
+            sample_array[sample_off] = '\0';
+        }
+    }
+
+    char first_raw_hex[8];
+    std::snprintf(first_raw_hex, sizeof first_raw_hex, "%02x%02x%02x", first_raw[0],
+                  first_raw[1], first_raw[2]);
+
+    constexpr size_t kJsonCap = 1024;
+    char *json = static_cast<char *>(heap_caps_malloc(kJsonCap, MALLOC_CAP_SPIRAM));
+    if (json == nullptr) {
+        heap_caps_free(sample_array);
+        heap_caps_free(samples);
+        KF_LOGE(TAG, "SCANLINE: out of PSRAM for the JSON reply");
+        reply_err("KFDBG SCANLINE", "out of memory formatting result");
+        return;
+    }
+
+    /* changed_between_reads: distinct_count > 1 among the OK samples --
+     * exactly one distinct value (or zero, if every read failed) means the
+     * register never budged across the whole run, which is what "reads are
+     * not working" looks like from here (see this command's own doc).
+     * value_min/value_max/... are only meaningful when ok > 0; -1 signals
+     * that plainly rather than reporting a misleading 0. */
+    const int n = std::snprintf(
+        json, kJsonCap,
+        "{\"cmd_hex\":\"0x%02x\",\"read_hz\":%lu,\"reply_bytes\":%u,"
+        "\"dummy_bytes_assumed\":1,\"samples\":%d,\"ok\":%d,\"failed\":%d,"
+        "\"first_raw_hex\":\"%s\",\"sample_stride\":%d,\"sample_values\":[%s],"
+        "\"value_min\":%d,\"value_max\":%d,\"distinct_values\":%d,"
+        "\"changed_between_reads\":%s,\"increases\":%d,\"decreases\":%d,"
+        "\"avg_read_us\":%lu,\"min_read_us\":%lu,\"max_read_us\":%lu}",
+        static_cast<unsigned>(KF_ESP_DISPLAY_DIAG_CMD_GET_SCANLINE),
+        static_cast<unsigned long>(kf_esp_display_diag_read_hz()),
+        static_cast<unsigned>(kScanlineReplyBytes), kScanlineSampleCount, ok_count,
+        kScanlineSampleCount - ok_count, first_raw_hex, kScanlineReportStride,
+        sample_array, have_range ? static_cast<int>(value_min) : -1,
+        have_range ? static_cast<int>(value_max) : -1, distinct_count,
+        (distinct_count > 1) ? "true" : "false", increases, decreases,
+        static_cast<unsigned long>(avg_us), static_cast<unsigned long>(min_us),
+        static_cast<unsigned long>(max_us));
+
+    heap_caps_free(sample_array);
+    heap_caps_free(samples);
+
+    if (n <= 0 || static_cast<size_t>(n) >= kJsonCap) {
+        KF_LOGE(TAG, "SCANLINE: JSON build failed or truncated (n=%d, cap=%zu)", n, kJsonCap);
+        heap_caps_free(json);
+        reply_err("KFDBG SCANLINE", "internal error formatting result");
+        return;
+    }
+
+    kf_dbg_enqueue_reply("json", reinterpret_cast<uint8_t *>(json), static_cast<size_t>(n));
+    heap_caps_free(json);
+}
+
 void handle_btn(uint32_t mask) {
     char content[64];
     int n;
@@ -543,6 +760,8 @@ void process_command_line(const char *line) {
         handle_shot();
     } else if (std::strcmp(tok1, "STATE") == 0) {
         handle_state();
+    } else if (std::strcmp(tok1, "SCANLINE") == 0) {
+        handle_scanline();
     } else if (std::strcmp(tok1, "BTN") == 0) {
         char tok2[16];
         uint32_t mask = 0;

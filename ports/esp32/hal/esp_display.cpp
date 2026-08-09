@@ -45,6 +45,8 @@
 
 #include "kf/budget.h"
 #include "kf/hal/log.h"
+#include "kf_dbg_bridge.h" /* KF_DBG_BRIDGE_ENABLE -- gates the MISO/SCANLINE pieces below */
+#include "kf_esp_display_diag.h"
 #include "kf_esp_pins.h"
 #include "kf_panel_profile.h"
 
@@ -141,12 +143,47 @@ void send_init_table(const kf_panel_profile &panel) {
 kf_result kf_display_init(void) {
     KF_LOGI(TAG, "panel profile: %s", kPanel.name);
 
-    /* No MISO: these panels are write-only, and leaving it at -1 tells the
-     * SPI driver not to reserve a pin. max_transfer_sz covers a full frame,
+    /* MISO: reserved on the bus only when the debug bridge is compiled in.
+     *
+     * "These panels are write-only" was true of the Waveshare ST7789 this
+     * comment was first written for -- it genuinely has no data-out pin.
+     * The ILI9341 actually driving this board is not write-only: it has a
+     * real SDO, wired to GPIO6 for the KFDBG SCANLINE diagnostic (see
+     * kf_esp_pins.h's KF_ESP_PIN_LCD_MISO comment for the GPIO6/backlight
+     * collision that wire creates, and kf_dbg_bridge.cpp for what SCANLINE
+     * actually does with it). Reserving the pin here is what makes
+     * esp_lcd_panel_io_rx_param() usable at all -- SPI cannot read without a
+     * MISO pin in the bus config, full stop.
+     *
+     * Left at -1 whenever KF_DBG_BRIDGE_ENABLE is 0, which reproduces this
+     * file's exact pre-diagnostic behaviour: no pin reserved, no side
+     * effect on anything.
+     *
+     * When it IS reserved, there is a real cost beyond "one more pin is
+     * spoken for", and it is worth being honest about rather than burying
+     * in a diagnostic-only comment: GPIO6 is not this bus's native IOMUX
+     * MISO pin (that is GPIO13 -- already spent on I2C, see kf_esp_pins.h),
+     * and ESP-IDF's spi_bus_initialize() only grants the IOMUX fast path
+     * when EVERY configured pin -- MOSI, MISO, SCLK, CS -- matches the
+     * peripheral's native set (confirmed by reading spicommon_bus_
+     * initialize_io()'s bus_uses_iomux_pins() in ESP-IDF's spi_common.c,
+     * not assumed). A non-native MISO therefore drops MOSI, SCLK and CS
+     * onto the GPIO matrix too, not just MISO -- for the WHOLE bus, on
+     * every KF_DBG_BRIDGE_ENABLE=1 build, not only while a SCANLINE command
+     * is actually running. docs/hardware-bringup.md's measured 40MHz write
+     * ceiling was measured on the IOMUX path (CLK12/MOSI11/CS10 are exactly
+     * SPI2's native pins) and has never been re-measured on the GPIO-matrix
+     * path this flag now forces -- worth re-running that clock sweep once
+     * real hardware with this flag on is back on the bench, rather than
+     * assuming 40MHz still holds. max_transfer_sz covers a full frame,
      * since the no-swap path issues exactly one draw_bitmap() per frame. */
     spi_bus_config_t bus_config{};
     bus_config.mosi_io_num = KF_ESP_PIN_LCD_MOSI;
+#if KF_DBG_BRIDGE_ENABLE
+    bus_config.miso_io_num = KF_ESP_PIN_LCD_MISO;
+#else
     bus_config.miso_io_num = -1;
+#endif
     bus_config.sclk_io_num = KF_ESP_PIN_LCD_SCLK;
     bus_config.quadwp_io_num = -1;
     bus_config.quadhd_io_num = -1;
@@ -227,7 +264,22 @@ kf_result kf_display_init(void) {
     }
 
     /* Backlight GPIO, plain push-pull output, defaults to off until the
-     * caller explicitly asks for one. */
+     * caller explicitly asks for one.
+     *
+     * Skipped entirely when KF_DBG_BRIDGE_ENABLE has just claimed this same
+     * pin (GPIO6) as the display's MISO, above -- see kf_esp_pins.h's
+     * KF_ESP_PIN_LCD_MISO comment for the collision. Configuring GPIO6 as a
+     * push-pull output here, while the SPI peripheral's input matrix is
+     * also listening on it for KFDBG SCANLINE's reads, would put the
+     * ESP32's own output driver in direct electrical contention with the
+     * panel's SDO pin -- not a theoretical concern, a dead short between two
+     * active drivers the moment they disagree. Skipping it costs nothing
+     * real: this board's LED pin is wired straight to 3V3 (see
+     * kf_esp_pins.h), so this GPIO has never actually controlled the
+     * backlight in hardware, and kf_display_set_backlight() degrades to a
+     * documented no-op below in this configuration rather than fighting the
+     * read line. */
+#if !KF_DBG_BRIDGE_ENABLE
     gpio_config_t bl_config{};
     bl_config.pin_bit_mask = (1ULL << KF_ESP_PIN_LCD_BL);
     bl_config.mode = GPIO_MODE_OUTPUT;
@@ -236,6 +288,7 @@ kf_result kf_display_init(void) {
     bl_config.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&bl_config);
     gpio_set_level(KF_ESP_PIN_LCD_BL, 0);
+#endif
 
     KF_LOGI(TAG, "%s up: %dx%d, %lu Hz SPI, RGB565, %s framebuffer",
             kPanel.name, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT,
@@ -358,7 +411,16 @@ kf_result kf_display_present(const kf_color *framebuffer,
 }
 
 kf_result kf_display_set_backlight(uint8_t level) {
-    /* On/off only -- see this file's header comment. */
+    /* On/off only -- see this file's header comment.
+     *
+     * A genuine no-op whenever KF_DBG_BRIDGE_ENABLE has claimed GPIO6 as
+     * MISO instead (see kf_display_init()'s backlight comment): the pin is
+     * never configured as a GPIO output in that build, so this still
+     * compiles and still returns KF_OK, but the level it writes has no
+     * electrical effect. Not a bug -- this GPIO has never controlled the
+     * real backlight on the hardware in hand regardless (the module's LED
+     * pin is tied straight to 3V3), so there is nothing this call could
+     * have done here that it is now failing to do. */
     gpio_set_level(KF_ESP_PIN_LCD_BL, level > 0 ? 1 : 0);
     return KF_OK;
 }
@@ -383,3 +445,56 @@ void kf_display_shutdown(void) {
         g_spi_bus_initialized = false;
     }
 }
+
+#if KF_DBG_BRIDGE_ENABLE
+
+/* KFDBG SCANLINE's one raw primitive -- see kf_esp_display_diag.h for the
+ * full contract and kf_dbg_bridge.cpp's handle_scanline() for the sampling
+ * loop and statistics built on top of it.
+ *
+ * Reuses g_io, the SAME esp_lcd_panel_io_handle_t kf_display_present() sends
+ * frames through, at the SAME clock (KF_DISPLAY_SPI_HZ) writes use -- not a
+ * separate, slower device. That was the plan going in, and it was dropped
+ * for a concrete, verified reason rather than time pressure: esp_lcd hangs
+ * every transaction (tx_param, tx_color, and rx_param alike) off ONE
+ * spi_device_handle_t per esp_lcd_panel_io_handle_t, with the clock fixed at
+ * creation (esp_lcd_panel_io_spi_config_t::pclk_hz) -- there is no
+ * per-transaction clock override anywhere in esp_lcd_panel_io_spi.c. Getting
+ * a genuinely slower read clock therefore means a SECOND SPI device, and a
+ * second device sharing this display's CS pin (GPIO10, SPI2's own IOMUX CS0
+ * pin) is not safe on ESP-IDF's driver: spi_bus_add_device() assigns each
+ * device its own cs_id and calls spicommon_cs_initialize(), which -- for
+ * any device that is not cs_id 0 on the IOMUX pin -- calls
+ * gpio_matrix_output(cs_io_num, spics_out[cs_id], ...), REASSIGNING which
+ * signal drives that physical pin. Add a temporary slow-clock device for a
+ * SCANLINE run and its gpio_matrix_output() call steals GPIO10's routing
+ * from the write device's own CS0 signal; remove it afterward and
+ * spicommon_cs_free_io() calls gpio_output_disable() on the pin, leaving
+ * NEITHER device's CS connected. Either way the display's write path breaks
+ * until g_io (and, since g_panel holds a pointer into it, g_panel too) is
+ * torn down and rebuilt from scratch -- confirmed by reading spi_common.c's
+ * spicommon_cs_initialize()/spicommon_cs_free_io(), not assumed. That is
+ * "forcing it" in exactly the sense the task that added this diagnostic
+ * asked not to: a real fix exists (delete and recreate g_io and g_panel,
+ * replaying the whole init table, for the duration of a read burst) but it
+ * is untested with no hardware on hand to test it against, and a broken
+ * write path is a far worse failure mode for a build that is supposed to
+ * keep rendering exactly as before. Reading at the write clock is the safe
+ * choice; if the numbers KFDBG SCANLINE reports look like garbage, that is
+ * itself the finding -- see kf_esp_display_diag_read_hz()'s own comment. */
+bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
+    if (g_io == nullptr) {
+        return false;
+    }
+    const esp_err_t err = esp_lcd_panel_io_rx_param(
+        g_io, KF_ESP_DISPLAY_DIAG_CMD_GET_SCANLINE, out_bytes, byte_count);
+    return err == ESP_OK;
+}
+
+uint32_t kf_esp_display_diag_read_hz(void) {
+    /* Exactly the write clock -- see kf_esp_display_diag_read_scanline()'s
+     * own comment for why a separate, slower one was not built. */
+    return KF_DISPLAY_SPI_HZ;
+}
+
+#endif /* KF_DBG_BRIDGE_ENABLE */

@@ -603,6 +603,44 @@ def cmd_mult(link, args):
           f"{payload.decode('utf-8', 'replace')}")
 
 
+def cmd_scanline(link, args):
+    """Ask the panel where its scan currently is, 64 times.
+
+    Answers one question: can this display tell us when it is safe to write?
+    It has no TE pin, so polling Get_scanline (0x45) is the only candidate,
+    and nobody knows whether this module answers reads at all.
+    """
+    payload = _expect(link, "KFDBG SCANLINE", "json", timeout=15.0)
+    text = payload.decode("utf-8", "replace")
+    if args.json:
+        print(text)
+        return
+    try:
+        d = json.loads(text)
+    except ValueError:
+        print(text)
+        return
+    for k in sorted(d):
+        print(f"  {k}: {d[k]}")
+    distinct = d.get("distinct_values", 0)
+    inc, dec = d.get("increases", 0), d.get("decreases", 0)
+    print()
+    if d.get("ok", 0) == 0:
+        print("VERDICT: the panel did not answer a single read. Beam-racing is "
+              "not possible on this module -- either SDO is not wired through, "
+              "or it does not respond at this SPI clock.")
+    elif distinct <= 1:
+        print("VERDICT: reads succeeded but the value never changed. That is a "
+              "stuck register, not a scan counter -- not usable.")
+    elif inc > dec * 2:
+        print("VERDICT: looks like a real scan counter (it advances and wraps). "
+              "Beam-racing may be viable -- the remaining question is whether "
+              "avg_read_us is cheap enough to poll within a frame.")
+    else:
+        print("VERDICT: values change but do not advance consistently. That "
+              "reads as noise rather than a counter -- not usable.")
+
+
 def cmd_watch(link, args):
     print("watching state, Ctrl-C to stop", file=sys.stderr)
     try:
@@ -715,6 +753,12 @@ def build_parser():
     mult.add_argument("factor", type=int,
                        help="1 is normal speed, 256 is the fastest")
 
+    scanline = sub.add_parser("scanline", parents=[common],
+                               help="probe whether the panel can report its "
+                                    "scan position (beam-racing feasibility)")
+    scanline.add_argument("--json", action="store_true",
+                           help="print the raw JSON instead of a summary")
+
     watch = sub.add_parser("watch", parents=[common],
                             help="print device state repeatedly")
     watch.add_argument("--interval", type=float, default=1.0,
@@ -742,6 +786,8 @@ def main(argv=None):
                 cmd_reset(link, args)
             elif args.command == "mult":
                 cmd_mult(link, args)
+            elif args.command == "scanline":
+                cmd_scanline(link, args)
             elif args.command == "watch":
                 cmd_watch(link, args)
     except KfDebugError as e:
