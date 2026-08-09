@@ -1346,8 +1346,23 @@ int run_pet_dirtiness_check(void) {
     check(KF_PET_DIRTY_FLIES_MP < KF_PET_DIRTY_STINK_MP,
           "flies show up before stink lines");
 
-    /* Cleaning resets it. */
-    kf_pet_clean(&messy, &config, 0u);
+    /* Cleaning washes the creature, not just the floor.
+     *
+     * Explicitly the variation this creature LIKES, because how thoroughly
+     * a clean works now depends on that (see kf_pet_clean()) and this
+     * creature's base trait was rolled at random. Variation 0 would make
+     * this check pass or fail on the dice rather than on the behaviour it
+     * is about, which is a worse kind of failure than a loud one. What a
+     * disliked clean leaves behind is checked in the care-variation check,
+     * where it is the actual subject. */
+    uint8_t liked_clean = 0u;
+    for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+        if (kf_pet_reaction_to(messy.base_trait, KF_PET_CARE_CLEAN, v) ==
+            KF_PET_REACTION_LIKED) {
+            liked_clean = v;
+        }
+    }
+    kf_pet_clean(&messy, &config, liked_clean);
     check(messy.dirtiness_mp == 0u, "cleaning also washes the creature");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
@@ -1758,7 +1773,47 @@ int run_pet_care_variation_check(void) {
     check(pet.last_care_action == KF_PET_CARE_REST, "resting records itself");
     kf_pet_clean(&pet, &config, 0u);
     check(pet.last_care_action == KF_PET_CARE_CLEAN, "cleaning records itself");
-    check(pet.poop_count == 0u, "and still does its actual job");
+    check(pet.poop_count < 3u,
+          "and still does its actual job -- at least some of the mess goes "
+          "whatever this creature thinks of how it was done");
+
+    /* How much of it goes is what preference buys, since cleaning has no
+     * bar to raise. Walk every trait: the favourite way of being cleaned
+     * finishes the job, and the disliked one visibly does not. */
+    for (uint8_t trait = 0u; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
+        uint8_t liked = 0u, disliked = 0u;
+        for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+            if (kf_pet_reaction_to(trait, KF_PET_CARE_CLEAN, v) ==
+                KF_PET_REACTION_LIKED) {
+                liked = v;
+            }
+            if (kf_pet_reaction_to(trait, KF_PET_CARE_CLEAN, v) ==
+                KF_PET_REACTION_DISLIKED) {
+                disliked = v;
+            }
+        }
+
+        kf_pet_state bathed{};
+        kf_pet_init(&bathed);
+        bathed.base_trait = trait;
+        bathed.stage = KF_PET_STAGE_CHILD;
+        bathed.poop_count = KF_PET_MAX_POOPS;
+        bathed.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+
+        kf_pet_state scrubbed_wrong = bathed;
+
+        kf_pet_clean(&bathed, &config, liked);
+        kf_pet_clean(&scrubbed_wrong, &config, disliked);
+
+        check(bathed.poop_count == 0u && bathed.dirtiness_mp == 0u,
+              "the way this creature likes to be cleaned finishes the job");
+        check(scrubbed_wrong.poop_count > 0u &&
+                  scrubbed_wrong.dirtiness_mp > 0u,
+              "the way it does not leaves mess behind, visibly");
+        check(scrubbed_wrong.poop_count < KF_PET_MAX_POOPS,
+              "but never leaves everything -- a button that appears to do "
+              "nothing reads as broken, not as a bad choice");
+    }
 
     /* Nonsense variation is treated as neutral rather than crashing or
      * silently becoming a favourite. */
@@ -2386,15 +2441,25 @@ int run_lua_creature_check() {
      * care action's boost now depends on how this session's (randomly
      * rolled) base_trait feels about variation 0 of that action (see
      * kf/pet.cpp's care_boost_liked_mp/neutral_mp/disliked_mp and the
-     * care-variations plan) -- calibrated so even the worst case, disliked
-     * at 10000mp, still exceeds a single hour's decay. Coming from stage
-     * 1's genuine rock bottom, the worst case takes 10 calls per need to
-     * exactly reach max (10 * 10000 == KF_PET_MILLIPERCENT_MAX); this loops
-     * that many times regardless of which variation this trait happens to
-     * like, since kf_pet_feed()/play()/rest() clamp at max regardless, so
-     * extra calls past whatever the actual boost turns out to be are a
-     * harmless margin, not a source of drift. */
-    for (int i = 0; i < 10; ++i) {
+     * care-variations plan). How many calls that takes therefore depends on
+     * a trait rolled at random, so the count is DERIVED from the smallest
+     * boost the config allows rather than written in: enough calls that
+     * even a creature that dislikes variation 0 of everything reaches max.
+     *
+     * Deriving it matters more than it looks. The obvious version -- work
+     * out that ten calls of the disliked boost happen to land exactly on
+     * KF_PET_MILLIPERCENT_MAX and hard-code ten -- is correct today and
+     * silently wrong the first time anyone tunes care_boost_disliked_mp
+     * down, which is a number explicitly marked as being for living with.
+     * Extra calls are free: the care actions clamp at max. */
+    const kf_pet_config care_config = kf_pet_default_config();
+    const kf_pet_millipercent smallest_boost =
+        care_config.care_boost_disliked_mp > 0u
+            ? care_config.care_boost_disliked_mp
+            : KF_PET_MILLIPERCENT_MAX;
+    const int calls_to_fill = static_cast<int>(
+        (KF_PET_MILLIPERCENT_MAX + smallest_boost - 1u) / smallest_boost);
+    for (int i = 0; i < calls_to_fill; ++i) {
         kf_pet_session_feed(0u);
         kf_pet_session_play(0u);
         kf_pet_session_rest(0u);

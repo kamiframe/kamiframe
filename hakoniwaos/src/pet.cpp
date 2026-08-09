@@ -1046,13 +1046,41 @@ void kf_pet_clean(kf_pet_state *state, const kf_pet_config *config,
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
-    /* Cleaning has no bar of its own to raise -- the boost is still
-     * resolved (and the reaction still recorded) so a creature can like or
-     * dislike how it was bathed just as much as how it was fed, but there
-     * is nothing here for the number itself to do. */
-    (void)apply_care_reaction(state, config, KF_PET_CARE_CLEAN, variation);
-    state->poop_count = 0u;
-    state->dirtiness_mp = 0u;
+    /* Cleaning has no need bar to raise, so what preference buys here is
+     * THOROUGHNESS: how much of the mess actually comes off. The care-loop
+     * spec's section 4 asks for exactly that -- all three variations
+     * address both halves of mess and "differ only in how well".
+     *
+     * Scaled against the liked boost, so a creature's favourite way of
+     * being cleaned is a complete job and the others visibly are not. That
+     * visibility is the point: leaving two poops on the floor tells the
+     * player they chose badly in a way a slightly smaller invisible number
+     * never could, which is the same argument section 6 makes for leading
+     * with the reaction rather than the bar.
+     *
+     * At least one poop always goes, since the division rounds up. A clean
+     * that appears to do nothing at all reads as a broken button rather
+     * than as a bad choice. */
+    const kf_pet_millipercent thoroughness =
+        apply_care_reaction(state, config, KF_PET_CARE_CLEAN, variation);
+    const kf_pet_millipercent best = config->care_boost_liked_mp;
+    if (best == 0u || thoroughness >= best) {
+        state->poop_count = 0u;
+        state->dirtiness_mp = 0u;
+    } else {
+        const uint32_t cleared =
+            (static_cast<uint32_t>(state->poop_count) * thoroughness +
+             best - 1u) /
+            best;
+        state->poop_count = cleared >= state->poop_count
+                                 ? 0u
+                                 : static_cast<uint8_t>(state->poop_count -
+                                                        cleared);
+        state->dirtiness_mp = static_cast<kf_pet_millipercent>(
+            (static_cast<uint64_t>(state->dirtiness_mp) *
+             (best - thoroughness)) /
+            best);
+    }
 }
 
 /* ADR 0023: a pure query over the three whole-life accumulators, computed
