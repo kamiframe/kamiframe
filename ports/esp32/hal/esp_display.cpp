@@ -484,15 +484,32 @@ constexpr int kVsyncRowsPerCount = 2;
  * torn frame beats a stalled device, every time. */
 constexpr uint32_t kVsyncMaxWaitUs = 12000;
 
-/* True: the safe default. See this feature's task-level writeup for why --
- * short version, the best evidence available (one re-decoded raw sample,
- * plus which byte the datasheet-framing corruption pattern implicated) says
- * 40MHz reads are usable, and the cost of being wrong is bounded (12ms per
- * write, worst case, never a hang) and immediately visible in KFDBG STATE's
- * avg_wait_us/rects_waited fields -- which is exactly the point of shipping
- * this behind a flag instead of leaving it out entirely: turning it off is
- * one command away the moment real hardware disagrees with this bet. */
-bool g_vsync_enabled = true;
+/* FALSE, and this is a measured result rather than caution.
+ *
+ * It shipped defaulting true on the strength of one re-decoded raw sample
+ * suggesting 40MHz scanline reads were usable. Real hardware disagreed:
+ * with the wait enabled, the flicker on changing content was unchanged.
+ * The bet lost, and the flag existing is what made that a one-command
+ * answer instead of an argument.
+ *
+ * Exactly which link failed is not established -- 40MHz reads may be
+ * unreliable in a way the slow sweep did not expose, or the count-to-row
+ * mapping in kf_vsync_count_to_scan_row() may be wrong, or the wait may be
+ * landing on the wrong side of the scan. Nobody chased it further, because
+ * the ceiling on this whole approach was modest even if it worked: a read
+ * costs ~50us against a ~64us scan step, so the granularity was never going
+ * to be better than a couple of scan rows.
+ *
+ * Kept rather than deleted. It is a working implementation of a technique
+ * that IS correct in principle, the measurement path (KFDBG SCANLINE) is
+ * genuinely useful on any future panel, and a panel that answers reads more
+ * cleanly -- or exposes TE, at which point the wait becomes an interrupt --
+ * turns this back on with one command. Deleting it would throw away the
+ * expensive half of the work and keep none of it.
+ *
+ * See ADR 0032 for what this cost, what it established, and what it means
+ * for choosing a panel for the real board. */
+bool g_vsync_enabled = false;
 
 /* Per-second stats for KFDBG STATE -- see kf_esp_display_vsync.h's own
  * comment on kf_esp_display_vsync_get_stats() for the exact fields and why
