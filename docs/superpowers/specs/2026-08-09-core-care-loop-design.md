@@ -205,3 +205,45 @@ become compact icons or a single row rather than three full-width bars.
 | Death after telegraphed sickness | Sudden permanent death | Deaths must feel deserved |
 | | No death | Stakes are the point |
 | Cure by care | A medicine action | A fifth action that is only ever "press when red" |
+
+---
+
+## Addendum, 2026-08-09: how the character bible maps onto the code's stages
+
+`14-character-bible-v1.md` names three stages (baby, juvenile, adult) while
+the simulation has five. Chris resolved the mismatch: the bible was
+describing the stages where characters are *distinct*, not the whole life.
+
+| Code stage | Bible | Designs needed |
+|---|---|---|
+| Egg | not in the bible; always first | 1 |
+| Baby | not in the bible; "barely a thing", needy, featureless | 1, shared |
+| Child | the bible's **Baby** — Marumaru, the uncut blank | 1, shared |
+| Teen | the bible's **Juvenile** — one per verb family | 4 |
+| Adult | the bible's **Adult** | 10 confirmed |
+
+So the code keeps all five stages and the bible's three map onto the last
+three. Nothing in the simulation's stage machinery changes.
+
+### What does NOT yet reconcile: the branch shape
+
+| | Bible | Code today |
+|---|---|---|
+| Teen forms | 4 verb families (Cut, Hold, Mark, Go) | `KF_PET_TEEN_FORM_COUNT` = 3 |
+| Adults per family | uneven — Cut 2, Hold 3, Mark 3, Go 1 | `KF_PET_ADULT_BRANCH_COUNT` = 2, uniform |
+| Total adults | 10, plus Hokorimaru | 6 |
+
+Three consequences for whoever implements this:
+
+1. **Teen forms must become 4**, not 3.
+2. **Adults per family are uneven and will change.** The bible's own section
+   11 says Go and Cut still need more creatures to balance at three each. So
+   the code should carry a per-family count table rather than one constant —
+   otherwise every roster addition is a breaking change to the tree.
+3. **Hokorimaru is not a normal branch.** It is what a creature becomes when
+   it is *never interacted with at all* — a separate condition from the
+   care-quality average that drives the other branches, and explicitly
+   flagged in the bible's section 8 as needing its own mechanism.
+
+Changing the tree means bumping the save format version, since `teen_form`
+and `adult_branch` are stored.
