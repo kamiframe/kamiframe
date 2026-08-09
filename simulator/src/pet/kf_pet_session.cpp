@@ -246,7 +246,7 @@ const kf_pet_state *kf_pet_session_state(void) {
 void kf_pet_session_feed(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_feed called before kf_pet_session_init");
-    kf_pet_feed(&g.state);
+    kf_pet_feed(&g.state, &g.config);
     debug_snapshot_push();
 }
 

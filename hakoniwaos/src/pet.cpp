@@ -640,7 +640,7 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
     }
 }
 
-void kf_pet_feed(kf_pet_state *state) {
+void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config) {
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
@@ -654,12 +654,11 @@ void kf_pet_feed(kf_pet_state *state) {
      * default interval first -- otherwise feeding a never-advanced pet
      * would look like it was already about to poop and skip the shorten
      * below entirely. */
-    const kf_pet_config config = kf_pet_default_config();
     if (state->seconds_until_next_poop == 0u) {
-        state->seconds_until_next_poop = config.poop_interval_seconds;
+        state->seconds_until_next_poop = config->poop_interval_seconds;
     }
-    if (state->seconds_until_next_poop > config.poop_interval_after_feed_seconds) {
-        state->seconds_until_next_poop = config.poop_interval_after_feed_seconds;
+    if (state->seconds_until_next_poop > config->poop_interval_after_feed_seconds) {
+        state->seconds_until_next_poop = config->poop_interval_after_feed_seconds;
     }
 }
 

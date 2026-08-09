@@ -380,8 +380,15 @@ void apply_stage_segment_for_test(kf_pet_state *state,
 
 /* Care actions. Each raises its need by a fixed amount and clamps at
  * KF_PET_MILLIPERCENT_MAX -- feeding an already-full pet does nothing
- * extra, it does not "bank" overfeeding against future decay. */
-void kf_pet_feed(kf_pet_state *state);
+ * extra, it does not "bank" overfeeding against future decay.
+ *
+ * kf_pet_feed() takes the config because eating also brings the next poop
+ * forward, and by how much is a tuning figure that lives in the config like
+ * every other one (see kf_pet_config). The other three need nothing from
+ * it yet. Rather than give them an unused parameter for symmetry's sake,
+ * they take it when they have a reason to -- which the care variations
+ * (see the care-loop spec's section 5) will give all four at once. */
+void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config);
 void kf_pet_play(kf_pet_state *state);
 void kf_pet_rest(kf_pet_state *state);
 

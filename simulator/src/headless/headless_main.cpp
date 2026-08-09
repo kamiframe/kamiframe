@@ -287,12 +287,12 @@ int run_pet_check() {
     {
         kf_pet_state state;
         kf_pet_init(&state);
-        kf_pet_feed(&state);
+        kf_pet_feed(&state, &config);
         check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX,
               "feeding an already-full pet does not overflow past max");
 
         kf_pet_advance(&state, &config, 3600u);
-        kf_pet_feed(&state);
+        kf_pet_feed(&state, &config);
         kf_pet_play(&state);
         kf_pet_rest(&state);
         check(state.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
@@ -325,7 +325,7 @@ int run_pet_check() {
          * pre-sleep snapshot below is not just a fresh pet -- proving the
          * equivalence holds from an arbitrary state, not only from zero. */
         kf_pet_advance(&state, &config, 2u * 3600u);
-        kf_pet_feed(&state);
+        kf_pet_feed(&state, &config);
         check(kf_pet_save(&state) == KF_OK, "save after some care actions");
 
         const kf_pet_state pre_sleep = state;
@@ -794,7 +794,7 @@ int run_pet_personality_check() {
         kf_pet_state state = state_a;
         kf_pet_advance(&state, &config, 30u * 86400u); /* a month, offline-style */
         state.hunger_mp = 0u;
-        kf_pet_feed(&state);
+        kf_pet_feed(&state, &config);
         check(state.base_trait == state_a.base_trait,
               "base_trait is unchanged by kf_pet_advance() and a care "
               "action -- rolled once at init, fixed for the pet's whole "
@@ -1159,7 +1159,7 @@ int run_hokorimaru_check(void) {
     /* Touched even once: an ordinary family. */
     kf_pet_state touched{};
     kf_pet_init(&touched);
-    kf_pet_feed(&touched);
+    kf_pet_feed(&touched, &config);
     check(touched.care_actions_taken == 1u, "feeding counts as care");
     advance_to_teen_for_test(&touched, &config);
     check(touched.teen_form != KF_PET_TEEN_FORM_DUST,
@@ -1277,11 +1277,28 @@ int run_pet_mess_check(void) {
     kf_pet_state fed{};
     kf_pet_init(&fed);
     fed.stage = KF_PET_STAGE_CHILD;
-    kf_pet_feed(&fed);
+    kf_pet_feed(&fed, &config);
     check(fed.seconds_until_next_poop == config.poop_interval_after_feed_seconds,
           "feeding shortens the wait for the next poop");
     check(config.poop_interval_after_feed_seconds < config.poop_interval_seconds,
           "the after-feed interval really is shorter");
+
+    /* And it shortens it by the amount THIS config says, not the default's.
+     * Every tuning figure in the care loop lives in kf_pet_config precisely
+     * so it can be changed in one place; a care action that reaches past
+     * its caller's config for a default would make that promise false, and
+     * would do it silently -- the pet would simply poop on the wrong
+     * schedule with no error anywhere. */
+    kf_pet_config tuned = kf_pet_default_config();
+    tuned.poop_interval_seconds = 900u;
+    tuned.poop_interval_after_feed_seconds = 120u;
+
+    kf_pet_state tuned_pet{};
+    kf_pet_init(&tuned_pet);
+    tuned_pet.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&tuned_pet, &tuned);
+    check(tuned_pet.seconds_until_next_poop == tuned.poop_interval_after_feed_seconds,
+          "feeding honours the caller's config, not the default one");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
