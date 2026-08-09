@@ -354,10 +354,20 @@ void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
      * only written once `target` has passed it -- kf_pet_init()'s 0 is
      * already the right answer otherwise. Out-of-range input (not just
      * unset) falls back to 0 rather than being written raw -- see the
-     * header comment on why 0 is always a safe fallback for both. */
+     * header comment on why 0 is always a safe fallback for both.
+     *
+     * The valid range here is [0, KF_PET_TEEN_FORM_DUST], inclusive of the
+     * dust form -- NOT "< KF_PET_TEEN_FORM_COUNT", which would silently
+     * clamp KF_PET_TEEN_FORM_DUST itself (== KF_PET_TEEN_FORM_COUNT, by
+     * kf/pet.h's own deliberate construction, see that macro's comment) to
+     * 0. Dust is not an error value the way anything past it is -- it is a
+     * real teen_form a genuinely-neglected creature can and does reach
+     * (advance_to_next_stage(), hakoniwaos/src/pet.cpp), so a lever whose
+     * entire purpose is making every form inspectable has no business
+     * treating it as out of range. */
     if (target >= KF_PET_STAGE_TEEN) {
         g.state.teen_form =
-            teen_form < KF_PET_TEEN_FORM_COUNT ? teen_form : 0u;
+            teen_form <= KF_PET_TEEN_FORM_DUST ? teen_form : 0u;
     }
     if (target == KF_PET_STAGE_ADULT) {
         const uint8_t adults_in_family =

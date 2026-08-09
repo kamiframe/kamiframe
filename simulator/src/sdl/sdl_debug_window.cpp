@@ -67,6 +67,19 @@ enum class DebugAction {
     kTeenForm1,
     kTeenForm2,
     kTeenForm3,
+
+    /* Judgement call (review of Task 8): the dust form
+     * (KF_PET_TEEN_FORM_DUST, kf/pet.h -- deliberately equal to
+     * KF_PET_TEEN_FORM_COUNT, one past the four verb families above) is a
+     * REAL teen_form a genuinely-neglected creature reaches
+     * (advance_to_next_stage(), hakoniwaos/src/pet.cpp), not an error
+     * value, and this window's whole purpose is making every form
+     * inspectable -- a picker that silently could not reach one of them
+     * would be exactly the gap this button closes. Named for what it is,
+     * not "Form4", since dust is not one of the four families the
+     * Form0-3 buttons pick between. */
+    kTeenFormDust,
+
     kAdultBranch0,
     kAdultBranch1,
     kAdultBranch2,
@@ -131,19 +144,24 @@ constexpr DebugButton kButtons[] = {
     /* Task 8: picks which teen_form/adult_branch the stage-jump row below
      * will use -- read this row (and the next) top-to-bottom BEFORE the
      * jump row, the same order a player presses them in. Four teen_form
-     * slots (KF_PET_TEEN_FORM_COUNT) and three adult_branch slots
-     * (KF_PET_ADULT_BRANCH_MAX, the widest family) -- see kf/pet.h. An
-     * adult_branch picked here that is out of range for whichever
-     * teen_form is ALSO currently selected is not rejected here (this
-     * window does not know each family's exact count without calling
-     * kf_pet_adults_in_family(), which it happily could, but the session
-     * layer already clamps it defensively -- see kf_pet_session_debug_
-     * jump_to_stage()'s own header comment), so pressing e.g. "Adult 2"
-     * against a one-adult family is harmless, just not useful. */
+     * slots (KF_PET_TEEN_FORM_COUNT) plus dust (see kTeenFormDust's own
+     * comment above) and three adult_branch slots (KF_PET_ADULT_BRANCH_MAX,
+     * the widest family) -- see kf/pet.h. An adult_branch picked here that
+     * is out of range for whichever teen_form is ALSO currently selected is
+     * not rejected here (this window does not know each family's exact
+     * count without calling kf_pet_adults_in_family(), which it happily
+     * could, but the session layer already clamps it defensively -- see
+     * kf_pet_session_debug_jump_to_stage()'s own header comment), so
+     * pressing e.g. "Adult 2" against a one-adult family is harmless, just
+     * not useful. That same clamp is also exactly what makes "Dust" safe to
+     * combine with any Adult button: kf_pet_adults_in_family() returns 1
+     * for dust by construction (kf/pet.h), so anything but Adult0 there
+     * just falls back to it. */
     {{16, 176, 64, 32}, "Form0", DebugAction::kTeenForm0},
     {{88, 176, 64, 32}, "Form1", DebugAction::kTeenForm1},
     {{160, 176, 64, 32}, "Form2", DebugAction::kTeenForm2},
     {{232, 176, 64, 32}, "Form3", DebugAction::kTeenForm3},
+    {{304, 176, 64, 32}, "Dust", DebugAction::kTeenFormDust},
 
     {{16, 216, 64, 32}, "Adult0", DebugAction::kAdultBranch0},
     {{88, 216, 64, 32}, "Adult1", DebugAction::kAdultBranch1},
@@ -332,7 +350,8 @@ bool is_teen_form_button(DebugAction action) {
     return action == DebugAction::kTeenForm0 ||
            action == DebugAction::kTeenForm1 ||
            action == DebugAction::kTeenForm2 ||
-           action == DebugAction::kTeenForm3;
+           action == DebugAction::kTeenForm3 ||
+           action == DebugAction::kTeenFormDust;
 }
 
 uint8_t teen_form_for(DebugAction action) {
@@ -345,6 +364,8 @@ uint8_t teen_form_for(DebugAction action) {
         return 2u;
     case DebugAction::kTeenForm3:
         return 3u;
+    case DebugAction::kTeenFormDust:
+        return KF_PET_TEEN_FORM_DUST;
     default:
         return 0u;
     }

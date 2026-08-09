@@ -237,8 +237,12 @@ void kf_pet_session_debug_reset(void);
  * just unset -- falls back to 0 rather than being written raw: 0 is always
  * a valid family index, and every family has at least one adult, so 0 is
  * always a valid adult index too, which makes "unset" and "invalid" the
- * same safe case instead of two to get right separately. `stage` itself is
- * clamped to KF_PET_STAGE_ADULT if it somehow arrives out of range.
+ * same safe case instead of two to get right separately. `teen_form`'s
+ * valid range is [0, KF_PET_TEEN_FORM_DUST] -- the dust form is a real,
+ * reachable form (see the paragraph above), not an error value, so it is
+ * accepted here exactly like any of the four verb families; only input
+ * past it falls back to 0. `stage` itself is clamped to KF_PET_STAGE_ADULT
+ * if it somehow arrives out of range.
  *
  * Also clears the snapshot history (see kf_pet_session_debug_reset()'s own
  * comment on why): a jump is a fabricated state with no continuity from
