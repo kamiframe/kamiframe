@@ -293,7 +293,8 @@ uint32_t sick_scaled_rate(uint32_t rate_mp_per_hour, bool sick,
  * next one, picking a branch and resetting the per-stage accumulators
  * where that applies. Only ever called once kf_pet_advance()'s loop has
  * confirmed stage_elapsed_seconds has reached the stage's full duration. */
-void advance_to_next_stage(kf_pet_state *state) {
+void advance_to_next_stage(kf_pet_state *state,
+                            const kf_pet_config *config) {
     switch (state->stage) {
     case KF_PET_STAGE_EGG:
         state->stage = KF_PET_STAGE_BABY;
@@ -301,13 +302,32 @@ void advance_to_next_stage(kf_pet_state *state) {
     case KF_PET_STAGE_BABY:
         state->stage = KF_PET_STAGE_CHILD;
         break;
-    case KF_PET_STAGE_CHILD:
-        /* Never touched -> dust, regardless of what the care average says.
-         * Checked BEFORE the ordinary branch selection because it is not a
-         * quality judgement: an untouched creature has no care history to
-         * grade, and grading it anyway would land it in whichever family
-         * zero care happens to map to. See character bible section 8. */
-        if (state->care_actions_taken == 0u) {
+    case KF_PET_STAGE_CHILD: {
+        /* Barely tended -> dust, regardless of which family the ordinary
+         * bands would have picked. Checked BEFORE the ordinary branch
+         * selection because it is not a quality judgement on the same
+         * scale: the other four families are "how well was it raised", and
+         * this is "was it raised at all".
+         *
+         * This used to be `care_actions_taken == 0` -- literally never
+         * touched, which is what the character bible's section 8 describes.
+         * That stopped being reachable when Chris ruled that a creature
+         * left alone dies like a Tamagotchi in a drawer: an untouched
+         * creature now dies during CHILD, days before this branch point,
+         * so the dust form would have been a documented character that no
+         * player could ever obtain.
+         *
+         * So the condition became the nearest thing that survives: kept
+         * alive and nothing more. A creature fed only when it was about to
+         * die and otherwise ignored still averages almost nothing across
+         * its whole childhood, which is the same story the bible tells --
+         * neglect made visible -- reached by a route that does not require
+         * the creature to be dead. */
+        const uint64_t child_care_average_mp =
+            state->stage_elapsed_seconds > 0u
+                ? state->care_integral_mp_seconds / state->stage_elapsed_seconds
+                : 0u;
+        if (child_care_average_mp < config->dust_care_average_mp) {
             state->teen_form = KF_PET_TEEN_FORM_DUST;
         } else {
             state->teen_form = select_branch(state->care_integral_mp_seconds,
@@ -316,6 +336,7 @@ void advance_to_next_stage(kf_pet_state *state) {
         }
         state->stage = KF_PET_STAGE_TEEN;
         break;
+    }
     case KF_PET_STAGE_TEEN:
         /* kf_pet_adults_in_family() returns 1 for out-of-range input, and
          * KF_PET_TEEN_FORM_DUST is out-of-range by construction (it equals
@@ -562,12 +583,16 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
      * Whatever is left over counts as care, and works the accumulator back
      * down at the same rate it went up.
      *
-     * A creature that has never been cared for is exempt from all of it.
-     * The character bible's dust form is what total absence of interaction
-     * produces, and it takes a full childhood to reach; illness would kill
-     * that creature days before it got there. It is the creature that has
-     * known care and then lost it that sickens. */
-    if (state->care_actions_taken > 0u) {
+     * NOTHING is exempt. An earlier version spared creatures that had
+     * never been touched at all, to keep the character bible's dust form
+     * reachable -- Chris overruled it: a creature left in a drawer runs its
+     * needs down, calls out, and dies, exactly as the original Tamagotchi
+     * did. That is the end state here too, and it is what makes the
+     * babysitter hand-off worth building later.
+     *
+     * See kf_pet_advance()'s teen-branch selection for where the dust form
+     * went instead. */
+    {
         const bool neglected_after = is_neglected(state, config);
 
         uint32_t neglected_for = 0u;
@@ -880,6 +905,29 @@ kf_pet_config kf_pet_default_config(void) {
     c.care_boost_liked_mp = 35000u;
     c.care_boost_neutral_mp = 25000u;
     c.care_boost_disliked_mp = 10000u;
+
+    /* A bath's happiness bonus: noticeable for the way it likes, barely
+     * there for a way it tolerates, nothing for the way it hates. Small
+     * against the 25000 a real play session gives -- this is a reward for
+     * paying attention, not a second way to entertain the creature.
+     * Tuning numbers. */
+    c.bath_happiness_liked_mp = 6000u;
+    c.bath_happiness_neutral_mp = 1500u;
+
+    /* Below a 20% average across the whole of CHILD, the creature was kept
+     * alive and nothing more, and grows into the dust form rather than one
+     * of the four families.
+     *
+     * PROVISIONAL, and the one number here that most needs playing rather
+     * than reasoning about. It is squeezed between two hard constraints:
+     * too high and it swallows the worst verb-family band, so a badly
+     * raised creature never gets a real form; too low and it is
+     * unreachable by anything still alive, because staying alive already
+     * requires keeping every need above neglect_need_mp most of the time,
+     * which drags the average up on its own. 20% sits between them by
+     * argument, not by evidence -- it is the only route to a character the
+     * bible describes, so it wants testing with a real creature. */
+    c.dust_care_average_mp = 20000u;
     return c;
 }
 
@@ -965,7 +1013,7 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
         }
 
         if (state->stage_elapsed_seconds >= duration) {
-            advance_to_next_stage(state);
+            advance_to_next_stage(state, config);
         } else {
             /* This segment used up all of `remaining` without finishing
              * the stage -- nothing left to do this call. */
@@ -1038,49 +1086,63 @@ void kf_pet_rest(kf_pet_state *state, const kf_pet_config *config,
     state->energy_mp = clamp_add(state->energy_mp, boost);
 }
 
-void kf_pet_clean(kf_pet_state *state, const kf_pet_config *config,
-                   uint8_t variation) {
+void kf_pet_bath(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation) {
     if (state->dead) {
         return;
     }
     if (state->care_actions_taken < UINT32_MAX) {
         state->care_actions_taken++;
     }
-    /* Cleaning has no need bar to raise, so what preference buys here is
-     * THOROUGHNESS: how much of the mess actually comes off. The care-loop
-     * spec's section 4 asks for exactly that -- all three variations
-     * address both halves of mess and "differ only in how well".
+
+    /* Clean is clean, whichever way it was done. Being washed is a NEED,
+     * and a need met badly is still a need met -- a creature left dirty
+     * because it disliked the flannel would punish the player for doing
+     * the right thing in the wrong style, which is the opposite of what
+     * preference is for.
      *
-     * Scaled against the liked boost, so a creature's favourite way of
-     * being cleaned is a complete job and the others visibly are not. That
-     * visibility is the point: leaving two poops on the floor tells the
-     * player they chose badly in a way a slightly smaller invisible number
-     * never could, which is the same argument section 6 makes for leading
-     * with the reaction rather than the bar.
-     *
-     * At least one poop always goes, since the division rounds up. A clean
-     * that appears to do nothing at all reads as a broken button rather
-     * than as a bad choice. */
-    const kf_pet_millipercent thoroughness =
-        apply_care_reaction(state, config, KF_PET_CARE_CLEAN, variation);
-    const kf_pet_millipercent best = config->care_boost_liked_mp;
-    if (best == 0u || thoroughness >= best) {
-        state->poop_count = 0u;
-        state->dirtiness_mp = 0u;
-    } else {
-        const uint32_t cleared =
-            (static_cast<uint32_t>(state->poop_count) * thoroughness +
-             best - 1u) /
-            best;
-        state->poop_count = cleared >= state->poop_count
-                                 ? 0u
-                                 : static_cast<uint8_t>(state->poop_count -
-                                                        cleared);
-        state->dirtiness_mp = static_cast<kf_pet_millipercent>(
-            (static_cast<uint64_t>(state->dirtiness_mp) *
-             (best - thoroughness)) /
-            best);
+     * Poops are untouched here: they are kf_pet_flush()'s job. */
+    state->dirtiness_mp = 0u;
+
+    /* What preference buys is a little happiness on top. apply_care_
+     * reaction() records the reaction (which is what the screen shows) and
+     * hands back the need-restore figure the other three actions use --
+     * that figure is not what a bath is worth, so it is deliberately
+     * discarded and the two bath-specific values used instead. */
+    (void)apply_care_reaction(state, config, KF_PET_CARE_BATH, variation);
+    switch (state->last_reaction) {
+    case KF_PET_REACTION_LIKED:
+        state->happiness_mp =
+            clamp_add(state->happiness_mp, config->bath_happiness_liked_mp);
+        break;
+    case KF_PET_REACTION_NEUTRAL:
+        state->happiness_mp =
+            clamp_add(state->happiness_mp, config->bath_happiness_neutral_mp);
+        break;
+    default:
+        /* Disliked: nothing. Not a penalty -- see kf/pet.h's comment on
+         * why there is no third config value to make one possible. */
+        break;
     }
+}
+
+void kf_pet_flush(kf_pet_state *state) {
+    if (state->dead) {
+        return;
+    }
+    if (state->care_actions_taken < UINT32_MAX) {
+        state->care_actions_taken++;
+    }
+
+    /* All of them, always. There are no degrees of flushing: either the
+     * mess is gone or the player did not press the button.
+     *
+     * Nothing else moves. No need is restored, no reaction is recorded,
+     * and last_reaction/last_care_action are left exactly as the previous
+     * real care action set them -- a chore should not overwrite the
+     * creature's response to the last thing that was actually done TO it,
+     * which is what the screen is showing. */
+    state->poop_count = 0u;
 }
 
 /* ADR 0023: a pure query over the three whole-life accumulators, computed

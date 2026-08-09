@@ -306,3 +306,91 @@ carry `last_advanced` forward by the same elapsed seconds that drive decay:
 wall time then enters Core exactly once, at load, and time of day is available
 everywhere without Core ever reading a clock. That is a good change regardless
 of what sleep ends up looking like.
+
+---
+
+## Addendum, 2026-08-09 (evening): Chris's decisions
+
+Five rulings, and what each one changed.
+
+### A drawer is fatal
+
+A creature left alone runs its needs down, calls out, and dies — exactly as
+the original Tamagotchi did. No exemption for total neglect. This overturned
+the earlier rule that spared never-touched creatures.
+
+**Consequence, resolved here:** the dust form (Hokorimaru) was reached by
+never interacting with a creature at all. That is now impossible — an
+untouched creature dies during childhood, days before the branch point. Left
+alone, the bible would have documented a character no player could ever
+obtain.
+
+So the condition became the nearest thing that survives: **kept alive and
+nothing more.** A care average across the whole of CHILD below
+`dust_care_average_mp` grows the creature into dust rather than one of the
+four verb families. Same story — neglect made visible — by a route that does
+not require the creature to be dead first.
+
+`dust_care_average_mp` is **provisional at 20%** and is the number here most
+in need of play rather than argument. It is squeezed between two hard walls:
+too high and it swallows the worst verb-family band, so a badly raised
+creature never gets a real form; too low and nothing alive can reach it,
+because surviving already means keeping every need above the neglect
+threshold most of the time, which drags the average up on its own. The window
+between "barely raised" and "raised badly" is genuinely narrow.
+
+### Death without a player holds on the last creature's scene
+
+No auto-hatching. The device sits on the death scene until someone comes back
+and starts a new egg. This is also what gives the deferred babysitter hand-off
+a real job: the sanctioned way to avoid this, rather than a convenience.
+
+**Shrine, not a gravestone — recommended.** A small roadside shrine reads as
+remembrance and continuity, where a headstone reads as a plot in a Western
+graveyard; the shrine also carries the visual language the rest of the project
+already uses, and it gives the eventual "start a new egg" action somewhere
+natural to live — you leave an offering rather than dig. Not yet built:
+nothing draws any scene at all yet.
+
+### Cleaning is two actions, not one
+
+Split, because they were never really one thing:
+
+**Bath** — washes the creature. Dirtiness to zero, always, whichever variation
+was used. Being clean is a *need*, and a need met badly is still met; a
+creature left dirty because it disliked the flannel would punish the player
+for doing the right thing in the wrong style. What preference buys is a small
+happiness bonus on top: a noticeable lift for the way it likes, barely
+anything for a way it tolerates, and nothing for the way it hates. Nothing
+negative, ever — there is deliberately no config value that could make it so.
+
+**Flush** — clears the poops. One way to do it, no variations, no opinion, no
+effect on any need. It does not touch dirtiness either, but it does slow how
+fast dirtiness climbs, since waiting poops accelerate it. A player who flushes
+but never baths has slowed the problem without solving it.
+
+This replaced a thoroughness mechanic where a disliked clean left mess behind.
+That was a defensible reading of "they differ only in how well" and it was
+wrong: it made meeting a need conditional on style.
+
+### The clock is a device setting, not a per-creature one
+
+Local time is set once in the device's global settings and every creature on
+it shares that. This settles the timezone half of sleep — Core carries a UTC
+offset from config, and nothing per-egg.
+
+The other half of sleep is still open (see the previous addendum): what the
+drowsy/settle interaction means offline, where there is no player to settle
+anything.
+
+### Egg and baby have designs now
+
+**Egg:** deliberately generic. Nothing about it hints at what is inside.
+
+**Baby:** a small drifting spirit wisp — soft tapering body, no limbs, no
+ground contact, trailing off at the bottom, with a vague ghostly face in manga
+shorthand. Shared by every creature.
+
+**Marumaru, at the CHILD stage, remains the first form that is actually its
+own thing.** Both new designs are placeholders in the sense that the bible
+does not describe either stage; neither is an attempt to invent bible content.

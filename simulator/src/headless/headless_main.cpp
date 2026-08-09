@@ -524,7 +524,13 @@ int run_pet_stage_check() {
         kf_pet_config zero_decay = zero_all_stage_rates(config);
         zero_decay.child_duration_seconds = 1000u;
 
-        const kf_pet_millipercent kNeglected = 10000u;   /* 10% -> band 0 */
+        /* 22%: above dust_care_average_mp (20%), below the bottom family
+         * band's own ceiling of 25%. The window between "barely raised at
+         * all" and "raised badly" is genuinely narrow, and this case is
+         * about the FAMILY bands, so it has to sit inside it deliberately
+         * rather than land on the dust form by accident. The dust boundary
+         * itself is checked in run_hokorimaru_check(). */
+        const kf_pet_millipercent kNeglected = 22000u;   /* -> band 0 */
         const kf_pet_millipercent kMediocre = 50000u;    /* 50% -> band 1 */
         const kf_pet_millipercent kWellCared = 90000u;   /* 90% -> band 3 */
         const struct {
@@ -1150,32 +1156,73 @@ int run_hokorimaru_check(void) {
 
     const kf_pet_config config = kf_pet_default_config();
 
-    /* Never touched: straight through to the dust form. */
-    kf_pet_state neglected{};
-    kf_pet_init(&neglected);
-    check(neglected.care_actions_taken == 0u, "a fresh pet has taken no care");
-    advance_to_teen_for_test(&neglected, &config);
-    check(neglected.teen_form == KF_PET_TEEN_FORM_DUST,
-          "a never-touched creature becomes the dust form");
+    /* A creature nobody ever touches DIES. Chris's call, and the reason the
+     * dust form is no longer reached that way: left in a drawer it runs its
+     * needs down, and death arrives during childhood, days before the
+     * branch point that would have made it dust. */
+    kf_pet_state abandoned{};
+    kf_pet_init(&abandoned);
+    advance_to_teen_for_test(&abandoned, &config);
+    check(abandoned.care_actions_taken == 0u, "never touched");
+    check(abandoned.dead, "and dead -- a drawer is fatal, as it should be");
+    check(abandoned.stage < KF_PET_STAGE_TEEN,
+          "it never even reached the branch point, which is exactly why the "
+          "dust form needed a different route");
 
-    /* Touched even once: an ordinary family. */
-    kf_pet_state touched{};
-    kf_pet_init(&touched);
-    kf_pet_feed(&touched, &config, 0u);
-    check(touched.care_actions_taken == 1u, "feeding counts as care");
-    advance_to_teen_for_test(&touched, &config);
-    check(touched.teen_form != KF_PET_TEEN_FORM_DUST,
-          "one care action is enough to avoid the dust form");
-    check(touched.teen_form < KF_PET_TEEN_FORM_COUNT,
-          "a cared-for creature lands in one of the four families");
+    /* The route it got: kept alive and nothing more. Needs pinned low
+     * enough to average under dust_care_average_mp, but above the neglect
+     * threshold so the creature survives to be judged -- which is the whole
+     * needle this condition has to thread. Decay is zeroed so the average
+     * is exactly the level set here rather than a decay curve's integral. */
+    kf_pet_config held = zero_all_stage_rates(config);
+    /* Mess off too, not just decay. Poops and dirtiness are neglect
+     * channels in their own right (see is_neglected()), and over a
+     * three-day childhood they would saturate and kill this creature long
+     * before the branch point -- which is true and correct behaviour, and
+     * has nothing to do with what this check is about. The zero sentinels
+     * are the documented way to say "no mess"; see kf_pet_config. */
+    held.poop_interval_seconds = 0u;
+    held.dirtiness_rise_mp_per_hour = 0u;
+    held.dirtiness_rise_per_poop_mp_per_hour = 0u;
+    const kf_pet_millipercent kBarelyRaised = 15000u; /* 15%: under 20%, over 10% */
+    check(kBarelyRaised < config.dust_care_average_mp,
+          "the barely-raised level really is below the dust threshold");
+    check(kBarelyRaised > config.neglect_need_mp,
+          "and above the neglect threshold, so this creature stays alive "
+          "long enough to become anything at all");
+
+    kf_pet_state barely{};
+    kf_pet_init(&barely);
+    barely.hunger_mp = kBarelyRaised;
+    barely.happiness_mp = kBarelyRaised;
+    barely.energy_mp = kBarelyRaised;
+    kf_pet_feed(&barely, &held, 0u); /* touched -- but only just */
+    barely.hunger_mp = kBarelyRaised;
+    advance_to_teen_for_test(&barely, &held);
+    check(!barely.dead, "a creature kept barely alive is still alive");
+    check(barely.teen_form == KF_PET_TEEN_FORM_DUST,
+          "and grows into the dust form -- neglect made visible, which is "
+          "the character the bible describes");
+
+    /* Raised properly: an ordinary family. */
+    kf_pet_state raised{};
+    kf_pet_init(&raised);
+    raised.hunger_mp = 60000u;
+    raised.happiness_mp = 60000u;
+    raised.energy_mp = 60000u;
+    advance_to_teen_for_test(&raised, &held);
+    check(raised.teen_form != KF_PET_TEEN_FORM_DUST,
+          "a properly raised creature avoids the dust form");
+    check(raised.teen_form < KF_PET_TEEN_FORM_COUNT,
+          "and lands in one of the four families");
 
     /* The dust form has exactly one adult -- kf_pet_adults_in_family()
      * returns 1 for out-of-range input, and KF_PET_TEEN_FORM_DUST is
      * out-of-range by construction (it equals KF_PET_TEEN_FORM_COUNT). This
      * is being relied on deliberately here, not by accident. */
     {
-        kf_pet_state dust = neglected;
-        kf_pet_advance(&dust, &config, config.teen_duration_seconds);
+        kf_pet_state dust = barely;
+        kf_pet_advance(&dust, &held, held.teen_duration_seconds);
         check(dust.stage == KF_PET_STAGE_ADULT,
               "the dust form completes Teen into Adult the same as any "
               "other family");
@@ -1256,6 +1303,13 @@ int run_pet_mess_check(void) {
     };
 
     kf_pet_config config = kf_pet_default_config();
+    /* Death off. This check saturates the poop counter by advancing fifty
+     * hours with no care at all, which under the real rules kills the
+     * creature -- and a dead creature ignores every care action, so the
+     * flush below would silently do nothing. The zero sentinel is the
+     * documented way to say "cannot die"; what this check is about is where
+     * poops come from and where they go. Survival has its own checks. */
+    config.sickness_death_seconds = 0u;
 
     kf_pet_state pet{};
     kf_pet_init(&pet);
@@ -1271,9 +1325,15 @@ int run_pet_mess_check(void) {
     apply_stage_segment_for_test(&pet, &config, config.poop_interval_seconds * 100u);
     check(pet.poop_count == KF_PET_MAX_POOPS, "poop count saturates rather than growing forever");
 
-    /* Cleaning clears all of them. */
-    kf_pet_clean(&pet, &config, 0u);
-    check(pet.poop_count == 0u, "cleaning clears every poop");
+    /* Flushing clears all of them, always -- there are no degrees of it.
+     * A bath deliberately does NOT: washing the creature and clearing up
+     * after it are two different jobs, and only one of them is something
+     * the creature has an opinion about. */
+    kf_pet_bath(&pet, &config, 0u);
+    check(pet.poop_count == KF_PET_MAX_POOPS,
+          "a bath washes the creature and leaves the floor alone");
+    kf_pet_flush(&pet);
+    check(pet.poop_count == 0u, "flushing clears every poop");
 
     /* Feeding brings the next one sooner. */
     kf_pet_state fed{};
@@ -1349,7 +1409,7 @@ int run_pet_dirtiness_check(void) {
     /* Cleaning washes the creature, not just the floor.
      *
      * Explicitly the variation this creature LIKES, because how thoroughly
-     * a clean works now depends on that (see kf_pet_clean()) and this
+     * a clean works now depends on that (see kf_pet_bath()) and this
      * creature's base trait was rolled at random. Variation 0 would make
      * this check pass or fail on the dice rather than on the behaviour it
      * is about, which is a worse kind of failure than a loud one. What a
@@ -1357,12 +1417,12 @@ int run_pet_dirtiness_check(void) {
      * where it is the actual subject. */
     uint8_t liked_clean = 0u;
     for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
-        if (kf_pet_reaction_to(messy.base_trait, KF_PET_CARE_CLEAN, v) ==
+        if (kf_pet_reaction_to(messy.base_trait, KF_PET_CARE_BATH, v) ==
             KF_PET_REACTION_LIKED) {
             liked_clean = v;
         }
     }
-    kf_pet_clean(&messy, &config, liked_clean);
+    kf_pet_bath(&messy, &config, liked_clean);
     check(messy.dirtiness_mp == 0u, "cleaning also washes the creature");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
@@ -1425,7 +1485,8 @@ int run_pet_sickness_check(void) {
     kf_pet_feed(&pet, &config, 0u);
     kf_pet_play(&pet, &config, 0u);
     kf_pet_rest(&pet, &config, 0u);
-    kf_pet_clean(&pet, &config, 0u);
+    kf_pet_bath(&pet, &config, 0u);
+    kf_pet_flush(&pet);
     check(pet.sick, "a single round of care does not cure it on the spot");
 
     /* Sustained care does. Sixty ten-minute stretches of being properly
@@ -1435,7 +1496,8 @@ int run_pet_sickness_check(void) {
         kf_pet_feed(&pet, &config, 0u);
         kf_pet_play(&pet, &config, 0u);
         kf_pet_rest(&pet, &config, 0u);
-        kf_pet_clean(&pet, &config, 0u);
+        kf_pet_bath(&pet, &config, 0u);
+        kf_pet_flush(&pet);
         apply_stage_segment_for_test(&pet, &config, 600u);
     }
     check(pet.neglect_seconds == 0u, "attentive care works the clock back down");
@@ -1461,9 +1523,10 @@ int run_pet_sickness_check(void) {
     apply_stage_segment_for_test(&untouched, &config,
                                   config.sickness_onset_seconds * 4u);
     check(untouched.care_actions_taken == 0u, "still never touched");
-    check(untouched.neglect_seconds == 0u && !untouched.sick,
-          "a creature that has never known care does not sicken from its "
-          "absence -- it is on the dust path instead");
+    check(untouched.sick,
+          "a creature nobody ever touches sickens like any other -- there "
+          "is no exemption for total neglect, which is the whole point of "
+          "a drawer being fatal");
 
     /* The case this whole mechanic exists for: the device spent a day in a
      * drawer. ONE kf_pet_advance() call, one segment, a creature that was
@@ -1555,7 +1618,8 @@ int run_pet_death_check(void) {
     kf_pet_feed(&pet, &config, 0u);
     kf_pet_play(&pet, &config, 0u);
     kf_pet_rest(&pet, &config, 0u);
-    kf_pet_clean(&pet, &config, 0u);
+    kf_pet_bath(&pet, &config, 0u);
+    kf_pet_flush(&pet);
     check(pet.dead, "a week of care does not bring it back");
     check(pet.hunger_mp == hunger_at_death, "nothing decays after death");
     check(pet.stage == stage_at_death, "and it does not keep growing up");
@@ -1597,9 +1661,9 @@ int run_pet_death_check(void) {
     untouched.stage = KF_PET_STAGE_CHILD;
     apply_stage_segment_for_test(&untouched, &config, 4u * 3600u);
     apply_stage_segment_for_test(&untouched, &config, 30u * 86400u);
-    check(!untouched.dead,
-          "a creature that has never been touched does not die of it -- it "
-          "is on the dust path, which takes a whole childhood to walk");
+    check(untouched.dead,
+          "a creature that has never been touched dies of it, exactly as an "
+          "original Tamagotchi left in a drawer does");
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -1771,48 +1835,70 @@ int run_pet_care_variation_check(void) {
     check(pet.last_care_action == KF_PET_CARE_PLAY, "playing records itself");
     kf_pet_rest(&pet, &config, 0u);
     check(pet.last_care_action == KF_PET_CARE_REST, "resting records itself");
-    kf_pet_clean(&pet, &config, 0u);
-    check(pet.last_care_action == KF_PET_CARE_CLEAN, "cleaning records itself");
-    check(pet.poop_count < 3u,
-          "and still does its actual job -- at least some of the mess goes "
-          "whatever this creature thinks of how it was done");
+    kf_pet_bath(&pet, &config, 0u);
+    check(pet.last_care_action == KF_PET_CARE_BATH, "bathing records itself");
 
-    /* How much of it goes is what preference buys, since cleaning has no
-     * bar to raise. Walk every trait: the favourite way of being cleaned
-     * finishes the job, and the disliked one visibly does not. */
+    /* Flushing is the one mess action with no opinion attached, so it must
+     * not overwrite the creature's response to the last thing actually
+     * done to it -- that response is what the screen is showing. */
+    const uint8_t reaction_before_flush = pet.last_reaction;
+    kf_pet_flush(&pet);
+    check(pet.poop_count == 0u, "flushing does its job");
+    check(pet.last_care_action == KF_PET_CARE_BATH &&
+              pet.last_reaction == reaction_before_flush,
+          "and leaves the last reaction alone -- a chore is not a response");
+
+    /* Being clean is a NEED, so every variation gets the creature equally
+     * clean. What preference buys is a little happiness on top. Walk every
+     * trait, since which variation is which differs by trait. */
     for (uint8_t trait = 0u; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
-        uint8_t liked = 0u, disliked = 0u;
+        uint8_t liked = 0u, neutral = 0u, disliked = 0u;
         for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
-            if (kf_pet_reaction_to(trait, KF_PET_CARE_CLEAN, v) ==
-                KF_PET_REACTION_LIKED) {
+            switch (kf_pet_reaction_to(trait, KF_PET_CARE_BATH, v)) {
+            case KF_PET_REACTION_LIKED:
                 liked = v;
-            }
-            if (kf_pet_reaction_to(trait, KF_PET_CARE_CLEAN, v) ==
-                KF_PET_REACTION_DISLIKED) {
+                break;
+            case KF_PET_REACTION_DISLIKED:
                 disliked = v;
+                break;
+            default:
+                neutral = v;
+                break;
             }
         }
 
-        kf_pet_state bathed{};
-        kf_pet_init(&bathed);
-        bathed.base_trait = trait;
-        bathed.stage = KF_PET_STAGE_CHILD;
-        bathed.poop_count = KF_PET_MAX_POOPS;
-        bathed.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+        kf_pet_state filthy{};
+        kf_pet_init(&filthy);
+        filthy.base_trait = trait;
+        filthy.stage = KF_PET_STAGE_CHILD;
+        filthy.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+        filthy.poop_count = KF_PET_MAX_POOPS;
+        filthy.happiness_mp = 0u;
 
-        kf_pet_state scrubbed_wrong = bathed;
+        kf_pet_state tolerated = filthy;
+        kf_pet_state hated = filthy;
 
-        kf_pet_clean(&bathed, &config, liked);
-        kf_pet_clean(&scrubbed_wrong, &config, disliked);
+        kf_pet_bath(&filthy, &config, liked);
+        kf_pet_bath(&tolerated, &config, neutral);
+        kf_pet_bath(&hated, &config, disliked);
 
-        check(bathed.poop_count == 0u && bathed.dirtiness_mp == 0u,
-              "the way this creature likes to be cleaned finishes the job");
-        check(scrubbed_wrong.poop_count > 0u &&
-                  scrubbed_wrong.dirtiness_mp > 0u,
-              "the way it does not leaves mess behind, visibly");
-        check(scrubbed_wrong.poop_count < KF_PET_MAX_POOPS,
-              "but never leaves everything -- a button that appears to do "
-              "nothing reads as broken, not as a bad choice");
+        check(filthy.dirtiness_mp == 0u && tolerated.dirtiness_mp == 0u &&
+                  hated.dirtiness_mp == 0u,
+              "every variation gets the creature equally clean -- being "
+              "washed is a need, and a creature left dirty because it "
+              "disliked the flannel would punish the player for meeting it");
+        check(filthy.poop_count == KF_PET_MAX_POOPS &&
+                  hated.poop_count == KF_PET_MAX_POOPS,
+              "and none of them touch the floor, whatever the creature "
+              "thought of the bath");
+
+        check(filthy.happiness_mp > tolerated.happiness_mp,
+              "the way it likes to be washed cheers it up most");
+        check(tolerated.happiness_mp > hated.happiness_mp,
+              "a way it merely tolerates, barely");
+        check(hated.happiness_mp == 0u,
+              "and a way it hates does nothing at all -- nothing NEGATIVE "
+              "either, since the creature still ended up clean");
     }
 
     /* Nonsense variation is treated as neutral rather than crashing or
@@ -2250,7 +2336,7 @@ int run_lua_pet_check() {
      * session. Mess is the one care type with no bar of its own, so the
      * only way a script can react to it is through pet.poops() and
      * pet.dirtiness() -- and the only way a player can act on it is
-     * pet.clean(). Both halves are checked here.
+     * pet.bath() and pet.flush(). Both halves are checked here.
      *
      * The dt is large on purpose: poops arrive on a 1800-second timer
      * (kf_pet_default_config()), so proving the reads see something other
@@ -2280,7 +2366,7 @@ int run_lua_pet_check() {
 
     /* Now clean it up from Lua. dt is zero for these frames so no new mess
      * can arrive between the call and the check -- what is being proven is
-     * that pet.clean() reached kf_pet_clean(), not how fast mess returns. */
+     * that the two calls reached Core, not how fast mess returns. */
     check(kf_lua_port_init(kKfLuaPetCleanProofScriptSource,
                             kKfLuaPetCleanProofScriptChunkName),
           "stage 4 (clean) proof script loaded");
@@ -2288,9 +2374,10 @@ int run_lua_pet_check() {
     kf_lua_port_frame(0u);
     const kf_pet_state *live_cleaned = kf_pet_session_state();
     check(kf_lua_port_last_report() == 0,
-          "pet.poops() reports zero straight after pet.clean()");
+          "pet.poops() reports zero straight after pet.flush()");
     check(live_cleaned->poop_count == 0u && live_cleaned->dirtiness_mp == 0u,
-          "pet.clean() called from Lua cleared both halves of mess in the "
+          "pet.bath() and pet.flush() called from Lua cleared both halves "
+          "of mess in the "
           "live C++ state -- checked directly, independent of what the "
           "script itself reported");
     kf_lua_port_shutdown();
@@ -2409,21 +2496,29 @@ int run_lua_creature_check() {
                             kKfLuaDemoCreatureScriptChunkName),
           "demo creature script loaded");
 
-    /* Stage 1: decay from full to empty. A day of elapsed pet-time per
+    /* Stage 1: decay from full to empty. An hour of elapsed pet-time per
      * call, applied in one kf_pet_advance() call each (kf_pet_session_
      * frame() batches whatever it's handed, see its own header comment --
-     * a single huge dt is not a special case for it). 10 days comfortably
-     * exhausts even the slowest of the three configured decay rates (see
-     * kf_pet_default_config(), ADR 0015): every need should be clamped at
-     * exactly zero by the end, which the check below confirms directly
-     * against the live C++ state -- not because the demo creature script
-     * needs that number, but so stage 2's "recovered to full" transition
-     * below is known to start from genuine rock bottom, not merely "low". */
-    constexpr uint32_t kOneDayMs = 24u * 60u * 60u * 1000u;
-    constexpr long kStage1Frames = 10;
+     * a single large dt is not a special case for it). Sixteen hours
+     * comfortably exhausts even the slowest of the three configured decay
+     * rates (see kf_pet_default_config(), ADR 0015): every need should be
+     * clamped at exactly zero by the end, which the check below confirms
+     * directly against the live C++ state -- not because the demo creature
+     * script needs that number, but so stage 2's "recovered to full"
+     * transition below is known to start from genuine rock bottom, not
+     * merely "low".
+     *
+     * SIXTEEN HOURS, NOT TEN DAYS, and the difference matters. Ten days of
+     * total neglect kills the creature outright now, and a dead creature
+     * ignores every care action -- so stage 2 would have quietly stopped
+     * testing anything at all while still reading like it passed. Sixteen
+     * hours drains every need to nothing while staying well inside the
+     * twenty-four hours of accumulated neglect that would be fatal. */
+    constexpr uint32_t kOneHourMs = 60u * 60u * 1000u;
+    constexpr long kStage1Frames = 16;
     for (long i = 0; i < kStage1Frames; ++i) {
-        kf_pet_session_frame(kOneDayMs);
-        kf_lua_port_frame(kOneDayMs);
+        kf_pet_session_frame(kOneHourMs);
+        kf_lua_port_frame(kOneHourMs);
     }
     check(kf_lua_port_frame_count() == static_cast<uint32_t>(kStage1Frames),
           "stage 1 (decay through every band) ran the full frame count "
@@ -2431,8 +2526,8 @@ int run_lua_creature_check() {
     const kf_pet_state *after_decay = kf_pet_session_state();
     check(after_decay->hunger_mp == 0u && after_decay->happiness_mp == 0u &&
               after_decay->energy_mp == 0u,
-          "10 days of elapsed time clamps every need to exactly zero -- "
-          "confirms stage 2 below starts from genuine rock bottom");
+          "sixteen hours of elapsed time clamps every need to exactly "
+          "zero -- confirms stage 2 below starts from genuine rock bottom");
 
     /* Stage 2: care back up to full, directly in C++ (not via the script --
      * this demo creature only reads, see kf_lua_demo_creature_script.h),

@@ -55,10 +55,11 @@
  *       the two mess reads see live state, by the same comparison the
  *       decay script uses for hunger.
  *
- *   kKfLuaPetCleanProofScriptSource   Calls pet.clean() and reports
+ *   kKfLuaPetCleanProofScriptSource   Calls pet.bath() and pet.flush() and
+ *       reports
  *       pet.poops(). Run immediately after the mess script has left real
  *       mess on the floor, so a zero afterwards can only mean the call
- *       reached kf_pet_clean() -- the same "mutate, then check the live
+ *       reached Core -- the same "mutate, then check the live
  *       C++ state independently" proof the care script uses, applied to
  *       the fourth care action.
  *
@@ -147,7 +148,8 @@ inline constexpr const char *kKfLuaPetMessProofScriptChunkName =
 
 inline constexpr const char *kKfLuaPetCleanProofScriptSource = R"lua(
 function on_frame(dt_ms)
-    pet.clean()
+    pet.bath()
+    pet.flush()
     kf.report(pet.poops())
 end
 

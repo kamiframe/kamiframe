@@ -123,8 +123,11 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form);
 
 /* The dust form. NOT one of the four verb families -- deliberately equal to
  * KF_PET_TEEN_FORM_COUNT so it sits just past them, and so any loop over the
- * families skips it. Reached only by the never-interacted condition; see
- * kf_pet_state::care_actions_taken. */
+ * families skips it. Reached by keeping a creature alive and doing nothing
+ * else with it -- a care average across the whole of CHILD below
+ * kf_pet_config::dust_care_average_mp. (It used to be "never interacted with
+ * at all", which stopped being reachable once an untouched creature started
+ * dying in childhood; see advance_to_next_stage().) */
 #define KF_PET_TEEN_FORM_DUST KF_PET_TEEN_FORM_COUNT
 
 /* How many poops can be waiting at once.
@@ -150,15 +153,20 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form);
  * in the Lua cartridge layer, not here. */
 #define KF_PET_BASE_TRAIT_COUNT 6u
 
-/* The four care actions, as an index. Order is arbitrary but fixed: it is
- * the column order of the preference table and the argument to
- * kf_pet_reaction_to(), so reordering it silently rewrites every creature's
- * preferences. */
+/* The four care actions a creature has an OPINION about, as an index.
+ * Order is arbitrary but fixed: it is the column order of the preference
+ * table and the argument to kf_pet_reaction_to(), so reordering it silently
+ * rewrites every creature's preferences.
+ *
+ * Flushing is not here, and that is the point. Clearing up poops is a chore
+ * with one right way to do it -- see kf_pet_flush(). A creature having
+ * feelings about how its mess was disposed of would be three more variations
+ * to draw and tune for no discovery worth having. */
 typedef enum {
     KF_PET_CARE_FEED = 0,
     KF_PET_CARE_PLAY = 1,
     KF_PET_CARE_REST = 2,
-    KF_PET_CARE_CLEAN = 3,
+    KF_PET_CARE_BATH = 3,
 } kf_pet_care_action;
 
 #define KF_PET_CARE_ACTION_COUNT 4u
@@ -301,6 +309,23 @@ typedef struct {
     kf_pet_millipercent care_boost_liked_mp;
     kf_pet_millipercent care_boost_neutral_mp;
     kf_pet_millipercent care_boost_disliked_mp;
+
+    /* What a bath adds to happiness on top of getting the creature clean.
+     * Small on purpose: this is a bonus for paying attention, not a second
+     * way to play with it.
+     *
+     * TWO values, not three. There is deliberately no disliked figure,
+     * because the answer is always zero and a config field would invite
+     * someone to make it negative -- and taking happiness away for washing
+     * a creature that needed washing teaches the player to stop washing it. */
+    kf_pet_millipercent bath_happiness_liked_mp;
+    kf_pet_millipercent bath_happiness_neutral_mp;
+
+    /* The care average, across the whole of CHILD, below which a creature
+     * grows into the dust form instead of one of the four verb families.
+     * See advance_to_next_stage() for why this is a threshold on the
+     * average rather than "was it ever touched". */
+    kf_pet_millipercent dust_care_average_mp;
 } kf_pet_config;
 
 /* A reasonable illustrative default: hunger drains fastest (empty from
@@ -522,14 +547,30 @@ void kf_pet_play(kf_pet_state *state, const kf_pet_config *config,
 void kf_pet_rest(kf_pet_state *state, const kf_pet_config *config,
                   uint8_t variation);
 
-/* Clears every waiting poop. Counts as care, like the other three -- a
- * creature you clean up after is one you have interacted with, which is what
- * separates it from the never-touched path to the dust form. Cleaning
- * restores no need of its own, but still records the reaction (a creature
- * can like or dislike how it was bathed just as much as how it was fed),
- * which is why it takes `config` and `variation` now too. */
-void kf_pet_clean(kf_pet_state *state, const kf_pet_config *config,
-                   uint8_t variation);
+/* Washes the creature: dirtiness to zero, always, whichever variation was
+ * chosen. Being clean is a need, not a treat, so a creature never ends up
+ * dirty because it disliked the flannel.
+ *
+ * What preference buys is a little happiness on top -- a noticeable lift
+ * for the way it likes, a barely-there one for a way it merely tolerates,
+ * and nothing at all for the way it hates. Nothing NEGATIVE either: being
+ * washed in a way it dislikes is still being clean, and punishing the
+ * player for meeting a need would teach them not to meet it.
+ *
+ * Leaves poops alone entirely. That is kf_pet_flush(). */
+void kf_pet_bath(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+
+/* Clears every waiting poop. One way to do it, no variations, no opinion,
+ * no effect on any need -- a chore, not care.
+ *
+ * It does change how fast the creature gets dirty, though not by touching
+ * dirtiness itself: waiting poops accelerate dirtying (see
+ * kf_pet_config::dirtiness_rise_per_poop_mp_per_hour), so clearing them
+ * returns that rise to its baseline. A player who flushes but never baths
+ * has slowed the problem without solving it, which is the right shape for
+ * two actions that both live under "keep it clean". */
+void kf_pet_flush(kf_pet_state *state);
 
 /* Which of the three care-derived traits is currently dominant --
  * 0 = hunger, 1 = happiness, 2 = energy -- computed fresh from the three

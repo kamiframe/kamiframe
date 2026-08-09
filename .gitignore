@@ -35,3 +35,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Local credentials. NEVER commit .env -- see .env.example for the shape.
+.env

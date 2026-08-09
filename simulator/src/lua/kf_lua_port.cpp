@@ -123,10 +123,18 @@ int lua_pet_rest(lua_State *L) {
     return 0;
 }
 
-int lua_pet_clean(lua_State *L) {
+int lua_pet_bath(lua_State *L) {
     const uint8_t variation =
         static_cast<uint8_t>(luaL_optinteger(L, 1, 0));
-    kf_pet_session_clean(variation);
+    kf_pet_session_bath(variation);
+    return 0;
+}
+
+/* pet.flush() takes no argument, unlike the four care actions -- there is
+ * one way to clear up poops and the creature has no view on it. */
+int lua_pet_flush(lua_State *L) {
+    (void)L;
+    kf_pet_session_flush();
     return 0;
 }
 
@@ -296,7 +304,8 @@ const luaL_Reg kKfPetFuncs[] = {
     {"feed", lua_pet_feed},
     {"play", lua_pet_play},
     {"rest", lua_pet_rest},
-    {"clean", lua_pet_clean},
+    {"bath", lua_pet_bath},
+    {"flush", lua_pet_flush},
     {"poops", lua_pet_poops},
     {"dirtiness", lua_pet_dirtiness},
     {"sick", lua_pet_sick},

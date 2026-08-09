@@ -102,7 +102,10 @@ const kf_pet_state *kf_pet_session_state(void);
 void kf_pet_session_feed(uint8_t variation);
 void kf_pet_session_play(uint8_t variation);
 void kf_pet_session_rest(uint8_t variation);
-void kf_pet_session_clean(uint8_t variation);
+void kf_pet_session_bath(uint8_t variation);
+
+/* Clears the waiting poops. No variation: see kf/pet.h's kf_pet_flush(). */
+void kf_pet_session_flush(void);
 
 /* Persists the active pet's state now, via kf_pet_save(). Called
  * automatically by kf_pet_session_shutdown(), and exposed here too (and to

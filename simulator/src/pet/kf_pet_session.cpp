@@ -264,10 +264,17 @@ void kf_pet_session_rest(uint8_t variation) {
     debug_snapshot_push();
 }
 
-void kf_pet_session_clean(uint8_t variation) {
+void kf_pet_session_bath(uint8_t variation) {
     KF_ASSERT(g.ready,
-              "kf_pet_session_clean called before kf_pet_session_init");
-    kf_pet_clean(&g.state, &g.config, variation);
+              "kf_pet_session_bath called before kf_pet_session_init");
+    kf_pet_bath(&g.state, &g.config, variation);
+    debug_snapshot_push();
+}
+
+void kf_pet_session_flush(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_flush called before kf_pet_session_init");
+    kf_pet_flush(&g.state);
     debug_snapshot_push();
 }
 

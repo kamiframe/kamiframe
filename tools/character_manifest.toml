@@ -91,14 +91,22 @@ stage = "egg"
 kind = "shared"
 name_verified = false
 states = ["idle"]  # see the file-level comment above: no decay, nothing to react to yet
-has_design_brief = false  # the bible is silent on what an egg looks like here
+has_design_brief = true
+object = "none yet -- unhatched"
+read = "A plain egg. Deliberately generic: nothing about it hints at what is inside, because nothing has been decided yet at this stage."
+quirk = "Does nothing. That is the whole of it."
+note = "Chris, 2026-08-09: \"Go with a generic egg for now.\" Explicitly a placeholder -- the bible does not describe an egg, and this is not an attempt to invent one."
 
 [stages.baby]
 stage = "baby"
 kind = "shared"
 name_verified = false
 # states/frames/size: inherit [meta] defaults (full 5 care states)
-has_design_brief = false  # the bible does not describe this stage either (see addendum: "not in the bible")
+has_design_brief = true
+object = "none yet -- not solid enough to hold one"
+read = "A small drifting spirit wisp: a soft tapering body with no limbs and no ground contact, trailing off into nothing at the bottom. A vague, barely-there ghostly face -- two simple dark eye marks and a small open mouth, in the manga shorthand for a departed spirit rather than anything detailed or frightening."
+quirk = "Needy and featureless. It cannot do anything yet, and mostly just wants."
+note = "Chris, 2026-08-09: a generic spirit wisp with a vague ghostly face inspired by manga ghosts. Shared by every creature -- Marumaru at the CHILD stage is the first form that is actually its own thing."
 
 [stages.child]
 stage = "child"
