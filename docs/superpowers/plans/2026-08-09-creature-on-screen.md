@@ -606,8 +606,27 @@ The ownership switch. This is the task that can break the screen, so it goes in 
 - Modify: `simulator/CMakeLists.txt`, `ports/esp32/main/CMakeLists.txt` (both builds compile it)
 
 **Interfaces:**
-- Consumes: `kf_creature_*` (Tasks 1–3), `kf_blit`/`kf_fill_rect` from `kf/blit.h`, `kf_assets_get` from `kf/assets.h`, `kf_pet_session_state()` from `simulator/src/pet/kf_pet_session.h`.
+- Consumes: `kf_creature_*` (Tasks 1–3), `kf_blit`/`kf_fill_rect` and the mirrored blit from `kf/blit.h`, `kf_assets_get` from `kf/assets.h`, `kf_pet_session_state()` from `simulator/src/pet/kf_pet_session.h`.
 - Produces: `kf_creature_screen_init()`, `kf_creature_screen_frame(uint32_t dt_ms)`.
+
+**Direction, added after this plan was first written (Chris, 2026-08-09).** The
+creature faces four ways, served by three sprite sets: `s` (front), `e` (side),
+`n` (back). Which one to draw comes from the direction it is currently walking:
+moving mostly downward is `s`, mostly upward is `n`, mostly sideways is `e`.
+Pick the dominant axis; do not try to blend.
+
+**West is not a fourth sprite set, but it is not always a mirror either.**
+Mirroring is a capability, not a rule — some creatures will ship hand-drawn
+left-facing art and some will not. So the lookup, when facing west, asks the
+pack for the `_w_` name FIRST, and only when `kf_assets_get()` returns null for
+it falls back to the `_e_` sprite drawn mirrored. That makes the choice a
+property of which PNGs an artist shipped, with no config flag and no code
+change per creature — which is where an art decision belongs. A creature with
+no west art costs one extra failed lookup per frame; cache the resolved sprite
+pointer and only re-resolve when the name would change.
+
+**`kf_creature::facing` already exists** and is maintained by Task 3's wander,
+but nothing has used it until now.
 
 **Read before starting:** `docs/architecture/adr-0017-pet-screen.md:143-188` — the black-trail bug that caused `KF_DEMO_NONE`. This task is only safe because the pet screen no longer shares pixels with LVGL; if you find yourself pumping LVGL and blitting in the same frame over the same region, stop and re-read that ADR.
 
@@ -808,4 +827,14 @@ Each of these is its own plan, and each is genuinely separable:
 - **Animation.** Every sprite here is a single still (`default_frames = 1`). Chris's bedtime answer requires a drowsy animation, a walk cycle, and the creature putting bedding away — all multi-frame, plus a bedding prop that is not in the manifest at all.
 - **The stats band.** Task 4 reserves the bottom 60px and draws nothing in it. Bars and text via `kf/font.h` bitmap text replace the LVGL widgets.
 - **Death and evolution scenes.** Both spec'd as scenes, neither built; `KF_CREATURE_POSE_DEAD` currently borrows the sick sprite.
-- **Facing.** `kf_creature::facing` is maintained but nothing uses it — a left-facing sprite needs either mirrored art or a mirroring blit, and `kf_blit` has no mirror.
+- **Facing** was in this list as unbuilt. It has since moved into scope: a
+  mirrored blit landed in `kf/blit.h` as its own task, and Task 4 now selects a
+  direction sprite and falls back to a mirrored `e` when no `w` art exists.
+- **Multi-frame animation.** Every sprite here is still a single still
+  (`default_frames = 1`). Chris has since asked for nine-frame animations on
+  essentially every pose, in three directions — the drowsy settle, the walk
+  cycle, and the rest. That is a pipeline change (the manifest, the ingest tool,
+  and a frame-sequencing player) and a large art-generation spend, and it is its
+  own plan. What is built here shows one frame per pose; nothing about it
+  prevents a sequence being swapped in later, because the screen resolves a
+  sprite by name every time the name changes.
