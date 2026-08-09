@@ -54,6 +54,14 @@ from kf_character_manifest import (
 # exaggerated feature, one residue detail, the frozen-frame rule, the
 # half-size silhouette test -- is the bible's and is unchanged, because
 # those are design rules and hold in any medium.
+#
+# SECOND DEVIATION, additive this time (Chris, second art pass, 2026-08-09):
+# the first pass of generated art read as thin and Western-illustration
+# rather than the intended Japanese kawaii look. This is a standing house-
+# style decision, not a one-batch instruction -- it applies to every
+# creature generated from here on, so it lives here rather than in one-off
+# prompt text. The KAWAII_SHAPE_BLOCK below is appended to every sprite's
+# style block for that reason.
 STYLE_BLOCK = """House style -- every sprite, no exceptions:
 - A Tamagotchi-style creature sprite, drawn as pixel art. Chunky and readable at a glance, more mascot than monster.
 - Flat blocks of solid color with clean, hard pixel edges and a dark outline. A small palette. No gradients, no anti-aliasing, no soft or painterly rendering, no sketched or hand-drawn line.
@@ -65,6 +73,18 @@ STYLE_BLOCK = """House style -- every sprite, no exceptions:
 - The quirk must be visible in this single still frame. If a viewer can't tell what's wrong or funny about it from a motionless silhouette, it isn't done.
 - Silhouette must stay legible shrunk to HALF the drawn size -- this is a small screen.
 - Background: fully transparent (alpha channel), not a solid fill of any color. The asset pipeline keys the background out itself; do not draw one."""
+
+# Japanese kawaii shape language, standing house style as of the second art
+# pass (Chris, 2026-08-09): "cute, fat, blobby pixel sprites ... chubby,
+# rounded, blobby", explicitly reacting against the first pass reading as
+# thin and Western-illustration. Kept as its own block (appended after
+# STYLE_BLOCK, not merged into it) so the two art-direction decisions --
+# "this is pixel art, not a marker drawing" and "this is kawaii, not
+# Western" -- stay separately attributable and separately editable.
+KAWAII_SHAPE_BLOCK = """Kawaii shape language -- every sprite, no exceptions:
+- Chubby and blobby, never thin or spindly. The body reads as one soft, rounded mass first and a creature second -- squash it wider and rounder than feels natural.
+- No sharp angles, no straight edges longer than a pixel or two, no waistline or narrow joints. Every outline is a smooth, bulging curve.
+- The silhouette should look like it would bounce or jiggle if you flicked it -- pixel-art plump, closer to a rice-cake or a plush toy than an illustrated sprite."""
 
 # Bible section 6: shared grammar for the four juveniles, read from the
 # manifest itself (meta.juvenile_shared_grammar) rather than duplicated
@@ -114,6 +134,8 @@ def build_prompt(spec: SpriteSpec, meta: dict) -> str:
         lines.append(_NO_BRIEF)
         lines.append("")
         lines.append(STYLE_BLOCK)
+        lines.append("")
+        lines.append(KAWAII_SHAPE_BLOCK)
         return "\n".join(lines)
 
     name = spec.display_name or spec.entity_id
@@ -136,6 +158,8 @@ def build_prompt(spec: SpriteSpec, meta: dict) -> str:
         lines.append(f"Quirk (job + wear + the one behavior that works against it): {spec.quirk}")
     if spec.note:
         lines.append(f"Context note: {spec.note}")
+    if spec.render_note:
+        lines.append(f"Render note: {spec.render_note}")
 
     lines.append("")
     lines.append(f"State: {spec.state}")
@@ -153,6 +177,8 @@ def build_prompt(spec: SpriteSpec, meta: dict) -> str:
 
     lines.append("")
     lines.append(STYLE_BLOCK)
+    lines.append("")
+    lines.append(KAWAII_SHAPE_BLOCK)
     return "\n".join(lines)
 
 

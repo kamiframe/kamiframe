@@ -163,6 +163,15 @@ class SpriteSpec:
     quirk: str | None
     note: str | None
     family_heading_note: str | None
+    render_note: str | None      # optional: how this entity should occupy its
+                                  # canvas (e.g. "draw small, centred, with
+                                  # transparent margin") -- see the egg entry
+                                  # in character_manifest.toml for why this
+                                  # exists; distinct from `note` (design/
+                                  # provenance context) because it is a
+                                  # rendering instruction a prompt builder
+                                  # should always surface, not a comment a
+                                  # human might skim past
 
     @property
     def filename(self) -> str:
@@ -261,6 +270,7 @@ def _sprites_for_entity(entity: dict, entity_id: str, code_token: str, stage: st
                         quirk=entity.get("quirk"),
                         note=entity.get("note"),
                         family_heading_note=entity.get("family_heading_note"),
+                        render_note=entity.get("render_note"),
                     )
 
 

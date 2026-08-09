@@ -131,26 +131,69 @@ build/kamiframe-sim --pack examples/creature_demo/assets.kfpack
 `examples/creature_demo/` is the first roster slice actually produced this
 way (egg + baby, every state, all three directions). Its `sprites/`
 directory holds the 18 source PNGs (48x48, RGBA); `assets.kfpack` is the
-packed result. How they were made:
+packed result.
 
-- **Egg** (`create_1_direction_object`, no skeleton) came back exactly
-  48x48, no resizing needed. `create_character`'s default humanoid
-  skeleton fights a limbless, faceless egg outright, so the egg used a
-  different Pixellab tool than the baby did.
-- **Baby** (`create_character` for the base `neutral` pose,
-  `create_character_state` for the other four states, so every pose stays
-  visually the same creature) came back 68x68 -- Pixellab's `size`
-  parameter sizes the character, not the canvas, which ships ~40% larger
-  "for room to animate." Downscaled to 48x48 with a uniform resize
-  (`sips -z 48 48`), not a crop: a crop risks clipping a pose that leans
-  or bounces off-centre (`happy`, for one); a resize cannot lose any part
-  of the character.
-- **The three egg sprites (`egg_idle_s_01`/`_e_01`/`_n_01`) are the exact
-  same image file**, deliberately, not a missing-art gap: the egg's own
-  design brief says it has no markings and nothing hints at what's
-  inside, so a plain, rotationally-symmetric egg genuinely looks identical
-  from the front, side, and back. A second or third generation would show
-  nothing a viewer couldn't already see in the first.
+**Second pass (2026-08-09):** the first pass's art read as thin and
+Western-illustration rather than the intended Japanese kawaii look, and the
+egg had no markings. Both were regenerated. The kawaii/chubby/blobby
+direction is now a standing house-style rule -- see
+`tools/kf_prompt_builder.py`'s `KAWAII_SHAPE_BLOCK` -- not a one-batch
+prompt tweak, so it applies to every future creature too. How the second
+pass was made:
+
+- **Both egg and baby switched to `create_8_direction_object`**, not
+  `create_character`. The first pass used `create_character` for the baby
+  because it was the tool that gives multiple directions from one
+  identity-preserving base; the problem is that `create_character` always
+  imposes a humanoid skeleton, even for a body type with no arms or legs,
+  and the first-pass baby shipped with a faint limb artifact as a result.
+  `create_8_direction_object` has no skeleton at all -- it is built for
+  *objects* rendered from 8 angles, not rigged characters -- and a floating
+  limbless blob is much closer to an object than a humanoid, so it fits
+  better on every axis: no skeleton to fight, and it still gives multiple
+  consistent-identity directions the way `create_1_direction_object` (the
+  first pass's egg tool) cannot. The trade-off: object generation has no
+  humanoid-specific controls (proportions, body type), which this brief
+  never needed anyway.
+- **State variants use `create_object_state`**, the object-pipeline
+  equivalent of `create_character_state` -- it preserves the source
+  object's identity and edits pose/expression on top, across all 8
+  directions at once. Used for the baby's `happy`/`objecting`/`sick`/
+  `sleeping` states, each built from the `neutral` base object.
+- **Limblessness was fully achievable this way.** The `create_8_direction_object`
+  baby has no arms, legs, or ground contact in any of the three shipped
+  directions (`s`/`e`/`n`) or the five unshipped ones. One early attempt
+  did grow an unwanted spiral/tail shape on its back and west views --
+  traced to the house style's "one exaggerated feature" + "something
+  sticking out of the top" asymmetry instructions being satisfied with an
+  invented appendage instead of the face -- fixed by pinning the
+  exaggerated-feature budget explicitly to the eyes in the prompt and
+  regenerating; the final art has no appendage anywhere.
+- **The egg came back at the full 48x48 request size** but Chris asked for
+  it to read as *smaller* within its frame -- roughly a third the size,
+  centred, with transparent margin, canvas unchanged. That's a framing
+  instruction, not something to ask the generator to draw directly (asking
+  an image model to leave 2/3 of a small canvas blank tends to produce
+  worse art than drawing the subject at full confidence and shrinking it
+  after), so it's done as a post-process: crop to the drawn egg's own
+  bounding box, nearest-neighbour scale that down to ~16px, then pad onto
+  a transparent 48x48 canvas, centred. `tools/character_manifest.toml`'s
+  new `render_note` field on the egg entry records this instruction where
+  the next person would look for it; the crop/scale/pad step itself is
+  scratch tooling, not part of the shipped pipeline, since it is a one-off
+  post-process rather than something every future sprite needs.
+- **Baby's 68x68 canvas** (Pixellab's `size` parameter sizes the drawn
+  character, not the canvas, which ships larger "for room to animate," a
+  behaviour object generation shares with character generation) is
+  downscaled to 48x48 with a uniform nearest-neighbour resize, no crop --
+  a crop risks clipping a pose that leans or bounces off-centre (`happy`,
+  for one); a resize cannot lose any part of the character.
+- **The three egg sprites are no longer identical.** The first pass's
+  plain, markingless egg looked genuinely the same from every angle, so
+  reusing one file for `_s_01`/`_e_01`/`_n_01` cost nothing. Now that the
+  egg has its own speckle pattern, each direction is its own generation --
+  a rotationally-consistent but not pixel-identical egg is part of what
+  "has its own markings" means.
 
 Nothing about `--pack` is specific to that one pack; point it at any
 `.kfpack` a run of `kf_ingest_sprites.py -o` produced.
