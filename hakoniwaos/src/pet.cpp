@@ -102,6 +102,38 @@ kf_pet_millipercent apply_decay(kf_pet_millipercent value,
 /* Cut, Hold, Mark, Go -- character bible section 6, in that index order. */
 constexpr uint8_t kAdultsInFamily[KF_PET_TEEN_FORM_COUNT] = {2u, 3u, 3u, 1u};
 
+/* The preference table: for each base trait and action, which variation is
+ * liked and which is disliked. The third is neutral by elimination, which
+ * is why only two numbers are stored -- a full 6x4x3 table of reactions
+ * could encode a creature with two favourites, and this cannot.
+ *
+ * Placeholder values, in the same spirit as the decay rates: the SHAPE is
+ * the decision (every trait wants something different, and no two traits
+ * want the same set of things), and the specific assignments are for
+ * living with. Chris tunes this once there is a creature to tune it
+ * against.
+ *
+ * Rows are base traits, columns are kf_pet_care_action in enum order. */
+constexpr uint8_t kLikedVariation[KF_PET_BASE_TRAIT_COUNT]
+                                 [KF_PET_CARE_ACTION_COUNT] = {
+    {0u, 1u, 2u, 0u},
+    {1u, 2u, 0u, 2u},
+    {2u, 0u, 1u, 1u},
+    {0u, 2u, 1u, 2u},
+    {1u, 0u, 2u, 1u},
+    {2u, 1u, 0u, 0u},
+};
+
+constexpr uint8_t kDislikedVariation[KF_PET_BASE_TRAIT_COUNT]
+                                     [KF_PET_CARE_ACTION_COUNT] = {
+    {1u, 2u, 0u, 1u},
+    {2u, 0u, 1u, 0u},
+    {0u, 1u, 2u, 2u},
+    {2u, 1u, 0u, 0u},
+    {0u, 2u, 1u, 2u},
+    {1u, 0u, 2u, 1u},
+};
+
 /* -----------------------------------------------------------------------
  * Stage progression.
  * ----------------------------------------------------------------------- */
@@ -712,6 +744,23 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form) {
         return 1u;
     }
     return kAdultsInFamily[teen_form];
+}
+
+uint8_t kf_pet_reaction_to(uint8_t base_trait, kf_pet_care_action action,
+                            uint8_t variation) {
+    const unsigned a = static_cast<unsigned>(action);
+    if (base_trait >= KF_PET_BASE_TRAIT_COUNT ||
+        a >= KF_PET_CARE_ACTION_COUNT ||
+        variation >= KF_PET_CARE_VARIATION_COUNT) {
+        return KF_PET_REACTION_NEUTRAL;
+    }
+    if (variation == kLikedVariation[base_trait][a]) {
+        return KF_PET_REACTION_LIKED;
+    }
+    if (variation == kDislikedVariation[base_trait][a]) {
+        return KF_PET_REACTION_DISLIKED;
+    }
+    return KF_PET_REACTION_NEUTRAL;
 }
 
 kf_pet_config kf_pet_default_config(void) {

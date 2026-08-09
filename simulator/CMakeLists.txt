@@ -328,6 +328,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_death_check
              COMMAND kamiframe-headless --verify-pet-death)
 
+    # Proves the care-variation preference table (docs/superpowers/plans/
+    # 2026-08-09-care-variations.md) is exhaustively well-shaped: all six
+    # traits x four actions x three variations, every trait has exactly one
+    # liked/neutral/disliked variation of every action, no two traits agree
+    # on everything, and out-of-range input degrades to neutral rather than
+    # reading past the table. See headless_main.cpp's
+    # run_pet_preferences_check().
+    add_test(NAME pet_preferences_check
+             COMMAND kamiframe-headless --verify-pet-preferences)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read

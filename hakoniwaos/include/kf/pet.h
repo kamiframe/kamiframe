@@ -150,6 +150,53 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form);
  * in the Lua cartridge layer, not here. */
 #define KF_PET_BASE_TRAIT_COUNT 6u
 
+/* The four care actions, as an index. Order is arbitrary but fixed: it is
+ * the column order of the preference table and the argument to
+ * kf_pet_reaction_to(), so reordering it silently rewrites every creature's
+ * preferences. */
+typedef enum {
+    KF_PET_CARE_FEED = 0,
+    KF_PET_CARE_PLAY = 1,
+    KF_PET_CARE_REST = 2,
+    KF_PET_CARE_CLEAN = 3,
+} kf_pet_care_action;
+
+#define KF_PET_CARE_ACTION_COUNT 4u
+
+/* How many ways there are to perform each action. Three, per the care-loop
+ * spec's section 8: enough to prove the shape, where five is five times the
+ * art and tuning before the loop is known to be fun.
+ *
+ * WHAT each variation IS -- a snack or a proper meal, a bath or a wipe --
+ * is creative content and lives in the cartridge layer, exactly like the
+ * trait and evolution names. Core only ever knows there are three. */
+#define KF_PET_CARE_VARIATION_COUNT 3u
+
+/* How a creature took it. The player reads this, not the bars: with six
+ * traits, four actions and three variations there is no discovering
+ * anything from a bar that moved slightly less than expected. */
+typedef enum {
+    KF_PET_REACTION_LIKED = 0,
+    KF_PET_REACTION_NEUTRAL = 1,
+    KF_PET_REACTION_DISLIKED = 2,
+} kf_pet_reaction;
+
+/* How a creature with `base_trait` reacts to `variation` of `action`.
+ *
+ * A pure function of the table, taking no creature: the screen can preview
+ * it, a script can explain it, and a test can walk all seventy-two
+ * combinations without constructing anything. Preferences live on the BASE
+ * trait, which is rolled once and never changes, so this answer is stable
+ * for a creature's whole life and transfers to every future creature that
+ * shares the trait -- which is what makes learning it worth the player's
+ * time. See the care-loop spec's section 5.
+ *
+ * Out-of-range input returns KF_PET_REACTION_NEUTRAL rather than reading
+ * past the table: a corrupted save that survived the version check should
+ * land somewhere boring and defined. */
+uint8_t kf_pet_reaction_to(uint8_t base_trait, kf_pet_care_action action,
+                            uint8_t variation);
+
 /* Decay rates (millipercent per hour) and stage durations (seconds).
  * Config, not a constant, because "a dev writes a pet by configuring and
  * skinning this" is the whole point -- see the header comment above.

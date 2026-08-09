@@ -18,6 +18,7 @@
  *     kamiframe-headless --verify-pet-personality
  *     kamiframe-headless --verify-mess
  *     kamiframe-headless --verify-dirtiness
+ *     kamiframe-headless --verify-pet-preferences
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -1588,6 +1589,101 @@ int run_pet_death_check(void) {
     return ok ? 0 : 1;
 }
 
+/* The preference table is the one system in this care loop that a player
+ * is meant to LEARN rather than read. That only works if it is consistent,
+ * so this checks its shape exhaustively -- all six traits, all four
+ * actions, all three variations -- rather than spot-checking a few. Seventy
+ * two combinations is nothing to iterate and it is the difference between
+ * "the table is probably fine" and "the table is fine". */
+int run_pet_preferences_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    for (uint8_t trait = 0u; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
+        for (uint8_t a = 0u; a < KF_PET_CARE_ACTION_COUNT; ++a) {
+            const kf_pet_care_action action = static_cast<kf_pet_care_action>(a);
+            unsigned liked = 0u, neutral = 0u, disliked = 0u;
+            for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+                switch (kf_pet_reaction_to(trait, action, v)) {
+                case KF_PET_REACTION_LIKED:
+                    liked++;
+                    break;
+                case KF_PET_REACTION_NEUTRAL:
+                    neutral++;
+                    break;
+                case KF_PET_REACTION_DISLIKED:
+                    disliked++;
+                    break;
+                default:
+                    check(false, "every reaction is one of the three");
+                    break;
+                }
+            }
+            check(liked == 1u && neutral == 1u && disliked == 1u,
+                  "every trait has exactly one liked, one neutral and one "
+                  "disliked variation of every action -- a trait with two "
+                  "favourites or none is not something a player can learn");
+        }
+    }
+
+    /* Traits must actually differ, or there is nothing to discover. */
+    bool any_difference = false;
+    for (uint8_t a = 0u; a < KF_PET_CARE_ACTION_COUNT; ++a) {
+        const kf_pet_care_action action = static_cast<kf_pet_care_action>(a);
+        for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+            const uint8_t first = kf_pet_reaction_to(0u, action, v);
+            for (uint8_t trait = 1u; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
+                if (kf_pet_reaction_to(trait, action, v) != first) {
+                    any_difference = true;
+                }
+            }
+        }
+    }
+    check(any_difference,
+          "different traits want different things -- a table where every "
+          "creature agrees is a table with no game in it");
+
+    /* No two traits may be identical across the whole table, or two of the
+     * six are indistinguishable in play and one of them is dead weight. */
+    for (uint8_t x = 0u; x < KF_PET_BASE_TRAIT_COUNT; ++x) {
+        for (uint8_t y = static_cast<uint8_t>(x + 1u);
+             y < KF_PET_BASE_TRAIT_COUNT; ++y) {
+            bool identical = true;
+            for (uint8_t a = 0u; a < KF_PET_CARE_ACTION_COUNT; ++a) {
+                const kf_pet_care_action action =
+                    static_cast<kf_pet_care_action>(a);
+                for (uint8_t v = 0u; v < KF_PET_CARE_VARIATION_COUNT; ++v) {
+                    if (kf_pet_reaction_to(x, action, v) !=
+                        kf_pet_reaction_to(y, action, v)) {
+                        identical = false;
+                    }
+                }
+            }
+            check(!identical,
+                  "no two traits have identical preferences -- two traits a "
+                  "player cannot tell apart are one trait and a waste of a "
+                  "slot");
+        }
+    }
+
+    /* Nonsense input lands somewhere defined rather than reading off the
+     * end of the table. A corrupted save is the realistic route in. */
+    check(kf_pet_reaction_to(200u, KF_PET_CARE_FEED, 0u) <=
+              KF_PET_REACTION_DISLIKED,
+          "an out-of-range trait returns a valid reaction");
+    check(kf_pet_reaction_to(0u, KF_PET_CARE_FEED, 200u) <=
+              KF_PET_REACTION_DISLIKED,
+          "an out-of-range variation returns a valid reaction");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -2369,6 +2465,7 @@ int main(int argc, char *argv[]) {
     bool verify_dirtiness = false;
     bool verify_pet_sickness = false;
     bool verify_pet_death = false;
+    bool verify_pet_preferences = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2415,6 +2512,8 @@ int main(int argc, char *argv[]) {
             verify_pet_sickness = true;
         } else if (std::strcmp(argv[i], "--verify-pet-death") == 0) {
             verify_pet_death = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-preferences") == 0) {
+            verify_pet_preferences = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2444,6 +2543,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-dirtiness\n"
                         "kamiframe-headless --verify-pet-sickness\n"
                         "kamiframe-headless --verify-pet-death\n"
+                        "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2511,6 +2611,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_death) {
         return run_pet_death_check();
+    }
+
+    if (verify_pet_preferences) {
+        return run_pet_preferences_check();
     }
 
     if (verify_lua_pet) {
