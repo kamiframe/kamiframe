@@ -198,6 +198,56 @@ pass was made:
 Nothing about `--pack` is specific to that one pack; point it at any
 `.kfpack` a run of `kf_ingest_sprites.py -o` produced.
 
+**Third pass (2026-08-09):** added the shrine (death scene), Marumaru
+(the `child` life stage), and the first teen form (`hamaru`/`teen0`) --
+31 sprites, bringing `examples/creature_demo/` to 49. Scoped deliberately:
+the owner was hitting placeholder rectangles as soon as the demo pet grew
+up, so this batch unblocks that rather than finishing the full 378-sprite
+roster (the remaining three teens and all ten adults are still unmade).
+
+- **The shrine is a new *kind* of manifest entry, not a new creature life
+  stage.** `simulator/src/pet/kf_creature_screen.cpp` looks it up by the
+  literal name `shrine_idle_s_01`, never through
+  `kf_creature_sprite_name()` -- a shrine is scenery, not a creature with a
+  pose to look up. It needed exactly one sprite (one state, one direction),
+  which no existing entity did, so `tools/kf_character_manifest.py` grew a
+  `directions` per-entity override (defaulting to the usual three) and
+  `iter_sprites()` picked up a fourth shared-stage table, `[stages.shrine]`,
+  alongside egg/baby/child. See that file's own comments on both changes,
+  and the manifest entry's comment for why the mechanism-reuse (same
+  `[stages.X]` shape) doesn't make it an actual life stage.
+- **Generated with `create_8_direction_object` even though only one
+  direction shipped** -- for the shrine, not `create_1_direction_object`,
+  specifically to keep the same camera angle (`view = "low top-down"`) as
+  every creature sprite, so scenery and creature read as the same world.
+  Only the south rotation was downloaded; the other seven were generated
+  and discarded, which is the accepted cost of matching the camera exactly
+  rather than guessing at an equivalent angle from a cheaper tool.
+- **Marumaru (child) and Hamaru (teen0) both used the same
+  `create_8_direction_object` (neutral base) + `create_object_state` (the
+  other four care-loop states) sequence the second pass established for
+  the baby** -- see that section above. No new technique was needed for
+  either.
+- **All three requests used `size=48` directly**, unlike the baby's 68px
+  canvas in the second pass. `create_8_direction_object` returned exact
+  48x48 PNGs for all three entities this time, so the crop/downscale
+  post-process the second pass needed for the egg and baby was not
+  necessary here -- confirmed by decoding each PNG's own IHDR before
+  ingesting, not assumed.
+- **Every generation call requested `size=48` and `view="low top-down"`**,
+  matching the baby's own defaults, so the new sprites sit in the same
+  camera/scale family without a second style negotiation.
+- Ingest was run with `--id shrine`, `--id marumaru`, and `--id hamaru`
+  first (all three: 100% ok, 0 missing, 0 invalid) before the unfiltered
+  pack build, which -- with the roster still 330 sprites short of the full
+  378 -- always reports "missing" for the ungenerated teens/adults and
+  exits non-zero; that exit code does not mean the pack write failed. It
+  still writes and independently re-verifies whatever *did* validate
+  (`--strict` is the flag that would refuse to write on any gap, and
+  wasn't used here on purpose). Check the "wrote ... / pack verification:
+  OK" lines, not the process exit code, to see whether the write itself
+  succeeded.
+
 ## If something's confusing
 
 Every one of these commands accepts `--help` and will explain its own

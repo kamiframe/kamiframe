@@ -230,7 +230,7 @@ def main(argv=None) -> int:
     p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     p.add_argument("-o", "--out", type=Path, help=".kfpack path to write (only sprites that validate are packed)")
     p.add_argument("--id", help="only this entity id, e.g. chokimaru")
-    p.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult"])
+    p.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
     p.add_argument("--strict", action="store_true",
                     help="write nothing if anything is missing or invalid (default: pack what validates, report the rest)")
     args = p.parse_args(argv)

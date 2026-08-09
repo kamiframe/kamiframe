@@ -216,6 +216,23 @@ def _entity_size(entity: dict, meta: dict) -> tuple[int, int]:
     return size, size
 
 
+def _entity_directions(entity: dict) -> tuple[str, ...]:
+    """DIRECTIONS (module-level) unless the entity overrides it with its own
+    `directions = [...]`. Introduced for the shrine entity: a shrine is
+    scenery, not a creature with facings (see [stages.shrine]'s own comment
+    in the manifest), so it needs exactly one direction ("s") instead of the
+    usual three. No entity before it needed this, which is why it did not
+    exist until now."""
+    directions = entity.get("directions")
+    if directions is None:
+        return DIRECTIONS
+    for d in directions:
+        if d not in DIRECTIONS:
+            raise ManifestError(
+                f"direction '{d}' is not one of {DIRECTIONS}")
+    return tuple(directions)
+
+
 def _iter_shared_stage(stage_key: str, raw: dict, meta: dict) -> Iterator[SpriteSpec]:
     entity = raw["stages"][stage_key]
     entity_id = entity.get("id", stage_key)
@@ -238,12 +255,13 @@ def _sprites_for_entity(entity: dict, entity_id: str, code_token: str, stage: st
     states = _entity_states(entity, meta)
     frame_count = _entity_frames(entity, meta)
     width, height = _entity_size(entity, meta)
+    directions = _entity_directions(entity)
     grudge = grudge_eligible and entity.get("grudge", False)
     variants: list[str | None] = [None, GRUDGE_VARIANT] if grudge else [None]
 
     for state in states:
         for variant in variants:
-            for direction in DIRECTIONS:
+            for direction in directions:
                 for frame in range(1, frame_count + 1):
                     parts = [code_token, state, direction]
                     if variant:
@@ -281,7 +299,19 @@ def iter_sprites(raw: dict) -> Iterator[SpriteSpec]:
     teens = raw.get("teens", [])
     families = raw.get("families", [])
 
-    for stage_key in ("egg", "baby", "child"):
+    # Shared single-design entities: the three real creature life stages
+    # (egg/baby/child) plus "shrine" -- not a creature life stage at all
+    # (see [stages.shrine]'s own comment in the manifest for what it
+    # actually is: the death scene's scenery), but declared under the same
+    # [stages.X] table shape because the MECHANISM is identical -- one
+    # code_token equal to the stage key, no branch indices, no
+    # [[teens]]/[[adults]] machinery. Guarded with a membership check
+    # (unlike egg/baby/child, which have been required since the first
+    # pass) so a manifest without a [stages.shrine] table -- e.g. an older
+    # one -- does not KeyError here.
+    for stage_key in ("egg", "baby", "child", "shrine"):
+        if stage_key not in raw.get("stages", {}):
+            continue
         yield from _iter_shared_stage(stage_key, raw, meta)
 
     # teen_form_index: a teen's position in [[teens]] IS its teen_form --
@@ -426,7 +456,7 @@ def _cmd_stats(raw: dict, args) -> int:
 
     print(f"manifest: {args.manifest}")
     print(f"total sprites: {len(specs)}")
-    for stage in ("egg", "baby", "child", "teen", "adult"):
+    for stage in ("egg", "baby", "child", "teen", "adult", "shrine"):
         print(f"  {stage:6s}: {by_stage.get(stage, 0)}")
     print(f"distinct entities: {len({s.entity_id for s in specs})}")
     print(f"longest sprite name: '{longest.sprite_name}' "
@@ -463,7 +493,7 @@ def main(argv=None) -> int:
     sub.add_parser("stats", help="print sprite counts and validate names")
 
     listp = sub.add_parser("list", help="list sprite names, one per line")
-    listp.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult"])
+    listp.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
     listp.add_argument("--id", help="filter to one entity id, e.g. chokimaru")
     listp.add_argument("--state", help="filter to one state, e.g. happy")
     listp.add_argument("--direction", choices=list(DIRECTIONS), help="filter to one facing direction")
