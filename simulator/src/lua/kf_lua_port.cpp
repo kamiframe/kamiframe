@@ -115,6 +115,28 @@ int lua_pet_rest(lua_State *L) {
     return 0;
 }
 
+int lua_pet_clean(lua_State *L) {
+    (void)L;
+    kf_pet_session_clean();
+    return 0;
+}
+
+/* Mess, readable from a script. Poops are a plain count and dirtiness is
+ * millipercent like the three needs, so a creature script can react to
+ * "there are three poops down" or "we are past the flies threshold" the
+ * same way it already reacts to hunger. */
+int lua_pet_poops(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->poop_count));
+    return 1;
+}
+
+int lua_pet_dirtiness(lua_State *L) {
+    lua_pushinteger(
+        L, static_cast<lua_Integer>(kf_pet_session_state()->dirtiness_mp));
+    return 1;
+}
+
 int lua_pet_save(lua_State *L) {
     (void)L;
     kf_pet_session_save();
@@ -208,6 +230,9 @@ const luaL_Reg kKfPetFuncs[] = {
     {"feed", lua_pet_feed},
     {"play", lua_pet_play},
     {"rest", lua_pet_rest},
+    {"clean", lua_pet_clean},
+    {"poops", lua_pet_poops},
+    {"dirtiness", lua_pet_dirtiness},
     {"save", lua_pet_save},
     {"stage", lua_pet_stage},
     {"teen_form", lua_pet_teen_form},

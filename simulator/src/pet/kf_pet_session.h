@@ -102,6 +102,7 @@ const kf_pet_state *kf_pet_session_state(void);
 void kf_pet_session_feed(void);
 void kf_pet_session_play(void);
 void kf_pet_session_rest(void);
+void kf_pet_session_clean(void);
 
 /* Persists the active pet's state now, via kf_pet_save(). Called
  * automatically by kf_pet_session_shutdown(), and exposed here too (and to

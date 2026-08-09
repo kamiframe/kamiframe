@@ -1769,6 +1769,55 @@ int run_lua_pet_check() {
           "same live state as everything else here");
     kf_lua_port_shutdown();
 
+    /* Stage 4: mess (the care-loop spec's section 4), still the same
+     * session. Mess is the one care type with no bar of its own, so the
+     * only way a script can react to it is through pet.poops() and
+     * pet.dirtiness() -- and the only way a player can act on it is
+     * pet.clean(). Both halves are checked here.
+     *
+     * The dt is large on purpose: poops arrive on a 1800-second timer
+     * (kf_pet_default_config()), so proving the reads see something other
+     * than a constant zero needs simulated hours, not frames. 60 frames of
+     * 120000ms is 7200 simulated seconds -- four poop intervals, enough
+     * that the count is unambiguously nonzero without relying on the exact
+     * interval. */
+    constexpr uint32_t kStage4DtMs = 120000u;
+    constexpr long kStage4Frames = 60;
+    check(kf_lua_port_init(kKfLuaPetMessProofScriptSource,
+                            kKfLuaPetMessProofScriptChunkName),
+          "stage 4 (mess) proof script loaded");
+    for (long i = 0; i < kStage4Frames; ++i) {
+        kf_pet_session_frame(kStage4DtMs);
+        kf_lua_port_frame(kStage4DtMs);
+    }
+    const kf_pet_state *live_messy = kf_pet_session_state();
+    check(live_messy->poop_count > 0u && live_messy->dirtiness_mp > 0u,
+          "the live session really did get messy over stage 4 -- without "
+          "this the report comparison below would pass on two zeroes");
+    check(kf_lua_port_last_report() ==
+              static_cast<int64_t>(live_messy->poop_count) * 1000000 +
+                  static_cast<int64_t>(live_messy->dirtiness_mp),
+          "pet.poops() and pet.dirtiness() read via Lua match the live "
+          "C++ state exactly");
+    kf_lua_port_shutdown();
+
+    /* Now clean it up from Lua. dt is zero for these frames so no new mess
+     * can arrive between the call and the check -- what is being proven is
+     * that pet.clean() reached kf_pet_clean(), not how fast mess returns. */
+    check(kf_lua_port_init(kKfLuaPetCleanProofScriptSource,
+                            kKfLuaPetCleanProofScriptChunkName),
+          "stage 4 (clean) proof script loaded");
+    kf_pet_session_frame(0u);
+    kf_lua_port_frame(0u);
+    const kf_pet_state *live_cleaned = kf_pet_session_state();
+    check(kf_lua_port_last_report() == 0,
+          "pet.poops() reports zero straight after pet.clean()");
+    check(live_cleaned->poop_count == 0u && live_cleaned->dirtiness_mp == 0u,
+          "pet.clean() called from Lua cleared both halves of mess in the "
+          "live C++ state -- checked directly, independent of what the "
+          "script itself reported");
+    kf_lua_port_shutdown();
+
     kf_pet_session_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();

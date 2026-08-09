@@ -9,7 +9,7 @@
  * which runs these scripts back to back against the SAME continuing pet
  * session.
  *
- * Three scripts, not one, because they prove different things and mixing
+ * Five scripts, not one, because they prove different things and mixing
  * them into a single kf.report() call would need to encode multiple values
  * into one integer:
  *
@@ -47,6 +47,20 @@
  *       from kf_pet_session_state()/kf_pet_dominant_care_trait() in C++
  *       and compares -- the same "script report vs. live C++ state" proof
  *       the other two scripts use, extended to the five accessors.
+ *
+ *   kKfLuaPetMessProofScriptSource    Reports pet.poops() and
+ *       pet.dirtiness() packed into one integer (poops * 1000000 +
+ *       dirtiness -- dirtiness is millipercent, so at most 100000, a
+ *       decimal digit clear of the multiplier). Touches nothing. Proves
+ *       the two mess reads see live state, by the same comparison the
+ *       decay script uses for hunger.
+ *
+ *   kKfLuaPetCleanProofScriptSource   Calls pet.clean() and reports
+ *       pet.poops(). Run immediately after the mess script has left real
+ *       mess on the floor, so a zero afterwards can only mean the call
+ *       reached kf_pet_clean() -- the same "mutate, then check the live
+ *       C++ state independently" proof the care script uses, applied to
+ *       the fourth care action.
  */
 
 #ifndef KF_LUA_PET_PROOF_SCRIPT_H
@@ -91,5 +105,28 @@ kf.log("pet stage proof script loaded")
 
 inline constexpr const char *kKfLuaPetStageProofScriptChunkName =
     "=pet_stage_proof_script";
+
+inline constexpr const char *kKfLuaPetMessProofScriptSource = R"lua(
+function on_frame(dt_ms)
+    kf.report(pet.poops() * 1000000 + pet.dirtiness())
+end
+
+kf.log("pet mess proof script loaded")
+)lua";
+
+inline constexpr const char *kKfLuaPetMessProofScriptChunkName =
+    "=pet_mess_proof_script";
+
+inline constexpr const char *kKfLuaPetCleanProofScriptSource = R"lua(
+function on_frame(dt_ms)
+    pet.clean()
+    kf.report(pet.poops())
+end
+
+kf.log("pet clean proof script loaded")
+)lua";
+
+inline constexpr const char *kKfLuaPetCleanProofScriptChunkName =
+    "=pet_clean_proof_script";
 
 #endif /* KF_LUA_PET_PROOF_SCRIPT_H */
