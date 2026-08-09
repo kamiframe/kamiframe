@@ -57,10 +57,13 @@ back to back starting at directory_offset:
                    (not from the directory or from this entry) to this
                    entry's raw payload. Always a multiple of 4 -- see
                    "Alignment" below.
-    48      4     data_bytes (uint32), the payload's length in bytes. For a
-                   sprite this is always width*height*2 -- stored
-                   explicitly rather than only recomputed by the reader, so
-                   a corrupt width/height is caught by a mismatch check
+    48      4     data_bytes (uint32), the payload's length in bytes. For
+                   ASSET_TYPE_SPRITE this is width*height*2; for
+                   ASSET_TYPE_SPRITE_INDEXED it is
+                   palette_bytes_padded + frame_count*width*height (see
+                   "Asset types" below for both) -- stored explicitly rather
+                   than only recomputed by the reader, so a corrupt
+                   width/height/frame_count is caught by a mismatch check
                    instead of silently reading the wrong number of bytes.
 
 Payload data: for each entry, data_bytes raw bytes starting at that
@@ -125,8 +128,12 @@ is a new value in this table plus a new decoder, not a new file format:
         When flags bit 0 is set, PALETTE ENTRY 0 IS THE COLOUR KEY and
         index 0 is never drawn. Fixed by convention rather than stored,
         so the blitter compares against a compile-time constant; the
-        producer is what guarantees it (tools/kf_ingest_sprites.py forces
-        the magenta key into slot 0).
+        producer is what guarantees it. As of this task that means
+        quantize_rgb565() (below), which always seeds the palette with the
+        key colour first, plus make_indexed_asset()'s own check that
+        palette[0] really is the caller's declared color_key.
+        tools/kf_ingest_sprites.py has no indexed-sprite support yet -- it
+        will need the same guarantee when Task 4 gives it one.
 
         NO FORMAT VERSION BUMP. This is a new asset_type in the existing
         52-byte directory entry, which is precisely the extension path
@@ -260,11 +267,31 @@ def _indexed_sprite_type_meta(width: int, height: int, frame_count: int,
     return meta
 
 
-def make_indexed_asset(name, width, height, frames, palette, has_color_key):
+def make_indexed_asset(name, width, height, frames, palette, has_color_key,
+                        color_key=None):
     """`frames` is a list of bytes objects, each width*height index bytes,
     frame 0 first. `palette` is a list of RGB565 ints, entry 0 being the
     colour key when has_color_key. Returns one packable entry dict, the same
-    shape make_test_sprite() returns."""
+    shape make_test_sprite() returns.
+
+    When has_color_key is True, the caller must also pass `color_key` (the
+    RGB565 int that pixels equal to should not draw) -- this function is what
+    the format comment's "the producer guarantees palette[0] is the colour
+    key" claim actually cashes out to, so it checks it itself instead of
+    trusting that every caller happened to route through quantize_rgb565(),
+    which is the only thing that currently makes it true."""
+    if has_color_key:
+        if color_key is None:
+            raise ValueError(
+                f"'{name}': has_color_key=True requires color_key so this "
+                "function can verify palette[0] is really it")
+        if not palette or palette[0] != color_key:
+            raise ValueError(
+                f"'{name}': has_color_key=True but palette[0] "
+                f"({palette[0] if palette else 'EMPTY'!r}) != color_key "
+                f"({color_key!r}) -- KF_SPRITE_KEY_INDEX (kf/types.h) is "
+                "fixed at slot 0, so the packer refuses to write a sprite "
+                "whose key colour is anywhere else")
     for i, f in enumerate(frames):
         if len(f) != width * height:
             raise ValueError(f"'{name}' frame {i}: {len(f)} bytes, expected "
@@ -391,7 +418,8 @@ def make_indexed_test_sprite():
     key = rgb565(*TEST_SPRITE_COLOR_KEY)
     palette, frames = quantize_rgb565([_test_sprite_pixels_565()], key)
     return make_indexed_asset("test_sprite", TEST_SPRITE_W, TEST_SPRITE_H,
-                               frames, palette, has_color_key=True)
+                               frames, palette, has_color_key=True,
+                               color_key=key)
 
 
 def _shift_pixels_565(pixels565, width, height, shift):
@@ -421,7 +449,7 @@ def make_test_sprite_anim(frame_count):
     palette, frames = quantize_rgb565(frames565, key)
     return make_indexed_asset("test_sprite_anim", TEST_SPRITE_W,
                                TEST_SPRITE_H, frames, palette,
-                               has_color_key=True)
+                               has_color_key=True, color_key=key)
 
 
 # --------------------------------------------------------------------------
