@@ -1964,29 +1964,103 @@ int run_creature_pose_check(void) {
         }
     }
 
-    /* Task 2: (stage, pose) -> the asset-pack sprite name, per
-     * tools/character_manifest.toml's <entity>_<state>_<frame> convention.
-     * Egg collapses every pose to egg_idle_01 (the manifest gives the egg
-     * exactly one state, "idle") -- the case that matters most, because
-     * getting it wrong means the egg silently draws nothing. */
+    /* Task 2: (pet, pose, dir) -> the asset-pack sprite name, per
+     * tools/character_manifest.toml's naming convention now that teen and
+     * adult sprites are branch-specific rather than shared:
+     * <stage><indices>_<pose>_<dir>_<frame>. Egg collapses every pose to
+     * egg_idle_<dir>_01 (the manifest gives the egg exactly one state,
+     * "idle") -- the case that matters most, because getting it wrong means
+     * the egg silently draws nothing. teen_form/adult_branch come from the
+     * pet, not the stage, which is why this takes a pet state rather than a
+     * bare stage now: from the teen stage onward, "which sprite" cannot be
+     * answered from the stage alone. */
     struct NameCase {
         kf_pet_stage stage;
+        uint8_t teen_form;
+        uint8_t adult_branch;
         kf_creature_pose pose;
+        kf_creature_direction dir;
         const char *expect;
     };
     const NameCase names[] = {
-        {KF_PET_STAGE_EGG, KF_CREATURE_POSE_NEUTRAL, "egg_idle_01"},
-        {KF_PET_STAGE_EGG, KF_CREATURE_POSE_SICK, "egg_idle_01"},
-        {KF_PET_STAGE_BABY, KF_CREATURE_POSE_NEUTRAL, "baby_neutral_01"},
-        {KF_PET_STAGE_BABY, KF_CREATURE_POSE_SLEEPING, "baby_sleeping_01"},
-        {KF_PET_STAGE_CHILD, KF_CREATURE_POSE_HAPPY, "child_happy_01"},
+        /* Egg: collapses every pose to "idle", but not every direction --
+         * exercises S, E and N across the collapse in one pass. */
+        {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_S,
+         "egg_idle_s_01"},
+        {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_SICK, KF_CREATURE_DIR_E,
+         "egg_idle_e_01"},
+        {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_N,
+         "egg_idle_n_01"},
+        /* Baby and child: shared single designs, no branch indices. */
+        {KF_PET_STAGE_BABY, 0, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_S,
+         "baby_neutral_s_01"},
+        {KF_PET_STAGE_BABY, 0, 0, KF_CREATURE_POSE_SLEEPING, KF_CREATURE_DIR_E,
+         "baby_sleeping_e_01"},
+        {KF_PET_STAGE_CHILD, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_N,
+         "child_happy_n_01"},
+        /* Teen: branches by teen_form alone. form 0 and a non-zero form
+         * (3), plus the dust form (4, KF_PET_TEEN_FORM_DUST). */
+        {KF_PET_STAGE_TEEN, 0, 0, KF_CREATURE_POSE_OBJECTING, KF_CREATURE_DIR_S,
+         "teen0_objecting_s_01"},
+        {KF_PET_STAGE_TEEN, 3, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_E,
+         "teen3_neutral_e_01"},
+        {KF_PET_STAGE_TEEN, 4, 0, KF_CREATURE_POSE_SICK, KF_CREATURE_DIR_N,
+         "teen4_sick_n_01"},
+        /* Adult: branches by teen_form AND adult_branch. Non-zero of both,
+         * checked against the length worked out by hand in the task brief. */
+        {KF_PET_STAGE_ADULT, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_S,
+         "adult00_happy_s_01"},
+        {KF_PET_STAGE_ADULT, 2, 1, KF_CREATURE_POSE_OBJECTING, KF_CREATURE_DIR_E,
+         "adult21_objecting_e_01"},
+        /* DEAD has no art yet and falls back to the sick sprite -- see
+         * kf/creature.h. Not a defect; this is the one place that fallback
+         * is pinned down by a test. */
+        {KF_PET_STAGE_CHILD, 0, 0, KF_CREATURE_POSE_DEAD, KF_CREATURE_DIR_S,
+         "child_sick_s_01"},
     };
     for (const NameCase &c : names) {
+        kf_pet_state named_pet{};
+        kf_pet_init(&named_pet);
+        named_pet.stage = c.stage;
+        named_pet.teen_form = c.teen_form;
+        named_pet.adult_branch = c.adult_branch;
         char buf[32] = {0};
-        kf_creature_sprite_name(c.stage, c.pose, buf, sizeof(buf));
+        kf_creature_sprite_name(&named_pet, c.pose, c.dir, buf, sizeof(buf));
         if (std::strcmp(buf, c.expect) != 0) {
             KF_LOGE(TAG, "name: expected '%s', got '%s'", c.expect, buf);
             ok = false;
+        }
+    }
+
+    /* The manifest's own stated limit (tools/kf_character_manifest.py's
+     * PACK_NAME_MAX_CHARS) is 31 characters. adult<teen_form><adult_branch>
+     * is the longest stage token and "objecting" the longest pose, so sweep
+     * every branch index and every pose/direction combination on the adult
+     * stage and assert the limit directly, rather than trusting the by-hand
+     * arithmetic in the task brief not to have an off-by-one in it. */
+    for (uint8_t teen_form = 0; teen_form <= KF_PET_TEEN_FORM_DUST; ++teen_form) {
+        for (uint8_t branch = 0; branch < KF_PET_ADULT_BRANCH_MAX; ++branch) {
+            for (int pose = 0; pose < KF_CREATURE_POSE_COUNT; ++pose) {
+                for (int dir = 0; dir < KF_CREATURE_DIR_COUNT; ++dir) {
+                    kf_pet_state limit_pet{};
+                    kf_pet_init(&limit_pet);
+                    limit_pet.stage = KF_PET_STAGE_ADULT;
+                    limit_pet.teen_form = teen_form;
+                    limit_pet.adult_branch = branch;
+                    char buf[32] = {0};
+                    kf_creature_sprite_name(&limit_pet,
+                                             static_cast<kf_creature_pose>(pose),
+                                             static_cast<kf_creature_direction>(dir),
+                                             buf, sizeof(buf));
+                    if (std::strlen(buf) > 31u) {
+                        KF_LOGE(TAG,
+                                "name: '%s' is %zu chars, over the 31-char "
+                                "manifest limit",
+                                buf, std::strlen(buf));
+                        ok = false;
+                    }
+                }
+            }
         }
     }
 

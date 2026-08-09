@@ -5,7 +5,6 @@
 #include "kf/rng.h"
 
 #include <stdio.h>
-#include <string.h>
 
 kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
                                       uint32_t reaction_hold_ms) {
@@ -31,20 +30,39 @@ kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
 
 namespace {
 
-/* tools/character_manifest.toml's stage entities are keyed "egg", "baby",
- * "child" for these first three code stages; teen and adult sprites are not
- * in the manifest yet (only the four juveniles and ten confirmed adults,
- * keyed by creature id, not by stage) -- "baby" is this file's own fallback
- * for anything out of range, same defensive default kf/pet.h's own
- * out-of-range handling uses elsewhere. */
-const char *stage_name(kf_pet_stage stage) {
+/* Writes the <stage><indices> token -- "egg", "baby", "child", "teen<N>",
+ * or "adult<teen_form><adult_branch>" -- into out. Nothing downstream of
+ * this file ever sees a real creature name: tools/character_manifest.toml's
+ * teen and adult sprites are individually named per branch, but every name
+ * in that manifest is an unverified trademark placeholder (see
+ * docs/sdk-style-guide.md), so this writes the plain branch indices instead
+ * -- the same "opaque index, not a name" contract kf/pet.h's own
+ * teen_form/adult_branch fields already keep.
+ *
+ * A null pet or an out-of-range stage falls back to "baby", the same
+ * defensive default kf/pet.h's own out-of-range handling uses elsewhere. */
+void stage_token(const kf_pet_state *pet, char *out, size_t out_len) {
+    const kf_pet_stage stage = (pet != nullptr) ? pet->stage : KF_PET_STAGE_BABY;
     switch (stage) {
-    case KF_PET_STAGE_EGG: return "egg";
-    case KF_PET_STAGE_BABY: return "baby";
-    case KF_PET_STAGE_CHILD: return "child";
-    case KF_PET_STAGE_TEEN: return "teen";
-    case KF_PET_STAGE_ADULT: return "adult";
-    default: return "baby";
+    case KF_PET_STAGE_EGG:
+        snprintf(out, out_len, "egg");
+        return;
+    case KF_PET_STAGE_CHILD:
+        snprintf(out, out_len, "child");
+        return;
+    case KF_PET_STAGE_TEEN:
+        /* pet is never null here: a null pet always takes the BABY case
+         * above, so this branch is only reached with a real pet. */
+        snprintf(out, out_len, "teen%u", (unsigned)pet->teen_form);
+        return;
+    case KF_PET_STAGE_ADULT:
+        snprintf(out, out_len, "adult%u%u", (unsigned)pet->teen_form,
+                 (unsigned)pet->adult_branch);
+        return;
+    case KF_PET_STAGE_BABY:
+    default:
+        snprintf(out, out_len, "baby");
+        return;
     }
 }
 
@@ -60,21 +78,39 @@ const char *pose_name(kf_creature_pose pose) {
     }
 }
 
+/* "s"/"e"/"n" -- see kf_creature_direction in kf/creature.h for what each
+ * one means and why there is no "w". An out-of-range value falls back to
+ * "s", the front-facing sprite, rather than reading past the enum. */
+const char *direction_token(kf_creature_direction dir) {
+    switch (dir) {
+    case KF_CREATURE_DIR_E: return "e";
+    case KF_CREATURE_DIR_N: return "n";
+    case KF_CREATURE_DIR_S:
+    default: return "s";
+    }
+}
+
 } // namespace
 
-void kf_creature_sprite_name(kf_pet_stage stage, kf_creature_pose pose,
-                             char *out, size_t out_len) {
+void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
+                             kf_creature_direction dir, char *out,
+                             size_t out_len) {
     if (out == nullptr || out_len == 0u) {
         return;
     }
+    const kf_pet_stage stage = (pet != nullptr) ? pet->stage : KF_PET_STAGE_BABY;
+    const char *dir_tok = direction_token(dir);
     if (stage == KF_PET_STAGE_EGG) {
         /* The manifest gives the egg exactly one state, "idle" -- see
          * character_manifest.toml's [stages.egg] -- so every pose collapses
-         * here regardless of what was asked for. */
-        snprintf(out, out_len, "egg_idle_01");
+         * here regardless of what was asked for. Direction still varies:
+         * the egg is a single design, not a single sprite. */
+        snprintf(out, out_len, "egg_idle_%s_01", dir_tok);
         return;
     }
-    snprintf(out, out_len, "%s_%s_01", stage_name(stage), pose_name(pose));
+    char stage_buf[16];
+    stage_token(pet, stage_buf, sizeof(stage_buf));
+    snprintf(out, out_len, "%s_%s_%s_01", stage_buf, pose_name(pose), dir_tok);
 }
 
 namespace {
