@@ -46,13 +46,13 @@ constexpr size_t kTypeMetaBytes = 8;
 /* One table row per directory entry, of ANY kf_asset_type -- the directory
  * walk in kf_assets_init() below builds one of these for every entry it
  * validates, not just sprites. `sprite` is only meaningful when `type ==
- * KF_ASSET_TYPE_SPRITE`; for any other type it is left zeroed, which is
- * harmless because kf_assets_get() checks `type` before ever handing it
- * back. A future kf_assets_get_clip() would do the equivalent: scan this
- * same table, check `type == KF_ASSET_TYPE_AUDIO_CLIP`, and decode
- * `data_offset`/`data_bytes`/the raw `type_meta` bytes into whatever a PCM
- * clip view needs -- an addition here, not a second table or a second
- * directory walk. */
+ * KF_ASSET_TYPE_SPRITE` or `KF_ASSET_TYPE_SPRITE_INDEXED`; for any other
+ * type it is left zeroed, which is harmless because kf_assets_get() checks
+ * `type` before ever handing it back. A future kf_assets_get_clip() would do
+ * the equivalent: scan this same table, check `type ==
+ * KF_ASSET_TYPE_AUDIO_CLIP`, and decode `data_offset`/`data_bytes`/the raw
+ * `type_meta` bytes into whatever a PCM clip view needs -- an addition
+ * here, not a second table or a second directory walk. */
 struct AssetEntry {
     char name[kNameBytes];
     kf_asset_type type;
@@ -62,7 +62,8 @@ struct AssetEntry {
                                          * tools/kf_pack_assets.py's format
                                          * comment for what each type puts
                                          * here */
-    kf_sprite sprite; /* decoded from type_meta iff type == SPRITE */
+    kf_sprite sprite; /* decoded from type_meta iff type == SPRITE or
+                        * SPRITE_INDEXED */
 };
 
 AssetEntry *g_entries = nullptr;
@@ -208,6 +209,17 @@ kf_result kf_assets_init(void) {
             const uint16_t color_key = read_u16(row.type_meta + 4);
             const bool has_color_key = row.type_meta[6] != 0u;
 
+            /* Zero is never valid: a 0-byte payload would satisfy the
+             * data_bytes check below regardless, letting a malformed pack
+             * pass validation as a zero-sized sprite. Harmless today because
+             * nothing draws it, but this is the validation path, so the
+             * bound belongs here rather than wherever first tries to blit
+             * one. */
+            KF_ASSERT(width > 0u && height > 0u,
+                      "sprite '%s': %ux%u -- width and height must both be "
+                      "nonzero",
+                      row.name, width, height);
+
             const uint64_t expected_bytes = static_cast<uint64_t>(width) *
                                              static_cast<uint64_t>(height) *
                                              sizeof(kf_color);
@@ -238,6 +250,14 @@ kf_result kf_assets_init(void) {
                       "indexed sprite '%s': frame_count is 0 -- every sprite "
                       "has at least one frame",
                       row.name);
+            /* Same zero bound as the RGB565 branch above: without it,
+             * width=0 or height=0 satisfies the data_bytes check below (the
+             * payload shrinks to just the palette) and a malformed pack
+             * passes validation as a zero-sized sprite. */
+            KF_ASSERT(width > 0u && height > 0u,
+                      "indexed sprite '%s': %ux%u -- width and height must "
+                      "both be nonzero",
+                      row.name, width, height);
 
             /* Palette first, zero-padded to 4 so the index data behind it
              * starts aligned -- see tools/kf_pack_assets.py's own payload
