@@ -463,6 +463,21 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME creature_screen_check
              COMMAND kamiframe-headless --verify-creature-screen)
 
+    # Task 6: the five care buttons the creature screen now reads directly
+    # (kf_app_buttons_pressed(), the same debounced edge state kf_screen_
+    # nav.cpp already uses for MENU/B) -- the only way left to move
+    # pet->care_actions_taken in a running build besides the Lua binding,
+    # now that the old LVGL Home holding Feed/Play is unreachable (Task 4).
+    # Proves each button reaches its own kf_pet_session_* wrapper, that
+    # each action's variation counter cycles 0->1->2->0 INDEPENDENTLY of
+    # the other three (not one shared counter), that flush behaves per its
+    # own no-variation/no-reaction contract, and that a button-triggered
+    # action starts the same reaction-hold countdown a Lua-triggered one
+    # already did. See headless_main.cpp's run_creature_screen_input_check()
+    # and simulator/src/pet/kf_creature_screen.cpp's handle_care_buttons().
+    add_test(NAME creature_screen_input_check
+             COMMAND kamiframe-headless --verify-creature-screen-input)
+
     # Closes the coverage gap resolve_sprite() (kf_creature_screen.cpp) used
     # to record in its own comment: every OTHER test here mounts the
     # asset-less default pack, so kf_assets_get() always returns nullptr and

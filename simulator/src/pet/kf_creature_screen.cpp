@@ -5,15 +5,19 @@
 
 #include "kf_pet_session.h"
 
+#include "kf/app.h"
 #include "kf/assets.h"
 #include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/creature.h"
+#include "kf/hal/log.h"
 #include "kf/pet.h"
 
 #include <cstring>
 
 namespace {
+
+constexpr const char *TAG = "creature-screen";
 
 /* The bottom 60 rows are reserved for a stats band a later plan adds (see
  * kf_screen_nav.cpp's own comment on kf_pet_screen.cpp staying unreachable
@@ -198,6 +202,118 @@ void resolve_sprite(const kf_pet_state *pet, kf_creature_pose pose,
     *out_mirrored = mirrored;
 }
 
+/* Task 6: hardware button input for the five care actions.
+ *
+ * This is NOT the product's care UI -- there is no menu, no icon, no
+ * indication on screen of which button does what. It exists because Task 4
+ * made the old LVGL Home (kf_pet_screen.cpp, still unreachable from a
+ * running build -- see kf_screen_nav.h's own comment) unreachable, and that
+ * screen held the only Feed/Play buttons a running simulator had. Without
+ * this, care_actions_taken can only ever move from the Lua binding
+ * (kf_lua_port.cpp), and the project owner asked to be able to watch the
+ * creature react to care with his own hands, not just a demo script's.
+ * What the real care UI looks like -- menus, icons, whatever a later layout
+ * pass decides -- is still entirely undecided and not being settled here;
+ * this is a way to exercise the care loop, not a proposal for what ships.
+ *
+ * KF_BTN_MENU and KF_BTN_B stay kf_screen_nav.cpp's alone (screen
+ * switching); that leaves exactly five buttons for exactly five actions,
+ * the mapping the brief spells out:
+ *   A     -> feed   UP   -> play   DOWN -> rest
+ *   LEFT  -> bath   RIGHT -> flush (no variation -- see kf_pet_flush())
+ */
+
+/* One variation counter PER ACTION, not one shared counter across all four
+ * varying actions -- see this block's own header for why: three presses of
+ * the SAME button must walk that action through all three variations,
+ * which a shared counter would not guarantee (interleaving a Play press
+ * between two Feed presses would advance Feed's variation on Play's turn).
+ * Each starts at 0 and cycles 0 -> 1 -> 2 -> 0 -> ... independently.
+ * KF_PET_CARE_VARIATION_COUNT (kf/pet.h) is Core's own count of how many
+ * ways there are to do each action; this file does not hardcode 3. */
+uint8_t g_feed_variation = 0u;
+uint8_t g_play_variation = 0u;
+uint8_t g_rest_variation = 0u;
+uint8_t g_bath_variation = 0u;
+
+/* For the info-level log below -- readable names for kf_pet_reaction, the
+ * same three bands kf_creature_pose_for() (kf/creature.h) turns into a pose
+ * on screen. This is the ONLY place this file spells the enum out as text;
+ * everywhere else it stays a number, exactly like kf_pet_screen.cpp's own
+ * teen_form/adult_branch captions do for opaque indices it has no name
+ * for -- reaction, unlike those, already has three fixed, Core-defined
+ * bands worth naming here for a human reading the log. */
+const char *reaction_name(uint8_t reaction) {
+    switch (reaction) {
+    case KF_PET_REACTION_LIKED:
+        return "liked";
+    case KF_PET_REACTION_DISLIKED:
+        return "disliked";
+    case KF_PET_REACTION_NEUTRAL:
+    default:
+        return "neutral";
+    }
+}
+
+/* Reads `pressed` (a kf_button edge bitmask -- see kf/types.h) and fires at
+ * most one care action per button per call, through the kf_pet_session_*
+ * wrappers only (kf_pet_session.h) -- never kf_pet_feed() et al. directly,
+ * the same "presentation never mutates Core directly" rule every other
+ * caller of this pet's state already follows. `pet` is the pointer
+ * kf_pet_session_state() returned this frame: after a session call below
+ * mutates the state it points at, `pet->last_reaction`/`pet->
+ * care_actions_taken` already reflect that call, which is what the log
+ * line and kf_creature_screen_frame()'s own care_actions_taken-changed
+ * check both rely on.
+ *
+ * Split out of kf_creature_screen_frame() so kf_creature_screen_debug_
+ * press() (below, DEBUG/TEST ONLY) can drive exactly this same logic with
+ * a synthetic bitmask instead of a real kf_app_buttons_pressed() read --
+ * one implementation, two callers, not a second less-tested path. */
+void handle_care_buttons(const kf_pet_state *pet, uint32_t pressed) {
+    if (pressed & KF_BTN_A) {
+        const uint8_t variation = g_feed_variation;
+        g_feed_variation = static_cast<uint8_t>(
+            (variation + 1u) % KF_PET_CARE_VARIATION_COUNT);
+        kf_pet_session_feed(variation);
+        KF_LOGI(TAG, "feed variation=%u reaction=%s", variation,
+                reaction_name(pet->last_reaction));
+    }
+    if (pressed & KF_BTN_UP) {
+        const uint8_t variation = g_play_variation;
+        g_play_variation = static_cast<uint8_t>(
+            (variation + 1u) % KF_PET_CARE_VARIATION_COUNT);
+        kf_pet_session_play(variation);
+        KF_LOGI(TAG, "play variation=%u reaction=%s", variation,
+                reaction_name(pet->last_reaction));
+    }
+    if (pressed & KF_BTN_DOWN) {
+        const uint8_t variation = g_rest_variation;
+        g_rest_variation = static_cast<uint8_t>(
+            (variation + 1u) % KF_PET_CARE_VARIATION_COUNT);
+        kf_pet_session_rest(variation);
+        KF_LOGI(TAG, "rest variation=%u reaction=%s", variation,
+                reaction_name(pet->last_reaction));
+    }
+    if (pressed & KF_BTN_LEFT) {
+        const uint8_t variation = g_bath_variation;
+        g_bath_variation = static_cast<uint8_t>(
+            (variation + 1u) % KF_PET_CARE_VARIATION_COUNT);
+        kf_pet_session_bath(variation);
+        KF_LOGI(TAG, "bath variation=%u reaction=%s", variation,
+                reaction_name(pet->last_reaction));
+    }
+    if (pressed & KF_BTN_RIGHT) {
+        /* No variation, no reaction -- kf_pet_flush() leaves last_reaction/
+         * last_care_action exactly as the previous real care action left
+         * them (see its own comment in hakoniwaos/src/pet.cpp), so logging
+         * either here would misattribute someone else's reaction to a
+         * chore that has none of its own. */
+        kf_pet_session_flush();
+        KF_LOGI(TAG, "flush");
+    }
+}
+
 } // namespace
 
 void kf_creature_screen_init(void) {
@@ -209,6 +325,20 @@ void kf_creature_screen_init(void) {
 void kf_creature_screen_frame(uint32_t dt_ms) {
     if (!g_up) { return; }
     const kf_pet_state *pet = kf_pet_session_state();
+
+    /* Task 6: read this frame's debounced button edges the same way
+     * kf_screen_nav.cpp reads MENU/B -- kf_app_buttons_pressed() directly,
+     * not LVGL's keypad indev (see kf_screen_nav.h's own header comment for
+     * why the two are kept orthogonal; the same reasoning applies to care
+     * buttons). Only runs while THIS screen's own per-frame function is the
+     * one being called at all, which kf_screen_nav_frame() already
+     * guarantees is only while Home is the active screen (kf_screen_nav.cpp's
+     * g_screens[g_active].update(dt_ms)) -- an inactive screen's update
+     * never runs, so it never reaches this line, and needs no extra "am I
+     * active" check of its own. Must run BEFORE the care_actions_taken
+     * check just below, in the same call, so a button-triggered action is
+     * noticed the instant it lands rather than one frame late. */
+    handle_care_buttons(pet, kf_app_buttons_pressed());
 
     /* Notice a care action that happened since last frame and start the
      * reaction showing on the body. seen_care_actions/reaction_hold_ms live
@@ -367,4 +497,12 @@ void kf_creature_screen_debug_set_direction(kf_creature_direction dir) {
 
 kf_rect kf_creature_screen_debug_bounds(void) {
     return kf_creature_bounds(&g_creature);
+}
+
+void kf_creature_screen_debug_press(uint32_t buttons) {
+    handle_care_buttons(kf_pet_session_state(), buttons);
+}
+
+uint32_t kf_creature_screen_debug_reaction_hold_ms(void) {
+    return g_creature.reaction_hold_ms;
 }

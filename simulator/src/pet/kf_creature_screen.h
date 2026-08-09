@@ -81,6 +81,31 @@ void kf_creature_screen_enter(void);
  * run_creature_screen_sprite_check() for the actual caller.
  * --------------------------------------------------------------------- */
 
+/* Same effect as a real care-button edge (Task 6's KF_BTN_A/UP/DOWN/LEFT/
+ * RIGHT -- see kf_creature_screen.cpp's handle_care_buttons()), just
+ * callable without one -- the same reasoning kf_screen_nav.h's own
+ * kf_screen_nav_debug_advance()/_home() give for existing at all, rather
+ * than routing a headless check through headless_input.cpp's single shared,
+ * frame-indexed button script (KF_BTN_A/RIGHT/etc. already drive that
+ * script's OWN cases for the sprite-bounce demo; adding care-button
+ * windows to it would change what those unrelated, already-locked golden
+ * checksums see too). `buttons` is a kf_button bitmask, applied once,
+ * immediately -- unlike kf_creature_screen_debug_set_direction() below,
+ * this does not wait for the next kf_creature_screen_frame() call, because
+ * the real per-frame path does not either: kf_creature_screen_frame() acts
+ * on kf_app_buttons_pressed() the moment it reads it, so this mirrors that
+ * exactly rather than inventing a second timing model. */
+void kf_creature_screen_debug_press(uint32_t buttons);
+
+/* How long the current care reaction should still be showing on the
+ * creature's body -- kf_creature::reaction_hold_ms, unexported otherwise
+ * (kf_creature.h). Lets a headless check confirm a button-triggered care
+ * action starts the SAME reaction-hold countdown a Lua-triggered one
+ * already did (both go through the one `pet->care_actions_taken changed`
+ * check in kf_creature_screen_frame()) without duplicating that check's
+ * own logic in the test. */
+uint32_t kf_creature_screen_debug_reaction_hold_ms(void);
+
 /* Overrides the presentation-only creature's current facing. Takes effect
  * on the very next kf_creature_screen_frame() call and holds until changed
  * again or overwritten by real movement (kf_creature_update() only writes

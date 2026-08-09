@@ -2392,6 +2392,162 @@ static int run_creature_screen_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Task 6: the creature screen's own care-button input. Before this, the
+ * only way to move pet->care_actions_taken was the Lua binding
+ * (kf_lua_port.cpp) -- the LVGL Home that used to hold Feed/Play
+ * (kf_pet_screen.cpp) has been unreachable from a running build since Task
+ * 4 (kf_screen_nav.cpp). This proves the five care buttons
+ * (kf_creature_screen.cpp's handle_care_buttons()) each reach their own
+ * kf_pet_session_* wrapper, that per-action variation counters cycle
+ * 0 -> 1 -> 2 -> 0 independently of one another (not one shared counter --
+ * see that file's own comment on why a shared counter would be wrong), and
+ * that a button-triggered action starts the same reaction-hold countdown
+ * Task 4 already wired up for Lua-triggered ones.
+ *
+ * Drives input via kf_creature_screen_debug_press() rather than a real
+ * kf_app_buttons_pressed() read -- the same reason run_screen_nav_check()
+ * uses kf_screen_nav_debug_advance()/_home() instead of driving
+ * headless_input.cpp's kf_headless_script(): that script is one fixed,
+ * frame-indexed sequence shared by every check that goes through
+ * kf_app_frame() (headless_determinism among them), and adding a care-
+ * button window to it would change what those already-locked golden
+ * checksums see. This also means kf_app_init() is never called here, so --
+ * same as run_screen_nav_check() -- kf_rng is never reseeded from the
+ * entropy HAL and base_trait comes out deterministic from the fixed
+ * default seed kf_host_entropy_pin() set in main(). */
+static int run_creature_screen_input_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-input-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    const kf_pet_state *pet = kf_pet_session_state();
+    uint32_t care_actions_before = pet->care_actions_taken;
+
+    /* Presses one button, checks the action landed (care_actions_taken
+     * incremented, last_care_action is the right one) and that the
+     * reaction recorded matches kf_pet_reaction_to() for the variation
+     * this press SHOULD have used -- proof the variation counter, not just
+     * the button-to-action mapping, is doing the right thing. Reads
+     * pet->base_trait fresh each call rather than hardcoding an expected
+     * value: base_trait is whatever kf_pet_init() rolled for this run's
+     * pinned seed, and this check should keep passing however that roll
+     * comes out. */
+    auto press_and_check = [&](uint32_t button, kf_pet_care_action action,
+                                uint8_t expect_variation,
+                                const std::string &label) {
+        kf_creature_screen_debug_press(button);
+        check(pet->care_actions_taken == care_actions_before + 1u,
+              (label + ": care_actions_taken did not increment by one")
+                  .c_str());
+        care_actions_before = pet->care_actions_taken;
+        check(pet->last_care_action == static_cast<uint8_t>(action),
+              (label + ": last_care_action does not match the button "
+                       "pressed")
+                  .c_str());
+        const uint8_t expect_reaction =
+            kf_pet_reaction_to(pet->base_trait, action, expect_variation);
+        check(pet->last_reaction == expect_reaction,
+              (label + ": last_reaction does not match the variation this "
+                       "press should have used -- the per-action variation "
+                       "counter is not cycling correctly")
+                  .c_str());
+    };
+
+    /* Feed three times: variation 0, 1, 2. */
+    press_and_check(KF_BTN_A, KF_PET_CARE_FEED, 0u, "feed press 1 (variation 0)");
+    press_and_check(KF_BTN_A, KF_PET_CARE_FEED, 1u, "feed press 2 (variation 1)");
+
+    /* Play once, in between two more Feed presses: if the two actions
+     * shared one counter instead of each owning its own, this Play press
+     * would land on variation 2 (Feed's next value) instead of Play's own
+     * fresh 0 -- this is what actually distinguishes "per-action counters"
+     * from "one shared counter" rather than merely exercising both. */
+    press_and_check(KF_BTN_UP, KF_PET_CARE_PLAY, 0u,
+                     "play press (independent variation counter)");
+
+    /* Finish Feed's cycle: variation 2, then wrap back to 0. */
+    press_and_check(KF_BTN_A, KF_PET_CARE_FEED, 2u, "feed press 3 (variation 2)");
+    press_and_check(KF_BTN_A, KF_PET_CARE_FEED, 0u,
+                     "feed press 4 (wraps back to variation 0)");
+
+    /* Rest and Bath, each starting fresh at their own variation 0. */
+    press_and_check(KF_BTN_DOWN, KF_PET_CARE_REST, 0u, "rest press (variation 0)");
+    press_and_check(KF_BTN_LEFT, KF_PET_CARE_BATH, 0u, "bath press (variation 0)");
+
+    /* A button-triggered action reaches the reaction display exactly the
+     * way a Lua-triggered one already did (Task 4): kf_creature_screen_
+     * frame() notices pet->care_actions_taken changed since it last looked
+     * and starts a 1200ms reaction hold. The bath press just above already
+     * moved care_actions_taken, so one dt_ms == 0 frame call (no wander
+     * movement, so nothing else about the screen changes) is enough to
+     * prove it. */
+    kf_creature_screen_frame(0u);
+    check(kf_creature_screen_debug_reaction_hold_ms() == 1200u,
+          "a button-triggered care action starts the reaction hold, same "
+          "as a Lua-triggered one");
+
+    /* Flush (KF_BTN_RIGHT) is the odd one out: no variation, and -- per
+     * kf_pet_flush()'s own contract (hakoniwaos/src/pet.cpp) -- it leaves
+     * last_reaction/last_care_action exactly as the bath press above left
+     * them, since a chore is not a reaction-worthy care action. Set
+     * poop_count directly (kf_pet_session_state_mutable_for_test(), the
+     * same lever run_pet_mess_check()/creature_screen_check() use to drive
+     * the mess-drawing budget without playing out real neglect) so this
+     * check can prove flush did its actual job, not just that
+     * care_actions_taken moved. */
+    kf_pet_session_state_mutable_for_test()->poop_count = 3u;
+    const uint8_t last_care_action_before_flush = pet->last_care_action;
+    const uint8_t last_reaction_before_flush = pet->last_reaction;
+    kf_creature_screen_debug_press(KF_BTN_RIGHT);
+    check(pet->care_actions_taken == care_actions_before + 1u,
+          "flush press (care_actions_taken incremented)");
+    care_actions_before = pet->care_actions_taken;
+    check(pet->poop_count == 0u, "flush press actually cleared the mess");
+    check(pet->last_care_action == last_care_action_before_flush &&
+              pet->last_reaction == last_reaction_before_flush,
+          "flush has no variation and no reaction of its own -- "
+          "last_care_action/last_reaction stay exactly what the last real "
+          "care action (bath) left them, per kf_pet_flush()'s own "
+          "contract");
+
+    /* MENU and B stay kf_screen_nav.cpp's alone -- pressing them (and
+     * nothing else) here must not move care_actions_taken at all. */
+    kf_creature_screen_debug_press(KF_BTN_MENU | KF_BTN_B);
+    check(pet->care_actions_taken == care_actions_before,
+          "MENU/B are not care buttons and must not trigger a care action");
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Closes the coverage gap resolve_sprite() (kf_creature_screen.cpp) used to
  * record in its own comment: every check above (including run_creature_
  * screen_check() just above this one) mounts the checked-in DEFAULT asset
@@ -3687,6 +3843,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_wander = false;
     bool verify_creature_screen = false;
     bool verify_creature_screen_sprites = false;
+    bool verify_creature_screen_input = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -3747,6 +3904,9 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i], "--verify-creature-screen-sprites") ==
                    0) {
             verify_creature_screen_sprites = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen-input") ==
+                   0) {
+            verify_creature_screen_input = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -3784,6 +3944,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-wander\n"
                         "kamiframe-headless --verify-creature-screen\n"
                         "kamiframe-headless --verify-creature-screen-sprites\n"
+                        "kamiframe-headless --verify-creature-screen-input\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -3876,6 +4037,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen_sprites) {
         return run_creature_screen_sprite_check();
+    }
+
+    if (verify_creature_screen_input) {
+        return run_creature_screen_input_check();
     }
 
     if (verify_lua_pet) {
