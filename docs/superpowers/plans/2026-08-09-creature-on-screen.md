@@ -8,6 +8,50 @@
 
 **Tech Stack:** C++17, CMake, the existing `kf_blit`/`kf_fb_mark_dirty` framebuffer path, `kf/font.h` bitmap text (ADR 0010), CTest via `kamiframe-headless --verify-*` check modes.
 
+## Status as of 2026-08-09
+
+Tasks 1, 2 and 3 are **done, committed and reviewed clean**, along with a
+mirrored blit added as a prerequisite for Task 4. 26/26 tests pass, Core is
+heap-free.
+
+| Task | Commits |
+|---|---|
+| 1 — pose selection | `41d7d4c` |
+| 2 — sprite naming | `702eb0b`, fixed by `aafa753` |
+| 3 — the wander | `1a2970c` |
+| mirrored blit | `cb08dff` |
+
+**Resume at Task 4.** A fuller handoff — including the review findings, the
+gotchas that cost time, and what is waiting on Chris — lives in
+`.superpowers/sdd/progress.md`. That file is gitignored, so it exists only in
+the worktree where the work was done; this section is the committed copy of
+what a fresh checkout needs to carry on.
+
+Decisions taken after this plan was first written, all binding:
+
+- **Generic sprite names everywhere**, filenames included; no creature names in
+  code. `<stage><indices>_<pose>_<dir>_<frame>`, e.g. `adult21_objecting_e_01`,
+  31 characters maximum.
+- **Four facings from three sprite sets** — `s` front, `e` side, `n` back.
+- **Mirroring is a capability, not a rule.** The lookup tries `_w_` first and
+  falls back to a mirrored `_e_` only when the pack has no west art, so an
+  artist chooses per creature by which files they ship.
+- **Sleep is fully specified** in the care-loop spec's "Sleep, settled"
+  addendum but **not implemented in Core** — no field, no enum. So
+  `KF_CREATURE_POSE_SLEEPING` stays unreachable and must not be selectable.
+- **Nine-frame animations per pose** are wanted, in three directions. That is a
+  separate plan: the manifest is still `default_frames = 1` and nothing plays
+  sequences. This plan ships one frame per pose.
+
+Two known traps, both of which have already cost time once:
+
+- Pointing `KF_ASSET_PACK` at a non-default pack makes `headless_determinism`,
+  `headless_fullscreen` and `asset_pipeline_check` fail legitimately — they
+  checksum rendered output. Restore the default before trusting a test run.
+- `tools/kf_pack_assets.py` discards the alpha channel. Use
+  `tools/kf_ingest_sprites.py`, which resolves transparent pixels to magenta and
+  colour-keys them; otherwise the creature draws inside an opaque box.
+
 ## Global Constraints
 
 - **240x320 RGB565.** No alpha channel anywhere — transparency is colour-key only, magenta `KF_RGB(255,0,255)` by the convention in `tools/kf_ingest_sprites.py:53`.
