@@ -1917,6 +1917,203 @@ int run_pet_adult_reachability_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Proves the debug stage-jump (Chris's own request: a button that "spawns
+ * the creature at full care stats... at each button press and timeline
+ * moves to the beginning of each life stage", so looking at a stage's art
+ * and care behaviour does not require nursing a pet through every real
+ * stage first) lands exactly where it claims to, every time it is asked:
+ * the requested stage, alive, not sick, needs full, at the very start of
+ * that stage -- that an explicit teen_form/adult_branch index is honoured
+ * exactly wherever the stage has reached that branch point, defaults to 0
+ * both when unset AND when out of range (see kf_pet_session_debug_jump_
+ * to_stage()'s own header comment on why those are the same safe case),
+ * and stays at 0 when the stage has NOT reached that branch point yet even
+ * if a nonzero index was requested. Also proves the actual point of the
+ * feature: a genuinely dead, sick, neglected pet (killed by a real
+ * kf_pet_advance() run, not a hand-set flag) comes back alive and clean
+ * after a jump, without the "a drawer is fatal" rule having been touched
+ * -- see kf/pet.h's kf_pet_advance() and its leading `if (state->dead)
+ * return;`, still fully in force; this jump routes AROUND it by replacing
+ * the whole state, not through it. */
+int run_pet_debug_jump_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-pet-debug-jump-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_pet_session_init();
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* Same sum run_pet_adult_reachability_check() above and sdl_debug_
+     * window.cpp's timeline_tick_seconds() both compute independently --
+     * where a given stage begins on the pet's own lifetime clock. This
+     * file has no way to reach kf_pet_session.cpp's own private copy of
+     * this; four lines of addition is not worth exporting one for, the
+     * same call made at every other site that needs it. */
+    auto elapsed_before = [&config](kf_pet_stage stage) -> uint64_t {
+        uint64_t t = 0u;
+        if (stage > KF_PET_STAGE_EGG) {
+            t += config.egg_duration_seconds;
+        }
+        if (stage > KF_PET_STAGE_BABY) {
+            t += config.baby_duration_seconds;
+        }
+        if (stage > KF_PET_STAGE_CHILD) {
+            t += config.child_duration_seconds;
+        }
+        if (stage > KF_PET_STAGE_TEEN) {
+            t += config.teen_duration_seconds;
+        }
+        return t;
+    };
+
+    /* 1. Every stage: lands on it, alive, not sick, needs full, mess- and
+     * neglect-free, at the very start (stage_elapsed_seconds == 0 and the
+     * pet's own lifetime clock reading exactly where the stage begins) --
+     * requirement 1, checked for all five stages in one pass. */
+    {
+        constexpr kf_pet_stage kStages[] = {
+            KF_PET_STAGE_EGG, KF_PET_STAGE_BABY, KF_PET_STAGE_CHILD,
+            KF_PET_STAGE_TEEN, KF_PET_STAGE_ADULT};
+        for (kf_pet_stage stage : kStages) {
+            kf_pet_session_debug_jump_to_stage(stage, 0u, 0u);
+            const kf_pet_state *s = kf_pet_session_state();
+            check(s->stage == stage,
+                  "a jump lands on exactly the requested stage");
+            check(!s->dead, "a jumped-to pet is alive");
+            check(!s->sick, "a jumped-to pet is not sick");
+            check(s->hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                      s->happiness_mp == KF_PET_MILLIPERCENT_MAX &&
+                      s->energy_mp == KF_PET_MILLIPERCENT_MAX,
+                  "a jumped-to pet has every need topped up to full");
+            check(s->stage_elapsed_seconds == 0u,
+                  "a jumped-to pet sits at the very start of the stage, not "
+                  "partway through it");
+            check(s->neglect_seconds == 0u && s->poop_count == 0u,
+                  "a jumped-to pet has no accumulated neglect or mess");
+            check(kf_pet_session_debug_age_seconds() == elapsed_before(stage),
+                  "the pet's own lifetime clock reads exactly where this "
+                  "stage begins on the timeline");
+        }
+    }
+
+    /* 2. Explicit teen_form/adult_branch is honoured exactly -- every valid
+     * adult index in the WIDEST family (Hold, family 1, 3 adults per
+     * kAdultsInFamily in hakoniwaos/src/pet.cpp), so this is not merely a
+     * coincidence of the first index happening to already be 0, plus the
+     * single valid index of the NARROWEST family (Go, family 3, 1 adult). */
+    {
+        for (uint8_t adult = 0u; adult < 3u; ++adult) {
+            kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_ADULT, 1u, adult);
+            const kf_pet_state *s = kf_pet_session_state();
+            check(s->teen_form == 1u, "the requested teen_form is honoured");
+            check(s->adult_branch == adult,
+                  "the requested adult_branch is honoured for every valid "
+                  "index in a 3-adult family");
+        }
+
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_ADULT, 3u, 0u);
+        const kf_pet_state *s = kf_pet_session_state();
+        check(s->teen_form == 3u && s->adult_branch == 0u,
+              "a single-adult family's only valid index (0) is honoured "
+              "too, not just families with room to spare");
+    }
+
+    /* 3. Out-of-range indices clamp to 0 rather than being written raw --
+     * kf_pet_adults_in_family() and every other reader of adult_branch
+     * assumes it is < kf_pet_adults_in_family(teen_form), the same
+     * invariant Core's own save-format unpack() enforces on load. */
+    {
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_TEEN, 200u, 0u);
+        check(kf_pet_session_state()->teen_form == 0u,
+              "an out-of-range teen_form clamps to 0, not written raw");
+
+        /* Go (family 3) has only 1 adult (its only valid index is 0) --
+         * adult_branch 2 is out of range for THIS family specifically, even
+         * though 2 is a perfectly valid index for Hold or Mark above. */
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_ADULT, 3u, 2u);
+        check(kf_pet_session_state()->adult_branch == 0u,
+              "an adult_branch out of range for the SELECTED family (not "
+              "just out of range in the absolute sense) clamps to 0");
+    }
+
+    /* 4. teen_form/adult_branch stay at their "not decided yet" default
+     * when the target stage has not reached their own branch point, even
+     * if the caller asks for a nonzero index -- kf/pet.h's own words:
+     * meaningless before the branch point, and this must not pretend
+     * otherwise just because a debug caller supplied a number. */
+    {
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_BABY, 2u, 1u);
+        const kf_pet_state *s = kf_pet_session_state();
+        check(s->teen_form == 0u && s->adult_branch == 0u,
+              "teen_form/adult_branch stay at 0 when jumping to a stage "
+              "before Child->Teen has even happened, despite nonzero "
+              "indices being requested");
+
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_TEEN, 2u, 1u);
+        check(kf_pet_session_state()->teen_form == 2u &&
+                  kf_pet_session_state()->adult_branch == 0u,
+              "at Teen, teen_form IS honoured (its branch point already "
+              "passed) but adult_branch stays 0 -- Teen->Adult has not "
+              "happened yet, even with a nonzero index requested");
+    }
+
+    /* 5. The actual point of the feature: a pet killed by a REAL kf_pet_
+     * advance() run (live-ticked to death, the same technique run_pet_
+     * adult_reachability_check() above uses, not a hand-set `dead` flag)
+     * comes back alive, well, and clean after a jump -- without weakening
+     * kf_pet_advance()'s own death-by-neglect check at all, which is still
+     * exactly why a dead pet cannot simply be advanced back to health. */
+    {
+        kf_pet_session_debug_reset();
+        constexpr uint32_t kStepMs = KF_PET_SESSION_FLUSH_SECONDS * 1000u;
+        constexpr uint32_t kMaxSteps = 200000u; /* ~69 days of ticks */
+        for (uint32_t i = 0; i < kMaxSteps && !kf_pet_session_state()->dead;
+             ++i) {
+            kf_pet_session_frame(kStepMs);
+        }
+        check(kf_pet_session_state()->dead,
+              "the pet actually died of neglect before this check "
+              "continues -- otherwise the assertions below would prove "
+              "nothing about reviving a genuinely dead pet");
+
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_CHILD, 0u, 0u);
+        const kf_pet_state *s = kf_pet_session_state();
+        check(!s->dead, "a jump revives a dead pet into a fabricated, "
+                        "living one -- the entire reason this feature "
+                        "exists (kf_pet_advance() itself never revives "
+                        "anything, by design)");
+        check(!s->sick && s->neglect_seconds == 0u,
+              "a jump also clears sickness and accumulated neglect, not "
+              "just the dead flag on its own");
+        check(s->stage == KF_PET_STAGE_CHILD,
+              "and lands on exactly the requested stage, the same as it "
+              "would for a pet that was never neglected at all");
+    }
+
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* The preference table is the one system in this care loop that a player
  * is meant to LEARN rather than read. That only works if it is consistent,
  * so this checks its shape exhaustively -- all six traits, all four
@@ -4345,6 +4542,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_preferences = false;
     bool verify_pet_care_variation = false;
     bool verify_pet_adult_reachability = false;
+    bool verify_pet_debug_jump = false;
     bool verify_creature_pose = false;
     bool verify_creature_wander = false;
     bool verify_creature_screen = false;
@@ -4406,6 +4604,8 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i], "--verify-pet-adult-reachability") ==
                    0) {
             verify_pet_adult_reachability = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-debug-jump") == 0) {
+            verify_pet_debug_jump = true;
         } else if (std::strcmp(argv[i], "--verify-creature-pose") == 0) {
             verify_creature_pose = true;
         } else if (std::strcmp(argv[i], "--verify-creature-wander") == 0) {
@@ -4458,6 +4658,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-pet-care-variation\n"
                         "kamiframe-headless --verify-pet-adult-reachability\n"
+                        "kamiframe-headless --verify-pet-debug-jump\n"
                         "kamiframe-headless --verify-creature-pose\n"
                         "kamiframe-headless --verify-creature-wander\n"
                         "kamiframe-headless --verify-creature-screen\n"
@@ -4545,6 +4746,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_adult_reachability) {
         return run_pet_adult_reachability_check();
+    }
+
+    if (verify_pet_debug_jump) {
+        return run_pet_debug_jump_check();
     }
 
     if (verify_creature_pose) {

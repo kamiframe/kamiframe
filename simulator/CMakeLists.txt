@@ -406,6 +406,23 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_adult_reachability_check
              COMMAND kamiframe-headless --verify-pet-adult-reachability)
 
+    # Proves the debug stage-jump (Chris's request: a button that spawns the
+    # creature at full care stats at each life stage, so looking at a
+    # stage's art and care behaviour does not require nursing a pet through
+    # every real stage first): lands on the requested stage, alive, not
+    # sick, needs full, at the very start of it, for all five stages; an
+    # explicit teen_form/adult_branch index is honoured exactly wherever the
+    # stage has reached that branch point and clamps to 0 (same as "unset")
+    # when out of range; the two indices stay at their not-decided-yet
+    # default when the target stage has not reached their branch point yet;
+    # and a genuinely dead, sick, neglected pet (killed by a real
+    # kf_pet_advance() run) comes back alive and clean after a jump, without
+    # kf_pet_advance()'s own death-by-neglect rule having been touched. See
+    # headless_main.cpp's run_pet_debug_jump_check() and kf_pet_session.h's
+    # kf_pet_session_debug_jump_to_stage().
+    add_test(NAME pet_debug_jump_check
+             COMMAND kamiframe-headless --verify-pet-debug-jump)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
