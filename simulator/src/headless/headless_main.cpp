@@ -1963,6 +1963,32 @@ int run_creature_pose_check(void) {
         }
     }
 
+    /* Task 2: (stage, pose) -> the asset-pack sprite name, per
+     * tools/character_manifest.toml's <entity>_<state>_<frame> convention.
+     * Egg collapses every pose to egg_idle_01 (the manifest gives the egg
+     * exactly one state, "idle") -- the case that matters most, because
+     * getting it wrong means the egg silently draws nothing. */
+    struct NameCase {
+        kf_pet_stage stage;
+        kf_creature_pose pose;
+        const char *expect;
+    };
+    const NameCase names[] = {
+        {KF_PET_STAGE_EGG, KF_CREATURE_POSE_NEUTRAL, "egg_idle_01"},
+        {KF_PET_STAGE_EGG, KF_CREATURE_POSE_SICK, "egg_idle_01"},
+        {KF_PET_STAGE_BABY, KF_CREATURE_POSE_NEUTRAL, "baby_neutral_01"},
+        {KF_PET_STAGE_BABY, KF_CREATURE_POSE_SLEEPING, "baby_sleeping_01"},
+        {KF_PET_STAGE_CHILD, KF_CREATURE_POSE_HAPPY, "child_happy_01"},
+    };
+    for (const NameCase &c : names) {
+        char buf[32] = {0};
+        kf_creature_sprite_name(c.stage, c.pose, buf, sizeof(buf));
+        if (std::strcmp(buf, c.expect) != 0) {
+            KF_LOGE(TAG, "name: expected '%s', got '%s'", c.expect, buf);
+            ok = false;
+        }
+    }
+
     if (ok) {
         KF_LOGI(TAG, "all %zu cases passed", sizeof(cases) / sizeof(cases[0]));
     }

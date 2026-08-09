@@ -50,6 +50,21 @@ typedef enum {
 kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
                                       uint32_t reaction_hold_ms);
 
+/* Write the asset-pack name for this stage and pose into out, always
+ * NUL-terminated. Names follow tools/character_manifest.toml's convention,
+ * <entity>_<state>_<frame>, because that manifest is what produced the art
+ * and its filenames are the only contract between the two.
+ *
+ * The egg has exactly one state ("idle") because it has nothing to react to,
+ * so every pose collapses to egg_idle_01 there.
+ *
+ * KF_CREATURE_POSE_DEAD has no art in the manifest yet -- the death scene is
+ * unbuilt (care-loop spec section 7). It falls back to the sick sprite, which
+ * is wrong-looking but visible, rather than to nothing at all, which would
+ * look like a rendering bug. */
+void kf_creature_sprite_name(kf_pet_stage stage, kf_creature_pose pose,
+                             char *out, size_t out_len);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
