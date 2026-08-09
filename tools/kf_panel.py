@@ -645,8 +645,15 @@ if tk is not None:
         "Return": "MENU", "Escape": "MENU",
     }
 
-    TAP_VS_HOLD_MS = 150  # below this, a click/keypress is a tap (BTN);
-                           # at or above it, it's a hold (BTNHOLD elapsed).
+    # A press is NEVER sent as a bare one-shot KFDBG BTN, however brief the
+    # click. That command cannot register: core debounces buttons, requiring
+    # the same value across consecutive polls at least 8ms apart, while a
+    # one-shot mask clears itself after a single poll. The result on hardware
+    # was clicks that "sometimes did nothing" -- fast ones vanished, slow ones
+    # worked -- which reads as lag or a flaky mouse rather than a protocol
+    # mismatch. kf_debug.py's `press` subcommand defaults to 120ms for exactly
+    # the same reason; this is the same floor, applied to clicks.
+    MIN_PRESS_MS = 120
 
     # Skip-forward presets for the time controls. Seconds are computed once,
     # at import time, with kfd.parse_duration() -- the exact same duration
@@ -949,9 +956,11 @@ if tk is not None:
             self.pad_buttons["MENU"] = make("MENU", 3, 0, cspan=3)
 
             ttk.Label(frame, text="Keyboard: arrows = D-pad, Z/X = A/B, "
-                                   "Enter/Esc = MENU. Hold a bit under "
-                                   f"{TAP_VS_HOLD_MS}ms and it's a tap; "
-                                   "longer sends a timed hold.",
+                                   "Enter/Esc = MENU. Left/Up move the "
+                                   "selection back, Right/Down move it "
+                                   f"forward, A activates. Every press is at "
+                                   f"least {MIN_PRESS_MS}ms so the device "
+                                   "always sees it.",
                       style="Muted.TLabel", wraplength=500,
                       justify="left").pack(padx=10, pady=(0, 10), anchor="w")
 
@@ -1131,7 +1140,10 @@ if tk is not None:
             if not self.connected:
                 self.status_var.set("Not connected -- press ignored.")
                 return
-            hold_ms = elapsed_ms if elapsed_ms >= TAP_VS_HOLD_MS else 0
+            # max(), never 0 -- see MIN_PRESS_MS. A quick click becomes a
+            # short-but-real hold; a deliberate long press keeps its own
+            # measured duration.
+            hold_ms = max(int(elapsed_ms), MIN_PRESS_MS)
             mask = kfd.BUTTON_BITS[name]
             self.cmd_queue.put({"type": "press", "mask": mask, "hold_ms": hold_ms,
                                  "label": name})

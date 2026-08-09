@@ -18,17 +18,28 @@ uint32_t g_last_key = 0;
  * that nothing fancier -- chords, multi-key -- is worth building for a
  * five-widget menu layer. */
 uint32_t button_to_key(uint32_t buttons) {
-    if (buttons & KF_BTN_UP) {
-        return LV_KEY_UP;
+    /* PREV/NEXT, not UP/DOWN/LEFT/RIGHT, and this was a real bug found on
+     * hardware: with the arrow keys, focus could never move at all.
+     *
+     * LVGL's keypad handling only calls lv_group_focus_next()/_prev() for
+     * LV_KEY_NEXT and LV_KEY_PREV (indev/lv_indev.c, indev_keypad_proc()).
+     * Every other key -- including all four arrows -- is delivered to the
+     * FOCUSED WIDGET instead, and lv_button ignores them. So mapping the
+     * D-pad to arrows meant every press was correctly read, correctly
+     * debounced, correctly handed to LVGL, and then silently dropped by the
+     * focused button. The symptom was a pet screen stuck on Feed forever,
+     * with Play and Rest unreachable.
+     *
+     * A previous comment here asserted the opposite -- that arrows move
+     * focus "by LVGL's own default group behaviour". That was wrong, and
+     * wrong in the confident direction, which is why nobody re-checked it
+     * until a real device made it visible. It is checked now: see the
+     * function reference above. */
+    if (buttons & (KF_BTN_UP | KF_BTN_LEFT)) {
+        return LV_KEY_PREV;
     }
-    if (buttons & KF_BTN_DOWN) {
-        return LV_KEY_DOWN;
-    }
-    if (buttons & KF_BTN_LEFT) {
-        return LV_KEY_LEFT;
-    }
-    if (buttons & KF_BTN_RIGHT) {
-        return LV_KEY_RIGHT;
+    if (buttons & (KF_BTN_DOWN | KF_BTN_RIGHT)) {
+        return LV_KEY_NEXT;
     }
     if (buttons & KF_BTN_A) {
         return LV_KEY_ENTER;
