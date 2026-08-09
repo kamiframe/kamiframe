@@ -2211,11 +2211,13 @@ static int run_creature_screen_check(void) {
     /* The background colour, sampled from the framebuffer itself rather
      * than duplicating kf_creature_screen.cpp's private kBackground
      * constant here (it lives in that file's anonymous namespace, not
-     * exposed via kf_creature_screen.h): kf_creature_screen_init()'s last
-     * step is kf_creature_screen_enter(), which -- after the Important-1
-     * fix -- paints the WHOLE 240x320 panel this colour before the
-     * creature's first frame ever runs. Any pixel is a faithful sample at
-     * this exact point; (0,0) is as good as any. */
+     * exposed via kf_creature_screen.h): kf_creature_screen_init() calls
+     * kf_creature_screen_enter() before it returns (not as its LAST step --
+     * a ready flag is set after it -- but before any frame ever runs
+     * either way), which -- after the Important-1 fix -- paints the WHOLE
+     * 240x320 panel this colour before the creature's first frame ever
+     * runs. Any pixel is a faithful sample at this exact point; (0,0) is as
+     * good as any. */
     const kf_color background_color = kf_fb_pixels()[0];
 
     size_t worst_rects = 0;
@@ -2283,6 +2285,69 @@ static int run_creature_screen_check(void) {
 
     KF_LOGI(TAG, "creature-screen: worst frame %zu rects, %zu bytes",
             worst_rects, worst_bytes);
+
+    /* Task 5: mess must be STATIC. Eight poops redrawn as eight independent
+     * rectangles every frame, plus the creature's own (up to two), would
+     * blow past KF_MAX_DIRTY_RECTS and collapse the framebuffer to one
+     * screen-sized box every single frame -- see kf_creature_screen.cpp's
+     * mess-drawing comment for the exact budget arithmetic. So: force a
+     * full house of mess onto the pet via the debug-only mutable accessor
+     * (no care action or debug lever reaches poop_count directly), let one
+     * frame draw it, then run 100 more frames where NOTHING about the mess
+     * changes and confirm none of them cost more than the creature's own
+     * per-frame budget (kept at the same "2" bound A1 measured above --
+     * loose, but it is exactly the guard that catches mess being redrawn
+     * every frame, which is the whole point of this check). */
+    /* Counts pixels anywhere in the framebuffer that are not the background
+     * colour -- used below to prove mess actually got PAINTED, not just
+     * that dirty rectangles stayed within budget. Guards against the same
+     * vacuous-pass trap creature_pixel_ever_drawn (above) closes for the
+     * creature itself: a screen that never reads poop_count at all would
+     * pass a rect-count-only version of the check below just as easily as
+     * one that draws mess correctly, since "nothing new" costs zero rects
+     * too. */
+    auto count_non_background = [&]() -> size_t {
+        size_t count = 0;
+        const kf_color *px = kf_fb_pixels();
+        const size_t total =
+            static_cast<size_t>(KF_DISPLAY_WIDTH) * KF_DISPLAY_HEIGHT;
+        for (size_t i = 0; i < total; ++i) {
+            if (px[i] != background_color) { ++count; }
+        }
+        return count;
+    };
+    const size_t non_background_before_mess = count_non_background();
+
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->poop_count = KF_PET_MAX_POOPS;
+    kf_creature_screen_frame(33u); /* the frame that draws them */
+
+    /* Eight poops add real area to the panel beyond whatever the creature
+     * (or its placeholder) already accounts for -- comfortably more than
+     * this margin even if every poop is small, and far more than the ~1px
+     * of drift a single 33ms frame's worth of creature movement alone
+     * could plausibly account for (kSpeedPxPerSec = 18, per Controller
+     * amendment A1). */
+    check(count_non_background() >= non_background_before_mess + 400u,
+          "setting poop_count to KF_PET_MAX_POOPS did not visibly add mess "
+          "to the framebuffer -- the mess-drawing path is missing or is "
+          "not reading pet->poop_count");
+
+    size_t steady_worst = 0;
+    for (int i = 0; i < 100; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > steady_worst) {
+            steady_worst = static_cast<size_t>(d.count);
+        }
+    }
+    check(steady_worst <= 2u,
+          "more than 2 rects with 8 poops standing still -- they are being "
+          "redrawn every frame instead of staying static");
+    KF_LOGI(TAG, "creature-screen: steady-state worst frame %zu rects with "
+                 "a full house of mess",
+            steady_worst);
 
     kf_pet_session_shutdown();
     kf_assets_shutdown();
@@ -2482,6 +2547,40 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     kf_screen_nav_debug_home();
     check(kf_screen_nav_debug_index() == 0,
           "kf_screen_nav_debug_home() returned from Info to Home");
+
+    /* Controller amendment A7.1 (a Task 4 review fix that nothing else
+     * catches if reverted): kf_creature_screen_enter() -- which the
+     * kf_screen_nav_debug_home() call just above ran, via load()'s switch-
+     * to-Home path -- must repaint the WHOLE 240x320 panel, not just
+     * kField (y=[0,260)). Info is an LVGL screen and never touches rows
+     * 260-319 itself, so if Home's entry repaint only covered its own
+     * field, whatever Info last flushed into that band -- from before this
+     * very round trip -- would sit there forever, since Home never pumps
+     * LVGL to repaint it and no per-frame path here would ever touch it
+     * either. The golden checksum above does not cover this: it is taken
+     * while INFO is active, before this Home switch even happens.
+     *
+     * No new sprite/creature drawing has run yet at this exact point --
+     * kf_creature_screen_frame() has not been called since re-entering --
+     * so EVERY pixel on the panel is still exactly whatever
+     * kf_creature_screen_enter()'s fill just painted, and (0,0), inside
+     * kField, is a faithful sample of it (same reasoning
+     * run_creature_screen_check() uses for its own background_color
+     * sample). Comparing a pixel from inside the reserved band against
+     * that catches the bug directly: if the entry repaint regressed to
+     * kField-only, the band pixel would still be whatever Info left, and
+     * would not match. */
+    {
+        const kf_color *px = kf_fb_pixels();
+        const kf_color creature_background = px[0];
+        const kf_color band_pixel =
+            px[static_cast<size_t>(280) * KF_DISPLAY_WIDTH + 10u];
+        check(band_pixel == creature_background,
+              "row 280 (inside the reserved y=[260,320) stats band) still "
+              "held Info's leftover pixels after switching back to Home -- "
+              "kf_creature_screen_enter() must repaint the whole panel, "
+              "not just kField");
+    }
 
     kf_screen_nav_debug_home();
     check(kf_screen_nav_debug_index() == 0,

@@ -249,6 +249,20 @@ uint64_t kf_pet_session_debug_age_seconds(void);
  * reachable on ESP32. */
 void kf_pet_session_debug_seek(uint64_t target_age_seconds);
 
+/* Mutable access to the live pet, for tests that need to force a field no
+ * care action or debug lever reaches directly -- e.g. poop_count, to drive
+ * the creature screen's mess-drawing budget without playing out real
+ * neglect. This is NOT a second way for presentation to influence Core: the
+ * shipping path (kf_creature_screen.cpp and friends) reads only the const
+ * pointer kf_pet_session_state() returns, never this one, and this
+ * declaration exists solely so a test file can reach in.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_TOOLS, same as kf_pet_session_debug_
+ * seek() just above -- see this section's header comment. Desktop/headless
+ * only: not reachable on ESP32, exactly like the other TOOLS-gated
+ * functions here. */
+kf_pet_state *kf_pet_session_state_mutable_for_test(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

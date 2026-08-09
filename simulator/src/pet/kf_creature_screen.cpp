@@ -50,9 +50,63 @@ constexpr kf_color kBackground = KF_RGB(232, 240, 216);
  * sprites; nothing else about this file changes when that happens. */
 constexpr kf_color kPlaceholderColor = KF_RGB(255, 0, 128);
 
+/* Mess (Task 5). pet->poop_count (kf/pet.h) is a COUNT, 0..KF_PET_MAX_POOPS,
+ * with no positions -- Core says so deliberately, because where each one
+ * sits on screen is presentation's call, not the simulation's. This is that
+ * call: KF_PET_MAX_POOPS fixed slots in a single row, addressed by index
+ * alone -- deterministic, so the same count always paints the same pixels,
+ * no jitter frame to frame and no RNG (Controller amendment A6: placing
+ * mess with the RNG would make a bug report un-reproducible).
+ *
+ * The row sits inside kField (A3): kPoopSlotWidth * KF_PET_MAX_POOPS ==
+ * kField.x1, so all eight slots fit the 240px width with no overlap and
+ * none spill outside it, and the row itself (kPoopY0..kPoopY1) finishes
+ * well short of y=260, the reserved stats band this file never draws into
+ * otherwise -- with a further gap below the row and the band edge, so mess
+ * reads as sitting on the floor rather than colliding with the band. */
+constexpr int16_t kPoopSize = 12;
+constexpr int16_t kPoopY0 = 232;
+constexpr int16_t kPoopY1 = kPoopY0 + kPoopSize;
+constexpr int16_t kPoopSlotWidth =
+    static_cast<int16_t>(kField.x1 / static_cast<int16_t>(KF_PET_MAX_POOPS));
+
+/* The whole mess row, used only when the poop count actually changes -- see
+ * kf_creature_screen_frame()'s mess-drawing comment for why repainting
+ * through this one rect, rather than each poop's own rect standing alone,
+ * is what keeps that the ONE frame it happens on cheap. */
+constexpr kf_rect kMessBand = {0, kPoopY0, kField.x1, kPoopY1};
+
+/* A plain brown, unmistakably neither the field background nor
+ * kPlaceholderColor's hot pink -- nothing subtle is being attempted here,
+ * the same "obviously placeholder" reasoning kPlaceholderColor's own
+ * comment gives, until real mess art exists. */
+constexpr kf_color kPoopColor = KF_RGB(92, 64, 51);
+
+/* Where poop number `index` (0-based, < pet->poop_count) sits. Pure
+ * function of the index alone -- see kPoopSize's own comment for why that
+ * matters. */
+kf_rect poop_rect(uint8_t index) {
+    const int16_t x0 = static_cast<int16_t>(
+        index * kPoopSlotWidth + (kPoopSlotWidth - kPoopSize) / 2);
+    return kf_rect{x0, kPoopY0, static_cast<int16_t>(x0 + kPoopSize), kPoopY1};
+}
+
 kf_creature g_creature;
 kf_rect g_previous = {0, 0, 0, 0};
 bool g_up = false;
+
+/* How many poops are actually painted on screen right now -- NOT
+ * pet->poop_count, which the mess-drawing code below compares this
+ * against every frame precisely so it can tell "the count changed since
+ * last frame, repaint" from "nothing to do". -1 is not a value
+ * pet->poop_count (uint8_t) can ever hold, so it means "nothing painted
+ * yet, or the screen was just wiped" -- the state right after
+ * kf_creature_screen_init() and after every kf_creature_screen_enter()
+ * (Controller amendment A2: the entry repaint wipes any mess along with
+ * everything else, and nothing in the per-frame path would ever notice
+ * unless this is reset too). Either way it forces the very next frame to
+ * repaint regardless of what pet->poop_count already is. */
+int g_drawn_poops = -1;
 
 /* Remembers the outcome of the last sprite resolution (Controller amendment
  * A4: west-first lookup) so a creature with no west art pays one strcmp per
@@ -160,6 +214,55 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
      * what pins this budget down. */
     kf_fill_rect(g_previous, kBackground);
 
+    /* Mess (Task 5). Static by construction: this only ever paints on a
+     * frame where pet->poop_count actually differs from g_drawn_poops (it
+     * grew, shrank, or the screen was just entered -- A2), or where the
+     * erase just above happened to punch a hole through a poop that was
+     * standing at the creature's old position. A frame where neither is
+     * true touches no mess pixels and marks no mess rectangle at all --
+     * the whole point being that eight poops redrawn every frame, on top
+     * of the creature's own (up to two, per Controller amendment A1),
+     * would blow past KF_MAX_DIRTY_RECTS. See run_creature_screen_check()
+     * for what pins the steady-state budget down.
+     *
+     * Runs before the creature is drawn below, so the creature paints over
+     * any mess it happens to be standing on -- it is walking ON the floor,
+     * not under it. */
+    if (pet->poop_count != g_drawn_poops) {
+        /* The count changed, or this is the first frame after entry.
+         * Repaint the whole row once: clear the band, then redraw every
+         * currently-active slot. This costs exactly ONE dirty rectangle no
+         * matter how many poops are active -- every poop_rect() is fully
+         * inside kMessBand, which the fill just below already marked
+         * dirty, and a rectangle that overlaps an already-tracked one
+         * merges into it instead of adding a new one (kf/framebuffer.h's
+         * kf_fb_mark_dirty() comment). This is the one frame this task's
+         * budget does not have to hold at 2 -- it is not part of the
+         * steady-state loop the check measures, only the rare frame
+         * something about the mess actually changed. */
+        kf_fill_rect(kMessBand, kBackground);
+        for (uint8_t i = 0; i < pet->poop_count; ++i) {
+            kf_fill_rect(poop_rect(i), kPoopColor);
+        }
+        g_drawn_poops = pet->poop_count;
+    } else {
+        /* Nothing about the mess changed -- but the creature's OLD
+         * position (g_previous, just erased above) may have been sitting
+         * on top of a poop, and that erase painted background straight
+         * over it. Put back only the poops the erase actually touched.
+         * Free, not merely cheap: each redrawn poop_rect() overlaps
+         * g_previous, which the erase already marked dirty, so it merges
+         * into that same rectangle rather than adding a new one --
+         * Controller amendment A1: "redraw them; do not build machinery
+         * to avoid it." */
+        for (uint8_t i = 0; i < pet->poop_count; ++i) {
+            const kf_rect r = poop_rect(i);
+            if (!kf_rect_is_empty(kf_rect_intersect(g_previous, r))) {
+                kf_fill_rect(r, kPoopColor);
+            }
+        }
+    }
+
     const kf_creature_pose pose =
         kf_creature_pose_for(pet, g_creature.reaction_hold_ms);
     const kf_sprite *sprite = nullptr;
@@ -192,8 +295,14 @@ void kf_creature_screen_enter(void) {
      * never runs while Home is showing. One dirty rect either way --
      * kScreen fully contains kField, and overlapping/touching rects merge
      * (kf/framebuffer.h's own comment on kf_fb_mark_dirty()) -- so this
-     * costs nothing extra against the 2-rect per-frame budget the checks
-     * below police.
+     * costs nothing extra against the RECT-COUNT budget run_creature_
+     * screen_check() (simulator/src/headless/headless_main.cpp) polices:
+     * one dirty rect, same as if only kField had been touched. It is NOT
+     * free in BYTES, though -- 240x320x2 = 153,600, well past that same
+     * check's 13,824-byte per-frame limit. Nothing breaks: this function
+     * is called once per screen switch, never from inside a frame either
+     * check measures. Said plainly so the byte cost is not mistaken for
+     * zero just because the rect cost is.
      *
      * This does NOT mean the reserved stats band (kField's own comment,
      * above) becomes this screen's to draw into: kBackground here is
@@ -202,4 +311,19 @@ void kf_creature_screen_enter(void) {
      * top of it -- until the stats band that owns it lands. */
     kf_fill_rect(kScreen, kBackground);
     g_previous = kf_creature_bounds(&g_creature);
+
+    /* Mess must be invalidated here too (Controller amendment A2): the
+     * fill just above just wiped any poops that were painted on screen,
+     * along with everything else, but it does not touch pet->poop_count
+     * itself -- Core's number is unaffected, only what is currently
+     * PAINTED is. Left alone, g_drawn_poops would still read whatever it
+     * held before this entry, so the next kf_creature_screen_frame() would
+     * see "count unchanged" and draw nothing, and the mess would silently
+     * stay invisible until poop_count happens to change for some other
+     * reason. -1 is not a real count, so it forces that next frame to
+     * repaint regardless of what pet->poop_count already is -- see
+     * g_drawn_poops's own comment. Not drawing the mess itself here: that
+     * stays kf_creature_screen_frame()'s job, run once, the very next time
+     * it is called. */
+    g_drawn_poops = -1;
 }

@@ -48,9 +48,9 @@ void load(size_t index) {
     g_active = index;
     if (g_screens[index].root == nullptr) {
         /* Switching TO a screen that owns the framebuffer directly (Home):
-         * it must repaint its own field in full right now, or it inherits
-         * whatever LVGL last left in those pixels and then only ever
-         * erases its own small moving rectangle out of that -- the
+         * it must repaint the whole panel in full right now, or it
+         * inherits whatever LVGL last left in those pixels and then only
+         * ever erases its own small moving rectangle out of that -- the
          * black-trail bug (docs/architecture/adr-0017-pet-screen.md:143-
          * 188) in a new shape. kf_creature_screen_enter() is exactly that
          * repaint; see its own header comment. */
@@ -107,8 +107,11 @@ void kf_screen_nav_init(void) {
     /* Home is the creature screen (Task 4): it owns the framebuffer
      * directly, so it gets no lv_obj_t root -- see ScreenEntry's own
      * comment. kf_creature_screen_init() already paints the field's
-     * background itself (via kf_creature_screen_enter(), its last step),
-     * the same "screen looks right from its very first frame" convention
+     * background itself (via kf_creature_screen_enter(), called before
+     * kf_creature_screen_init() returns -- not its LAST step; the last
+     * statement just sets a ready flag, but the whole panel is painted
+     * before any frame ever runs either way), the same "screen looks right
+     * from its very first frame" convention
      * kf_pet_screen_init()/kf_pet_info_screen_init() already used, so
      * nothing extra is needed here the way lv_screen_active() capture used
      * to be for the old LVGL Home.

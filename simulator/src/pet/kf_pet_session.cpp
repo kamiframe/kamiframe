@@ -381,4 +381,10 @@ void kf_pet_session_debug_seek(uint64_t target_age_seconds) {
     g.pending_ms = 0;
 }
 
+kf_pet_state *kf_pet_session_state_mutable_for_test(void) {
+    KF_ASSERT(g.ready, "kf_pet_session_state_mutable_for_test called before "
+                        "kf_pet_session_init");
+    return &g.state;
+}
+
 #endif // KF_PET_SESSION_ENABLE_DEBUG_TOOLS
