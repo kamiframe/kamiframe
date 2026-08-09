@@ -43,16 +43,22 @@ struct Mover {
 struct Demo {
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
-    /* frame_count explicit at 1 (position 6: pixels, indices, palette,
-     * width, height, frame_count) rather than left at value-init's 0, so
-     * this sprite meets its own type's invariant ("always >= 1", kf/types.h)
-     * even before kf_demo_init()'s `sprite = *test_sprite` overwrites every
-     * field wholesale. Nothing reads this particular frame_count today, but
-     * a value that violates the type it belongs to is a bug waiting for the
-     * day something does. */
-    kf_sprite sprite{nullptr, nullptr, nullptr, 0,
-                     0,       1,       0,       0,
-                     false,   KF_SPRITE_FORMAT_RGB565};
+    /* Value-initialised, then frame_count explicitly forced to 1 by name
+     * rather than by position, so this sprite meets its own type's
+     * invariant ("always >= 1", kf/types.h) even before kf_demo_init()'s
+     * `sprite = *test_sprite` overwrites every field wholesale. This has to
+     * survive a field being inserted anywhere in kf_sprite: C++17 has no
+     * designated initialisers, and a positional aggregate initialiser
+     * silently reassigns which member "1" lands on when the struct's shape
+     * changes -- a shorter-than-full-width list is legal C++, so the
+     * compiler gives no warning either. Nothing reads this particular
+     * frame_count today, but a value that violates the type it belongs to
+     * is a bug waiting for the day something does. */
+    kf_sprite sprite = [] {
+        kf_sprite s{};
+        s.frame_count = 1;
+        return s;
+    }();
     Mover movers[kStressSprites];
     int mover_count = 1;
 

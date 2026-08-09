@@ -4777,6 +4777,11 @@ int run_blit_mirror_check(void) {
     sprite.width = 4;
     sprite.height = 3;
     sprite.has_color_key = false;
+    /* Every kf_sprite construction site sets this explicitly rather than
+     * trusting value-init's 0 -- kf/types.h documents frame_count as
+     * "always >= 1", and a 0 here is a silent, delayed fault (nothing
+     * reads it yet, but Task 2/6 will). */
+    sprite.frame_count = 1;
 
     kf_color *fb = kf_fb_pixels();
     const kf_color kSentinel = 0xDEAD;
