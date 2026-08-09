@@ -20,6 +20,7 @@
  *     kamiframe-headless --verify-dirtiness
  *     kamiframe-headless --verify-pet-preferences
  *     kamiframe-headless --verify-pet-care-variation
+ *     kamiframe-headless --verify-creature-pose
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -36,6 +37,7 @@
 #include "kf/arena.h"
 #include "kf/assets.h"
 #include "kf/budget.h"
+#include "kf/creature.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
 #include "kf/hal/power.h"
@@ -1915,6 +1917,59 @@ int run_pet_care_variation_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Proves kf_creature_pose_for()'s precedence -- dead beats sick beats a held
+ * reaction beats neutral -- and proves the reaction window actually gates
+ * the sticky last_reaction field: the same LIKED reaction reads as happy
+ * while the window is open and neutral once it has lapsed. See
+ * kf/creature.h and kf/creature.cpp. */
+int run_creature_pose_check(void) {
+    kf_pet_state pet{};
+    kf_pet_init(&pet);
+
+    struct Case {
+        const char *name;
+        bool sick;
+        bool dead;
+        uint8_t reaction;
+        uint32_t hold_ms;
+        kf_creature_pose expect;
+    };
+
+    const Case cases[] = {
+        {"fresh pet is neutral", false, false, KF_PET_REACTION_NEUTRAL, 0,
+         KF_CREATURE_POSE_NEUTRAL},
+        {"liked care inside the window is happy", false, false,
+         KF_PET_REACTION_LIKED, 500, KF_CREATURE_POSE_HAPPY},
+        {"liked care after the window lapses is neutral", false, false,
+         KF_PET_REACTION_LIKED, 0, KF_CREATURE_POSE_NEUTRAL},
+        {"disliked care inside the window is objecting", false, false,
+         KF_PET_REACTION_DISLIKED, 500, KF_CREATURE_POSE_OBJECTING},
+        {"sickness outranks a happy reaction", true, false,
+         KF_PET_REACTION_LIKED, 500, KF_CREATURE_POSE_SICK},
+        {"death outranks sickness", true, true, KF_PET_REACTION_LIKED, 500,
+         KF_CREATURE_POSE_DEAD},
+    };
+
+    bool ok = true;
+    for (const Case &c : cases) {
+        pet.sick = c.sick;
+        pet.dead = c.dead;
+        pet.last_reaction = c.reaction;
+        const kf_creature_pose got = kf_creature_pose_for(&pet, c.hold_ms);
+        if (got != c.expect) {
+            KF_LOGE(TAG, "FAILED: %s: expected %d, got %d", c.name,
+                    static_cast<int>(c.expect), static_cast<int>(got));
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        KF_LOGI(TAG, "all %zu cases passed", sizeof(cases) / sizeof(cases[0]));
+    }
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -2754,6 +2809,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_death = false;
     bool verify_pet_preferences = false;
     bool verify_pet_care_variation = false;
+    bool verify_creature_pose = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2804,6 +2860,8 @@ int main(int argc, char *argv[]) {
             verify_pet_preferences = true;
         } else if (std::strcmp(argv[i], "--verify-pet-care-variation") == 0) {
             verify_pet_care_variation = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-pose") == 0) {
+            verify_creature_pose = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2835,6 +2893,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-pet-death\n"
                         "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-pet-care-variation\n"
+                        "kamiframe-headless --verify-creature-pose\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2910,6 +2969,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_care_variation) {
         return run_pet_care_variation_check();
+    }
+
+    if (verify_creature_pose) {
+        return run_creature_pose_check();
     }
 
     if (verify_lua_pet) {

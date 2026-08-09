@@ -401,6 +401,14 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless --verify-pet-screen
                      --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
 
+    # Proves kf_creature_pose_for()'s precedence (dead beats sick beats a
+    # held reaction beats neutral) and proves the reaction-hold window
+    # actually gates the sticky last_reaction field, rather than reading it
+    # straight through. See headless_main.cpp's run_creature_pose_check()
+    # and hakoniwaos/include/kf/creature.h.
+    add_test(NAME creature_pose_check
+             COMMAND kamiframe-headless --verify-creature-pose)
+
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and
