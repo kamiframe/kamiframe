@@ -7,13 +7,12 @@
 #include "kf/demo.h"
 
 #include "kf/arena.h"
+#include "kf/assets.h"
 #include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
 #include "kf/rng.h"
-
-#include "sprite_data.h"
 
 #include <cstdint>
 
@@ -50,9 +49,12 @@ struct Demo {
 
     kf_color background = 0;
 
-    /* Tileset, generated at init into the assets arena. No asset pipeline
-     * exists yet, and this also puts the assets arena to work so its
-     * high-water mark is not permanently zero. */
+    /* Tileset, generated at init straight into KF_ARENA_ASSETS -- procedural
+     * game data, not a packed sprite, so it has no business going through
+     * the asset pipeline (kf/assets.h) the real sprite above now comes
+     * from. Kept as-is since ADR 0033: it is exactly the kind of "decoded
+     * sprites and game data" kf/arena.h's own comment says that arena is
+     * for, alongside the asset pipeline's own small descriptor table. */
     kf_sprite tiles[kTileCount];
     int32_t scroll_x = 0;
     int32_t scroll_y = 0;
@@ -68,8 +70,8 @@ Demo d;
 kf_rect sprite_rect(const Mover &m) {
     const int16_t x = static_cast<int16_t>(m.x / kSub);
     const int16_t y = static_cast<int16_t>(m.y / kSub);
-    return kf_rect{x, y, static_cast<int16_t>(x + KF_TEST_SPRITE_WIDTH),
-                   static_cast<int16_t>(y + KF_TEST_SPRITE_HEIGHT)};
+    return kf_rect{x, y, static_cast<int16_t>(x + d.sprite.width),
+                   static_cast<int16_t>(y + d.sprite.height)};
 }
 
 void build_tileset(void) {
@@ -169,20 +171,44 @@ void kf_demo_init(uint32_t seed, kf_demo_mode mode) {
         return;
     }
 
-    d.sprite.pixels = kf_test_sprite_pixels;
-    d.sprite.width = KF_TEST_SPRITE_WIDTH;
-    d.sprite.height = KF_TEST_SPRITE_HEIGHT;
-    d.sprite.color_key = KF_TEST_SPRITE_COLOR_KEY;
-    d.sprite.has_color_key = true;
+    /* The one real sprite this build has, loaded through the asset
+     * pipeline (docs/architecture/adr-0033-asset-pipeline.md) rather than
+     * baked into a header: kf_assets_init() (called from kf_app_init(),
+     * before this function runs) has already mounted the pack and built
+     * its descriptor table, so this is a lookup, not a load. Copied by
+     * value into d.sprite -- kf_sprite is a flat POD, so this copies the
+     * pointer/width/height/color-key fields, not the pixel bytes
+     * themselves, which stay wherever kf_hal_assets_base() put them. */
+    const kf_sprite *test_sprite = kf_assets_get("test_sprite");
+    KF_ASSERT(test_sprite != nullptr,
+              "asset pack has no sprite named 'test_sprite' -- regenerate "
+              "examples/hello_sprite/assets.kfpack with "
+              "tools/kf_pack_assets.py --test-sprite");
+    d.sprite = *test_sprite;
+
+    /* The sprite's dimensions now come from the pack at runtime rather than
+     * a compile-time macro, so -- unlike before -- the compiler can no
+     * longer prove KF_DISPLAY_WIDTH/HEIGHT minus them stays non-negative.
+     * Assert it once, here, then work in explicit uint32_t ranges below so
+     * the subtraction itself stays in a signed type the compiler CAN
+     * reason about, with no implicit sign-changing conversion at the
+     * kf_rng_below() call boundary (-Wsign-conversion, -Werror). */
+    KF_ASSERT(d.sprite.width <= KF_DISPLAY_WIDTH &&
+                  d.sprite.height <= KF_DISPLAY_HEIGHT,
+              "test_sprite is %ux%u, too big for the %dx%d display",
+              d.sprite.width, d.sprite.height, KF_DISPLAY_WIDTH,
+              KF_DISPLAY_HEIGHT);
+    const uint32_t x_range =
+        static_cast<uint32_t>(KF_DISPLAY_WIDTH - d.sprite.width);
+    const uint32_t y_range =
+        static_cast<uint32_t>(KF_DISPLAY_HEIGHT - d.sprite.height);
 
     d.mover_count = (mode == KF_DEMO_FULLSCREEN) ? kStressSprites : 1;
 
     for (int i = 0; i < d.mover_count; ++i) {
         Mover &m = d.movers[i];
-        m.x = static_cast<int32_t>(
-            kf_rng_below(KF_DISPLAY_WIDTH - KF_TEST_SPRITE_WIDTH)) * kSub;
-        m.y = static_cast<int32_t>(
-            kf_rng_below(KF_DISPLAY_HEIGHT - KF_TEST_SPRITE_HEIGHT)) * kSub;
+        m.x = static_cast<int32_t>(kf_rng_below(x_range)) * kSub;
+        m.y = static_cast<int32_t>(kf_rng_below(y_range)) * kSub;
         m.vx = 20 + static_cast<int32_t>(kf_rng_below(24u));
         m.vy = 20 + static_cast<int32_t>(kf_rng_below(24u));
         if (kf_rng_next() & 1u) {
@@ -195,8 +221,8 @@ void kf_demo_init(uint32_t seed, kf_demo_mode mode) {
 
     /* Centre the single sprite so the simple demo starts tidily. */
     if (mode == KF_DEMO_SPRITE) {
-        d.movers[0].x = ((KF_DISPLAY_WIDTH - KF_TEST_SPRITE_WIDTH) / 2) * kSub;
-        d.movers[0].y = ((KF_DISPLAY_HEIGHT - KF_TEST_SPRITE_HEIGHT) / 2) * kSub;
+        d.movers[0].x = static_cast<int32_t>(x_range / 2u) * kSub;
+        d.movers[0].y = static_cast<int32_t>(y_range / 2u) * kSub;
     }
 
     d.background = KF_RGB(24, 26, 38);
@@ -258,8 +284,8 @@ void kf_demo_update(uint32_t held, uint32_t pressed) {
         d.scroll_y += 9;
     }
 
-    const int32_t max_x = (KF_DISPLAY_WIDTH - KF_TEST_SPRITE_WIDTH) * kSub;
-    const int32_t max_y = (KF_DISPLAY_HEIGHT - KF_TEST_SPRITE_HEIGHT) * kSub;
+    const int32_t max_x = (KF_DISPLAY_WIDTH - d.sprite.width) * kSub;
+    const int32_t max_y = (KF_DISPLAY_HEIGHT - d.sprite.height) * kSub;
 
     for (int i = 0; i < d.mover_count; ++i) {
         Mover &m = d.movers[i];

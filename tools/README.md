@@ -4,7 +4,12 @@ Small standalone scripts that support the build. They are not part of the
 firmware or the simulator.
 
 - `check_no_heap.py` -- CI check that core never reaches for the heap.
-- `make_font.py`, `make_test_sprite.py` -- generate checked-in asset headers.
+- `make_font.py` -- generates the checked-in bitmap font header (still a
+  baked-in header on purpose; see that file's own docstring).
+- `kf_pack_assets.py` -- the asset pipeline's packer (ADR 0033): packs
+  named sprites (and, later, audio clips) into a `.kfpack` file
+  `kf/assets.h` loads at runtime. Supersedes the old `make_test_sprite.py`,
+  which is gone.
 - `kf_debug.py` -- talk to a real board over USB. Explained below.
 - `kf_debug_selftest.py` -- proves `kf_debug.py` decodes the wire protocol
   correctly, without needing a board plugged in.

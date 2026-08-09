@@ -20,8 +20,8 @@ if(ESP_PLATFORM)
     return()
 endif()
 
-# Shared by both backends: pools, logging, entropy, clocks, storage, power.
-# Nothing here touches a display or an input device.
+# Shared by both backends: pools, logging, entropy, clocks, storage, power,
+# assets. Nothing here touches a display or an input device.
 set(KF_HOST_COMMON_SRCS
     src/host/host_memory.cpp
     src/host/host_log.cpp
@@ -29,6 +29,7 @@ set(KF_HOST_COMMON_SRCS
     src/host/host_entropy.cpp
     src/host/host_storage.cpp
     src/host/host_power.cpp
+    src/host/host_assets.cpp
 )
 
 add_library(kamiframe_host_common STATIC ${KF_HOST_COMMON_SRCS})
@@ -36,6 +37,15 @@ target_include_directories(kamiframe_host_common
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/host)
 target_link_libraries(kamiframe_host_common
     PUBLIC hakoniwaos kamiframe_options)
+
+# host_assets.cpp's default asset pack path: an absolute, source-tree-
+# relative path baked in at configure time, not a relative "wherever you
+# run it from" default -- see that file's own header comment for why. Both
+# kamiframe-sim and kamiframe-headless link kamiframe_host_common, so both
+# get the same default with no per-target duplication.
+target_compile_definitions(kamiframe_host_common PUBLIC
+    KF_HOST_DEFAULT_ASSET_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack"
+)
 
 # ---------------------------------------------------------------------------
 # Pet session -- owns the live kf_pet_state instance and drives its two
@@ -353,4 +363,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # one.
     add_test(NAME lua_creature_check
              COMMAND kamiframe-headless --verify-lua-creature)
+
+    # Proves the asset pipeline (ADR 0033) end to end: kf_assets_init()
+    # mounts and parses the checked-in pack
+    # (examples/hello_sprite/assets.kfpack), kf_assets_get("test_sprite")
+    # finds it with the right size/color-key, and its pixel bytes are
+    # byte-identical to the pack FILE's own bytes at the offset its
+    # directory names -- read independently, not through
+    # hakoniwaos/src/assets.cpp's own parser, so this is a real "matches
+    # what the packer wrote" proof rather than the parser grading itself.
+    # See headless_main.cpp's run_asset_check().
+    add_test(NAME asset_pipeline_check
+             COMMAND kamiframe-headless --verify-assets)
 endif()

@@ -82,6 +82,7 @@ idf_component_register(
         ../hal/esp_log.cpp
         ../hal/esp_storage.cpp
         ../hal/esp_power.cpp
+        ../hal/esp_assets.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
         ../../../simulator/src/lua/kf_lua_alloc.cpp
         ../../../simulator/src/lua/kf_lua_port.cpp
@@ -93,6 +94,7 @@ idf_component_register(
         lua
         kamiframe_lvgl_port
         spi_flash
+        esp_partition
         esp_driver_gpio
         esp_driver_spi
         esp_driver_i2c
@@ -105,6 +107,19 @@ idf_component_register(
         esp_system
     WHOLE_ARCHIVE
 )
+
+## Puts the checked-in test asset pack (ADR 0033) into the "assets" data
+## partition (../partitions.csv) as part of `idf.py flash`, the same
+## mechanism ESP-IDF's own examples use for a raw (non-filesystem) data
+## partition -- see e.g. examples/storage/nvs/nvs_bootloader in the ESP-IDF
+## tree for another call to this exact function. esp_assets.cpp's
+## esp_partition_mmap() call above only maps whatever is already in flash;
+## this is what actually puts the pack file's bytes there. Only reached
+## once ESP-IDF's own project.cmake (included by ../CMakeLists.txt) has
+## defined esptool_py_flash_to_partition(), which is why this call lives
+## here rather than earlier in the file.
+esptool_py_flash_to_partition(flash "assets"
+    "${CMAKE_CURRENT_LIST_DIR}/../../../examples/hello_sprite/assets.kfpack")
 
 ## See kf_pet_session.h's "DEBUG ONLY" section and kf_pet_session.cpp's
 ## top-of-file comment: the pet session's debug tools now split across TWO

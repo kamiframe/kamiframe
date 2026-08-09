@@ -19,8 +19,6 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS ${HAKONIWAOS_SRCS}
         INCLUDE_DIRS include
-        # The demo pulls in the generated test sprite. Goes away with the demo.
-        PRIV_INCLUDE_DIRS ../examples/hello_sprite
         REQUIRES esp_timer
     )
     # ESP-IDF defaults its own components to gnu++26. Pin ours to the same
@@ -36,7 +34,6 @@ else()
 
     target_include_directories(hakoniwaos
         PUBLIC  ${CMAKE_CURRENT_LIST_DIR}/include
-        PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../examples/hello_sprite
     )
 
     target_link_libraries(hakoniwaos PUBLIC kamiframe_options)

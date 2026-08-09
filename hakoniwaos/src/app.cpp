@@ -10,6 +10,7 @@
 #include "kf/app.h"
 
 #include "kf/arena.h"
+#include "kf/assets.h"
 #include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/font.h"
@@ -299,6 +300,9 @@ void kf_app_init(kf_demo_mode mode) {
     KF_ASSERT(kf_input_init() == KF_OK, "input HAL failed to start");
     KF_ASSERT(kf_store_init() == KF_OK, "storage HAL failed to start");
     KF_ASSERT(kf_power_init() == KF_OK, "power HAL failed to start");
+    /* Before kf_demo_init() below: the demo looks up sprites by name via
+     * kf_assets_get(), so the pack must already be mounted and parsed. */
+    KF_ASSERT(kf_assets_init() == KF_OK, "assets HAL failed to start");
 
     const kf_display_caps *caps = kf_display_get_caps();
     KF_ASSERT(caps != nullptr, "display backend returned no capabilities");
@@ -454,6 +458,7 @@ void kf_app_shutdown(void) {
     kf_app_log_budget_report();
 
     kf_demo_shutdown();
+    kf_assets_shutdown();
     kf_input_shutdown();
     kf_display_shutdown();
     kf_power_shutdown();

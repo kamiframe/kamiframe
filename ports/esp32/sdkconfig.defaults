@@ -46,3 +46,11 @@ CONFIG_SD_ENABLE_SDIO_SUPPORT=n
 # headroom, and there is no reason to bring the device up at a slower clock
 # now only to raise it again once those land.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# The real partition table (ADR 0033), replacing ESP-IDF's default
+# single-app layout: NVS, two 1.5MB OTA app slots, and a 12MB assets
+# partition kf/hal/assets.h mounts by name. See partitions.csv itself for
+# the full reasoning behind every offset and size.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"

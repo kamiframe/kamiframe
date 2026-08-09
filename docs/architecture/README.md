@@ -40,6 +40,7 @@ future us in month eight asking the same question with less patience.
 | [0030](adr-0030-serial-debug-bridge.md) | The KFDBG serial debug bridge: see and drive the device over USB, no camera | Accepted |
 | [0031](adr-0031-kfdbg-time-control.md) | Time control over KFDBG, and splitting the pet session's debug flag in two | Accepted |
 | [0032](adr-0032-panel-tearing-and-selection.md) | Screen tearing, what we tried, and what the kit's panel must expose | Accepted |
+| [0033](adr-0033-asset-pipeline.md) | The asset pipeline: sprites packed into flash, memory-mapped, not copied | Accepted |
 
 Open evaluations, deliberately not decided:
 

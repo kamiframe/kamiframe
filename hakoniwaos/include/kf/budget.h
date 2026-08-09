@@ -187,11 +187,21 @@
  * Flash
  * ------------------------------------------------------------------------- */
 
-/* 16MB part. Firmware, OTA slots, NVS and the partition table all take a
- * share, so the asset partition is smaller than the chip. Refine when the
- * partition table is written (Phase 1b). */
+/* 16MB part. Firmware (x2, for OTA -- see ports/esp32/partitions.csv),
+ * NVS and the partition table all take a share, so the asset partition is
+ * smaller than the chip.
+ *
+ * REFINED, not just assumed, now that the partition table exists
+ * (docs/architecture/adr-0033-asset-pipeline.md): 12MB is what is actually
+ * left over after two 1.5MB app slots (current firmware is ~640KB; real
+ * headroom for LVGL+Lua+Wifi/BLE to grow into) plus NVS/phy_init/otadata,
+ * not a round number picked in isolation. This MUST equal
+ * partitions.csv's "assets" partition size exactly -- kf/assets.cpp checks
+ * a loaded pack against this number, but nothing checks this number against
+ * the CSV itself, so a change to one needs the same commit to change the
+ * other. */
 #define KF_FLASH_TOTAL_BYTES        (16u * 1024u * 1024u)
-#define KF_FLASH_ASSET_BUDGET_BYTES (10u * 1024u * 1024u)
+#define KF_FLASH_ASSET_BUDGET_BYTES (12u * 1024u * 1024u)
 
 /* -------------------------------------------------------------------------
  * Storage (save state)

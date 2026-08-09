@@ -20,6 +20,7 @@
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-screen-nav [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua-creature
+ *     kamiframe-headless --verify-assets
  *
  * Exit codes:
  *     0  everything asserted held
@@ -28,6 +29,7 @@
 
 #include "kf/app.h"
 #include "kf/arena.h"
+#include "kf/assets.h"
 #include "kf/budget.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
@@ -54,6 +56,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -1582,6 +1585,151 @@ int run_lua_creature_check() {
     return ok ? 0 : 1;
 }
 
+/* Proves the asset pipeline (ADR 0033) end to end: kf_assets_init() mounts
+ * and parses the checked-in pack (examples/hello_sprite/assets.kfpack, the
+ * same file kf_demo_init() loads "test_sprite" from), kf_assets_get() finds
+ * it with the size and color key tools/kf_pack_assets.py --test-sprite
+ * always writes, and -- the actual "matches what the packer wrote" proof --
+ * its pixel bytes are byte-identical to the pack FILE's own bytes at the
+ * offset ITS OWN directory entry names, read directly here with a small,
+ * independent parse that does not go through kf/assets.cpp at all. That
+ * last part matters: without it, this check would only prove kf/assets.cpp
+ * agrees with itself, not that it read the file correctly.
+ *
+ * Bypasses kf_app_init(): only KF_ARENA_ASSETS needs to exist first, not a
+ * display, storage, or the pet session -- the same "bring up only what this
+ * check needs" pattern run_lvgl_check() and run_lua_check() already use. */
+int run_asset_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_arena_init_all();
+
+    check(kf_assets_init() == KF_OK, "kf_assets_init mounts and parses the "
+                                      "checked-in pack");
+
+    check(kf_assets_get("no_such_sprite") == nullptr,
+          "a name absent from the pack returns NULL rather than a stale or "
+          "garbage pointer");
+
+    const kf_sprite *sprite = kf_assets_get("test_sprite");
+    check(sprite != nullptr,
+          "kf_assets_get(\"test_sprite\") finds the packed sprite by name");
+
+    if (sprite != nullptr) {
+        check(sprite->width == 32u && sprite->height == 32u,
+              "test_sprite is 32x32, the fixed size "
+              "tools/kf_pack_assets.py --test-sprite always writes");
+        check(sprite->has_color_key, "test_sprite carries a color key");
+        check(sprite->pixels[0] == sprite->color_key,
+              "the sprite's own corner pixel (outside the body ellipse in "
+              "the generator's math) reads back as the color key -- a real "
+              "decoded pixel, not zeroed or garbage memory");
+
+        /* Independently re-open and parse the pack FILE, byte for byte,
+         * without reusing kf/assets.cpp's reader at all. */
+        std::FILE *f = std::fopen(KF_HOST_DEFAULT_ASSET_PACK_PATH, "rb");
+        check(f != nullptr, "the pack file kf_assets_init() just mounted "
+                             "can be reopened directly for comparison");
+        if (f != nullptr) {
+            std::fseek(f, 0, SEEK_END);
+            const long file_size = std::ftell(f);
+            std::vector<uint8_t> raw(file_size > 0 ? static_cast<size_t>(file_size) : 0u);
+            std::fseek(f, 0, SEEK_SET);
+            const size_t read =
+                raw.empty() ? 0u : std::fread(raw.data(), 1, raw.size(), f);
+            std::fclose(f);
+            check(read == raw.size(), "the pack file reads back in full");
+
+            check(raw.size() >= 16u &&
+                      std::memcmp(raw.data(), "KFAP", 4) == 0,
+                  "the pack file on disk starts with the KFAP magic");
+
+            uint16_t entry_count = 0u;
+            uint32_t directory_offset = 0u;
+            if (raw.size() >= 16u) {
+                std::memcpy(&entry_count, raw.data() + 6, sizeof(entry_count));
+                std::memcpy(&directory_offset, raw.data() + 8,
+                            sizeof(directory_offset));
+            }
+            check(entry_count == 1u,
+                  "the checked-in pack has exactly the one sprite this "
+                  "check expects -- if that changed on purpose, this check "
+                  "needs updating too");
+
+            /* 52-byte entry: name(32) asset_type(1) reserved(1) reserved(2)
+             * type_meta(8) data_offset(4) data_bytes(4) -- see
+             * tools/kf_pack_assets.py's format comment. Read directly here
+             * rather than via a shared struct/constant with
+             * hakoniwaos/src/assets.cpp on purpose: this check exists to
+             * catch the two ever drifting apart, so it must not share the
+             * one piece of code that could hide that drift. */
+            if (entry_count == 1u && directory_offset + 52u <= raw.size()) {
+                const uint8_t *entry = raw.data() + directory_offset;
+                char name[33] = {};
+                std::memcpy(name, entry, 32);
+                check(std::strcmp(name, "test_sprite") == 0,
+                      "the pack file's own directory names this entry "
+                      "'test_sprite'");
+
+                const uint8_t asset_type = entry[32];
+                check(asset_type == 0u,
+                      "the pack file's own directory marks this entry as "
+                      "ASSET_TYPE_SPRITE (0)");
+
+                uint16_t width = 0u, height = 0u, color_key = 0u;
+                uint8_t has_color_key = 0u;
+                std::memcpy(&width, entry + 36, sizeof(width));
+                std::memcpy(&height, entry + 38, sizeof(height));
+                std::memcpy(&color_key, entry + 40, sizeof(color_key));
+                has_color_key = entry[42];
+                check(width == sprite->width && height == sprite->height &&
+                          color_key == sprite->color_key &&
+                          (has_color_key != 0u) == sprite->has_color_key,
+                      "the sprite metadata (width/height/color_key/"
+                      "has_color_key) in the file's own type_meta matches "
+                      "what kf_assets_get() reported");
+
+                uint32_t data_offset = 0u;
+                uint32_t data_bytes = 0u;
+                std::memcpy(&data_offset, entry + 44, sizeof(data_offset));
+                std::memcpy(&data_bytes, entry + 48, sizeof(data_bytes));
+
+                check(static_cast<uint64_t>(data_offset) + data_bytes <=
+                          raw.size(),
+                      "the pixel data the directory names actually fits "
+                      "inside the file");
+                check(data_bytes == static_cast<uint32_t>(sprite->width) *
+                                         sprite->height * 2u,
+                      "data_bytes recorded in the file's own directory "
+                      "matches width*height*2");
+
+                if (static_cast<uint64_t>(data_offset) + data_bytes <=
+                    raw.size()) {
+                    check(std::memcmp(sprite->pixels, raw.data() + data_offset,
+                                       data_bytes) == 0,
+                          "the sprite kf_assets_get() handed back is "
+                          "byte-identical to the pack file's own pixel "
+                          "bytes at the offset its directory names -- the "
+                          "loaded asset genuinely matches what the packer "
+                          "wrote, not a stale, shifted, or byte-swapped "
+                          "read");
+                }
+            }
+        }
+    }
+
+    kf_assets_shutdown();
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -1600,6 +1748,7 @@ int main(int argc, char *argv[]) {
     bool verify_pet_screen = false;
     bool verify_screen_nav = false;
     bool verify_lua_creature = false;
+    bool verify_assets = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -1638,6 +1787,8 @@ int main(int argc, char *argv[]) {
             verify_screen_nav = true;
         } else if (std::strcmp(argv[i], "--verify-lua-creature") == 0) {
             verify_lua_creature = true;
+        } else if (std::strcmp(argv[i], "--verify-assets") == 0) {
+            verify_assets = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -1652,7 +1803,8 @@ int main(int argc, char *argv[]) {
                         "[--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-screen-nav "
                         "[--expect-checksum HEX]\n"
-                        "kamiframe-headless --verify-lua-creature\n");
+                        "kamiframe-headless --verify-lua-creature\n"
+                        "kamiframe-headless --verify-assets\n");
             return 0;
         }
     }
@@ -1704,6 +1856,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_lua_creature) {
         return run_lua_creature_check();
+    }
+
+    if (verify_assets) {
+        return run_asset_check();
     }
 
     kf_app_init(mode);

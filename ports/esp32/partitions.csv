@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the Kamiframe contributors.
+#
+# Custom partition table for the 16MB N16R8 module. Replaces ESP-IDF's
+# default "single factory app" table (1MB app, no OTA, no assets), which is
+# enough to boot but not what real bring-up needs -- see
+# docs/architecture/adr-0033-asset-pipeline.md for the full reasoning
+# behind every number below.
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x6000,
+phy_init,   data, phy,      0xF000,    0x1000,
+otadata,    data, ota,      0x10000,   0x2000,
+ota_0,      app,  ota_0,    0x20000,   0x180000,
+ota_1,      app,  ota_1,    0x1A0000,  0x180000,
+assets,     data, 0x40,     0x320000,  0xC00000,
+#
+# --------------------------------------------------------------------------
+# nvs (24KB) / phy_init (4KB) / otadata (8KB): ESP-IDF's own standard sizes
+# for these three, unchanged from the default table. The pet's entire save
+# is 70 bytes (KF_PET_SAVE_KEY, kf/pet.h) -- 24KB of wear-levelled NVS is
+# vast headroom, not a figure chosen for this workload specifically.
+#
+# ota_0 / ota_1 (1.5MB each, 3MB total): current firmware is ~640KB
+# (kamiframe-firmware.bin, measured 2026-08-08). 1.5MB is real headroom --
+# LVGL and Lua are already linked in and will grow, and this project has
+# never once shipped a build smaller than its predecessor -- without giving
+# away flash the asset budget will actually use. Two slots, not one: see
+# "Why two app slots" below.
+#
+# assets (12MB): everything left after the above, rounded to a clean
+# number rather than consuming the chip's last ~896KB, which is simply
+# unpartitioned spare capacity at the tail of the 16MB device -- not lost,
+# just not committed to anything yet. KF_FLASH_ASSET_BUDGET_BYTES in
+# kf/budget.h is defined to match this exactly; kf/assets.cpp checks a
+# loaded pack against that constant, so a pack over budget fails the same
+# way on desktop as it eventually would on device, before flash tooling
+# ever gets a chance to refuse it. Type/subtype 0x40 (data, first
+# "individual application" custom subtype -- ESP-IDF's own partition-type
+# docs reserve 0x40-0xFE for this) rather than a filesystem subtype like
+# spiffs: this partition holds one raw .kfpack blob that
+# esp_partition_mmap() addresses directly, not a mounted filesystem, so
+# claiming to be one would be a lie the mount code never backs up. Found
+# by NAME ("assets", KF_HAL_ASSETS_PARTITION_LABEL in kf/hal/assets.h) at
+# runtime, not by this subtype value, so the exact number is not
+# load-bearing -- only uniqueness and staying in the custom range is.
+#
+# Why two app slots (OTA), built now, wired to nothing yet: a partition
+# table is baked in at flash time, and repartitioning a device already in
+# someone's hands is a real, avoidable pain -- exactly the "expensive to
+# undo" category CLAUDE.md asks to flag rather than foreclose quietly.
+# otadata + ota_0 + ota_1 cost ~3MB of a 16MB chip and, with no OTA client
+# code written, currently behave identically to a single "factory"
+# partition: nothing has ever chosen a non-default slot, so the bootloader
+# just runs ota_0. What they buy is the ABILITY to add a real update
+# mechanism (esp_https_ota or similar -- genuinely separate work, not
+# started here) later without ever touching this layout again. Choosing a
+# single "factory" partition instead would have been cheaper today and
+# foreclosed that option quietly; this is the deliberate alternative,
+# named rather than defaulted into.
+# --------------------------------------------------------------------------

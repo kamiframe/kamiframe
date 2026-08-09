@@ -3,10 +3,15 @@
 # Copyright the Kamiframe contributors.
 """Generate the slice-two bitmap font as a C header.
 
-Same reasoning as tools/make_test_sprite.py: no asset pipeline exists yet, so
-the font is generated once and checked in as a header. The glyphs below are
-drawn from scratch in this script, not extracted from any existing font file
-or library, so there is no third-party bitmap data to license.
+Sprites now go through the real asset pipeline (tools/kf_pack_assets.py,
+docs/architecture/adr-0033-asset-pipeline.md) instead of a baked-in header
+-- but the font stays exactly as it was, checked in as a header, on
+purpose: it is small, fixed, never swapped for a different font at
+runtime, and gains nothing from living in a flash partition that
+sprites and eventually sound genuinely need for their size and
+variety. The glyphs below are drawn from scratch in this script, not
+extracted from any existing font file or library, so there is no
+third-party bitmap data to license.
 
 Character set is deliberately small: space, 0-9, A-Z (uppercase only), and
 the punctuation the constraint HUD needs (. , : - / % + ( )). That is 46
