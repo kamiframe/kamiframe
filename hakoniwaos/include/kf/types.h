@@ -75,8 +75,10 @@ typedef enum {
 
 /* How a sprite's pixels are stored. A property of the DATA, not a request
  * from the caller -- which is why it lives on the sprite rather than being
- * a flag passed to kf_blit(). See kf/blit.h's own comment for why that
- * distinction is what makes this different from kf_blit_mirrored(). */
+ * a flag passed to kf_blit(). As of this task kf/blit.h does not branch on
+ * this field at all: it only draws KF_SPRITE_FORMAT_RGB565, and asserts
+ * sprite->pixels != nullptr, which will panic on an indexed sprite. Task 2
+ * is what teaches the blitter to read this field. */
 typedef enum {
     KF_SPRITE_FORMAT_RGB565 = 0,  /* `pixels` is valid */
     KF_SPRITE_FORMAT_INDEXED8 = 1 /* `indices` + `palette` are valid */
@@ -85,8 +87,12 @@ typedef enum {
 /* The palette slot a colour-keyed indexed sprite reserves for "do not draw
  * this pixel". Fixed at 0 by convention rather than stored per sprite: it
  * costs nothing, it makes the blitter's key test a compare against a
- * compile-time constant, and the packer is what guarantees it (see
- * tools/kf_ingest_sprites.py, which forces the magenta key to index 0). */
+ * compile-time constant, and the packer is what guarantees it. As of this
+ * task that means tools/kf_pack_assets.py's quantize_rgb565(), which always
+ * seeds the palette with the key colour at slot 0, plus
+ * make_indexed_asset()'s own check that palette[0] matches the declared key.
+ * tools/kf_ingest_sprites.py has no indexed-sprite support at all yet --
+ * Task 4 is what gives it this same guarantee. */
 #define KF_SPRITE_KEY_INDEX 0u
 
 /* An immutable sprite, possibly with more than one frame. Pixels live in

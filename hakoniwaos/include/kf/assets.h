@@ -109,9 +109,12 @@ typedef enum {
      * a large opaque sprite still blits four times faster as raw RGB565,
      * because an un-keyed RGB565 row is a memcpy and an indexed row can
      * never be one. Both are returned by kf_assets_get() as a kf_sprite;
-     * the caller reads ::format if it cares, and kf/blit.h handles either
-     * without being told. See tools/kf_pack_assets.py's format comment for
-     * the type_meta layout and the payload's palette-then-frames shape. */
+     * the caller reads ::format if it cares. As of this task, kf/blit.h does
+     * NOT handle indexed sprites -- it asserts sprite->pixels != nullptr,
+     * which an indexed sprite deliberately leaves null. Drawing one panics
+     * until Task 2 teaches the blitter this format. See
+     * tools/kf_pack_assets.py's format comment for the type_meta layout and
+     * the payload's palette-then-frames shape. */
     KF_ASSET_TYPE_SPRITE_INDEXED = 2
 } kf_asset_type;
 
