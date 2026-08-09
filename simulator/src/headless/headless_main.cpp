@@ -24,6 +24,9 @@
  *     kamiframe-headless --verify-creature-wander
  *     kamiframe-headless --verify-creature-screen
  *     kamiframe-headless --verify-creature-screen-sprites
+ *     kamiframe-headless --verify-creature-screen-input
+ *     kamiframe-headless --verify-creature-screen-egg
+ *     kamiframe-headless --verify-creature-screen-death
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -3008,6 +3011,281 @@ static int run_creature_screen_sprite_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Proves three of this task's four enumerated testable claims at once,
+ * because they all fall out of the same fresh-pet-is-an-egg fixture and
+ * the same per-frame loop:
+ *
+ *   1. the egg does not wander -- kf_creature_screen_debug_bounds() must
+ *      report the exact same rect on the very last frame as on the very
+ *      first, across many frames of real elapsed time, for a stage that
+ *      used to wander like every other one (the bug this task fixes);
+ *   2. the bob stays inside the dirty-rect budget -- reusing the same
+ *      worst_rects measurement run_creature_screen_check() already applies
+ *      to a wandering creature, applied here to a bobbing one instead,
+ *      still <=2u;
+ *   3. the on-screen button guide is never redrawn per frame -- across the
+ *      same loop, no frame's dirty rectangles may touch the reserved
+ *      band, y=[260,320), at all.
+ *
+ * The fourth claim, the death scene centring, has its own fixture below
+ * (run_creature_screen_death_check()) -- a dead pet is a different pet
+ * than a fresh egg, and the two do not share a meaningful setup.
+ *
+ * Also checks the bob is not a no-op: kf_creature_screen_debug_egg_bob_
+ * offset_y() must take at least one nonzero value across the run, or a
+ * broken/always-zero wave would pass claim 2 above completely vacuously
+ * (zero movement trivially never blows a rect budget) the same way
+ * creature_pixel_ever_drawn guards run_creature_screen_check() above
+ * against a vacuous "drew nothing" pass. */
+static int run_creature_screen_egg_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-egg-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    const kf_pet_state *pet = kf_pet_session_state();
+    check(pet->stage == KF_PET_STAGE_EGG,
+          "a fresh pet is an egg -- this check's whole fixture depends on "
+          "it (kf_pet_init(), kf/pet.h)");
+
+    const kf_rect initial_bounds = kf_creature_screen_debug_bounds();
+    check(!kf_rect_is_empty(initial_bounds),
+          "kf_creature_screen_debug_bounds() returned an empty rect for a "
+          "freshly-initialised egg");
+
+    /* Same reasoning as draw_care_guide()'s own comment: the guide is
+     * painted once, by kf_creature_screen_init()'s call into kf_creature_
+     * screen_enter(), before this loop ever runs -- so it must already be
+     * visible on screen right now, and this is the one point in the check
+     * where sampling for it proves anything (every dirty-rect assertion
+     * below is about frames AFTER this point never touching it again, not
+     * about whether it was ever drawn in the first place). Scans slot 0's
+     * whole cell -- x=[0,48) (kGuideSlotWidth, kf_creature_screen.cpp-
+     * private, reproduced here by value like kBackground/
+     * kKnownPlaceholderColor elsewhere in this file), y=[260,268)
+     * (kGuideTextY=286 down through one KF_FONT_CELL_H=8 row -- actually
+     * the whole reserved band down to 320 is fair game, but one glyph row
+     * is enough) -- for ANY pixel that is fg=KF_BLACK, rather than
+     * assuming a specific pixel inside "1:FEED"'s glyph shapes happens to
+     * be foreground; kf_text_draw()'s bg fill (kBackground) covers the
+     * whole cell margin too, so most of this rectangle is background even
+     * where a real label was drawn, and only the actual glyph strokes are
+     * KF_BLACK. */
+    bool guide_pixel_found = false;
+    {
+        const kf_color *px = kf_fb_pixels();
+        for (int16_t y = 260; y < 320 && !guide_pixel_found; ++y) {
+            const kf_color *row = px + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
+            for (int16_t x = 0; x < 48; ++x) {
+                if (row[x] == KF_BLACK) {
+                    guide_pixel_found = true;
+                    break;
+                }
+            }
+        }
+    }
+    check(guide_pixel_found,
+          "the care-button guide's first label was not drawn into the "
+          "reserved band on screen entry -- see draw_care_guide() "
+          "(kf_creature_screen.cpp)");
+
+    size_t worst_rects = 0;
+    bool bob_ever_nonzero = false;
+    int16_t last_offset = kf_creature_screen_debug_egg_bob_offset_y();
+    bool guide_band_ever_touched = false;
+    for (int i = 0; i < 600; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > worst_rects) {
+            worst_rects = static_cast<size_t>(d.count);
+        }
+        for (int r = 0; r < d.count; ++r) {
+            if (d.rects[r].y1 > 260) {
+                guide_band_ever_touched = true;
+            }
+        }
+        const int16_t offset = kf_creature_screen_debug_egg_bob_offset_y();
+        if (offset != 0) {
+            bob_ever_nonzero = true;
+        }
+        last_offset = offset;
+    }
+    (void)last_offset;
+
+    check(worst_rects <= 2u,
+          "an egg bobbing in place used more than 2 dirty rects in a "
+          "frame -- the same budget a wandering creature already holds "
+          "to");
+    KF_LOGI(TAG, "creature-screen-egg: worst frame %zu rects", worst_rects);
+
+    check(bob_ever_nonzero,
+          "the egg bob offset was 0 for all 600 frames -- either the wave "
+          "is broken or dt_ms is not reaching egg_bob_offset_y() at all, "
+          "which would make the dirty-rect check above pass vacuously "
+          "(zero movement never blows a rect budget)");
+
+    check(!guide_band_ever_touched,
+          "a frame's dirty rectangles touched the reserved guide band "
+          "(y>=260) after screen entry -- the guide must be static, drawn "
+          "once by kf_creature_screen_enter(), never redrawn from kf_"
+          "creature_screen_frame()");
+
+    const kf_rect final_bounds = kf_creature_screen_debug_bounds();
+    check(final_bounds.x0 == initial_bounds.x0 &&
+              final_bounds.y0 == initial_bounds.y0 &&
+              final_bounds.x1 == initial_bounds.x1 &&
+              final_bounds.y1 == initial_bounds.y1,
+          "the egg's own position (kf_creature_bounds(), NOT the bobbed "
+          "draw position -- see kf_creature_screen_debug_bounds()'s own "
+          "comment) moved across 600 frames of a stage that must not "
+          "wander at all");
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Proves the fourth of this task's enumerated testable claims: the death
+ * scene centres a single shrine in the field once pet->dead is true, and
+ * nothing about it wanders or redraws once painted.
+ *
+ * Mounts the checked-in DEFAULT asset pack (no shrine_idle_s_01 in it, the
+ * same "art may not exist yet" situation every other check in this file
+ * that uses the default pack already lives with -- see kPlaceholderColor's
+ * own comment), so this exercises the placeholder-rectangle fallback
+ * path, not real shrine art. That is deliberate, not a gap: the concurrent
+ * art-generation task may not have shipped shrine_idle_s_01 into the
+ * default pack by the time this runs, and this check has to hold either
+ * way -- exactly the same reasoning run_creature_screen_check() already
+ * applies to the creature's own placeholder fallback. */
+static int run_creature_screen_death_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-death-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init mounts the default "
+                                      "pack (no shrine art in it yet)");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* Same sampling trick run_creature_screen_check() uses for its own
+     * background_color: any pixel is a faithful sample of the background
+     * right after kf_creature_screen_init(), which paints the whole panel
+     * before anything else runs. */
+    const kf_color background_color = kf_fb_pixels()[0];
+
+    /* Walk the creature a little first, as a LIVING pet (not an egg, so
+     * this exercises the ordinary wander, not the egg gate), before it
+     * dies -- proving the death branch actually stops something that was
+     * genuinely moving, not a creature that never left its start rect in
+     * the first place. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->stage = KF_PET_STAGE_CHILD;
+    for (int i = 0; i < 30; ++i) {
+        kf_creature_screen_frame(33u);
+    }
+
+    pet->dead = true;
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u); /* the one frame that paints the shrine */
+
+    constexpr kf_color kKnownPlaceholderColor = KF_RGB(255, 0, 128);
+
+    /* Centred: kShrinePlaceholderSize is 48 (kf_creature_screen.cpp,
+     * private -- reproduced here by value, the same cross-file-constant
+     * pattern used throughout this file), kField is 240 wide, so the
+     * placeholder rect spans x=[96,144). The exact centre pixel (120, *)
+     * must be the placeholder colour; well outside that span (e.g. x=10,
+     * a corner the creature was free to wander through moments ago, and
+     * where the field's OWN background would show if nothing were
+     * centred, or a stray creature sprite would show if the wander had
+     * not actually stopped) must still be plain background. This proves
+     * centring directionally without duplicating centered_in_field()'s
+     * exact arithmetic in the test. */
+    const kf_color *px = kf_fb_pixels();
+    check(px[150 * KF_DISPLAY_WIDTH + 120] == kKnownPlaceholderColor,
+          "the shrine placeholder was not drawn centred in the field -- "
+          "expected the placeholder colour at the field's centre pixel");
+    check(px[150 * KF_DISPLAY_WIDTH + 10] == background_color,
+          "something was drawn far from the field's centre when the pet "
+          "died -- the shrine (or its placeholder) must be centred, not "
+          "spread across the field, and nothing else should be wandering "
+          "any more");
+
+    /* Static once painted: further frames must draw nothing further at
+     * all -- zero dirty rects, not just a small number, since there is
+     * nothing left for a dead pet's scene to update frame to frame. */
+    size_t steady_worst = 0;
+    for (int i = 0; i < 100; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > steady_worst) {
+            steady_worst = static_cast<size_t>(d.count);
+        }
+    }
+    check(steady_worst == 0u,
+          "a frame after the shrine was already painted still dirtied a "
+          "rectangle -- the death scene must be a one-time static draw, "
+          "exactly like the mess and the button guide");
+
+    KF_LOGI(TAG, "creature-screen-death: shrine centred and static");
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -4072,6 +4350,8 @@ int main(int argc, char *argv[]) {
     bool verify_creature_screen = false;
     bool verify_creature_screen_sprites = false;
     bool verify_creature_screen_input = false;
+    bool verify_creature_screen_egg = false;
+    bool verify_creature_screen_death = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -4138,6 +4418,12 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i], "--verify-creature-screen-input") ==
                    0) {
             verify_creature_screen_input = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen-egg") ==
+                   0) {
+            verify_creature_screen_egg = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen-death") ==
+                   0) {
+            verify_creature_screen_death = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -4177,6 +4463,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-screen\n"
                         "kamiframe-headless --verify-creature-screen-sprites\n"
                         "kamiframe-headless --verify-creature-screen-input\n"
+                        "kamiframe-headless --verify-creature-screen-egg\n"
+                        "kamiframe-headless --verify-creature-screen-death\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -4277,6 +4565,14 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen_input) {
         return run_creature_screen_input_check();
+    }
+
+    if (verify_creature_screen_egg) {
+        return run_creature_screen_egg_check();
+    }
+
+    if (verify_creature_screen_death) {
+        return run_creature_screen_death_check();
     }
 
     if (verify_lua_pet) {

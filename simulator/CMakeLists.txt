@@ -513,6 +513,29 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME creature_screen_sprite_check
              COMMAND kamiframe-headless --verify-creature-screen-sprites)
 
+    # The egg-and-guide task (project-owner feedback: "an egg that strolls
+    # across the field is wrong"): the egg no longer wanders (kf_creature_
+    # update() is simply never called for it -- see kf_creature_screen.cpp's
+    # own comment on why that gate lives in the screen, not in Core), it
+    # bobs gently in place instead (egg_bob_offset_y(), pure integer
+    # triangle wave, no trig, no float), and the on-screen care-button guide
+    # painted once by kf_creature_screen_enter() is never touched again by
+    # the per-frame path. See headless_main.cpp's
+    # run_creature_screen_egg_check() for all three claims measured
+    # together against one fixture.
+    add_test(NAME creature_screen_egg_check
+             COMMAND kamiframe-headless --verify-creature-screen-egg)
+
+    # The death scene (spec: "Death without a player holds on the last
+    # creature's scene" -- docs/superpowers/specs/2026-08-09-core-care-loop-
+    # design.md): once pet->dead, the screen special-cases a single shrine
+    # sprite (or its placeholder, until the art pipeline ships
+    # shrine_idle_s_01) centred in the field, and stops drawing anything
+    # else -- no wander, no per-frame redraw once painted. See
+    # headless_main.cpp's run_creature_screen_death_check().
+    add_test(NAME creature_screen_death_check
+             COMMAND kamiframe-headless --verify-creature-screen-death)
+
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and
