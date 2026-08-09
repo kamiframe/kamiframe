@@ -264,3 +264,45 @@ So the tree becomes:
   data edit rather than a breaking change.
 - **Hokorimaru is reached by never interacting at all**, which is a different
   condition from the care-quality average every other branch uses.
+
+---
+
+## Addendum, 2026-08-09: why sleep is not the next thing built
+
+Sickness and death landed first, which makes sleep more urgent than section 3
+suggests — a creature that needs attention every thirty minutes and can now
+die of accumulated neglect, with no night, is incoherent. It was planned next
+and deliberately stopped, because two questions in it are not technical.
+
+**The hard part is offline, not live.** While the device is on, segments are
+one frame long and a sleep window is trivial. Offline, a single segment can
+span a fortnight and a dozen nights, and this file's standing rule is that no
+loop may be bounded by elapsed time. So the seconds falling inside a daily
+window have to be solved for analytically rather than stepped through — which
+is tractable (whole days plus two partials), but it has to be got right the
+first time, because a mistake there silently corrupts offline ageing, which is
+the feature the entire product rests on.
+
+**The part that needs Chris is the interaction.** Section 3 says the creature
+becomes drowsy and *the player settles it down*, with a cost to keeping it up.
+That is a real and good interaction while someone is watching. It has no
+meaning at all across a fortnight in a drawer, where there is no player to
+settle anything — so the offline rule has to be "it sleeps", and the live rule
+has to be "it sleeps if you let it". Those are two different behaviours
+sharing one state, and which one applies is a judgement about how the thing
+should feel, not a technical fact.
+
+Two smaller decisions ride along with it: whether being asleep should suspend
+the neglect clock (it must, or the player is punished for the creature
+sleeping — but then an unwoken creature is immune, which the automatic morning
+wake has to be trusted to prevent), and what the creature's night is in local
+terms, since the wall clock is UTC and a creature that sleeps at 22:00 GMT is
+wrong for most of the people who will own one.
+
+**One thing was settled and is worth keeping.** Core has no clock by design,
+and `last_advanced` currently only moves when a save is loaded, so during live
+play the pet has no idea what time it is. The fix is for `kf_pet_advance()` to
+carry `last_advanced` forward by the same elapsed seconds that drive decay:
+wall time then enters Core exactly once, at load, and time of day is available
+everywhere without Core ever reading a clock. That is a good change regardless
+of what sleep ends up looking like.
