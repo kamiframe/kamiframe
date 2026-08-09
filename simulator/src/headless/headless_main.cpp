@@ -35,6 +35,7 @@
  *     kamiframe-headless --verify-assets
  *     kamiframe-headless --verify-indexed-assets
  *     kamiframe-headless --verify-blit-mirror
+ *     kamiframe-headless --verify-indexed-blit
  *
  * Exit codes:
  *     0  everything asserted held
@@ -4917,6 +4918,116 @@ int run_blit_mirror_check(void) {
     return ok ? 0 : 1;
 }
 
+/* The centrepiece losslessness proof, and it does not need a golden
+ * constant to make it: draw the RGB565 test_sprite and the indexed one at
+ * the same place into the same framebuffer, and compare the two results
+ * byte for byte. If 8bpp indexing lost anything for this art, this fails.
+ *
+ * Also pins frame addressing (frame k reads k*w*h into the payload), the
+ * out-of-range clamp, mirrored equivalence, and the draw-counter bucket. */
+int run_indexed_blit_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    kf_arena_init_all();
+    kf_fb_init();
+
+    check(kf_assets_init() == KF_OK, "default pack mounts");
+    const kf_sprite *rgb = kf_assets_get("test_sprite");
+    check(rgb != nullptr, "RGB565 test_sprite found");
+
+    const size_t fb_bytes =
+        static_cast<size_t>(KF_DISPLAY_WIDTH) * KF_DISPLAY_HEIGHT * sizeof(kf_color);
+    std::vector<uint8_t> from_rgb(fb_bytes);
+    std::vector<uint8_t> from_indexed(fb_bytes);
+
+    if (rgb != nullptr) {
+        kf_fill(KF_RGB(8, 16, 24));
+        kf_blit(rgb, 40, 50);
+        std::memcpy(from_rgb.data(), kf_fb_pixels(), fb_bytes);
+    }
+    kf_assets_shutdown();
+
+    /* kf_arena_init_all() is NOT called again here, or anywhere else in this
+     * function -- it panics on a second call (kf/arena.cpp:
+     * `KF_ASSERT(!g_initialised, "kf_arena_init_all called twice")`), and
+     * KF_ARENA_ASSETS is not one of the resettable arenas (only
+     * KF_ARENA_SCRATCH is). One kf_arena_init_all() call at the top of this
+     * function is enough for every kf_assets_shutdown()/kf_assets_init()
+     * remount below -- see run_indexed_asset_check() (Task 1) for where
+     * this was found the hard way. */
+    kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "indexed fixture mounts");
+    const kf_sprite *ix = kf_assets_get("test_sprite");
+    check(ix != nullptr, "indexed test_sprite found");
+
+    if (ix != nullptr) {
+        kf_fill(KF_RGB(8, 16, 24));
+        kf_blit(ix, 40, 50);
+        std::memcpy(from_indexed.data(), kf_fb_pixels(), fb_bytes);
+        check(from_rgb == from_indexed,
+              "an indexed blit and an RGB565 blit of the same sprite produce "
+              "a byte-identical framebuffer");
+
+        /* Mirrored, same claim. */
+        kf_fill(KF_RGB(8, 16, 24));
+        kf_blit_mirrored(ix, 40, 50);
+        std::vector<uint8_t> ix_mirror(fb_bytes);
+        std::memcpy(ix_mirror.data(), kf_fb_pixels(), fb_bytes);
+        kf_assets_shutdown();
+        kf_host_assets_set_pack_path(nullptr);
+        check(kf_assets_init() == KF_OK, "default pack remounts");
+        const kf_sprite *rgb2 = kf_assets_get("test_sprite");
+        kf_fill(KF_RGB(8, 16, 24));
+        if (rgb2 != nullptr) { kf_blit_mirrored(rgb2, 40, 50); }
+        check(std::memcmp(ix_mirror.data(), kf_fb_pixels(), fb_bytes) == 0,
+              "a mirrored indexed blit matches a mirrored RGB565 blit");
+        kf_assets_shutdown();
+    }
+
+    /* Frames. */
+    kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "indexed fixture remounts");
+    const kf_sprite *anim = kf_assets_get("test_sprite_anim");
+    check(anim != nullptr && anim->frame_count == 3u, "3-frame fixture found");
+    if (anim != nullptr) {
+        std::vector<uint8_t> f0(fb_bytes), f1(fb_bytes), f_oob(fb_bytes);
+        kf_fill(KF_BLACK); kf_blit_frame(anim, 40, 50, 0);
+        std::memcpy(f0.data(), kf_fb_pixels(), fb_bytes);
+        kf_fill(KF_BLACK); kf_blit_frame(anim, 40, 50, 1);
+        std::memcpy(f1.data(), kf_fb_pixels(), fb_bytes);
+        kf_fill(KF_BLACK); kf_blit_frame(anim, 40, 50, 99);
+        std::memcpy(f_oob.data(), kf_fb_pixels(), fb_bytes);
+
+        check(f0 != f1, "frame 1 draws something different from frame 0");
+        check(f0 == f_oob,
+              "an out-of-range frame clamps to frame 0 rather than wrapping "
+              "-- a wrap would hide a stale cursor behind plausible-looking "
+              "animation");
+
+        kf_fill(KF_BLACK);
+        kf_draw_counters_reset();
+        kf_blit_frame(anim, 40, 50, 0);
+        const kf_draw_counters counters = kf_draw_counters_get();
+        check(counters.opaque_pixels == 0u &&
+                  counters.keyed_pixels ==
+                      static_cast<uint32_t>(anim->width) * anim->height,
+              "an indexed blit is charged entirely to the keyed bucket -- it "
+              "has no memcpy fast path, so its cost SHAPE is per-pixel "
+              "whether or not a key is tested");
+    }
+
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+
+    if (!ok) { return 1; }
+    KF_LOGI(TAG, "indexed-blit: pixel-identical to RGB565, frames address "
+                  "correctly");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -4957,6 +5068,7 @@ int main(int argc, char *argv[]) {
     bool verify_assets = false;
     bool verify_indexed_assets = false;
     bool verify_blit_mirror = false;
+    bool verify_indexed_blit = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -5045,6 +5157,8 @@ int main(int argc, char *argv[]) {
             verify_indexed_assets = true;
         } else if (std::strcmp(argv[i], "--verify-blit-mirror") == 0) {
             verify_blit_mirror = true;
+        } else if (std::strcmp(argv[i], "--verify-indexed-blit") == 0) {
+            verify_indexed_blit = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -5082,7 +5196,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lua-creature\n"
                         "kamiframe-headless --verify-assets\n"
                         "kamiframe-headless --verify-indexed-assets\n"
-                        "kamiframe-headless --verify-blit-mirror\n");
+                        "kamiframe-headless --verify-blit-mirror\n"
+                        "kamiframe-headless --verify-indexed-blit\n");
             return 0;
         }
     }
@@ -5222,6 +5337,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_blit_mirror) {
         return run_blit_mirror_check();
+    }
+
+    if (verify_indexed_blit) {
+        return run_indexed_blit_check();
     }
 
     kf_app_init(mode);

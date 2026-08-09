@@ -137,6 +137,17 @@
 #define KF_DRAW_OPAQUE_PX_PER_US   100u
 #define KF_DRAW_KEYED_PX_PER_US     25u
 
+/* AND ONE MORE THING THIS NUMBER IS NOW COVERING. Since indexed sprites
+ * landed (KF_ASSET_TYPE_SPRITE_INDEXED, kf/assets.h) the keyed bucket also
+ * carries per-pixel PALETTE LOOKUPS, which the original figure did not
+ * contemplate: an indexed pixel is a byte load, a compare, and a 16-bit
+ * table read, against the keyed figure's assumed load-compare-store. The
+ * palette is at most 512 bytes and is read for every pixel of a blit, so it
+ * should stay cache-resident and the difference should be small -- but this
+ * is a guess sitting on top of a guess. Split it into its own constant if
+ * bring-up measures a real gap. Do not split it before then: a second
+ * uncalibrated number is worse than one, because it looks like knowledge. */
+
 /* -------------------------------------------------------------------------
  * Memory
  *

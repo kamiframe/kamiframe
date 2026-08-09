@@ -356,7 +356,10 @@ In `hakoniwaos/include/kf/types.h`, replace the `kf_sprite` block:
  * from the caller -- which is why it lives on the sprite rather than being
  * a flag passed to kf_blit(). Note for Task 1: kf/blit.h does not read this
  * field yet at that point, and asserts sprite->pixels != nullptr, so an
- * indexed sprite panics if blit'd before Task 2 lands. */
+ * indexed sprite panics if blit'd before Task 2 lands. (Task 2 closes this
+ * gap -- see its own Step 3 below. By the time both tasks have landed, the
+ * checked-in header no longer carries this "not yet" wording; it reads
+ * "since Task 2, kf/blit.h ... branch[es] on this field" instead.) */
 typedef enum {
     KF_SPRITE_FORMAT_RGB565 = 0,  /* `pixels` is valid */
     KF_SPRITE_FORMAT_INDEXED8 = 1 /* `indices` + `palette` are valid */
@@ -418,9 +421,12 @@ In `hakoniwaos/include/kf/assets.h`, inside `kf_asset_type`, after
      * the caller reads ::format if it cares. As of Task 1, kf/blit.h does
      * NOT handle indexed sprites -- it asserts sprite->pixels != nullptr,
      * which an indexed sprite deliberately leaves null. Drawing one panics
-     * until Task 2 teaches the blitter this format. See
-     * tools/kf_pack_assets.py's format comment for the type_meta layout and
-     * the payload's palette-then-frames shape. */
+     * until Task 2 teaches the blitter this format. (Task 2 closes this
+     * gap; the checked-in header's comment is updated at that point to say
+     * kf/blit.h branches on ::format instead of asserting against it --
+     * see Task 2's own Step 3.) See tools/kf_pack_assets.py's format
+     * comment for the type_meta layout and the payload's palette-then-
+     * frames shape. */
     KF_ASSET_TYPE_SPRITE_INDEXED = 2
 ```
 

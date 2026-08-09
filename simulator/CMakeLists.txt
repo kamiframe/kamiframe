@@ -673,4 +673,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_blit_mirror_check() and hakoniwaos/include/kf/blit.h.
     add_test(NAME blit_mirror_check
              COMMAND kamiframe-headless --verify-blit-mirror)
+
+    # The centrepiece losslessness proof (Task 2): draws the RGB565
+    # test_sprite and the indexed one at the same screen position and
+    # memcmp's the two resulting framebuffers, byte for byte -- a far
+    # stronger check than a hand-written assertion, and the whole reason
+    # 8bpp indexing was chosen for this art. Also pins frame addressing
+    # (frame k reads k*w*h into the payload), the out-of-range clamp to
+    # frame 0 rather than a wrap, mirrored equivalence, and that an indexed
+    # blit is charged entirely to the keyed draw-counter bucket. See
+    # headless_main.cpp's run_indexed_blit_check() and kf/blit.h's
+    # kf_blit_frame()/kf_blit_frame_mirrored().
+    add_test(NAME indexed_blit_check
+             COMMAND kamiframe-headless --verify-indexed-blit)
 endif()

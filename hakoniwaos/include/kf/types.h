@@ -75,10 +75,13 @@ typedef enum {
 
 /* How a sprite's pixels are stored. A property of the DATA, not a request
  * from the caller -- which is why it lives on the sprite rather than being
- * a flag passed to kf_blit(). As of this task kf/blit.h does not branch on
- * this field at all: it only draws KF_SPRITE_FORMAT_RGB565, and asserts
- * sprite->pixels != nullptr, which will panic on an indexed sprite. Task 2
- * is what teaches the blitter to read this field. */
+ * a flag passed to kf_blit(). Since Task 2, kf/blit.h's kf_blit_frame() and
+ * kf_blit_frame_mirrored() (and the kf_blit()/kf_blit_mirrored() wrappers
+ * that call them at frame 0) branch on this field once per call, outside
+ * the per-pixel loop, and draw either shape correctly -- see that
+ * function's own "BOTH FORMATS, ONE FUNCTION" header comment for why
+ * format gets a branch rather than a function of its own the way mirroring
+ * does. */
 typedef enum {
     KF_SPRITE_FORMAT_RGB565 = 0,  /* `pixels` is valid */
     KF_SPRITE_FORMAT_INDEXED8 = 1 /* `indices` + `palette` are valid */

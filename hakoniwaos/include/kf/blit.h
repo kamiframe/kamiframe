@@ -60,6 +60,42 @@ void kf_blit(const kf_sprite *sprite, int16_t x, int16_t y);
  * colour key is being tested, and a reversed copy is per-pixel either way. */
 void kf_blit_mirrored(const kf_sprite *sprite, int16_t x, int16_t y);
 
+/* Draw one frame of a possibly-multi-frame sprite. kf_blit() above is
+ * exactly kf_blit_frame(sprite, x, y, 0) and kf_blit_mirrored() is exactly
+ * kf_blit_frame_mirrored(sprite, x, y, 0) -- the two-argument forms are kept
+ * so every existing call site stays untouched and its output stays identical
+ * by construction, the same reason kf_blit_mirrored() is its own function.
+ *
+ * `frame` is CLAMPED to frame 0 when it is >= sprite->frame_count, not
+ * wrapped. Asking for a frame that does not exist is a caller bug -- most
+ * plausibly an animation cursor that survived a change of sprite -- and
+ * wrapping would hide it behind animation that looks fine. Frame 0 is a
+ * correct, still image, which is visible in a screenshot and catchable in a
+ * test.
+ *
+ * BOTH FORMATS, ONE FUNCTION. Unlike mirroring, which is a behaviour the
+ * CALLER chooses and therefore gets its own function so nobody can pass the
+ * wrong flag into a hot path, the pixel format is a property of the DATA:
+ * the sprite already knows, there is nothing for a caller to get wrong, and
+ * every sprite in this project is migrating to indexed anyway. Making format
+ * a fourth function instead of a branch would give us kf_blit x {plain,
+ * mirrored} x {rgb565, indexed} and force every call site to branch on
+ * something it should not have to know about. So these branch once on
+ * sprite->format, at the top, outside the per-pixel loop.
+ *
+ * COST. An indexed row is a byte load, a key compare against
+ * KF_SPRITE_KEY_INDEX, and a palette lookup, per pixel -- there is no memcpy
+ * fast path and there never can be one, so an indexed blit is charged
+ * entirely to the keyed draw counter regardless of has_color_key, exactly as
+ * kf_blit_mirrored() already is and for the same "bucket reflects cost
+ * SHAPE" reason. An un-keyed RGB565 sprite still gets its whole-row memcpy
+ * and its opaque bucket; that four-times-cheaper path is why
+ * KF_ASSET_TYPE_SPRITE was not deleted when indexing arrived. */
+void kf_blit_frame(const kf_sprite *sprite, int16_t x, int16_t y,
+                    uint16_t frame);
+void kf_blit_frame_mirrored(const kf_sprite *sprite, int16_t x, int16_t y,
+                             uint16_t frame);
+
 /* Intersection of two rects. Result may be empty. */
 kf_rect kf_rect_intersect(kf_rect a, kf_rect b);
 
