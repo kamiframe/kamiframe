@@ -10,13 +10,33 @@
  * the device, which is the failure mode this whole architecture exists to
  * avoid.
  *
- * Keyboard mapping matches the 5-7 button target hardware:
+ * Keyboard mapping models the 5-7 button target hardware, EXCEPT for the
+ * five care-action buttons (KF_BTN_A/UP/DOWN/LEFT/RIGHT), which this
+ * simulator build reaches through number keys instead of arrows/WASD:
  *
- *     arrows / WASD   D-pad
- *     Z / J           A
- *     X / K           B
- *     Enter / Escape  Menu
- */
+ *     1 2 3 4 5       feed / play / rest / bath / flush
+ *                     (KF_BTN_A / UP / DOWN / LEFT / RIGHT)
+ *     X / K           B (jump to Home)
+ *     Enter / Escape  Menu (advance screens)
+ *
+ * The project owner could not tell which key did what -- there is no
+ * on-screen legend for arrows/WASD/Z, and "up" doing something that is not
+ * "walk up" (it plays with the creature; see kf_creature_screen.cpp's
+ * handle_care_buttons()) does not read as discoverable. He asked for
+ * number keys explicitly and said rewiring the keyboard was fine, so this
+ * moves the five care actions off the D-pad/A entirely rather than adding
+ * numbers alongside them -- one mapping to learn, matching the on-screen
+ * guide (kf_creature_screen.cpp's draw_care_guide()) key for key, not two
+ * that happen to overlap.
+ *
+ * This is a DESKTOP-ONLY remap. The real device still has exactly seven
+ * physical buttons and no number keys (kf/types.h's kf_button) -- what
+ * changes here is only which host key produces which kf_button event, not
+ * the button model itself (KF_BTN_A/UP/DOWN/LEFT/RIGHT/B/MENU are
+ * untouched, see kf/types.h). A guide reading "1 = feed" is therefore
+ * correct on this keyboard and would be wrong on the device; the
+ * device-facing wording is a design decision for the project owner, not
+ * settled here -- see this task's own report. */
 
 #include "kf/hal/input.h"
 
@@ -35,12 +55,15 @@ struct Binding {
     kf_button button;
 };
 
+/* 1-5 replace arrows/WASD/Z/J entirely for the five care-action buttons --
+ * see this file's header comment for why this is a move, not an addition.
+ * Order matches handle_care_buttons()'s own mapping (kf_creature_screen.cpp)
+ * and the brief's original A/UP/DOWN/LEFT/RIGHT order: feed, play, rest,
+ * bath, flush. */
 constexpr Binding kBindings[] = {
-    {SDL_SCANCODE_UP, KF_BTN_UP},       {SDL_SCANCODE_W, KF_BTN_UP},
-    {SDL_SCANCODE_DOWN, KF_BTN_DOWN},   {SDL_SCANCODE_S, KF_BTN_DOWN},
-    {SDL_SCANCODE_LEFT, KF_BTN_LEFT},   {SDL_SCANCODE_A, KF_BTN_LEFT},
-    {SDL_SCANCODE_RIGHT, KF_BTN_RIGHT}, {SDL_SCANCODE_D, KF_BTN_RIGHT},
-    {SDL_SCANCODE_Z, KF_BTN_A},         {SDL_SCANCODE_J, KF_BTN_A},
+    {SDL_SCANCODE_1, KF_BTN_A},         {SDL_SCANCODE_2, KF_BTN_UP},
+    {SDL_SCANCODE_3, KF_BTN_DOWN},      {SDL_SCANCODE_4, KF_BTN_LEFT},
+    {SDL_SCANCODE_5, KF_BTN_RIGHT},
     {SDL_SCANCODE_X, KF_BTN_B},         {SDL_SCANCODE_K, KF_BTN_B},
     {SDL_SCANCODE_RETURN, KF_BTN_MENU}, {SDL_SCANCODE_ESCAPE, KF_BTN_MENU},
 };
@@ -96,7 +119,7 @@ bool kf_sdl_mouse_relative_to(SDL_Window *window, int32_t *x, int32_t *y,
 }
 
 kf_result kf_input_init(void) {
-    KF_LOGI(TAG, "keyboard: arrows/WASD = d-pad, Z/J = A, X/K = B, "
+    KF_LOGI(TAG, "keyboard: 1-5 = feed/play/rest/bath/flush, X/K = B, "
                  "Enter/Esc = menu");
     return KF_OK;
 }
