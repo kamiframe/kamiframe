@@ -60,11 +60,10 @@ constexpr const char *TAG = "pet";
 /* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution),
  * to 3 with ADR 0023 (personality traits), to 4 with the evolution-tree
  * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
- * comment), and to 5 with mess (poop_count and seconds_until_next_poop
- * added so far; dirtiness_mp joins the same version 5 layout right after --
- * see kf/pet.h's KF_PET_SAVE_BYTES comment) -- kf_pet_deserialize() refuses
- * to load anything written by a different version rather than guessing at a
- * layout that changed, see unpack() below. */
+ * comment), and to 5 with mess (poop_count, seconds_until_next_poop and
+ * dirtiness_mp added) -- kf_pet_deserialize() refuses to load anything
+ * written by a different version rather than guessing at a layout that
+ * changed, see unpack() below. */
 constexpr uint8_t kSaveVersion = 5;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
@@ -340,6 +339,23 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
         state->seconds_until_next_poop -= segment;
     }
 
+    /* Dirtiness rises with time, faster the more mess is waiting -- reads
+     * state->poop_count AFTER the block above, so this segment's own new
+     * poops (if any) already count towards this segment's dirtying.
+     * Saturates at full rather than wrapping. */
+    const uint64_t dirtiness_rise_per_hour =
+        static_cast<uint64_t>(config->dirtiness_rise_mp_per_hour) +
+        (static_cast<uint64_t>(config->dirtiness_rise_per_poop_mp_per_hour) *
+         state->poop_count);
+    const uint64_t dirtiness_rise =
+        (dirtiness_rise_per_hour * segment) / 3600u;
+    if (dirtiness_rise >= KF_PET_MILLIPERCENT_MAX - state->dirtiness_mp) {
+        state->dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+    } else {
+        state->dirtiness_mp = static_cast<kf_pet_millipercent>(
+            state->dirtiness_mp + dirtiness_rise);
+    }
+
     accumulate_personality(state, config, segment, hunger_before_mp,
                             happiness_before_mp, energy_before_mp);
 }
@@ -407,6 +423,7 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u32(out, off, state->energy_mp);
     put_u8(out, off, state->poop_count);
     put_u32(out, off, state->seconds_until_next_poop);
+    put_u32(out, off, state->dirtiness_mp);
     put_u8(out, off, state->last_advanced.valid ? 1u : 0u);
     put_i64(out, off, state->last_advanced.epoch_seconds);
     put_u8(out, off, static_cast<uint8_t>(state->stage));
@@ -455,6 +472,7 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->energy_mp = get_u32(in, off);
     state->poop_count = get_u8(in, off);
     state->seconds_until_next_poop = get_u32(in, off);
+    state->dirtiness_mp = get_u32(in, off);
     state->last_advanced.valid = get_u8(in, off) != 0u;
     state->last_advanced.epoch_seconds = get_i64(in, off);
     const uint8_t stage_byte = get_u8(in, off);
@@ -518,6 +536,11 @@ kf_pet_config kf_pet_default_config(void) {
     c.poop_interval_seconds = 1800u;
     c.poop_interval_after_feed_seconds = 600u;
 
+    /* Clean-ish pet reaches flies in about 12 hours; a pet with the full
+     * eight poops waiting gets there in about 2. Tuning numbers. */
+    c.dirtiness_rise_mp_per_hour = 4000u;
+    c.dirtiness_rise_per_poop_mp_per_hour = 2500u;
+
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers
      * later, just make it configurable," so these are a starting point
@@ -541,6 +564,7 @@ void kf_pet_init(kf_pet_state *state) {
     state->energy_mp = KF_PET_MILLIPERCENT_MAX;
     state->poop_count = 0u;
     state->seconds_until_next_poop = 0u;  /* set on first advance */
+    state->dirtiness_mp = 0u;
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
     state->stage = KF_PET_STAGE_EGG;
@@ -658,6 +682,7 @@ void kf_pet_clean(kf_pet_state *state) {
         state->care_actions_taken++;
     }
     state->poop_count = 0u;
+    state->dirtiness_mp = 0u;
 }
 
 /* ADR 0023: a pure query over the three whole-life accumulators, computed

@@ -135,6 +135,13 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form);
  * message, and eight says it as clearly as eighty. */
 #define KF_PET_MAX_POOPS 8u
 
+/* Where dirtiness becomes visible. Flies first, stink lines later -- two
+ * stages of "this is getting bad" that a player can read across a room
+ * without looking at a number, which is the entire reason dirtiness is not
+ * a fourth bar. */
+#define KF_PET_DIRTY_FLIES_MP 50000u   /* 50% */
+#define KF_PET_DIRTY_STINK_MP 80000u   /* 80% */
+
 /* Base-trait table size (ADR 0023), same compile-time-constant treatment
  * as the two above and for the same reason: this is the SHAPE of the
  * table (how many slots exist), not a tuning value. Six placeholder base
@@ -176,6 +183,12 @@ typedef struct {
      * loop rather than leaving it on an unrelated timer. */
     uint32_t poop_interval_seconds;
     uint32_t poop_interval_after_feed_seconds;
+
+    /* Baseline dirtying, and the extra per waiting poop. The second is what
+     * couples the two halves of mess together: ignoring poops does not just
+     * leave poops, it makes the creature filthy faster. */
+    uint32_t dirtiness_rise_mp_per_hour;
+    uint32_t dirtiness_rise_per_poop_mp_per_hour;
 
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
@@ -226,6 +239,12 @@ typedef struct {
      * apply_stage_segment(), so a device that was switched off for a day
      * comes back to a correctly messy pet rather than a clean one. */
     uint32_t seconds_until_next_poop;
+
+    /* How dirty the creature itself is, 0..100000 mp. Rises with time and
+     * faster while poops are waiting. Unlike the three needs this has no
+     * decay direction of its own -- it only goes up, and only cleaning
+     * brings it down. */
+    kf_pet_millipercent dirtiness_mp;
 
     /* The wall-clock time this state was last advanced to. Saved
      * alongside the needs (see kf_pet_save()) so a reload can compute
@@ -390,16 +409,14 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * `care_actions_taken` was added and the valid range of `teen_form` grew to
  * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
  * misread rather than merely missing a field, and to version 5 with mess
- * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count` and
- * `seconds_until_next_poop` were added (dirtiness's own `dirtiness_mp`
- * follows in the same version bump, added right after this one -- see the
- * comment where it is declared in kf_pet_state). A save from an earlier
- * version is refused by kf_pet_load_and_advance()'s unpack() step and falls
- * back to a fresh pet, exactly the behaviour ADR 0015 already established
- * for any unrecognised version -- no migration code, an explicit, accepted
- * cost. */
+ * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count`,
+ * `seconds_until_next_poop` and `dirtiness_mp` were added. A save from an
+ * earlier version is refused by kf_pet_load_and_advance()'s unpack() step
+ * and falls back to a fresh pet, exactly the behaviour ADR 0015 already
+ * established for any unrecognised version -- no migration code, an
+ * explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 79u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 83u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

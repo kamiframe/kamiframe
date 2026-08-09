@@ -17,6 +17,7 @@
  *     kamiframe-headless --verify-pet-stage
  *     kamiframe-headless --verify-pet-personality
  *     kamiframe-headless --verify-mess
+ *     kamiframe-headless --verify-dirtiness
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -1286,6 +1287,54 @@ int run_pet_mess_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Dirtiness is the continuous half of mess, and it is deliberately NOT a
+ * fourth need bar -- it has no restore action of its own, it rises faster
+ * the more poops are waiting, and it shows itself as flies and stink lines
+ * rather than a number. See the care-loop spec's section 4. */
+int run_pet_dirtiness_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_pet_config config = kf_pet_default_config();
+
+    kf_pet_state clean_pet{};
+    kf_pet_init(&clean_pet);
+    clean_pet.stage = KF_PET_STAGE_CHILD;
+
+    kf_pet_state messy{};
+    kf_pet_init(&messy);
+    messy.stage = KF_PET_STAGE_CHILD;
+
+    /* Same elapsed time; the messy one starts with poops already down.
+     * Poops are cleared each iteration on the clean pet so the ONLY
+     * difference between them is the mess. */
+    constexpr uint32_t kHour = 3600u;
+    apply_stage_segment_for_test(&clean_pet, &config, kHour);
+    clean_pet.poop_count = 0u;
+
+    messy.poop_count = KF_PET_MAX_POOPS;
+    apply_stage_segment_for_test(&messy, &config, kHour);
+
+    check(clean_pet.dirtiness_mp > 0u, "a pet gets dirty just by existing");
+    check(messy.dirtiness_mp > clean_pet.dirtiness_mp,
+          "poops on the floor make it dirty faster");
+
+    check(KF_PET_DIRTY_FLIES_MP < KF_PET_DIRTY_STINK_MP,
+          "flies show up before stink lines");
+
+    /* Cleaning resets it. */
+    kf_pet_clean(&messy);
+    check(messy.dirtiness_mp == 0u, "cleaning also washes the creature");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -1982,6 +2031,7 @@ int main(int argc, char *argv[]) {
     bool verify_hokorimaru = false;
     bool verify_pet_personality = false;
     bool verify_mess = false;
+    bool verify_dirtiness = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -2022,6 +2072,8 @@ int main(int argc, char *argv[]) {
             verify_pet_personality = true;
         } else if (std::strcmp(argv[i], "--verify-mess") == 0) {
             verify_mess = true;
+        } else if (std::strcmp(argv[i], "--verify-dirtiness") == 0) {
+            verify_dirtiness = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -2048,6 +2100,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-hokorimaru\n"
                         "kamiframe-headless --verify-pet-personality\n"
                         "kamiframe-headless --verify-mess\n"
+                        "kamiframe-headless --verify-dirtiness\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2103,6 +2156,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_mess) {
         return run_pet_mess_check();
+    }
+
+    if (verify_dirtiness) {
+        return run_pet_dirtiness_check();
     }
 
     if (verify_lua_pet) {

@@ -300,6 +300,12 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_mess_check
              COMMAND kamiframe-headless --verify-mess)
 
+    # Proves dirtiness (the continuous half of mess) rises with time, rises
+    # faster while poops are waiting, and is reset by kf_pet_clean(). See
+    # headless_main.cpp's run_pet_dirtiness_check().
+    add_test(NAME pet_dirtiness_check
+             COMMAND kamiframe-headless --verify-dirtiness)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read
