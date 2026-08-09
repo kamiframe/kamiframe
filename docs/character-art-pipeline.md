@@ -38,11 +38,19 @@ To see the exact filenames expected for one creature:
 python3 tools/kf_character_manifest.py list --id chokimaru
 ```
 
-That's the naming convention: `<creature>_<pose>_<frame number>`, and
-`_grudge_` inserted before the frame number for the "badly drawn" neglect
-variant (see the character bible, section 3, for what that means). A file
-generated for Chokimaru's happy pose is named `chokimaru_happy_01.png`, full
-stop -- no other file will ever be read for that pose.
+That's the naming convention: `<stage-token><branch-indices>_<pose>_<dir>
+[_grudge]_<frame number>` -- generic, not `<creature>_...`, because no real
+creature name is allowed to appear in a filename the code loads (every name
+in this manifest is an unverified trademark placeholder -- see
+`docs/sdk-style-guide.md`). `chokimaru`'s `id` still drives its *prompt*
+(see Step 2), but the file the runtime actually asks for is named after its
+generic stage and branch position instead -- e.g. `adult00_happy_s_01.png`,
+not `chokimaru_happy_01.png`. `hakoniwaos/src/creature.cpp`'s
+`kf_creature_sprite_name()` is the authority on this scheme, not this
+manifest -- see `tools/kf_character_manifest.py`'s own module docstring
+("THE NAMING CONVENTION") for the full breakdown of every token, including
+why `_grudge_` sits where it does even though no runtime lookup asks for it
+yet.
 
 ## Step 2: get a prompt for the image generator
 
@@ -106,6 +114,25 @@ You don't need every creature ready at once. Point it at a folder with
 just a few pictures in it (`--id chokimaru` narrows the check to one
 creature) and it will happily pack just those, while still telling you
 what's still missing.
+
+## Seeing it in the simulator
+
+Building a pack this way does not change what `kamiframe-sim` shows by
+default -- the compiled-in default stays `examples/hello_sprite/assets.kfpack`
+(the `KF_ASSET_PACK` CMake cache variable), and every ctest target keeps
+checksumming output against that one, untouched. To look at a *different*
+pack without recompiling or touching that default, pass it at the command
+line:
+
+```
+build/simulator/kamiframe-sim --pack examples/creature_demo/assets.kfpack
+```
+
+`examples/creature_demo/` is the first roster slice actually produced this
+way (egg + baby, every state, all three directions -- see its own
+directory for the source PNGs and how the pack was built). Nothing about
+`--pack` is specific to that one pack; point it at any `.kfpack` a run of
+`kf_ingest_sprites.py -o` produced.
 
 ## If something's confusing
 
