@@ -153,8 +153,9 @@ int lua_pet_stage(lua_State *L) {
 }
 
 /* pet.teen_form() / pet.adult_branch() -- WHICH branch was taken, as plain
- * 0-based indices (0..KF_PET_TEEN_FORM_COUNT-1, 0..KF_PET_ADULT_BRANCH_
- * COUNT-1). Raw integers, not names, on purpose: unlike the stage itself,
+ * 0-based indices (0..KF_PET_TEEN_FORM_COUNT-1, 0..kf_pet_adults_in_family
+ * (teen_form)-1 -- the adult count is per-family, not one shared constant,
+ * see kf/pet.h). Raw integers, not names, on purpose: unlike the stage itself,
  * naming these branches is real creative content that does not exist yet
  * (Chris: "simplistic blobs for now to get the systems working... I will
  * work with my friend who is a designer on creating actual characters,

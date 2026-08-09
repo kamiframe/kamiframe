@@ -508,28 +508,33 @@ int run_pet_stage_check() {
      * perfectly constant for the whole stage, so the care average is
      * exactly the constant value that was set going in -- no need to
      * duplicate apply_decay()'s own arithmetic here to predict the
-     * answer. Three known care levels are checked, one per teen_form band
-     * (branch_count == KF_PET_TEEN_FORM_COUNT == 3): neglected lands on
-     * band 0, mediocre on band 1, well-cared-for on band 2. */
+     * answer. Three known care levels are checked against
+     * (branch_count == KF_PET_TEEN_FORM_COUNT == 4 now that the tree has
+     * four verb families -- see the evolution-tree-reconciliation plan):
+     * neglected lands on band 0, mediocre on band 1, well-cared-for on the
+     * top band, 3. Band 2 is not hit by any case here, which is fine -- this
+     * is exact arithmetic on select_branch()'s own formula
+     * (average_mp * branch_count) / (MAX + 1), not a claim that every band
+     * needs a dedicated case. */
     {
         kf_pet_config zero_decay = zero_all_stage_rates(config);
         zero_decay.child_duration_seconds = 1000u;
 
         const kf_pet_millipercent kNeglected = 10000u;   /* 10% -> band 0 */
         const kf_pet_millipercent kMediocre = 50000u;    /* 50% -> band 1 */
-        const kf_pet_millipercent kWellCared = 90000u;   /* 90% -> band 2 */
+        const kf_pet_millipercent kWellCared = 90000u;   /* 90% -> band 3 */
         const struct {
             kf_pet_millipercent level;
             uint8_t expected_band;
             const char *label;
         } cases[] = {
             {kNeglected, 0u, "a neglected Child (10% needs, held constant) "
-                              "lands on the worst teen_form band (0)"},
+                              "lands on the worst teen_form band (0 of 4)"},
             {kMediocre, 1u, "a mediocre Child (50% needs, held constant) "
-                             "lands on the middle teen_form band (1)"},
-            {kWellCared, 2u, "a well-cared-for Child (90% needs, held "
+                             "lands on teen_form band 1 of 4"},
+            {kWellCared, 3u, "a well-cared-for Child (90% needs, held "
                               "constant) lands on the best teen_form band "
-                              "(2)"},
+                              "(3 of 4)"},
         };
         for (const auto &c : cases) {
             kf_pet_state state;
@@ -592,14 +597,20 @@ int run_pet_stage_check() {
               "time left over after the last transition is credited to "
               "Adult, the same leftover-crediting proven for Baby in check "
               "2 above");
-        /* 80% average with 3 bands: (80000*3)/100001 = 2 (top band). */
-        check(state.teen_form == 2u,
+        /* 80% average with 4 bands (KF_PET_TEEN_FORM_COUNT):
+         * (80000*4)/100001 = 3 (top band) -- lands on family 3, Go, which
+         * the character bible gives exactly one adult. */
+        check(state.teen_form == 3u,
               "teen_form, decided from Child's 80%-constant care, lands on "
-              "the top of 3 bands");
-        /* 80% average with 2 bands: (80000*2)/100001 = 1 (top band). */
-        check(state.adult_branch == 1u,
-              "adult_branch, decided from Teen's 80%-constant care, lands "
-              "on the top of 2 bands");
+              "the top of 4 bands (family 3, Go)");
+        /* Go has only 1 adult (kf_pet_adults_in_family(3) == 1u), so
+         * select_branch()'s band count is 1 regardless of the 80% care
+         * score: (80000*1)/100001 = 0, the only band there is. A
+         * single-adult family still passes through branch selection
+         * deterministically -- it just has nowhere else to land. */
+        check(state.adult_branch == 0u,
+              "adult_branch, decided from Teen's 80%-constant care against "
+              "Go's single-adult family, lands on its only band (0)");
         check(state.hunger_mp == 80000u && state.happiness_mp == 80000u &&
                   state.energy_mp == 80000u,
               "needs are still exactly 80% -- zero decay rates held them "
@@ -613,7 +624,7 @@ int run_pet_stage_check() {
         check(state.stage_elapsed_seconds == kLeftoverInAdult + 500u,
               "Adult's own elapsed timer keeps accumulating rather than "
               "resetting or being ignored");
-        check(state.teen_form == 2u && state.adult_branch == 1u,
+        check(state.teen_form == 3u && state.adult_branch == 0u,
               "the branches already decided stay exactly as they were -- "
               "nothing re-picks them once in the terminal stage");
     }
@@ -1050,6 +1061,47 @@ int run_pet_demand_curve_check(void) {
     KF_LOGI(TAG, "demand curve: baby hunger %u, adult hunger %u after 1h",
             static_cast<unsigned>(baby.hunger_mp),
             static_cast<unsigned>(adult.hunger_mp));
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* The tree's shape, asserted directly. These numbers come from the character
+ * bible's confirmed roster (Cut 2, Hold 3, Mark 3, Go 1) and will change as
+ * the roster fills -- section 11 of the bible says Go and Cut are still
+ * short. When they change, this test is the thing that should fail first,
+ * which is the point of asserting them rather than trusting a constant. */
+int run_evolution_tree_shape_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(KF_PET_TEEN_FORM_COUNT == 4u, "four verb families");
+    check(kf_pet_adults_in_family(0u) == 2u, "Cut has 2 adults");
+    check(kf_pet_adults_in_family(1u) == 3u, "Hold has 3 adults");
+    check(kf_pet_adults_in_family(2u) == 3u, "Mark has 3 adults");
+    check(kf_pet_adults_in_family(3u) == 1u, "Go has 1 adult");
+
+    uint32_t total = 0u;
+    for (uint8_t f = 0u; f < KF_PET_TEEN_FORM_COUNT; ++f) {
+        total += kf_pet_adults_in_family(f);
+        check(kf_pet_adults_in_family(f) <= KF_PET_ADULT_BRANCH_MAX,
+              "no family exceeds KF_PET_ADULT_BRANCH_MAX");
+    }
+    check(total == 9u, "nine adults across the four families");
+
+    /* Out of range must not read off the end of the table. */
+    check(kf_pet_adults_in_family(KF_PET_TEEN_FORM_COUNT) == 1u,
+          "an out-of-range family degrades to a single adult");
+
+    KF_LOGI(TAG, "tree: %u families, %u adults, max %u per family",
+            static_cast<unsigned>(KF_PET_TEEN_FORM_COUNT),
+            static_cast<unsigned>(total),
+            static_cast<unsigned>(KF_PET_ADULT_BRANCH_MAX));
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
@@ -1800,6 +1852,7 @@ int main(int argc, char *argv[]) {
     bool verify_lua = false;
     bool verify_pet = false;
     bool verify_pet_stage = false;
+    bool verify_tree_shape = false;
     bool verify_pet_personality = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
@@ -1833,6 +1886,8 @@ int main(int argc, char *argv[]) {
             verify_pet = true;
         } else if (std::strcmp(argv[i], "--verify-pet-stage") == 0) {
             verify_pet_stage = true;
+        } else if (std::strcmp(argv[i], "--verify-tree-shape") == 0) {
+            verify_tree_shape = true;
         } else if (std::strcmp(argv[i], "--verify-pet-personality") == 0) {
             verify_pet_personality = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
@@ -1857,6 +1912,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lua [--frames N]\n"
                         "kamiframe-headless --verify-pet\n"
                         "kamiframe-headless --verify-pet-stage\n"
+                        "kamiframe-headless --verify-tree-shape\n"
                         "kamiframe-headless --verify-pet-personality\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
@@ -1897,6 +1953,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_stage) {
         return run_pet_stage_check();
+    }
+
+    if (verify_tree_shape) {
+        return run_evolution_tree_shape_check();
     }
 
     if (verify_pet_personality) {

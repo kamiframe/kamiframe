@@ -261,6 +261,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_stage_evolution_check
              COMMAND kamiframe-headless --verify-pet-stage)
 
+    # Proves the evolution tree's SHAPE directly: four verb families, with
+    # an uneven adult count per family (Cut 2, Hold 3, Mark 3, Go 1), per the
+    # character bible's sections 6/7 and
+    # docs/superpowers/plans/2026-08-09-evolution-tree-reconciliation.md.
+    # Asserted against the bible's numbers rather than trusted as a passing
+    # constant, so a future roster change (the bible's section 11 says Go and
+    # Cut are still short) fails this test first. See headless_main.cpp's
+    # run_evolution_tree_shape_check().
+    add_test(NAME evolution_tree_shape_check
+             COMMAND kamiframe-headless --verify-tree-shape)
+
     # Proves the personality-traits mechanic (ADR 0023): base_trait rolled
     # once via kf_rng_below() and fixed for the pet's whole life, the three
     # care-derived accumulators building whole-life rather than resetting

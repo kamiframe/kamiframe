@@ -88,14 +88,38 @@ typedef enum {
  * index by it would read past the end of every one of them. */
 #define KF_PET_STAGE_COUNT 5u
 
-/* Tree shape, per Chris's design: 3 teen types, each branching to 2 adult
- * forms (6 adults total). Both are compile-time constants, not config --
- * unlike stage durations and decay rates, the SHAPE of the evolution tree
- * is a structural decision (how many branch slots exist), not a tuning
- * value; changing these means the save format and the Lua-side branch
- * tables change together, not something to vary per pet at runtime. */
-#define KF_PET_TEEN_FORM_COUNT 3u
-#define KF_PET_ADULT_BRANCH_COUNT 2u
+/* Tree shape, per the character bible (14-character-bible-v1.md, sections
+ * 6/7) as resolved in
+ * docs/superpowers/specs/2026-08-09-core-care-loop-design.md: 4 verb
+ * families, each branching to an UNEVEN number of adult forms. Compile-time
+ * constants, not config -- unlike stage durations and decay rates, the
+ * SHAPE of the evolution tree is a structural decision (how many branch
+ * slots exist), not a tuning value; changing these means the save format
+ * and the Lua-side branch tables change together, not something to vary
+ * per pet at runtime.
+ *
+ * Four verb families -- Cut, Hold, Mark, Go -- per the character bible's
+ * section 6. Indices only: the bible's names are unverified placeholders and
+ * deliberately do not appear in Core, exactly like base_trait above. */
+#define KF_PET_TEEN_FORM_COUNT 4u
+
+/* The largest number of adults any one family has. Sizes arrays that must
+ * hold a row per family; the ACTUAL count per family is uneven and comes
+ * from kf_pet_adults_in_family(). */
+#define KF_PET_ADULT_BRANCH_MAX 3u
+
+/* How many adult forms a given verb family leads to.
+ *
+ * Uneven on purpose, and expected to change: the bible's confirmed roster is
+ * Cut 2, Hold 3, Mark 3, Go 1, and its own section 11 says Go and Cut still
+ * need creatures to balance at three each. A per-family lookup rather than
+ * one constant means filling those gaps is a one-line data edit instead of a
+ * change to the tree's shape.
+ *
+ * Out-of-range input returns 1 rather than reading past the table -- a
+ * corrupted save that survived the version check should land on a valid
+ * creature, not undefined behaviour. */
+uint8_t kf_pet_adults_in_family(uint8_t teen_form);
 
 /* Base-trait table size (ADR 0023), same compile-time-constant treatment
  * as the two above and for the same reason: this is the SHAPE of the
@@ -185,7 +209,10 @@ typedef struct {
      * transition. See the header comment above for why these are opaque
      * indices, not names. */
     uint8_t teen_form;   /* [0, KF_PET_TEEN_FORM_COUNT) once stage >= TEEN */
-    uint8_t adult_branch; /* [0, KF_PET_ADULT_BRANCH_COUNT) once stage == ADULT */
+    uint8_t adult_branch; /* [0, kf_pet_adults_in_family(teen_form)) once
+                            * stage == ADULT -- the per-family count, not one
+                            * shared constant; see kf_pet_adults_in_family()
+                            * above. */
 
     /* How many seconds have been credited to the CURRENT stage so far.
      * Resets to 0 at every stage transition. This is what

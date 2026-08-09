@@ -142,26 +142,42 @@ constexpr lv_palette_t kPreBranchColor[3] = {
     LV_PALETTE_GREEN,  /* child */
 };
 
-/* One colour per teen_form (KF_PET_TEEN_FORM_COUNT == 3), chosen once at
- * the Child->Teen transition and read from then on -- see kf/pet.h's
- * kf_pet_state comment. */
+/* One colour per teen_form (KF_PET_TEEN_FORM_COUNT == 4: Cut, Hold, Mark,
+ * Go, per the character bible's section 6), chosen once at the Child->Teen
+ * transition and read from then on -- see kf/pet.h's kf_pet_state comment.
+ * Placeholder colours standing in for real art, same status as every other
+ * number in this file that isn't final. */
 constexpr lv_palette_t kTeenColor[KF_PET_TEEN_FORM_COUNT] = {
-    LV_PALETTE_BLUE,
-    LV_PALETTE_PURPLE,
-    LV_PALETTE_CYAN,
+    LV_PALETTE_BLUE,   /* Cut */
+    LV_PALETTE_PURPLE, /* Hold */
+    LV_PALETTE_CYAN,   /* Mark */
+    LV_PALETTE_ORANGE, /* Go */
 };
 
-/* One colour per (teen_form, adult_branch) pair -- KF_PET_TEEN_FORM_COUNT x
- * KF_PET_ADULT_BRANCH_COUNT == 6 distinct adult forms, per Chris's design
- * (3 teen types, each branching to 2 adults). Each row stays in the same
- * rough hue family as that teen_form's own colour above, so an adult's
- * blob still visually "belongs" to the teen it grew from even though this
- * table doesn't know or care what either one is actually called. */
+/* One colour per (teen_form, adult_branch) pair, sized
+ * [KF_PET_TEEN_FORM_COUNT][KF_PET_ADULT_BRANCH_MAX]. Rows are RAGGED because
+ * families are: Cut has 2 adults, Hold and Mark have 3, Go has 1 (character
+ * bible section 11) -- kf_pet_adults_in_family() is the actual per-family
+ * count, and adult_branch is always < that count, so a short family's unused
+ * trailing slots here are unreachable by construction, not meaningful data.
+ * They're filled with the family's own teen colour (kTeenColor above)
+ * rather than left as some other placeholder, so an accidental read past
+ * the real count still lands on a colour that visually "belongs" to the
+ * right family.
+ *
+ * Column 0 of every row deliberately matches that family's teen colour --
+ * adult_branch 0 keeps the teen's own hue, later columns are variants --
+ * same rough-hue-family reasoning as before this table grew a Go row. */
 constexpr lv_palette_t kAdultColor[KF_PET_TEEN_FORM_COUNT]
-                                   [KF_PET_ADULT_BRANCH_COUNT] = {
-    {LV_PALETTE_BLUE, LV_PALETTE_LIGHT_BLUE},
-    {LV_PALETTE_PURPLE, LV_PALETTE_DEEP_PURPLE},
-    {LV_PALETTE_CYAN, LV_PALETTE_TEAL},
+                                   [KF_PET_ADULT_BRANCH_MAX] = {
+    /* Cut: 2 real adults, 1 unreachable pad slot. */
+    {LV_PALETTE_BLUE, LV_PALETTE_LIGHT_BLUE, LV_PALETTE_BLUE},
+    /* Hold: 3 real adults, no padding. */
+    {LV_PALETTE_PURPLE, LV_PALETTE_DEEP_PURPLE, LV_PALETTE_INDIGO},
+    /* Mark: 3 real adults, no padding. */
+    {LV_PALETTE_CYAN, LV_PALETTE_TEAL, LV_PALETTE_LIGHT_BLUE},
+    /* Go: 1 real adult, 2 unreachable pad slots. */
+    {LV_PALETTE_ORANGE, LV_PALETTE_ORANGE, LV_PALETTE_ORANGE},
 };
 
 struct BlobStyle {

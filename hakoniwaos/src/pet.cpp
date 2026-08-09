@@ -86,6 +86,9 @@ kf_pet_millipercent apply_decay(kf_pet_millipercent value,
     return static_cast<kf_pet_millipercent>(value - delta);
 }
 
+/* Cut, Hold, Mark, Go -- character bible section 6, in that index order. */
+constexpr uint8_t kAdultsInFamily[KF_PET_TEEN_FORM_COUNT] = {2u, 3u, 3u, 1u};
+
 /* -----------------------------------------------------------------------
  * Stage progression.
  * ----------------------------------------------------------------------- */
@@ -164,9 +167,9 @@ void advance_to_next_stage(kf_pet_state *state) {
         state->stage = KF_PET_STAGE_TEEN;
         break;
     case KF_PET_STAGE_TEEN:
-        state->adult_branch = select_branch(state->care_integral_mp_seconds,
-                                             state->stage_elapsed_seconds,
-                                             KF_PET_ADULT_BRANCH_COUNT);
+        state->adult_branch = select_branch(
+            state->care_integral_mp_seconds, state->stage_elapsed_seconds,
+            kf_pet_adults_in_family(state->teen_form));
         state->stage = KF_PET_STAGE_ADULT;
         break;
     case KF_PET_STAGE_ADULT:
@@ -422,6 +425,13 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
 }
 
 } // namespace
+
+uint8_t kf_pet_adults_in_family(uint8_t teen_form) {
+    if (teen_form >= KF_PET_TEEN_FORM_COUNT) {
+        return 1u;
+    }
+    return kAdultsInFamily[teen_form];
+}
 
 kf_pet_config kf_pet_default_config(void) {
     kf_pet_config c{};
