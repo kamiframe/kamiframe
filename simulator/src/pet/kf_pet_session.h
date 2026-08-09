@@ -120,27 +120,46 @@ void kf_pet_session_shutdown(void);
 /* ---------------------------------------------------------------------
  * DEBUG ONLY below this line. Not part of the gameplay surface (not
  * exposed to Lua -- a script has no business fast-forwarding or resetting
- * time on its own pet), not called by the ESP32 build, and not something
- * a real device would ever expose to a player. Their only current caller
- * is sdl_main.cpp's debug key bindings, added specifically because
- * kf_pet_advance()'s bounded-loop design (ADR 0021) makes jumping an
- * arbitrary amount of pet-time cheap and safe to call directly, and the
- * default illustrative stage durations (an hour for an egg, about a week
- * for a full grow-up) are otherwise much too slow to watch interactively.
+ * time on its own pet) and not something a real device would ever expose
+ * to a player.
  *
- * These four are DECLARED unconditionally below, same as everything else
+ * Split across TWO flags, not one, because the four functions below have
+ * very different costs:
+ *
+ *   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates kf_pet_session_debug_
+ *   advance()/_reset()/_age_seconds() below -- each a thin wrapper over
+ *   kf_pet_advance()/kf_pet_init(), which the gameplay path already links
+ *   in; no extra static memory of its own. Cheap enough that the ESP32
+ *   build turns this ON: it is how ports/esp32/main/kf_dbg_bridge.cpp's
+ *   KFDBG ADVANCE/RESET/MULT commands reach the pet session at all (see
+ *   that file, ADR 0030), letting a developer fast-forward a real
+ *   device's four-real-day decay curve over a serial link instead of
+ *   watching it do nothing for four days.
+ *
+ *   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY kf_pet_session_debug_
+ *   seek() below and the scrubbable-timeline snapshot ring backing it --
+ *   the genuinely expensive part, kDebugSnapshotCapacity times sizeof
+ *   (DebugSnapshot) north of 200KB of unconditional static memory (see
+ *   kf_pet_session.cpp's top-of-file comment). A real device has neither
+ *   the SRAM to spare for that nor, so far, a caller for it, so ports/
+ *   esp32/main/CMakeLists.txt turns this OFF -- unchanged from before
+ *   this split. Its only current callers are desktop-only: sdl_main.cpp's
+ *   debug key bindings and sdl_debug_window.cpp's draggable timeline,
+ *   added specifically because kf_pet_advance()'s bounded-loop design
+ *   (ADR 0021) makes jumping an arbitrary amount of pet-time cheap and
+ *   safe to call directly, and the default illustrative stage durations
+ *   (an hour for an egg, about a week for a full grow-up) are otherwise
+ *   much too slow to watch interactively.
+ *
+ * All four are DECLARED unconditionally below, same as everything else
  * in this header, so nothing calling into this file needs to know or
- * care which backend it is. Whether they are DEFINED depends on
- * KF_PET_SESSION_ENABLE_DEBUG_TOOLS -- see kf_pet_session.cpp's
- * top-of-file comment. Desktop/headless get real definitions by default;
- * ESP32's main/CMakeLists.txt turns that off, both because "not called
- * by the ESP32 build" (this comment, unchanged since before there was an
- * ESP32 build capable of calling anything) is meant literally, and
- * because the snapshot ring backing kf_pet_session_debug_seek() below
- * costs 200KB+ of static memory a real device cannot spend on a feature
- * it never uses. Calling one of these four from ESP32 code is therefore
- * a link error, not silently-wrong behaviour -- the correct outcome,
- * since none of them are meant to be reachable there.
+ * care which backend it is, or which of the two flags gates which
+ * function below. Whether each is DEFINED depends on its own flag --
+ * see kf_pet_session.cpp's top-of-file comment. Desktop/headless get real
+ * definitions of all four by default. Calling a function whose flag is
+ * off for the calling backend is therefore a link error, not
+ * silently-wrong behaviour -- the correct outcome, since a function
+ * gated off is not meant to be reachable from that backend.
  * --------------------------------------------------------------------- */
 
 /* Advances the live pet by exactly `seconds`, immediately -- bypassing
@@ -149,7 +168,10 @@ void kf_pet_session_shutdown(void);
  * deltas add up correctly over real time, not to gate a deliberate,
  * one-shot jump. Uses the exact same kf_pet_advance() offline fast-forward
  * relies on, so this is not a separate, less-tested code path -- it is
- * the same one, called on demand instead of at boot. */
+ * the same one, called on demand instead of at boot.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
+ * header comment. Reachable on ESP32 via KFDBG ADVANCE (ADR 0030). */
 void kf_pet_session_debug_advance(uint32_t seconds);
 
 /* Resets the live pet to a fresh egg, in place -- without touching
@@ -157,9 +179,13 @@ void kf_pet_session_debug_advance(uint32_t seconds);
  * action, or shutdown) overwrites the save with this fresh state. Lets
  * someone testing branch outcomes start over without restarting the
  * whole process or deleting a save file by hand. Also clears the
- * snapshot history kf_pet_session_debug_seek() reads (see below) -- a
- * fresh egg starts a genuinely new timeline; the previous pet's history
- * has nothing to do with it. */
+ * snapshot history kf_pet_session_debug_seek() reads (see below), on
+ * backends where that history exists at all -- a fresh egg starts a
+ * genuinely new timeline; the previous pet's history has nothing to do
+ * with it.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
+ * header comment. Reachable on ESP32 via KFDBG RESET (ADR 0030). */
 void kf_pet_session_debug_reset(void);
 
 /* Total elapsed pet-age in seconds since this pet's own genesis (the
@@ -169,7 +195,11 @@ void kf_pet_session_debug_reset(void);
  * lifetime clock, not a wall-clock or session-uptime reading: two eggs
  * hatched a real week apart, both still 10 minutes into being a baby,
  * report the same age. The debug window's timeline (sdl_debug_window.cpp)
- * uses this as its X axis. */
+ * uses this as its X axis.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
+ * header comment. Reachable on ESP32 via KFDBG STATE's pet_age_s field
+ * (ADR 0030). */
 uint64_t kf_pet_session_debug_age_seconds(void);
 
 /* Scrubs the live pet to exactly `target_age_seconds` on its own
@@ -208,7 +238,11 @@ uint64_t kf_pet_session_debug_age_seconds(void);
  * same age range; a later seek into that range picks whichever
  * happens to still be in the ring, not a real branch history -- this is
  * a preview tool, not a save-state manager, and does not attempt to
- * track timeline branches. */
+ * track timeline branches.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_TOOLS -- the expensive one; see
+ * this section's header comment. Desktop/headless only, unchanged: not
+ * reachable on ESP32. */
 void kf_pet_session_debug_seek(uint64_t target_age_seconds);
 
 #ifdef __cplusplus

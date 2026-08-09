@@ -106,11 +106,24 @@ idf_component_register(
     WHOLE_ARCHIVE
 )
 
-## See kf_pet_session.cpp's top-of-file comment: the desktop/headless
-## backends get the scrubbable debug-timeline ring by default (a real
-## static allocation over 200KB), and this build opts out of it
-## explicitly, since a real device has neither the SRAM to spare nor any
-## caller for it (nothing in app_main.cpp is a debug key binding).
+## See kf_pet_session.h's "DEBUG ONLY" section and kf_pet_session.cpp's
+## top-of-file comment: the pet session's debug tools now split across TWO
+## flags, not one, because they cost very differently --
+##
+##   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS (advance/reset/age_seconds) is a
+##   handful of instructions on top of code the gameplay path already
+##   links in. Left ON (its default) here, deliberately: it is how
+##   kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT commands below reach the
+##   pet session at all, letting a developer fast-forward a real device's
+##   multi-day decay curve over the serial bridge instead of watching it
+##   do nothing for days (see ADR 0030's "Time control" section).
+##
+##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY the scrubbable-timeline
+##   snapshot ring and kf_pet_session_debug_seek() -- a real static
+##   allocation over 200KB that desktop/headless get by default. This
+##   build opts out of it explicitly, since a real device has neither the
+##   SRAM to spare nor any caller for it (nothing in app_main.cpp scrubs a
+##   timeline).
 ##
 ## LUA_32BITS: must match ../components/lua/CMakeLists.txt's identical
 ## define on `lua_core` exactly -- see that file's own comment for why
@@ -128,8 +141,13 @@ idf_component_register(
 ## see kf_dbg_bridge.h's own comment on that flag. Setting only
 ## KF_DBG_INPUT_INJECT_ENABLE=0 keeps PING/SHOT/STATE (read-only
 ## introspection) while refusing remote control of the buttons, for a
-## build that wants the former without the latter.
+## build that wants the former without the latter. A build that removes
+## the bridge entirely this way also loses ADVANCE/RESET/MULT below, since
+## they are KFDBG commands like any other -- KF_PET_SESSION_ENABLE_DEBUG_
+## CONTROLS staying on costs nothing by itself in that configuration, it
+## simply has no caller left.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    KF_PET_SESSION_ENABLE_DEBUG_CONTROLS=1
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0
     LUA_32BITS
 )

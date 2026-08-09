@@ -167,6 +167,30 @@ void kf_dbg_bridge_shutdown(void);
  * function reads for the mechanics (one-shot BTN vs timed BTNHOLD). */
 uint32_t kf_dbg_input_mask(void);
 
+/* --------------------------------------------------------------------------
+ * The time-control side of the contract with app_main.cpp. Declared
+ * unconditionally, same reasoning as kf_dbg_input_mask() above. See
+ * kf_dbg_bridge.cpp's handle_advance()/handle_reset()/handle_mult() for
+ * the KFDBG ADVANCE/RESET/MULT commands that drive this. ---------------- */
+
+/* The time multiplier KFDBG MULT most recently set, still in effect this
+ * frame -- 1 (real time, unscaled) until a MULT command arrives, same
+ * "1 until told otherwise" default sdl_debug_window.cpp's play-speed
+ * multiplier uses. app_main.cpp's loop multiplies this into the delta it
+ * hands kf_pet_session_frame() -- and ONLY that delta, not LVGL's tick or
+ * Lua's frame delta -- for the exact reason sdl_main.cpp's own identical
+ * call already documents: see that file's comment on
+ * kf_sdl_debug_window_time_multiplier(). Range is 1..256, matching the
+ * simulator's debug window; KFDBG MULT rejects anything outside that
+ * range with an `err` reply rather than storing it here, so this always
+ * returns a value already known to be in range.
+ *
+ * Called exactly once per frame, from app_main.cpp's loop, on the SAME
+ * thread that kf_dbg_bridge_frame() runs on and that sets this value
+ * (MULT's handler, inside kf_dbg_bridge_frame()) -- same single-thread,
+ * no-lock-needed reasoning as kf_dbg_input_mask() above. */
+uint32_t kf_dbg_time_multiplier(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

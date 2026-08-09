@@ -38,6 +38,7 @@ future us in month eight asking the same question with less patience.
 | [0028](adr-0028-esp32-lua-port.md) | Lua on ESP-IDF, and the demo creature driving the pet for real | Accepted |
 | [0029](adr-0029-panel-profiles.md) | Panel profiles: one display driver, many panels | Accepted |
 | [0030](adr-0030-serial-debug-bridge.md) | The KFDBG serial debug bridge: see and drive the device over USB, no camera | Accepted |
+| [0031](adr-0031-kfdbg-time-control.md) | Time control over KFDBG, and splitting the pet session's debug flag in two | Accepted |
 
 Open evaluations, deliberately not decided:
 

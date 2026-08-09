@@ -180,6 +180,23 @@ extern "C" void app_main(void) {
 
     uint64_t next_pet_log_us = kf_time_mono_us() + kPetLogIntervalUs;
 
+    /* Tracked here, not left to kf_pet_session_frame()'s own internal
+     * real-time tracking, because KFDBG MULT's time multiplier
+     * (kf_dbg_time_multiplier()) has to scale ONLY the delta fed to the
+     * pet session -- not LVGL's tick (kf_lvgl_port_pump()) or Lua's frame
+     * delta (kf_lua_port_frame()), both of which stay real-time so
+     * animation and script frame-rate semantics are unaffected. This
+     * mirrors sdl_main.cpp's identical treatment of
+     * kf_sdl_debug_window_time_multiplier() exactly -- see that file's own
+     * comment on its last_frame_us/real_dt_ms/multiplier dance for the
+     * full reasoning, including the correctness trap it avoids: passing a
+     * non-zero synthetic value every frame (instead of 0 = "use your own
+     * real-time tracking") sidesteps kf_pet_session_frame() only updating
+     * its internal last-call timestamp on the `dt_ms == 0` path, which
+     * would otherwise leave that timestamp stale across a multiplier
+     * change and double-count the next 0-argument call. */
+    uint64_t last_frame_us = 0;
+
     KF_LOGI(TAG, "running (kf_app_frame loop; no quit condition on device)");
     for (;;) {
         /* kf_dbg_bridge_frame() runs BEFORE kf_app_frame() specifically so
@@ -189,7 +206,9 @@ extern "C" void app_main(void) {
          * protocol spec puts it, means the very next one, not the one
          * after. Non-blocking either way: see kf_dbg_bridge.h's own "WHY A
          * BACKGROUND TASK" comment for why this never stalls the loop
-         * regardless of where it sits in it. */
+         * regardless of where it sits in it. A KFDBG MULT command sitting
+         * in the same queue is handled here too, so the multiplier read
+         * below already reflects it this same iteration. */
         kf_dbg_bridge_frame();
 
         if (!kf_app_frame()) {
@@ -201,11 +220,10 @@ extern "C" void app_main(void) {
          * vTaskDelay needed here, matching sdl_main.cpp's own bare
          * while-loop shape on desktop.
          *
-         * The 0 argument means "use your own real-elapsed-time tracking" for
-         * every call below that takes one (see kf_pet_session.h,
-         * kf_lvgl_port.h, kf_lua_port.h) -- there is no debug time multiplier
-         * on this backend to fold in, unlike sdl_main.cpp's own calls, so
-         * there is nothing this file needs to compute itself.
+         * real_dt_ms * multiplier feeds ONLY kf_pet_session_frame() --
+         * see this loop's header comment above. Every other 0 argument
+         * below still means "use your own real-elapsed-time tracking"
+         * (see kf_pet_session.h, kf_lvgl_port.h, kf_lua_port.h).
          *
          * Ordering matches sdl_main.cpp's frame-ordering comment exactly,
          * for the same two reasons. kf_pet_session_frame() and
@@ -215,17 +233,25 @@ extern "C" void app_main(void) {
          * the screen is permanently one frame behind. And the pet session
          * runs before kf_lua_port_frame(), so the script's pet.hunger() and
          * friends see this frame's elapsed time already applied. */
-        kf_pet_session_frame(0);
+        const uint64_t now_us = kf_time_mono_us();
+        const uint32_t real_dt_ms =
+            last_frame_us == 0u
+                ? 0u
+                : static_cast<uint32_t>((now_us - last_frame_us) / 1000u);
+        last_frame_us = now_us;
+        const uint32_t multiplier = kf_dbg_time_multiplier();
+
+        kf_pet_session_frame(real_dt_ms * multiplier);
         kf_screen_nav_frame();
         kf_lvgl_port_pump(0);
 
         /* kf_lua_port_frame(0): same "0 means real elapsed time" convention
-         * as kf_pet_session_frame() above, tracked internally the same way
-         * kf_lvgl_port_pump()'s would be on the desktop build -- there is no
-         * debug time multiplier on this backend to fold in either. */
+         * as kf_pet_session_frame() would use without a multiplier, tracked
+         * internally the same way kf_lvgl_port_pump()'s is -- Lua's frame
+         * delta deliberately does not get the multiplier folded in, per
+         * this loop's header comment. */
         kf_lua_port_frame(0);
 
-        const uint64_t now_us = kf_time_mono_us();
         if (now_us >= next_pet_log_us) {
             log_pet_state();
             next_pet_log_us = now_us + kPetLogIntervalUs;

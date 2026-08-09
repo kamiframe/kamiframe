@@ -9,34 +9,44 @@
 
 #include <cstdint>
 
-/* Desktop/headless backends want the full scrubbable-timeline history
- * below (the debug snapshot ring); the ESP32 build does not, and cannot
- * casually afford it -- kDebugSnapshotCapacity times sizeof(DebugSnapshot)
- * lands north of 200KB, which has no business being an unconditional
- * static allocation on a device with 512KB of internal SRAM that also
- * needs room for LVGL, Lua and FreeRTOS itself. This is the same
- * "enforce the device's limits, don't just document them" rule ADR 0006
- * already applies everywhere else in this codebase, applied here for the
- * first time this file has had a real device to enforce it against.
+/* Two flags, not one -- see kf_pet_session.h's "DEBUG ONLY" section
+ * header comment for the full reasoning; this is the short version.
  *
- * ports/esp32/main/CMakeLists.txt defines this to 0 explicitly via
- * target_compile_definitions(); every other backend gets the desktop
- * behaviour (1) by default so nothing else has to opt in. When disabled,
- * every function in the "DEBUG ONLY" section of kf_pet_session.h is
- * still DECLARED (callers don't need to care) but not DEFINED -- calling
- * one from ESP32 code is a link error, which is the correct outcome: none
- * of them are meant to be reachable there (see kf_pet_session.h's own
- * "not called by the ESP32 build" note, written before there was an ESP32
- * build capable of calling anything). */
+ * KF_PET_SESSION_ENABLE_DEBUG_CONTROLS gates the three cheap functions
+ * (_debug_advance/_debug_reset/_debug_age_seconds) -- thin wrappers over
+ * kf_pet_advance()/kf_pet_init() with no static memory of their own.
+ * ports/esp32/main/CMakeLists.txt turns this ON: it is the ESP32 build's
+ * only way to reach the pet session's debug fast-forward at all, via
+ * ports/esp32/main/kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT (ADR 0030).
+ *
+ * KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates ONLY _debug_seek() and the
+ * scrubbable-timeline snapshot ring backing it -- the genuinely expensive
+ * part, kDebugSnapshotCapacity times sizeof(DebugSnapshot) north of 200KB,
+ * which has no business being an unconditional static allocation on a
+ * device with 512KB of internal SRAM that also needs room for LVGL, Lua
+ * and FreeRTOS itself. This is the same "enforce the device's limits,
+ * don't just document them" rule ADR 0006 already applies everywhere else
+ * in this codebase. ports/esp32/main/CMakeLists.txt turns this OFF --
+ * unchanged from before this file had two flags instead of one.
+ *
+ * Both default ON (1); every backend other than ESP32 gets the full
+ * desktop behaviour with nothing to opt into. When either is 0, every
+ * function it gates is still DECLARED in kf_pet_session.h (callers don't
+ * need to care) but not DEFINED here -- calling one from a backend that
+ * has it off is a link error, which is the correct outcome: none of them
+ * are meant to be reachable from a backend that disabled them. */
 #ifndef KF_PET_SESSION_ENABLE_DEBUG_TOOLS
 #define KF_PET_SESSION_ENABLE_DEBUG_TOOLS 1
+#endif
+#ifndef KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
+#define KF_PET_SESSION_ENABLE_DEBUG_CONTROLS 1
 #endif
 
 namespace {
 
 constexpr const char *TAG = "pet-session";
 
-#if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
+#if KF_PET_SESSION_ENABLE_DEBUG_TOOLS || KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
 
 /* How many seconds of a stage's own duration have already been lived
  * through as of `stage` starting -- i.e. where `stage` begins on the
@@ -44,9 +54,11 @@ constexpr const char *TAG = "pet-session";
  * terminal, see kf/pet.h), so this is also the total axis length the
  * debug window's timeline draws tick marks across. Pure function of
  * config + stage, no session state involved, which is why this lives as
- * a free function rather than a Session member. Debug-tools-only, like
- * everything else in this #if: nothing outside the timeline scrubber
- * needs a pet's age in isolation from its state. */
+ * a free function rather than a Session member. Gated on EITHER debug
+ * flag, not just TOOLS: kf_pet_session_debug_age_seconds() (CONTROLS)
+ * needs total_age_seconds() below just as much as debug_snapshot_push()
+ * (TOOLS) does. Nothing outside those two needs a pet's age in isolation
+ * from its state. */
 uint64_t elapsed_before_stage(const kf_pet_config &config, kf_pet_stage stage) {
     uint64_t t = 0u;
     if (stage > KF_PET_STAGE_EGG) {
@@ -68,6 +80,10 @@ uint64_t total_age_seconds(const kf_pet_state &state, const kf_pet_config &confi
     return elapsed_before_stage(config, state.stage) + state.stage_elapsed_seconds;
 }
 
+#endif // KF_PET_SESSION_ENABLE_DEBUG_TOOLS || KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
+
+#if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
+
 /* One full state snapshot, timestamped on the pet's own lifetime clock
  * (see total_age_seconds() above), not a wall-clock or session-uptime
  * reading. See kf_pet_session_debug_seek()'s header comment in
@@ -75,7 +91,11 @@ uint64_t total_age_seconds(const kf_pet_state &state, const kf_pet_config &confi
  * error this trades away (an approximated care_integral at the exact
  * moment of a stage transition) is bounded by snapshot SPACING, which
  * this file controls tightly (every state change), rather than by
- * however far apart a player's care-action clicks happen to land. */
+ * however far apart a player's care-action clicks happen to land.
+ *
+ * TOOLS-only, unlike total_age_seconds() above: the ring this backs is
+ * exactly the "expensive timeline" half of the DEBUG ONLY split -- see
+ * kf_pet_session.h's header comment. */
 struct DebugSnapshot {
     kf_pet_state state;
     uint64_t age_seconds;
@@ -86,10 +106,12 @@ struct DebugSnapshot {
  * kf_pet_session.h's own header comment on why this lives in
  * simulator/, not hakoniwaos/), and gone entirely from the build when
  * KF_PET_SESSION_ENABLE_DEBUG_TOOLS is 0 (see this file's top-of-file
- * comment). Generous enough that a normal debug session never evicts its
- * own history; a sustained high-multiplier run (see sdl_debug_window.cpp's
- * 256x) can still fill it, at which point the ring starts overwriting its
- * OLDEST entries -- see debug_snapshot_push() below. */
+ * comment) -- independent of KF_PET_SESSION_ENABLE_DEBUG_CONTROLS, which
+ * does not affect this ring at all. Generous enough that a normal debug
+ * session never evicts its own history; a sustained high-multiplier run
+ * (see sdl_debug_window.cpp's 256x) can still fill it, at which point the
+ * ring starts overwriting its OLDEST entries -- see debug_snapshot_push()
+ * below. */
 constexpr size_t kDebugSnapshotCapacity = 2048u;
 
 #endif // KF_PET_SESSION_ENABLE_DEBUG_TOOLS
@@ -107,15 +129,16 @@ struct Session {
     bool ready = false;
 
 #if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
-    /* Debug-only: the timeline snapshot ring. See kf_pet_session.h's
-     * "DEBUG ONLY" section. Written by debug_snapshot_push() after every
-     * state change; read only by kf_pet_session_debug_seek(). A plain
-     * ring buffer, not a growable log -- oldest entries are silently
-     * overwritten once full, exactly like any other fixed-capacity
-     * structure this project uses (no heap in Core; this file is not
-     * Core, but there is no reason to reach for unbounded growth here
-     * either). Absent entirely from Session when this backend has no use
-     * for it -- see this file's top-of-file comment. */
+    /* Debug-only: the timeline snapshot ring, gated on TOOLS specifically
+     * (not CONTROLS -- see kf_pet_session.h's "DEBUG ONLY" section).
+     * Written by debug_snapshot_push() after every state change; read
+     * only by kf_pet_session_debug_seek(). A plain ring buffer, not a
+     * growable log -- oldest entries are silently overwritten once full,
+     * exactly like any other fixed-capacity structure this project uses
+     * (no heap in Core; this file is not Core, but there is no reason to
+     * reach for unbounded growth here either). Absent entirely from
+     * Session on a backend that has TOOLS off -- see this file's
+     * top-of-file comment. */
     DebugSnapshot debug_snapshots[kDebugSnapshotCapacity];
     size_t debug_snapshot_count = 0;
     size_t debug_snapshot_next = 0;
@@ -152,9 +175,12 @@ void debug_snapshot_reset() {
 #else // !KF_PET_SESSION_ENABLE_DEBUG_TOOLS
 
 /* No-op stand-ins so every call site below (init/frame/feed/play/rest, all
- * real gameplay code the ESP32 build genuinely runs) stays exactly as
+ * real gameplay code the ESP32 build genuinely runs, PLUS the CONTROLS-
+ * gated _debug_advance/_debug_reset further down) stays exactly as
  * written regardless of which backend compiles this file, rather than
- * growing an #if at every call site. */
+ * growing an #if at every call site. Used whenever TOOLS is off,
+ * independent of CONTROLS -- a backend with CONTROLS on and TOOLS off
+ * (ESP32) still has no ring to push a snapshot into. */
 void debug_snapshot_push() {}
 void debug_snapshot_reset() {}
 
@@ -258,7 +284,12 @@ void kf_pet_session_shutdown(void) {
     g.ready = false;
 }
 
-#if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
+/* The cheap trio -- gated on CONTROLS, not TOOLS, per this file's
+ * top-of-file comment. Each calls debug_snapshot_push()/_reset(), defined
+ * above under the TOOLS #if/#else pair: the real ring-writer when TOOLS
+ * is on, a no-op when it is off (e.g. ESP32: CONTROLS on, TOOLS off) --
+ * either way these three don't need to know which. */
+#if KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
 
 void kf_pet_session_debug_advance(uint32_t seconds) {
     KF_ASSERT(g.ready, "kf_pet_session_debug_advance called before "
@@ -280,6 +311,12 @@ uint64_t kf_pet_session_debug_age_seconds(void) {
                         "kf_pet_session_init");
     return total_age_seconds(g.state, g.config);
 }
+
+#endif // KF_PET_SESSION_ENABLE_DEBUG_CONTROLS
+
+/* The expensive one -- gated on TOOLS specifically, independent of
+ * CONTROLS above. See kf_pet_session.h's "DEBUG ONLY" header comment. */
+#if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
 
 void kf_pet_session_debug_seek(uint64_t target_age_seconds) {
     KF_ASSERT(g.ready,

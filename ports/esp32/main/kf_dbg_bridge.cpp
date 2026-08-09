@@ -4,7 +4,20 @@
  * See kf_dbg_bridge.h for the shape of this (two low-priority FreeRTOS
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
- * tasks, the KFDBG command parser, and the five command handlers.
+ * tasks, the KFDBG command parser, and the command handlers -- PING, SHOT,
+ * STATE, BTN, BTNHOLD, and the time-control trio ADVANCE/RESET/MULT (see
+ * "Time control" below).
+ *
+ * Time control: an egg on this codebase's default config lasts 1 hour and
+ * does not decay at all, and post-hatch decay is hours-to-days per need
+ * (hunger empties in 4 real days, the slowest of the three) -- fine for a
+ * shipped pet, useless for a developer watching a real device over a
+ * serial link. ADVANCE/RESET mirror kf_pet_session.h's debug_advance()/
+ * _reset() exactly (see that header's "DEBUG ONLY" section for what they
+ * do and why they're safe to call directly -- kf_pet_advance()'s bounded-
+ * loop design, ADR 0021). MULT mirrors sdl_debug_window.cpp's play-speed
+ * multiplier: see handle_mult() and app_main.cpp's frame loop for how it
+ * is applied.
  *
  * Wire format, confirmed against tools/kf_debug.py and tools/
  * kf_debug_selftest.py (the host side, already written and tested):
@@ -153,6 +166,19 @@ bool g_inject_one_shot_pending = false;
 /* BTNHOLD: applies until this monotonic timestamp. 0 means "not holding". */
 uint64_t g_inject_hold_until_us = 0;
 #endif
+
+/* MULT: the pet-time multiplier currently in effect, read once per frame
+ * by app_main.cpp's loop via kf_dbg_time_multiplier(). Same single-thread,
+ * no-lock reasoning as the injected button state above -- handle_mult()
+ * (below, called from kf_dbg_bridge_frame()) and kf_dbg_time_multiplier()
+ * (called from app_main.cpp's loop, the same iteration, right after
+ * kf_dbg_bridge_frame() returns) never run concurrently. Not under
+ * #if KF_DBG_INPUT_INJECT_ENABLE like the button state above -- MULT is a
+ * time-scale control, not button injection, so it stays available
+ * whenever the bridge as a whole is on, the same as PING/SHOT/STATE. 1
+ * means real time, unscaled -- matches sdl_debug_window.cpp's own default
+ * before any multiplier button is clicked. */
+uint32_t g_time_multiplier = 1;
 
 /* --------------------------------------------------------------------------
  * The one frame builder every command handler shares. See this file's
@@ -335,22 +361,35 @@ void handle_state() {
     const size_t heap_free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     const size_t heap_free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
+    /* pet_age_s: the pet's own lifetime clock (cumulative stage durations
+     * already lived through, plus the current stage's own elapsed time) --
+     * NOT the same as stage_elapsed_s above, which resets at every stage
+     * transition. See kf_pet_session_debug_age_seconds()'s own comment in
+     * kf_pet_session.h. Reachable here specifically because ports/esp32/
+     * main/CMakeLists.txt turns KF_PET_SESSION_ENABLE_DEBUG_CONTROLS on
+     * (see that file's comment) -- this is the STATE half of the same
+     * time-control feature ADVANCE/RESET/MULT below make possible. */
+    const uint64_t pet_age_s = kf_pet_session_debug_age_seconds();
+
     /* Single-line, minified JSON -- see the ADR for the exact key set;
      * field names are not fixed by the protocol spec (tools/kf_debug.py
      * prints whatever keys arrive rather than expecting specific ones), so
      * this is a firmware-side choice, documented once here and in the ADR
      * rather than duplicated in a comment at every field. */
-    char json[320];
+    char json[384];
     const int n = std::snprintf(
         json, sizeof json,
         "{\"stage\":%d,\"hunger_mp\":%lu,\"happiness_mp\":%lu,\"energy_mp\":%lu,"
-        "\"base_trait\":%u,\"stage_elapsed_s\":%llu,\"heap_free_internal\":%zu,"
+        "\"base_trait\":%u,\"stage_elapsed_s\":%llu,\"pet_age_s\":%llu,"
+        "\"time_multiplier\":%lu,\"heap_free_internal\":%zu,"
         "\"heap_free_psram\":%zu,\"fps\":%lu.%lu,\"frame_us\":%lu}",
         static_cast<int>(pet->stage), static_cast<unsigned long>(pet->hunger_mp),
         static_cast<unsigned long>(pet->happiness_mp),
         static_cast<unsigned long>(pet->energy_mp),
         static_cast<unsigned>(pet->base_trait),
-        static_cast<unsigned long long>(pet->stage_elapsed_seconds), heap_free_internal,
+        static_cast<unsigned long long>(pet->stage_elapsed_seconds),
+        static_cast<unsigned long long>(pet_age_s),
+        static_cast<unsigned long>(g_time_multiplier), heap_free_internal,
         heap_free_psram, static_cast<unsigned long>(fps_x10 / 10u),
         static_cast<unsigned long>(fps_x10 % 10u),
         static_cast<unsigned long>(last->cpu_us));
@@ -399,6 +438,48 @@ void handle_btnhold(uint32_t mask, uint32_t ms) {
 #endif
     kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
                           n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+/* KFDBG ADVANCE <seconds>: kf_pet_session_debug_advance(), immediately --
+ * see that function's own comment in kf_pet_session.h for why it is cheap
+ * and safe to call directly (kf_pet_advance()'s bounded-loop design, ADR
+ * 0021), and this file's own header comment for why a developer needs
+ * this at all against this codebase's real decay rates. */
+void handle_advance(uint32_t seconds) {
+    kf_pet_session_debug_advance(seconds);
+    char content[64];
+    const int n = std::snprintf(content, sizeof content, "ADVANCE seconds=%lu",
+                                 static_cast<unsigned long>(seconds));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+/* KFDBG RESET: kf_pet_session_debug_reset() -- a fresh egg, in place,
+ * without touching whatever is currently on the device's NVS. See that
+ * function's own comment in kf_pet_session.h. */
+void handle_reset() {
+    kf_pet_session_debug_reset();
+    static const char kMsg[] = "RESET";
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<const uint8_t *>(kMsg),
+                          sizeof(kMsg) - 1);
+}
+
+/* KFDBG MULT <n>: sets g_time_multiplier, read once per frame by
+ * app_main.cpp's loop via kf_dbg_time_multiplier() and folded into ONLY
+ * the delta it hands kf_pet_session_frame() -- never LVGL's tick or Lua's
+ * frame delta. See kf_dbg_time_multiplier()'s own comment in
+ * kf_dbg_bridge.h for the full reasoning (mirrors sdl_main.cpp's
+ * identical treatment of kf_sdl_debug_window_time_multiplier() exactly).
+ * Range validated by the caller (process_command_line()) against the
+ * same 1..256 sdl_debug_window.cpp's multiplier buttons cover -- this
+ * function is only ever called with an already-valid n. */
+void handle_mult(uint32_t n) {
+    g_time_multiplier = n;
+    char content[32];
+    const int rn = std::snprintf(content, sizeof content, "MULT n=%lu",
+                                  static_cast<unsigned long>(n));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          rn > 0 ? static_cast<size_t>(rn) : 0);
 }
 
 /* --------------------------------------------------------------------------
@@ -481,6 +562,33 @@ void process_command_line(const char *line) {
             return;
         }
         handle_btnhold(mask, ms);
+    } else if (std::strcmp(tok1, "ADVANCE") == 0) {
+        char tok2[16];
+        uint32_t seconds = 0;
+        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &seconds)) {
+            reply_err(line, "KFDBG ADVANCE needs one decimal seconds argument");
+            return;
+        }
+        handle_advance(seconds);
+    } else if (std::strcmp(tok1, "RESET") == 0) {
+        handle_reset();
+    } else if (std::strcmp(tok1, "MULT") == 0) {
+        char tok2[16];
+        uint32_t mult = 0;
+        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &mult)) {
+            reply_err(line, "KFDBG MULT needs one decimal multiplier argument");
+            return;
+        }
+        /* 1..256: same range sdl_debug_window.cpp's multiplier buttons
+         * cover (1x through 256x) -- see kf_dbg_time_multiplier()'s own
+         * comment in kf_dbg_bridge.h. Rejected here, before handle_mult()
+         * ever runs, so g_time_multiplier is never set to anything
+         * outside that range. */
+        if (mult < 1u || mult > 256u) {
+            reply_err(line, "KFDBG MULT must be between 1 and 256");
+            return;
+        }
+        handle_mult(mult);
     } else {
         reply_err(line, "unknown KFDBG subcommand");
     }
@@ -710,17 +818,24 @@ uint32_t kf_dbg_input_mask(void) {
 #endif
 }
 
+uint32_t kf_dbg_time_multiplier(void) { return g_time_multiplier; }
+
 #else // !KF_DBG_BRIDGE_ENABLE
 
 /* The whole bridge, compiled away: no task, no queue, no UART driver
  * install, nothing -- see kf_dbg_bridge.h's own comment on this flag.
  * kf_dbg_input_mask() returns 0 unconditionally, so esp_input.cpp's
  * `mask |= kf_dbg_input_mask();` is always a no-op OR, needing no #if of
- * its own at the call site. */
+ * its own at the call site. kf_dbg_time_multiplier() returns 1 (real
+ * time, unscaled), not 0 -- there is no MULT command left to change it,
+ * and app_main.cpp's loop multiplies this straight into the pet session's
+ * delta, so 1 is "behave exactly as if this feature did not exist",
+ * which is precisely what disabling the bridge should mean. */
 
 void kf_dbg_bridge_init(void) {}
 void kf_dbg_bridge_frame(void) {}
 void kf_dbg_bridge_shutdown(void) {}
 uint32_t kf_dbg_input_mask(void) { return 0; }
+uint32_t kf_dbg_time_multiplier(void) { return 1; }
 
 #endif // KF_DBG_BRIDGE_ENABLE
