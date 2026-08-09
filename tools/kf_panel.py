@@ -108,6 +108,10 @@ class SerialTransport(Transport):
     reimplementing port-opening, write-framing, or error messages."""
 
     def __init__(self, port, baud=115200, verbose=False):
+        self.port = port  # the resolved port string (auto-detection, if
+        # any, already happened in build_transport() before this runs) --
+        # kept so the UI can show *which* port it actually connected to,
+        # not just the literal "auto" the user typed.
         self._link = kfd.SerialLink(port, baud=baud, verbose=verbose)
 
     def send_line(self, line):
@@ -189,6 +193,35 @@ def kfdbg_press(transport, mask, hold_ms=0):
     return payload.decode("utf-8", "replace")
 
 
+def kfdbg_advance(transport, seconds):
+    """Same `KFDBG ADVANCE <seconds>` command as kf_debug.py's cmd_advance
+    -- ages the pet forward without waiting for it to happen in real time.
+    Callers build `seconds` with kfd.parse_duration(), the same helper
+    cmd_advance() uses, rather than a second copy of that parsing."""
+    payload = expect_frame(transport, f"KFDBG ADVANCE {seconds}", "ack")
+    return payload.decode("utf-8", "replace")
+
+
+def kfdbg_reset(transport):
+    """Same `KFDBG RESET` command as kf_debug.py's cmd_reset -- back to a
+    fresh egg."""
+    payload = expect_frame(transport, "KFDBG RESET", "ack")
+    return payload.decode("utf-8", "replace")
+
+
+def kfdbg_mult(transport, factor):
+    """Same `KFDBG MULT <n>` command as kf_debug.py's cmd_mult, n in
+    1..256. The UI only ever offers the fixed multiplier buttons below, so
+    an out-of-range value here would be a bug in this file, not a user
+    typo -- but the check is cheap and the resulting error is worth having
+    either way."""
+    if not 1 <= factor <= 256:
+        raise kfd.KfDebugError(
+            f"time multiplier must be between 1 and 256, got {factor}")
+    payload = expect_frame(transport, f"KFDBG MULT {factor}", "ack")
+    return payload.decode("utf-8", "replace")
+
+
 def kfdbg_shot(transport):
     """Returns raw RGB565-LE pixel bytes, 240*320*2, row-major."""
     payload = expect_frame(transport, "KFDBG SHOT", "fb", timeout=kfd.SHOT_TIMEOUT)
@@ -228,6 +261,27 @@ class FakeDevice:
         self.cursor_x = kfd.FB_WIDTH // 2
         self.cursor_y = kfd.FB_HEIGHT // 2
         self.last_button_note = "none"
+        self.time_multiplier = 1
+        self.advanced_seconds = 0  # accumulated via KFDBG ADVANCE, demo-only
+
+    def handle_advance(self, seconds):
+        """KFDBG ADVANCE for the fake device: just banks the seconds so
+        state_dict()'s pet_age_s reflects it immediately. The real
+        firmware actually re-runs decay math for the skipped time; the
+        demo device only needs to prove the panel's buttons round-trip
+        the command and the readout updates."""
+        self.advanced_seconds += seconds
+        return f"advanced {seconds}s (demo)"
+
+    def handle_mult(self, factor):
+        self.time_multiplier = factor
+        return f"multiplier now {factor}x (demo)"
+
+    def reset(self):
+        """KFDBG RESET for the fake device: back to a fresh egg, same as
+        __init__ builds."""
+        self.__init__()
+        return "reset to a fresh egg (demo)"
 
     def handle_button(self, mask, hold_ms):
         """Moves the on-screen blob and nudges the stats, so a screenshot
@@ -261,6 +315,7 @@ class FakeDevice:
 
     def state_dict(self):
         elapsed = time.monotonic() - self.stage_started
+        pet_age_s = (time.monotonic() - self.boot_time) + self.advanced_seconds
         return {
             "stage": self.stage,
             "base_trait": self.trait,
@@ -268,6 +323,8 @@ class FakeDevice:
             "happiness": self.happiness,
             "energy": self.energy,
             "time_in_stage_s": round(elapsed, 1),
+            "pet_age_s": round(pet_age_s, 1),
+            "time_multiplier": self.time_multiplier,
             "free_heap_bytes": 181_000 - (self.frame_count * 37) % 4000,
             "free_psram_bytes": 7_800_000 - (self.frame_count * 191) % 20000,
             "fps": round(29.4 + 0.6 * ((self.frame_count % 10) / 10), 1),
@@ -368,6 +425,19 @@ class FakeTransport(Transport):
             return "ack", note.encode("utf-8")
         if head == ["KFDBG", "BTNHOLD"] and len(parts) >= 4:
             note = self.device.handle_button(int(parts[2]), int(parts[3]))
+            return "ack", note.encode("utf-8")
+        if head == ["KFDBG", "ADVANCE"] and len(parts) >= 3:
+            note = self.device.handle_advance(int(parts[2]))
+            return "ack", note.encode("utf-8")
+        if head == ["KFDBG", "RESET"]:
+            note = self.device.reset()
+            return "ack", note.encode("utf-8")
+        if head == ["KFDBG", "MULT"] and len(parts) >= 3:
+            factor = int(parts[2])
+            if not 1 <= factor <= 256:
+                return "err", (f"time multiplier must be between 1 and 256, "
+                                f"got {factor}").encode("utf-8")
+            note = self.device.handle_mult(factor)
             return "ack", note.encode("utf-8")
         return "err", f"fake device doesn't understand: {command}".encode("utf-8")
 
@@ -489,10 +559,32 @@ def rgb888_to_ppm(rgb_bytes, width, height):
 
 if tk is not None:
 
+    # ==========================================================================
+    # Fixed colour palette. Applied explicitly to every widget below, rather
+    # than left to inherit from the OS ttk theme (macOS's "aqua" theme mostly
+    # ignores configured foreground/background on ttk widgets and substitutes
+    # system colours instead -- which is exactly why the panel had invisible
+    # widgets under dark mode: black-on-nothing text landed on a dark system
+    # background). These colours are fixed regardless of whether the OS is in
+    # light or dark mode, so the panel looks the same, and stays legible,
+    # either way. See _setup_style() below for where they're wired in.
+    # ==========================================================================
+    COLOR_BG = "#f2f2f3"
+    COLOR_FG = "#151515"
+    COLOR_MUTED_FG = "#4a4a4a"
+    COLOR_BORDER = "#c7c7c7"
+    COLOR_BUTTON_BG = "#e3e3e3"
+    COLOR_BUTTON_ACTIVE_BG = "#d2d2d2"
+    COLOR_ENTRY_BG = "#ffffff"
+    COLOR_WARN_FG = "#8a4b00"
+    COLOR_CONNECTED_FG = "#1a7f37"
+    COLOR_FAILED_FG = "#b42318"
+    COLOR_DISABLED_FG = "#8a8a8a"
+
     class Tooltip:
         """A small delayed label that follows the mouse over one widget.
-        Used on the disabled simulator-debug controls to explain *why*
-        they're disabled without needing a status bar essay for each one."""
+        Used on the seek-timeline control to explain *why* it's disabled
+        without needing a status bar essay for it."""
 
         def __init__(self, widget, text):
             self.widget = widget
@@ -510,8 +602,9 @@ if tk is not None:
             self._tip.wm_overrideredirect(True)
             self._tip.wm_geometry(f"+{x}+{y}")
             label = tk.Label(self._tip, text=self.text, justify="left",
-                              background="#ffffe0", relief="solid",
-                              borderwidth=1, font=("TkDefaultFont", 9),
+                              background="#ffffe0", foreground="#111111",
+                              relief="solid", borderwidth=1,
+                              font=("TkDefaultFont", 9),
                               wraplength=260, padx=6, pady=3)
             label.pack()
 
@@ -525,10 +618,13 @@ if tk is not None:
     # that isn't in this list still shows up, appended below, so an
     # unrecognised field is visible rather than silently dropped (the
     # protocol doesn't pin field names down -- see kf_debug.py).
+    # time_multiplier and pet_age_s are the two fields KFDBG STATE grew for
+    # the time controls below -- placed right after the stats a reader
+    # already cares about, not buried at the end.
     STATE_FIELD_ORDER = [
         "stage", "base_trait", "trait", "hunger", "happiness", "energy",
-        "time_in_stage_s", "free_heap_bytes", "free_psram_bytes", "fps",
-        "frame_time_ms",
+        "time_in_stage_s", "pet_age_s", "time_multiplier",
+        "free_heap_bytes", "free_psram_bytes", "fps", "frame_time_ms",
     ]
 
     BUTTON_LABELS = ["UP", "DOWN", "LEFT", "RIGHT", "A", "B", "MENU"]
@@ -545,6 +641,18 @@ if tk is not None:
 
     TAP_VS_HOLD_MS = 150  # below this, a click/keypress is a tap (BTN);
                            # at or above it, it's a hold (BTNHOLD elapsed).
+
+    # Skip-forward presets for the time controls. Seconds are computed once,
+    # at import time, with kfd.parse_duration() -- the exact same duration
+    # parser kf_debug.py's `advance` subcommand uses -- rather than a second
+    # copy of "1h means 3600" living in this file.
+    ADVANCE_PRESETS = [
+        ("Skip 1 Hour", kfd.parse_duration("1h")),
+        ("Skip 1 Day", kfd.parse_duration("1d")),
+        ("Skip 1 Week", kfd.parse_duration("1w")),
+    ]
+
+    MULT_PRESETS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 
     class PanelApp:
@@ -575,9 +683,16 @@ if tk is not None:
             self._build_ui()
             self._bind_keys()
 
+            # Auto-connect on launch, for every target kind, not just demo --
+            # the whole point is that Connect shouldn't be a control the user
+            # has to go find first. If nothing is plugged in, this fails
+            # quickly and says so plainly in the connection-state banner
+            # rather than leaving the panel simply looking unconnected.
             if self.target_kind == "demo":
                 self.status_var.set("Demo mode -- connecting to the fake device...")
-                self._connect()
+            else:
+                self.status_var.set("Looking for a device to connect to...")
+            self._connect()
 
             self.root.after(50, self._drain_results)
             self.root.after(int(self.state_interval.get() * 1000), self._poll_state_tick)
@@ -586,61 +701,199 @@ if tk is not None:
         # UI construction
         # ------------------------------------------------------------
 
+        def _setup_style(self):
+            """Fixed, explicit colours for every ttk widget class used
+            below, on the 'clam' theme rather than the platform-native one.
+            'clam' actually honours style.configure() colours; macOS's
+            'aqua' theme substitutes system control colours for most of
+            them regardless of what's configured, which is what made
+            widgets vanish under dark mode in the first place -- switching
+            themes fixes that at the root instead of patching around it
+            per-widget."""
+            self.root.configure(background=COLOR_BG)
+            style = ttk.Style(self.root)
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass  # 'clam' ships with every standard Tk build; if some
+                      # install is missing it, fall back to whatever theme
+                      # is active rather than crashing -- every colour
+                      # below is still set explicitly, just possibly with
+                      # less effect on that theme.
+
+            style.configure(".", background=COLOR_BG, foreground=COLOR_FG,
+                             fieldbackground=COLOR_ENTRY_BG)
+            style.configure("TFrame", background=COLOR_BG)
+            style.configure("TLabel", background=COLOR_BG, foreground=COLOR_FG)
+            style.configure("Muted.TLabel", background=COLOR_BG,
+                             foreground=COLOR_MUTED_FG)
+            style.configure("Warn.TLabel", background=COLOR_BG,
+                             foreground=COLOR_WARN_FG)
+            style.configure("ConnGood.TLabel", background=COLOR_BG,
+                             foreground=COLOR_CONNECTED_FG,
+                             font=("TkDefaultFont", 12, "bold"))
+            style.configure("ConnBad.TLabel", background=COLOR_BG,
+                             foreground=COLOR_FAILED_FG,
+                             font=("TkDefaultFont", 12, "bold"))
+            style.configure("ConnNeutral.TLabel", background=COLOR_BG,
+                             foreground=COLOR_FG,
+                             font=("TkDefaultFont", 12, "bold"))
+            style.configure("TLabelframe", background=COLOR_BG,
+                             foreground=COLOR_FG, bordercolor=COLOR_BORDER)
+            style.configure("TLabelframe.Label", background=COLOR_BG,
+                             foreground=COLOR_FG,
+                             font=("TkDefaultFont", 10, "bold"))
+            style.configure("TButton", background=COLOR_BUTTON_BG,
+                             foreground=COLOR_FG, bordercolor=COLOR_BORDER)
+            style.map("TButton",
+                      background=[("active", COLOR_BUTTON_ACTIVE_BG),
+                                  ("disabled", COLOR_BG)],
+                      foreground=[("disabled", COLOR_DISABLED_FG)])
+            style.configure("TEntry", fieldbackground=COLOR_ENTRY_BG,
+                             foreground=COLOR_FG)
+            style.map("TEntry",
+                      fieldbackground=[("readonly", COLOR_ENTRY_BG)],
+                      foreground=[("readonly", COLOR_FG)])
+            style.configure("TCombobox", fieldbackground=COLOR_ENTRY_BG,
+                             foreground=COLOR_FG, background=COLOR_BUTTON_BG,
+                             arrowcolor=COLOR_FG)
+            style.map("TCombobox",
+                      fieldbackground=[("readonly", COLOR_ENTRY_BG)],
+                      foreground=[("readonly", COLOR_FG)])
+            style.configure("TSpinbox", fieldbackground=COLOR_ENTRY_BG,
+                             foreground=COLOR_FG, background=COLOR_BUTTON_BG,
+                             arrowcolor=COLOR_FG)
+            style.configure("Horizontal.TScale", background=COLOR_BG)
+            style.configure("TScrollbar", background=COLOR_BUTTON_BG,
+                             troughcolor=COLOR_BG, bordercolor=COLOR_BORDER,
+                             arrowcolor=COLOR_FG)
+
+            # The combobox's popdown list is a plain Tk Listbox underneath,
+            # styled through the option database rather than ttk.Style.
+            self.root.option_add("*TCombobox*Listbox.background", COLOR_ENTRY_BG)
+            self.root.option_add("*TCombobox*Listbox.foreground", COLOR_FG)
+            self.root.option_add("*TCombobox*Listbox.selectBackground",
+                                  COLOR_BUTTON_ACTIVE_BG)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", COLOR_FG)
+
         def _build_ui(self):
+            self._setup_style()
             root = self.root
-            pad = {"padx": 6, "pady": 4}
 
-            top = ttk.Frame(root)
-            top.pack(fill="x", **pad)
-            self._build_connection_controls(top)
+            # Explicit size, always -- never auto-sized to content. Content
+            # that needs more room scrolls (see the Canvas+Scrollbar setup
+            # below); the window itself does not grow to chase it.
+            root.geometry("560x900")
+            root.minsize(480, 640)
 
-            body = ttk.Frame(root)
-            body.pack(fill="both", expand=True, **pad)
-
-            left = ttk.Frame(body)
-            left.pack(side="left", fill="y", padx=(0, 12))
-            self._build_button_pad(left)
-            self._build_screenshot_controls(left)
-
-            right = ttk.Frame(body)
-            right.pack(side="left", fill="both", expand=True)
-            self._build_state_readout(right)
-            self._build_sim_controls(right)
-
+            # Status line: packed at the very bottom of the *root* window,
+            # before anything else claims space, so it's reserved and
+            # always visible -- outside the scrollable area on purpose,
+            # per the "pin the status line" requirement.
             status = ttk.Frame(root)
-            status.pack(fill="x", **pad)
+            status.pack(side="bottom", fill="x")
             self.status_var = tk.StringVar(value="Not connected.")
-            ttk.Label(status, textvariable=self.status_var,
-                      foreground="#555").pack(side="left")
+            self.status_label = ttk.Label(status, textvariable=self.status_var,
+                                           style="Muted.TLabel", wraplength=540,
+                                           justify="left")
+            self.status_label.pack(side="left", padx=8, pady=6, fill="x")
+            ttk.Separator(root, orient="horizontal").pack(side="bottom", fill="x")
+
+            # Everything else: one vertical column (Connection, Buttons,
+            # Screenshot, State, Time controls) inside a scrollable canvas,
+            # so nothing can ever end up unreachable regardless of window
+            # size or how much the state readout grows.
+            outer = ttk.Frame(root)
+            outer.pack(side="top", fill="both", expand=True)
+
+            self.canvas = tk.Canvas(outer, background=COLOR_BG,
+                                     highlightthickness=0, borderwidth=0)
+            scrollbar = ttk.Scrollbar(outer, orient="vertical",
+                                       command=self.canvas.yview)
+            self.canvas.configure(yscrollcommand=scrollbar.set)
+            self.canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+
+            self.scroll_frame = ttk.Frame(self.canvas)
+            self._scroll_window = self.canvas.create_window(
+                (0, 0), window=self.scroll_frame, anchor="nw")
+
+            def _on_frame_configure(_event=None):
+                self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+            def _on_canvas_configure(event):
+                # Keep the inner column exactly as wide as the visible
+                # canvas, so content wraps rather than ever needing a
+                # horizontal scrollbar -- only vertical scrolling is
+                # offered.
+                self.canvas.itemconfigure(self._scroll_window, width=event.width)
+
+            self.scroll_frame.bind("<Configure>", _on_frame_configure)
+            self.canvas.bind("<Configure>", _on_canvas_configure)
+
+            def _on_mousewheel(event):
+                if sys.platform == "darwin":
+                    self.canvas.yview_scroll(int(-1 * event.delta), "units")
+                else:
+                    self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            self.canvas.bind_all("<Button-4>",
+                                  lambda e: self.canvas.yview_scroll(-3, "units"))
+            self.canvas.bind_all("<Button-5>",
+                                  lambda e: self.canvas.yview_scroll(3, "units"))
+
+            col = self.scroll_frame
+            self._build_connection_controls(col)
+            self._build_button_pad(col)
+            self._build_screenshot_controls(col)
+            self._build_state_readout(col)
+            self._build_sim_controls(col)
+            ttk.Frame(col, height=8).pack(fill="x")  # bottom breathing room
 
         def _build_connection_controls(self, parent):
             frame = ttk.LabelFrame(parent, text="Connection")
-            frame.pack(fill="x")
+            frame.pack(fill="x", padx=8, pady=(8, 10))
+
+            # The prominent, plain-English connection banner -- always the
+            # first thing in the window, always in words, not just a
+            # button's enabled/disabled state.
+            self.conn_state_var = tk.StringVar(value="Not connected.")
+            self.conn_state_label = ttk.Label(
+                frame, textvariable=self.conn_state_var,
+                style="ConnNeutral.TLabel", wraplength=500, justify="left")
+            self.conn_state_label.pack(fill="x", padx=8, pady=(8, 4), anchor="w")
 
             if self.target_kind == "demo":
-                ttk.Label(frame, text="DEMO MODE -- driving an in-process "
+                ttk.Label(frame, text="Demo mode -- driving an in-process "
                                        "fake device, no hardware needed.",
-                          foreground="#a05a00").grid(row=0, column=0,
-                                                      columnspan=4, sticky="w",
-                                                      padx=6, pady=4)
+                          style="Warn.TLabel", wraplength=500,
+                          justify="left").pack(fill="x", padx=8, pady=(0, 8),
+                                                anchor="w")
                 return
 
-            ttk.Label(frame, text="Port:").grid(row=0, column=0, padx=(6, 2), pady=6)
+            row = ttk.Frame(frame)
+            row.pack(fill="x", padx=8, pady=(0, 6))
+            ttk.Label(row, text="Port:").pack(side="left", padx=(0, 4))
             self.port_var = tk.StringVar(
-                value=self.target_arg if self.target_arg not in (None, "auto") else "")
-            self.port_combo = ttk.Combobox(frame, textvariable=self.port_var, width=28)
-            self.port_combo.grid(row=0, column=1, padx=2, pady=6)
+                value=self.target_arg if self.target_arg not in (None, "auto")
+                else "auto")
+            self.port_combo = ttk.Combobox(row, textvariable=self.port_var, width=22)
+            self.port_combo.pack(side="left", padx=(0, 4))
             self._refresh_ports()
 
-            ttk.Button(frame, text="Rescan", command=self._refresh_ports).grid(
-                row=0, column=2, padx=2, pady=6)
+            ttk.Button(row, text="Rescan", command=self._refresh_ports).pack(
+                side="left", padx=(0, 8))
 
-            self.connect_btn = ttk.Button(frame, text="Connect", command=self._on_connect_click)
-            self.connect_btn.grid(row=0, column=3, padx=(10, 6), pady=6)
+            self.connect_btn = ttk.Button(row, text="Connect",
+                                           command=self._on_connect_click)
+            self.connect_btn.pack(side="left")
 
-            ttk.Label(frame, text="State poll (s):").grid(row=0, column=4, padx=(10, 2))
-            ttk.Spinbox(frame, from_=0.2, to=10.0, increment=0.1, width=5,
-                        textvariable=self.state_interval).grid(row=0, column=5, padx=2)
+            row2 = ttk.Frame(frame)
+            row2.pack(fill="x", padx=8, pady=(0, 8))
+            ttk.Label(row2, text="State poll (s):").pack(side="left", padx=(0, 4))
+            ttk.Spinbox(row2, from_=0.2, to=10.0, increment=0.1, width=5,
+                        textvariable=self.state_interval).pack(side="left")
 
         def _refresh_ports(self):
             try:
@@ -658,13 +911,18 @@ if tk is not None:
         def _build_button_pad(self, parent):
             frame = ttk.LabelFrame(parent, text="Buttons "
                                     "(click, click-and-hold, or use the keyboard)")
-            frame.pack(fill="x", pady=(0, 8))
+            frame.pack(fill="x", padx=8, pady=(0, 10))
 
             grid = ttk.Frame(frame)
-            grid.grid(row=0, column=0, padx=10, pady=10)
+            grid.pack(padx=10, pady=10)
 
             def make(name, r, c, cspan=1):
-                b = tk.Button(grid, text=name, width=6, height=2)
+                b = tk.Button(grid, text=name, width=6, height=2,
+                              background=COLOR_BUTTON_BG, foreground=COLOR_FG,
+                              activebackground=COLOR_BUTTON_ACTIVE_BG,
+                              activeforeground=COLOR_FG,
+                              highlightbackground=COLOR_BG,
+                              highlightthickness=1)
                 b.grid(row=r, column=c, columnspan=cspan, padx=3, pady=3)
                 b.bind("<ButtonPress-1>", lambda e, n=name: self._pad_down(n))
                 b.bind("<ButtonRelease-1>", lambda e, n=name: self._pad_up(n))
@@ -683,12 +941,12 @@ if tk is not None:
                                    "Enter/Esc = MENU. Hold a bit under "
                                    f"{TAP_VS_HOLD_MS}ms and it's a tap; "
                                    "longer sends a timed hold.",
-                      foreground="#555", wraplength=260,
-                      justify="left").grid(row=1, column=0, padx=10, pady=(0, 8))
+                      style="Muted.TLabel", wraplength=500,
+                      justify="left").pack(padx=10, pady=(0, 10), anchor="w")
 
         def _build_screenshot_controls(self, parent):
             frame = ttk.LabelFrame(parent, text="Screenshot")
-            frame.pack(fill="x")
+            frame.pack(fill="x", padx=8, pady=(0, 10))
 
             self.shot_btn = ttk.Button(frame, text="Save Screenshot (Cmd/Ctrl+S)",
                                         command=self._on_save_screenshot)
@@ -696,8 +954,8 @@ if tk is not None:
 
             ttk.Label(frame, text="Fetches a fresh frame from the device -- "
                                    "takes a second or two, that's expected, "
-                                   "not a hang.", foreground="#555",
-                      wraplength=260, justify="left").pack(padx=8, anchor="w")
+                                   "not a hang.", style="Muted.TLabel",
+                      wraplength=500, justify="left").pack(padx=8, anchor="w")
 
             self.shot_path_var = tk.StringVar(value="")
             self.shot_path_entry = ttk.Entry(frame, textvariable=self.shot_path_var,
@@ -706,90 +964,94 @@ if tk is not None:
 
             self.thumb_label = tk.Label(frame, text="No screenshot yet",
                                          width=30, height=16, relief="sunken",
-                                         background="#222", foreground="#888")
+                                         background="#222222", foreground="#aaaaaa")
             self.thumb_label.pack(padx=8, pady=(0, 8))
 
         def _build_state_readout(self, parent):
             frame = ttk.LabelFrame(parent, text="Pet state (live)")
-            frame.pack(fill="x", pady=(0, 8))
+            frame.pack(fill="x", padx=8, pady=(0, 10))
             self.state_grid = ttk.Frame(frame)
             self.state_grid.pack(fill="x", padx=8, pady=8)
             self._state_row_widgets = {}  # field name -> (key label, value label)
             self._last_ping_var = tk.StringVar(value="")
             ttk.Label(frame, textvariable=self._last_ping_var,
-                      foreground="#555").pack(anchor="w", padx=8, pady=(0, 6))
+                      style="Muted.TLabel").pack(anchor="w", padx=8, pady=(0, 8))
 
         def _build_sim_controls(self, parent):
             # ------------------------------------------------------------
-            # Placeholder for the simulator debug window's controls
-            # (simulator/src/sdl/sdl_debug_window.cpp), laid out now so
-            # wiring them up later is a small change, not a redesign.
-            #
-            # KFDBG has no commands for any of this yet. Every control
-            # below is disabled and tooltipped for that reason. When
-            # commands land, wire each one inside _on_sim_button() --
-            # that's the one place to touch; nothing about the layout
-            # needs to change.
-            #
-            # One of these will likely never work against real hardware:
-            # the seekable timeline needs the simulator's 2048-entry debug
-            # snapshot ring (200KB+), which is compiled out on the ESP32
-            # build (KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0) because the
-            # device only has 512KB of RAM total and the framebuffer alone
-            # is 150KB of it. So even once wired, expect it to stay
-            # unavailable on a real board and work only against the
-            # simulator.
+            # Time controls: KFDBG ADVANCE / RESET / MULT. These work
+            # against real hardware now, not just the simulator -- only
+            # the seekable pet-age timeline at the bottom stays disabled,
+            # because it needs the simulator's 2048-entry debug snapshot
+            # ring (200KB+), which is compiled out of the ESP32 build
+            # (KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0) since the device has
+            # 512KB of RAM total and the framebuffer alone is 150KB of it.
+            # It is labelled simulator-only below rather than left looking
+            # like a bug.
             # ------------------------------------------------------------
-            frame = ttk.LabelFrame(
-                parent, text="Simulator debug controls "
-                             "(not supported by this connection yet)")
-            frame.pack(fill="x")
+            frame = ttk.LabelFrame(parent, text="Time controls")
+            frame.pack(fill="x", padx=8, pady=(0, 10))
+
+            ttk.Label(frame, text="Skip the pet forward, or change how fast "
+                                   "time passes for it. These work on real "
+                                   "hardware, not only the simulator.",
+                      style="Muted.TLabel", wraplength=500,
+                      justify="left").pack(fill="x", padx=8, pady=(8, 6),
+                                            anchor="w")
 
             row1 = ttk.Frame(frame)
-            row1.pack(fill="x", padx=8, pady=(8, 2))
-            for label in ("Skip 1 Hour", "Skip 1 Day", "Skip 1 Week", "Reset Egg"):
-                self._make_disabled_sim_button(row1, label)
+            row1.pack(fill="x", padx=8, pady=(0, 6))
+            self.time_control_buttons = []
+            for label, seconds in ADVANCE_PRESETS:
+                btn = ttk.Button(
+                    row1, text=label,
+                    command=lambda l=label, s=seconds: self._on_advance_click(l, s))
+                btn.pack(side="left", padx=(0, 6))
+                self.time_control_buttons.append(btn)
+            reset_btn = ttk.Button(row1, text="Reset Egg",
+                                    command=self._on_reset_click)
+            reset_btn.pack(side="left")
+            self.time_control_buttons.append(reset_btn)
 
+            # The label gets its own line, and the nine multiplier buttons
+            # split across two rows rather than one -- nine buttons plus a
+            # label on one row doesn't fit at the window's minimum width
+            # (this was caught by tools/kf_panel_layout_check.py: the last
+            # button came back unmapped, the exact "control silently
+            # disappears" failure mode this whole rewrite exists to rule
+            # out).
             mult_frame = ttk.Frame(frame)
-            mult_frame.pack(fill="x", padx=8, pady=2)
-            ttk.Label(mult_frame, text="Time multiplier:").pack(side="left", padx=(0, 6))
-            for mult in (1, 2, 4, 8, 16, 32, 64, 128, 256):
-                self._make_disabled_sim_button(mult_frame, f"{mult}x", width=4)
+            mult_frame.pack(fill="x", padx=8, pady=(0, 8))
+            ttk.Label(mult_frame, text="Time multiplier:").pack(anchor="w")
+            half = (len(MULT_PRESETS) + 1) // 2
+            for row_values in (MULT_PRESETS[:half], MULT_PRESETS[half:]):
+                mult_row = ttk.Frame(mult_frame)
+                mult_row.pack(fill="x", pady=(2, 0))
+                for mult in row_values:
+                    btn = ttk.Button(mult_row, text=f"{mult}x", width=4,
+                                      command=lambda m=mult: self._on_mult_click(m))
+                    btn.pack(side="left", padx=2, pady=2)
+                    self.time_control_buttons.append(btn)
 
             timeline_frame = ttk.Frame(frame)
-            timeline_frame.pack(fill="x", padx=8, pady=(6, 2))
-            ttk.Label(timeline_frame, text="Pet-age timeline (seek):").pack(anchor="w")
+            timeline_frame.pack(fill="x", padx=8, pady=(2, 8))
+            ttk.Label(timeline_frame,
+                      text="Pet-age timeline (seek) -- simulator-only, not "
+                           "available on this connection:",
+                      style="Muted.TLabel", wraplength=500,
+                      justify="left").pack(anchor="w")
             scale = ttk.Scale(timeline_frame, from_=0, to=100, orient="horizontal")
             scale.state(["disabled"])
             scale.pack(fill="x", pady=2)
-            Tooltip(scale, "No KFDBG command for this yet -- and it likely "
-                            "never will work on real hardware, only the "
-                            "simulator (see the code comment above "
-                            "_build_sim_controls). Reserved space, not "
-                            "wired up.")
-            ttk.Label(timeline_frame, text="egg  →  baby  →  child  →  "
-                                            "teen  →  adult",
-                      foreground="#888", font=("TkDefaultFont", 8)).pack(anchor="w")
-
-        def _make_disabled_sim_button(self, parent, label, width=None):
-            kwargs = {"width": width} if width else {}
-            btn = ttk.Button(parent, text=label, state="disabled", **kwargs)
-            btn.pack(side="left", padx=2, pady=2)
-            Tooltip(btn, "The device doesn't support this yet -- KFDBG has "
-                         "no command for it. This button is reserved space "
-                         "for when one is added; see _on_sim_button() in "
-                         "kf_panel.py for where to wire it.")
-            return btn
-
-        def _on_sim_button(self, name):
-            # Reserved: the single place to dispatch a simulator-debug
-            # control once KFDBG grows commands for it. Every caller above
-            # is currently disabled, so this is unreachable today -- left
-            # in place, and commented, so wiring a new command later means
-            # adding one branch here rather than redesigning the panel.
-            raise NotImplementedError(
-                f"'{name}' has no KFDBG command yet -- see the comment "
-                "above _build_sim_controls()")
+            Tooltip(scale, "This needs the simulator's debug snapshot ring, "
+                            "which is compiled out of the ESP32 build to "
+                            "save RAM -- see the comment above "
+                            "_build_sim_controls() in kf_panel.py. It will "
+                            "only ever work against the desktop simulator, "
+                            "once that speaks KFDBG, never a real board. "
+                            "Reserved space, not a bug.")
+            ttk.Label(timeline_frame, text="egg -> baby -> child -> teen -> adult",
+                      style="Muted.TLabel", font=("TkDefaultFont", 8)).pack(anchor="w")
 
         # ------------------------------------------------------------
         # Keyboard + mouse input, with tap-vs-hold detection
@@ -871,14 +1133,18 @@ if tk is not None:
             if self.connected:
                 self.cmd_queue.put({"type": "disconnect"})
                 self.connect_btn.configure(state="disabled")
+                self.conn_state_var.set("Disconnecting...")
+                self.conn_state_label.configure(style="ConnNeutral.TLabel")
                 self.status_var.set("Disconnecting...")
                 return
             self.target_arg = self.port_var.get() or "auto"
             self._connect()
 
         def _connect(self):
-            if self.target_kind != "demo":
+            if self.target_kind != "demo" and hasattr(self, "connect_btn"):
                 self.connect_btn.configure(state="disabled")
+            self.conn_state_var.set("Connecting...")
+            self.conn_state_label.configure(style="ConnNeutral.TLabel")
             self.status_var.set("Connecting...")
             self.cmd_queue.put({"type": "connect"})
 
@@ -887,12 +1153,58 @@ if tk is not None:
             self.root.destroy()
 
         # ------------------------------------------------------------
+        # Time controls -- KFDBG ADVANCE / RESET / MULT. Same
+        # not-connected-ignored-with-a-status-message pattern as the
+        # button pad and screenshot button above, for consistency.
+        # ------------------------------------------------------------
+
+        def _on_advance_click(self, label, seconds):
+            if not self.connected:
+                self.status_var.set("Not connected -- command ignored.")
+                return
+            self.cmd_queue.put({"type": "advance", "seconds": seconds, "label": label})
+
+        def _on_reset_click(self):
+            if not self.connected:
+                self.status_var.set("Not connected -- command ignored.")
+                return
+            self.cmd_queue.put({"type": "reset"})
+
+        def _on_mult_click(self, factor):
+            if not self.connected:
+                self.status_var.set("Not connected -- command ignored.")
+                return
+            self.cmd_queue.put({"type": "mult", "factor": factor})
+
+        def _request_state_refresh(self):
+            """Ask for one state poll right away rather than waiting for
+            the next timer tick -- used after a time control fires, so the
+            readout reflects the new age/multiplier immediately instead of
+            up to `state_interval` seconds later."""
+            if self.connected and not self._state_pending:
+                self._state_pending = True
+                self.cmd_queue.put({"type": "state"})
+
+        # ------------------------------------------------------------
         # Worker thread -- ALL serial/socket/fake-device I/O happens here.
         # Tk callbacks only ever enqueue work and read results off
         # result_queue via root.after(); nothing above this method touches
         # a Transport directly, on purpose (see the module docstring on
         # threading in the task this file was built against).
         # ------------------------------------------------------------
+
+        def _describe_transport(self, transport):
+            """A short, plain-English name for what a Transport is
+            actually connected to, for the connection banner. Runs on the
+            worker thread (no Tk calls here), same as everything else in
+            _worker_loop."""
+            if self.target_kind == "demo":
+                return "the demo device (no hardware)"
+            if isinstance(transport, SerialTransport):
+                return transport.port
+            if isinstance(transport, SocketTransport):
+                return f"the simulator at {self.target_arg}"
+            return "the device"
 
         def _worker_loop(self):
             while True:
@@ -911,7 +1223,9 @@ if tk is not None:
                             self.target_kind, self.target_arg, self.baud, self.verbose)
                         info = kfdbg_ping(transport)
                         self.transport = transport
-                        self.result_queue.put({"type": "connect", "ok": True, "info": info})
+                        display = self._describe_transport(transport)
+                        self.result_queue.put({"type": "connect", "ok": True,
+                                                "info": info, "display": display})
                     elif kind == "disconnect":
                         if self.transport is not None:
                             self.transport.close()
@@ -929,6 +1243,18 @@ if tk is not None:
                         path, rgb = save_screenshot(self.transport)
                         self.result_queue.put({"type": "save_shot", "ok": True,
                                                 "path": path, "rgb": rgb})
+                    elif kind == "advance":
+                        note = kfdbg_advance(self.transport, item["seconds"])
+                        self.result_queue.put({"type": "advance", "ok": True,
+                                                "label": item["label"],
+                                                "seconds": item["seconds"], "note": note})
+                    elif kind == "reset":
+                        note = kfdbg_reset(self.transport)
+                        self.result_queue.put({"type": "reset", "ok": True, "note": note})
+                    elif kind == "mult":
+                        note = kfdbg_mult(self.transport, item["factor"])
+                        self.result_queue.put({"type": "mult", "ok": True,
+                                                "factor": item["factor"], "note": note})
                 except kfd.KfDebugError as e:
                     self.result_queue.put({"type": kind, "ok": False, "error": str(e)})
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
@@ -956,14 +1282,25 @@ if tk is not None:
                         state="normal", text="Disconnect" if result["ok"] else "Connect")
                 if result["ok"]:
                     self.connected = True
+                    self.conn_state_var.set(f"Connected to {result['display']}.")
+                    self.conn_state_label.configure(style="ConnGood.TLabel")
                     self.status_var.set(f"Connected. {result['info']}")
                 else:
                     self.connected = False
-                    self.status_var.set(f"Connect failed: {result['error']}")
+                    error = result["error"]
+                    if self.target_kind == "serial" and \
+                            "no serial port looked like" in error:
+                        self.conn_state_var.set("Not connected — no device found.")
+                    else:
+                        self.conn_state_var.set(f"Connection failed: {error}")
+                    self.conn_state_label.configure(style="ConnBad.TLabel")
+                    self.status_var.set(f"Connect failed: {error}")
             elif kind == "disconnect":
                 self.connected = False
                 if self.target_kind != "demo":
                     self.connect_btn.configure(state="normal", text="Connect")
+                self.conn_state_var.set("Not connected.")
+                self.conn_state_label.configure(style="ConnNeutral.TLabel")
                 self.status_var.set("Disconnected.")
             elif kind == "state":
                 self._state_pending = False
@@ -989,6 +1326,25 @@ if tk is not None:
                     self._update_thumbnail(result["rgb"])
                 else:
                     self.status_var.set(f"Screenshot failed: {result['error']}")
+            elif kind == "advance":
+                if result["ok"]:
+                    self.status_var.set(f"{result['label']} -- {result['note']}")
+                    self._request_state_refresh()
+                else:
+                    self.status_var.set(f"Time skip failed: {result['error']}")
+            elif kind == "reset":
+                if result["ok"]:
+                    self.status_var.set(f"Reset to a fresh egg -- {result['note']}")
+                    self._request_state_refresh()
+                else:
+                    self.status_var.set(f"Reset failed: {result['error']}")
+            elif kind == "mult":
+                if result["ok"]:
+                    self.status_var.set(
+                        f"Time multiplier now {result['factor']}x -- {result['note']}")
+                    self._request_state_refresh()
+                else:
+                    self.status_var.set(f"Time multiplier failed: {result['error']}")
 
         def _update_state_readout(self, data):
             keys = list(STATE_FIELD_ORDER) + \
@@ -996,8 +1352,10 @@ if tk is not None:
             keys = [k for k in keys if k in data]
             for i, key in enumerate(keys):
                 if key not in self._state_row_widgets:
-                    key_lbl = ttk.Label(self.state_grid, text=key, foreground="#777")
-                    val_lbl = ttk.Label(self.state_grid, text="", font=("TkDefaultFont", 10, "bold"))
+                    key_lbl = ttk.Label(self.state_grid, text=key, style="Muted.TLabel")
+                    val_lbl = ttk.Label(self.state_grid, text="", foreground=COLOR_FG,
+                                         background=COLOR_BG,
+                                         font=("TkDefaultFont", 10, "bold"))
                     key_lbl.grid(row=i, column=0, sticky="w", padx=(0, 12), pady=1)
                     val_lbl.grid(row=i, column=1, sticky="w", pady=1)
                     self._state_row_widgets[key] = (key_lbl, val_lbl)
@@ -1019,9 +1377,7 @@ if tk is not None:
         # ------------------------------------------------------------
 
         def _poll_state_tick(self):
-            if self.connected and not self._state_pending:
-                self._state_pending = True
-                self.cmd_queue.put({"type": "state"})
+            self._request_state_refresh()
             interval_ms = max(200, int(self.state_interval.get() * 1000))
             self.root.after(interval_ms, self._poll_state_tick)
 
