@@ -292,6 +292,14 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_personality_check
              COMMAND kamiframe-headless --verify-pet-personality)
 
+    # Proves poops (a count, not a list) accumulate on a timer, saturate at
+    # KF_PET_MAX_POOPS rather than growing forever, are cleared by
+    # kf_pet_clean(), and that feeding shortens the wait for the next one.
+    # See headless_main.cpp's run_pet_mess_check() and the care-loop spec's
+    # section 4.
+    add_test(NAME pet_mess_check
+             COMMAND kamiframe-headless --verify-mess)
+
     # Proves the pet.* Lua binding (ADR 0016) actually reads and mutates
     # the SAME live kf_pet_session state Core computes, not a disconnected
     # copy: pet.hunger() read from Lua matches kf_pet_session_state() read

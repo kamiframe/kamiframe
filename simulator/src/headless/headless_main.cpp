@@ -16,6 +16,7 @@
  *     kamiframe-headless --verify-pet
  *     kamiframe-headless --verify-pet-stage
  *     kamiframe-headless --verify-pet-personality
+ *     kamiframe-headless --verify-mess
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -1238,6 +1239,53 @@ void dump_framebuffer_ppm(const char *path) {
     KF_LOGI(TAG, "framebuffer written to %s", path);
 }
 
+/* Poops are a COUNT, not a list. Where each one sits on screen is
+ * presentation and belongs to the screen; the simulation only needs to know
+ * how many are waiting. That is what makes this survive offline
+ * fast-forward without storing anything per-poop. */
+int run_pet_mess_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_pet_config config = kf_pet_default_config();
+
+    kf_pet_state pet{};
+    kf_pet_init(&pet);
+    pet.stage = KF_PET_STAGE_CHILD;   /* eggs and babies still decay-exempt */
+    check(pet.poop_count == 0u, "a fresh pet has not pooped");
+
+    /* Long enough for several intervals, in one segment. */
+    apply_stage_segment_for_test(&pet, &config, config.poop_interval_seconds * 3u);
+    check(pet.poop_count >= 3u, "poops accumulate over time");
+
+    /* They pile up, but not without limit -- an unbounded count would
+     * eventually overflow the screen and mean nothing extra. */
+    apply_stage_segment_for_test(&pet, &config, config.poop_interval_seconds * 100u);
+    check(pet.poop_count == KF_PET_MAX_POOPS, "poop count saturates rather than growing forever");
+
+    /* Cleaning clears all of them. */
+    kf_pet_clean(&pet);
+    check(pet.poop_count == 0u, "cleaning clears every poop");
+
+    /* Feeding brings the next one sooner. */
+    kf_pet_state fed{};
+    kf_pet_init(&fed);
+    fed.stage = KF_PET_STAGE_CHILD;
+    kf_pet_feed(&fed);
+    check(fed.seconds_until_next_poop == config.poop_interval_after_feed_seconds,
+          "feeding shortens the wait for the next poop");
+    check(config.poop_interval_after_feed_seconds < config.poop_interval_seconds,
+          "the after-feed interval really is shorter");
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -1933,6 +1981,7 @@ int main(int argc, char *argv[]) {
     bool verify_tree_shape = false;
     bool verify_hokorimaru = false;
     bool verify_pet_personality = false;
+    bool verify_mess = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -1971,6 +2020,8 @@ int main(int argc, char *argv[]) {
             verify_hokorimaru = true;
         } else if (std::strcmp(argv[i], "--verify-pet-personality") == 0) {
             verify_pet_personality = true;
+        } else if (std::strcmp(argv[i], "--verify-mess") == 0) {
+            verify_mess = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -1996,6 +2047,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-tree-shape\n"
                         "kamiframe-headless --verify-hokorimaru\n"
                         "kamiframe-headless --verify-pet-personality\n"
+                        "kamiframe-headless --verify-mess\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -2047,6 +2099,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_personality) {
         return run_pet_personality_check();
+    }
+
+    if (verify_mess) {
+        return run_pet_mess_check();
     }
 
     if (verify_lua_pet) {

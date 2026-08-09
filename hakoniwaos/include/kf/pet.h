@@ -127,6 +127,14 @@ uint8_t kf_pet_adults_in_family(uint8_t teen_form);
  * kf_pet_state::care_actions_taken. */
 #define KF_PET_TEEN_FORM_DUST KF_PET_TEEN_FORM_COUNT
 
+/* How many poops can be waiting at once.
+ *
+ * Bounded on purpose. An unbounded count would overflow any screen that
+ * tries to draw them, and past a handful it stops communicating anything a
+ * player did not already know -- "you have not cleaned up" is the whole
+ * message, and eight says it as clearly as eighty. */
+#define KF_PET_MAX_POOPS 8u
+
 /* Base-trait table size (ADR 0023), same compile-time-constant treatment
  * as the two above and for the same reason: this is the SHAPE of the
  * table (how many slots exist), not a tuning value. Six placeholder base
@@ -162,6 +170,12 @@ typedef struct {
      * so the table can be indexed by stage without an offset, which is one
      * fewer thing to get wrong. */
     kf_pet_stage_rates stage_rates[KF_PET_STAGE_COUNT];
+
+    /* How long between poops normally, and how long after a meal. Feeding
+     * shortens the wait, which is what ties the mess mechanic to the care
+     * loop rather than leaving it on an unrelated timer. */
+    uint32_t poop_interval_seconds;
+    uint32_t poop_interval_after_feed_seconds;
 
     uint32_t egg_duration_seconds;
     uint32_t baby_duration_seconds;
@@ -199,6 +213,19 @@ typedef struct {
     kf_pet_millipercent hunger_mp;
     kf_pet_millipercent happiness_mp;
     kf_pet_millipercent energy_mp;
+
+    /* How many poops are waiting to be cleaned, 0..KF_PET_MAX_POOPS.
+     *
+     * A COUNT, not a list. Where each one sits on screen is presentation and
+     * belongs to the screen, which can place them from this number however
+     * it likes. Keeping it a count is also what lets offline fast-forward
+     * work without storing anything per-poop across a save. */
+    uint8_t poop_count;
+
+    /* Seconds remaining until the next poop appears. Counts down inside
+     * apply_stage_segment(), so a device that was switched off for a day
+     * comes back to a correctly messy pet rather than a clean one. */
+    uint32_t seconds_until_next_poop;
 
     /* The wall-clock time this state was last advanced to. Saved
      * alongside the needs (see kf_pet_save()) so a reload can compute
@@ -339,6 +366,11 @@ void kf_pet_feed(kf_pet_state *state);
 void kf_pet_play(kf_pet_state *state);
 void kf_pet_rest(kf_pet_state *state);
 
+/* Clears every waiting poop. Counts as care, like the other three -- a
+ * creature you clean up after is one you have interacted with, which is what
+ * separates it from the never-touched path to the dust form. */
+void kf_pet_clean(kf_pet_state *state);
+
 /* Which of the three care-derived traits is currently dominant --
  * 0 = hunger, 1 = happiness, 2 = energy -- computed fresh from the three
  * running accumulators above every call, never stored (see kf_pet_state's
@@ -353,17 +385,21 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * promise two different compilers (this project builds with both GCC and
  * MSVC) are obliged to keep identically. Bumped to version 2 with ADR
  * 0021 (life stages/evolution), to version 3 with ADR 0023 (personality
- * traits), and to version 4 with the evolution-tree reconciliation
+ * traits), to version 4 with the evolution-tree reconciliation
  * (docs/superpowers/plans/2026-08-09-evolution-tree-reconciliation.md):
  * `care_actions_taken` was added and the valid range of `teen_form` grew to
  * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
- * misread rather than merely missing a field. A save from an earlier
+ * misread rather than merely missing a field, and to version 5 with mess
+ * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count` and
+ * `seconds_until_next_poop` were added (dirtiness's own `dirtiness_mp`
+ * follows in the same version bump, added right after this one -- see the
+ * comment where it is declared in kf_pet_state). A save from an earlier
  * version is refused by kf_pet_load_and_advance()'s unpack() step and falls
  * back to a fresh pet, exactly the behaviour ADR 0015 already established
  * for any unrecognised version -- no migration code, an explicit, accepted
  * cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 74u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 79u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

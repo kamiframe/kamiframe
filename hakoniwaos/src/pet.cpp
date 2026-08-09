@@ -58,12 +58,14 @@ namespace {
 constexpr const char *TAG = "pet";
 
 /* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution),
- * to 3 with ADR 0023 (personality traits), and to 4 with the evolution-tree
+ * to 3 with ADR 0023 (personality traits), to 4 with the evolution-tree
  * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
- * comment) -- kf_pet_deserialize() refuses to load anything written by a
- * different version rather than guessing at a layout that changed, see
- * unpack() below. */
-constexpr uint8_t kSaveVersion = 4;
+ * comment), and to 5 with mess (poop_count and seconds_until_next_poop
+ * added so far; dirtiness_mp joins the same version 5 layout right after --
+ * see kf/pet.h's KF_PET_SAVE_BYTES comment) -- kf_pet_deserialize() refuses
+ * to load anything written by a different version rather than guessing at a
+ * layout that changed, see unpack() below. */
+constexpr uint8_t kSaveVersion = 5;
 
 /* +25.000% per care action. Illustrative, like kf_pet_default_config()'s
  * decay rates -- there is no real pet yet to tune either against. */
@@ -300,6 +302,44 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
         state->care_integral_mp_seconds += average_before_mp * segment;
     }
 
+    /* Mess advances with the needs, inside the same segment loop, so
+     * offline fast-forward covers it without a second code path. A pet left
+     * in a drawer for a day comes back correctly filthy.
+     *
+     * Closed-form -- one division, not a while-loop counting down one
+     * interval at a time -- for the same reason every other closed-form
+     * calculation in this file exists (see the file header comment): a
+     * multi-week offline segment must cost the same handful of steps as a
+     * one-second frame tick. It also means a misconfigured zero interval
+     * cannot hang the way a "subtract the interval every iteration" loop
+     * would: that case is handled directly below by simply not counting any
+     * poops, not by a guard bolted on in front of a loop that could
+     * otherwise spin forever. */
+    if (state->seconds_until_next_poop == 0u) {
+        state->seconds_until_next_poop = config->poop_interval_seconds;
+    }
+    if (config->poop_interval_seconds == 0u) {
+        /* Misconfigured: no interval to count down, so no mess rather than
+         * an infinite loop. kf_pet_default_config() never produces this,
+         * but a corrupted or hand-built config must still degrade safely. */
+        state->seconds_until_next_poop = 0u;
+    } else if (segment >= state->seconds_until_next_poop) {
+        const uint32_t after_first = segment - state->seconds_until_next_poop;
+        const uint64_t extra_poops =
+            static_cast<uint64_t>(after_first) / config->poop_interval_seconds;
+        const uint64_t total_poops = 1ull + extra_poops;
+        const uint64_t new_poop_count =
+            static_cast<uint64_t>(state->poop_count) + total_poops;
+        state->poop_count = new_poop_count >= KF_PET_MAX_POOPS
+                                 ? static_cast<uint8_t>(KF_PET_MAX_POOPS)
+                                 : static_cast<uint8_t>(new_poop_count);
+        state->seconds_until_next_poop =
+            config->poop_interval_seconds -
+            static_cast<uint32_t>(after_first % config->poop_interval_seconds);
+    } else {
+        state->seconds_until_next_poop -= segment;
+    }
+
     accumulate_personality(state, config, segment, hunger_before_mp,
                             happiness_before_mp, energy_before_mp);
 }
@@ -365,6 +405,8 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u32(out, off, state->hunger_mp);
     put_u32(out, off, state->happiness_mp);
     put_u32(out, off, state->energy_mp);
+    put_u8(out, off, state->poop_count);
+    put_u32(out, off, state->seconds_until_next_poop);
     put_u8(out, off, state->last_advanced.valid ? 1u : 0u);
     put_i64(out, off, state->last_advanced.epoch_seconds);
     put_u8(out, off, static_cast<uint8_t>(state->stage));
@@ -411,6 +453,8 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->hunger_mp = get_u32(in, off);
     state->happiness_mp = get_u32(in, off);
     state->energy_mp = get_u32(in, off);
+    state->poop_count = get_u8(in, off);
+    state->seconds_until_next_poop = get_u32(in, off);
     state->last_advanced.valid = get_u8(in, off) != 0u;
     state->last_advanced.epoch_seconds = get_i64(in, off);
     const uint8_t stage_byte = get_u8(in, off);
@@ -468,6 +512,12 @@ kf_pet_config kf_pet_default_config(void) {
     c.stage_rates[KF_PET_STAGE_TEEN] = {16000u, 11000u, 8000u};   /* ~2 h */
     c.stage_rates[KF_PET_STAGE_ADULT] = {8000u, 5500u, 4000u};    /* ~4 h */
 
+    /* Roughly one poop per half hour, or ten minutes after a meal. Tuning
+     * numbers, in the same spirit as the stage rates above: the shape is
+     * "eating causes mess sooner", the exact figures are for living with. */
+    c.poop_interval_seconds = 1800u;
+    c.poop_interval_after_feed_seconds = 600u;
+
     /* Illustrative stage timing -- adult by about a week. See kf/pet.h's
      * header comment: Chris's own call is "I'll decide exact numbers
      * later, just make it configurable," so these are a starting point
@@ -489,6 +539,8 @@ void kf_pet_init(kf_pet_state *state) {
     state->hunger_mp = KF_PET_MILLIPERCENT_MAX;
     state->happiness_mp = KF_PET_MILLIPERCENT_MAX;
     state->energy_mp = KF_PET_MILLIPERCENT_MAX;
+    state->poop_count = 0u;
+    state->seconds_until_next_poop = 0u;  /* set on first advance */
     state->last_advanced.valid = false;
     state->last_advanced.epoch_seconds = 0;
     state->stage = KF_PET_STAGE_EGG;
@@ -569,6 +621,22 @@ void kf_pet_feed(kf_pet_state *state) {
         state->care_actions_taken++;
     }
     state->hunger_mp = clamp_add(state->hunger_mp, kCareBoostMp);
+
+    /* Eating brings the next mess forward. Only ever shortens the wait --
+     * feeding repeatedly should not be able to push mess further away.
+     * seconds_until_next_poop == 0 means "no timer started yet" (see
+     * kf_pet_init()/apply_stage_segment()'s identical sentinel handling),
+     * not "a poop is due this instant", so that case is resolved to the
+     * default interval first -- otherwise feeding a never-advanced pet
+     * would look like it was already about to poop and skip the shorten
+     * below entirely. */
+    const kf_pet_config config = kf_pet_default_config();
+    if (state->seconds_until_next_poop == 0u) {
+        state->seconds_until_next_poop = config.poop_interval_seconds;
+    }
+    if (state->seconds_until_next_poop > config.poop_interval_after_feed_seconds) {
+        state->seconds_until_next_poop = config.poop_interval_after_feed_seconds;
+    }
 }
 
 void kf_pet_play(kf_pet_state *state) {
@@ -583,6 +651,13 @@ void kf_pet_rest(kf_pet_state *state) {
         state->care_actions_taken++;
     }
     state->energy_mp = clamp_add(state->energy_mp, kCareBoostMp);
+}
+
+void kf_pet_clean(kf_pet_state *state) {
+    if (state->care_actions_taken < UINT32_MAX) {
+        state->care_actions_taken++;
+    }
+    state->poop_count = 0u;
 }
 
 /* ADR 0023: a pure query over the three whole-life accumulators, computed
