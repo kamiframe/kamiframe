@@ -20,19 +20,22 @@
  * feature existed. That is not a software choice made for convenience, it
  * is a hardware fact about this board: reading Get_scanline needs the
  * ILI9341's SDO line wired to the SPI peripheral's MISO input, and
- * kf_display_init() only reserves that pin (GPIO6, shared with the
- * backlight -- see kf_esp_pins.h) when KF_DBG_BRIDGE_ENABLE reserves it for
- * the SCANLINE diagnostic. Without the bridge, MISO is never configured on
- * this bus at all (bus_config.miso_io_num stays -1), so there is no signal
- * for a read to receive regardless of what this header declares -- see
- * kf_display_init()'s own comment in esp_display.cpp for the electrical
- * reasoning (GPIO6 is not this bus's native IOMUX pin, so reserving it drops
- * the WHOLE bus to GPIO-matrix routing, not a free change to make
- * unconditionally just to let a shipping build wait on scanline reads too).
- * A shipping build (KF_DBG_BRIDGE_ENABLE=0) therefore keeps writing
- * immediately, every time -- the same behaviour this codebase already had
- * before KFDBG SCANLINE was added, not a regression this feature
- * introduces.
+ * kf_display_init() only ever reserves that pin (GPIO6, shared with the
+ * backlight -- see kf_esp_pins.h) when BOTH KF_DBG_BRIDGE_ENABLE is on AND
+ * the active panel profile has a physical read line to reserve it for
+ * (kf_panel_profile.h's has_read_line, ADR 0039). Without the bridge, or on
+ * a profile like the ST7789 whose module brings no SDO pin out to its
+ * header at all, MISO is never configured on this bus (bus_config.
+ * miso_io_num stays -1), so there is no signal for a read to receive
+ * regardless of what this header declares -- see kf_display_init()'s own
+ * comment in esp_display.cpp for the electrical reasoning (GPIO6 is not
+ * this bus's native IOMUX pin, so reserving it drops the WHOLE bus to
+ * GPIO-matrix routing, not a free change to make unconditionally just to
+ * let a shipping build wait on scanline reads too). A shipping build
+ * (KF_DBG_BRIDGE_ENABLE=0), and every KF_PANEL=st7789 build regardless of
+ * that flag, therefore keep writing immediately, every time -- the same
+ * behaviour this codebase already had before KFDBG SCANLINE was added, not
+ * a regression this feature introduces.
  */
 
 #ifndef KF_ESP_DISPLAY_VSYNC_H
@@ -51,12 +54,19 @@ extern "C" {
 
 /* KFDBG VSYNC <0|1>: turns the wait on or off at runtime, so the same board
  * can be measured both ways without a reflash -- toggle it, watch KFDBG
- * STATE's fps/frame_us and vsync_* fields, toggle it back. Default true
- * (see g_vsync_enabled's own comment in esp_display.cpp for why defaulting
- * ON is the right call given what is and is not confirmed about this
- * panel). Takes effect on the very next push_rect() call; there is no
- * frame-boundary latching to get right here, since push_rect() reads this
- * flag itself rather than caching it per frame. */
+ * STATE's fps/frame_us and vsync_* fields, toggle it back. Default FALSE
+ * (g_vsync_enabled in esp_display.cpp, currently `false` at that
+ * definition) -- this shipped defaulting true on the strength of one
+ * re-decoded raw sample suggesting 40MHz scanline reads were usable, and
+ * real hardware disagreed: with the wait enabled, flicker on changing
+ * content was unchanged (ADR 0032). The bet lost, so the default flipped;
+ * see g_vsync_enabled's own comment in esp_display.cpp for the fuller
+ * account of what was tried and what is still uncertain. KFDBG VSYNC 1
+ * exists to re-test this on different hardware or a different panel, not
+ * because it is expected to help. Takes effect on the very next
+ * push_rect() call; there is no frame-boundary latching to get right here,
+ * since push_rect() reads this flag itself rather than caching it per
+ * frame. */
 void kf_esp_display_vsync_set_enabled(bool enabled);
 
 /* The current setting, for KFDBG STATE to report -- see kf_dbg_bridge.cpp's

@@ -552,14 +552,17 @@ def _expect(link, command, expected_type, timeout=DEFAULT_TIMEOUT):
     An `err` reply -- including the device refusing a mutating command
     (FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/press) because its
     build has KF_DBG_MUTATE_ENABLE=0, or refuses `press`/BTNHOLD
-    specifically because KF_DBG_INPUT_INJECT_ENABLE=0 -- becomes a
+    specifically because KF_DBG_INPUT_INJECT_ENABLE=0, or refuses
+    scanline/vsync because the active panel profile has no read line to
+    poll (kf_panel_profile.h's has_read_line; ADR 0039) -- becomes a
     KfDebugError carrying the device's own message verbatim, which already
-    names the exact flag to flip (ports/esp32/main/kf_dbg_bridge.cpp's
-    require_mutate_enabled(); see ADR 0035). This is deliberately generic:
-    every cmd_*() below that calls this function gets a comprehensible
-    rejection for free, with no per-command error handling needed here, and
-    no separate "is mutation on" probe before sending -- the wire round
-    trip already tells the caller in one message rather than two.
+    names the exact flag or panel to blame (ports/esp32/main/
+    kf_dbg_bridge.cpp's require_mutate_enabled()/require_read_line(); see
+    ADR 0035, ADR 0039). This is deliberately generic: every cmd_*() below
+    that calls this function gets a comprehensible rejection for free, with
+    no per-command error handling needed here, and no separate capability
+    probe before sending -- the wire round trip already tells the caller in
+    one message rather than two.
     """
     link.send(command)
     frame_type, payload = link.read_frame(overall_timeout=timeout)

@@ -59,6 +59,14 @@
  *                    picture shifted by a few pixels with a stripe of
  *                    garbage down one edge.
  *
+ *   has_read_line    Whether the module brings an SDO pin out to a header
+ *                    pin this board has wired. Added in ADR 0039, alongside
+ *                    the discovery that this field -- not KF_DBG_BRIDGE_
+ *                    ENABLE -- is what decides whether GPIO6 on this board
+ *                    is a read line (KFDBG SCANLINE/VSYNC) or the backlight.
+ *                    See the field's own comment on kf_panel_profile below
+ *                    for the two panels' actual header pinouts.
+ *
  * ADDING A PANEL: add a profile below, point KF_PANEL_PROFILE at it, and run
  * ports/esp32-bringup with its own panel selector set to match. Nothing in
  * esp_display.cpp should need to change. If it does, that is a missing field
@@ -94,6 +102,43 @@ typedef struct {
     bool invert;
     int x_gap;
     int y_gap;
+
+    /* has_read_line   True if the physical module exposes a data-out (SDO)
+     *                  pin on a line this board actually wires -- what makes
+     *                  esp_lcd_panel_io_rx_param() possible at all, since SPI
+     *                  cannot read without a MISO signal in the bus config.
+     *                  This is a property of the MODULE, not the controller:
+     *                  the ILI9341 and ST7789 controllers both implement
+     *                  Get_Scanline-style parameter reads in silicon, but
+     *                  whether that silicon's SDO pin is brought out to a
+     *                  header pin this board can reach is a per-module wiring
+     *                  fact.
+     *
+     *                  true for the HiLetgo ILI9341: it has a real SDO,
+     *                  wired to GPIO6 for KFDBG SCANLINE (ADR 0024).
+     *
+     *                  false for the Waveshare 2in ST7789: its eight-pin
+     *                  header is VCC GND DIN CLK CS DC RST BL -- DIN is
+     *                  MOSI-only, and there is no ninth pin for SDO. Nothing
+     *                  on this board could read from that panel even if the
+     *                  ST7789 controller itself supports it.
+     *
+     *                  esp_display.cpp's kf_display_init() reads this field
+     *                  to decide the GPIO6 question: reserve it as MISO (a
+     *                  read line, and therefore NOT the backlight) only when
+     *                  this is true AND the debug bridge is compiled in.
+     *                  false means the pin is free for the backlight
+     *                  unconditionally -- see esp_display.cpp and
+     *                  kf_esp_pins.h's KF_ESP_PIN_LCD_MISO/KF_ESP_PIN_LCD_BL
+     *                  for the collision this field resolves, and ADR 0039
+     *                  for why the decision lives here instead of on
+     *                  KF_DBG_BRIDGE_ENABLE alone. kf_dbg_bridge.cpp's
+     *                  SCANLINE and VSYNC handlers also read this (via
+     *                  kf_esp_display_diag.h's kf_esp_display_has_read_line())
+     *                  to refuse outright on a profile with nothing to read,
+     *                  rather than reporting whatever a floating input
+     *                  returns. */
+    bool has_read_line;
 } kf_panel_profile;
 
 /* -------------------------------------------------------------------------
@@ -152,6 +197,11 @@ static const kf_panel_profile kf_panel_ili9341 = {
     false,
     0,
     0,
+    /* has_read_line: true. This HiLetgo module has a real SDO pin -- wired
+     * to GPIO6 for KFDBG SCANLINE (ADR 0024) -- and its LED pin is soldered
+     * straight to 3V3, so nothing this board does can ever turn its
+     * backlight off in software regardless of GPIO6's role. */
+    true,
 };
 
 /* -------------------------------------------------------------------------
@@ -203,6 +253,15 @@ static const kf_panel_profile kf_panel_st7789 = {
     false,
     0,
     0,
+    /* has_read_line: false. The Waveshare 2in module's eight-pin flex is
+     * VCC GND DIN CLK CS DC RST BL -- DIN is MOSI-only, there is no ninth
+     * pin for SDO, and no separate tearing-effect (TE) pin either. This
+     * board cannot read from this panel at all, on any GPIO. That is what
+     * makes BL a real, otherwise-unclaimed pin on this profile: GPIO6 is
+     * never reserved as MISO for a signal that does not physically exist,
+     * so kf_display_init() always configures it as the backlight output
+     * here -- see esp_display.cpp and ADR 0039. */
+    false,
 };
 
 /* -------------------------------------------------------------------------

@@ -56,11 +56,15 @@ extern "C" {
 #if KF_DBG_BRIDGE_ENABLE
 
 /* ILI9341's Get_Scanline command. Defined in the MIPI DCS command set, not
- * an ILI-proprietary opcode, so it is very likely valid against the ST7789
- * profile too -- but only the ILI9341 currently on the bench is what this
- * diagnostic has actually been reasoned about against, per the task that
- * added it (ADR 0024's HiLetgo 2.8in module). Treat a SCANLINE run against
- * KF_PANEL_PROFILE=kf_panel_st7789 as doubly unverified. */
+ * an ILI-proprietary opcode, so it would very likely be valid against the
+ * ST7789 controller's silicon too -- but that no longer matters for this
+ * board: the Waveshare 2in ST7789 MODULE brings no SDO pin out to its
+ * header at all (kf_panel_profile.h's has_read_line, ADR 0039), so
+ * kf_dbg_bridge.cpp's handle_scanline() refuses outright on that profile,
+ * via kf_esp_display_has_read_line() below, before this opcode is ever
+ * sent. In practice this command is ILI9341-only, which is exactly the one
+ * module this diagnostic has actually been reasoned about against, per the
+ * task that added it (ADR 0024's HiLetgo 2.8in module). */
 #define KF_ESP_DISPLAY_DIAG_CMD_GET_SCANLINE 0x45
 
 /* Issues one Get_Scanline read: command 0x45, then `byte_count` bytes of
@@ -119,6 +123,28 @@ bool kf_esp_display_diag_begin_probe(uint32_t read_hz);
  * updates," not a crash); see this function's own comment in
  * esp_display.cpp for why that is the safe degradation to pick here. */
 void kf_esp_display_diag_end_probe(void);
+
+/* Whether the panel this build drives (KF_PANEL_PROFILE) physically exposes
+ * a data-out pin this board has wired -- mirrors kf_panel_profile.h's
+ * has_read_line field, which esp_display.cpp's file-scope kPanel already
+ * reads to decide the GPIO6 MISO/backlight question (ADR 0039). Exposed
+ * here, rather than kf_dbg_bridge.cpp reaching into kf_panel_profile.h
+ * itself, because esp_display.cpp already owns "which panel is this build"
+ * as a fact private to itself -- the same reasoning that keeps kPanel out
+ * of any header.
+ *
+ * kf_dbg_bridge.cpp's handle_scanline() and handle_vsync() both call this
+ * first and refuse with `err` when it is false, instead of reading a MISO
+ * pin that was never reserved on the SPI bus and reporting whatever a
+ * floating input happens to return -- a diagnostic that invents plausible-
+ * looking numbers is worse than one that names the reason it cannot run. */
+bool kf_esp_display_has_read_line(void);
+
+/* The active profile's display name (kf_panel_profile.h's `name` field,
+ * e.g. "ST7789 (Waveshare 2in)"), for the refusal text above -- so a human
+ * reading a KFDBG reply knows which panel without cross-referencing a
+ * KF_PANEL build flag. */
+const char *kf_esp_display_panel_name(void);
 
 #endif /* KF_DBG_BRIDGE_ENABLE */
 

@@ -74,7 +74,12 @@ extern "C" {
  * investigate whether beam-racing is possible on this panel, at which point
  * it got wired to GPIO6. See KF_ESP_PIN_LCD_MISO below for the pin itself
  * and the collision it creates, and esp_display.cpp's kf_display_init() for
- * why the bus only reserves it when KF_DBG_BRIDGE_ENABLE is on.
+ * why the bus only reserves it when the active panel profile says it has a
+ * read line to reserve it for (kf_panel_profile.h's has_read_line, ADR
+ * 0039) AND KF_DBG_BRIDGE_ENABLE is on. Only the ILI9341 profile has
+ * has_read_line == true, so in practice this reservation, and the collision
+ * it creates, is an ILI9341-only concern -- the ST7789 profile never claims
+ * this pin as anything but the backlight.
  *
  * These wires are the same for every 240x320 SPI module this project
  * supports -- what differs between controllers is the init sequence,
@@ -113,22 +118,37 @@ extern "C" {
 
 /* SDO(MISO), wired 2026-08-08 for the KFDBG SCANLINE diagnostic (see
  * ports/esp32/main/kf_dbg_bridge.cpp and esp_display.cpp's kf_display_init())
- * -- confirmed against the manufacturer's schematic that this is the module's
- * only data-out line; there is no separate tearing-effect (TE) pin on this
- * board's 18-pin flex to wire instead.
+ * -- confirmed against the manufacturer's schematic that this is the
+ * ILI9341 module's only data-out line; there is no separate tearing-effect
+ * (TE) pin on this board's 18-pin flex to wire instead.
  *
  * KF_ESP_PIN_LCD_MISO IS KF_ESP_PIN_LCD_BL, above. Same GPIO, deliberately
- * defined twice with different names, and that collision is real on paper.
- * It is harmless on THIS board only because the module's own LED pin is
- * wired straight to 3V3 -- see the display block's header comment -- so
- * nothing today actually drives GPIO6 through the backlight path; esp_
- * display.cpp's kf_display_init() knows this and skips configuring GPIO6 as
- * a backlight output whenever KF_DBG_BRIDGE_ENABLE has claimed it as MISO,
- * specifically so the two never fight over the pin electrically. The day
- * real GPIO or PWM backlight control gets wired up for real, one of these
- * two names has to move to a different free pin FIRST -- there isn't one
- * spare on this layout (see this file's own "19 of 23" accounting above),
- * which is itself worth knowing before that day arrives. */
+ * defined twice with different names, because on THIS board's ILI9341
+ * module there is nowhere else to put it -- see this file's own "19 of 23"
+ * accounting above; a custom PCB does not have to repeat this trade.
+ *
+ * ADR 0039 resolved what used to be a real, unresolved collision: whether
+ * GPIO6 means "read line" or "backlight" is now a property of the active
+ * panel profile (kf_panel_profile.h's has_read_line), not a coincidence of
+ * which two build flags happened to be set. esp_display.cpp's
+ * kf_display_init() reserves the pin as MISO only when has_read_line is
+ * true AND KF_DBG_BRIDGE_ENABLE is on, and configures it as the backlight
+ * GPIO in every other case -- so the two roles are now mutually exclusive
+ * by construction, not by one path silently declining to configure a pin
+ * the other might be using.
+ *
+ * The two panels land on opposite sides of that split. On the ILI9341
+ * (has_read_line == true) the pin becomes MISO whenever the bridge is
+ * compiled in, and the collision this comment used to warn about is real on
+ * paper but moot in practice: this module's own LED pin is wired straight
+ * to 3V3, so nothing this board does through GPIO6 has ever controlled its
+ * backlight regardless of which role the pin is playing. On the ST7789
+ * (has_read_line == false, its module has no SDO pin at all) GPIO6 is
+ * always the backlight, unconditionally, on every KF_DBG_BRIDGE_ENABLE
+ * setting -- and that module's BL pin is real, so this is the only path in
+ * the tree that will ever drive it. See esp_display.cpp's kf_display_init()
+ * for the actual reservation logic and kf_display_set_backlight() for the
+ * one caller that turns the pin on. */
 #define KF_ESP_PIN_LCD_MISO GPIO_NUM_6
 
 /* -------------------------------------------------------------------------

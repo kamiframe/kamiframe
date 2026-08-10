@@ -35,10 +35,16 @@
  *    pass over the frame. See kf_display_present() for the reasoning and
  *    what it costs; kf_panel_profile.h explains why the panels differ.
  *
- * 3. Backlight is a plain GPIO on/off, not PWM. has_backlight is true and
- *    kf_display_set_backlight() treats any level > 0 as "on" -- there is no
- *    LEDC channel wired up here, so dimming is not implemented. Adding it
- *    later is a self-contained change to one function.
+ * 3. Backlight is a plain GPIO on/off, not PWM. kf_display_set_backlight()
+ *    treats any level > 0 as "on" -- there is no LEDC channel wired up here,
+ *    so dimming is not implemented. Adding it later is a self-contained
+ *    change to one function. has_backlight (g_caps) reflects whether THIS
+ *    build actually owns GPIO6 for it, which depends on the active panel
+ *    profile -- see kf_display_init() and ADR 0039. kf_display_init() also
+ *    calls kf_display_set_backlight() itself, once, right at the end: this
+ *    is the one and only caller anywhere in the tree, and without it the
+ *    GPIO is configured but left driven low forever, which is a black panel
+ *    with a perfectly healthy log.
  */
 
 #include "kf/hal/display.h"
@@ -115,7 +121,13 @@ kf_display_caps g_caps = {
     KF_PIXFMT_RGB565,
     /* supports_partial_update: true -- see header comment above. */
     true,
-    /* has_backlight: true -- on/off only, see header comment above. */
+    /* has_backlight: a placeholder default, corrected by kf_display_init()
+     * before anything else reads g_caps -- it depends on whether this
+     * build's panel profile has claimed GPIO6 for a read line instead (see
+     * own_backlight_pin in kf_display_init() and ADR 0039). Left true here
+     * rather than false only so a hypothetical caller reading caps before
+     * init() has run sees the more common case; kf/hal/display.h's own
+     * contract is that caps are only valid "after init" anyway. */
     true,
     /* link_bytes_per_second: the real, configured SPI clock, not an
      * estimate -- this is the one figure the desktop backend has to fake
@@ -281,47 +293,68 @@ bool rebuild_panel_io(uint32_t clock_hz) {
 kf_result kf_display_init(void) {
     KF_LOGI(TAG, "panel profile: %s", kPanel.name);
 
-    /* MISO: reserved on the bus only when the debug bridge is compiled in.
+    /* MISO: reserved on the bus only when the debug bridge is compiled in
+     * AND the active panel profile has a read line to reserve it for.
      *
-     * "These panels are write-only" was true of the Waveshare ST7789 this
-     * comment was first written for -- it genuinely has no data-out pin.
-     * The ILI9341 actually driving this board is not write-only: it has a
-     * real SDO, wired to GPIO6 for the KFDBG SCANLINE diagnostic (see
-     * kf_esp_pins.h's KF_ESP_PIN_LCD_MISO comment for the GPIO6/backlight
-     * collision that wire creates, and kf_dbg_bridge.cpp for what SCANLINE
-     * actually does with it). Reserving the pin here is what makes
-     * esp_lcd_panel_io_rx_param() usable at all -- SPI cannot read without a
-     * MISO pin in the bus config, full stop.
+     * Two independent questions used to be conflated into one: "is the
+     * debug bridge compiled in" is a build-time policy decision about how
+     * much of KFDBG to ship; "does GPIO6 carry a real signal" is a fact
+     * about the panel screwed to the board, and the two panels this file
+     * drives disagree about it. The HiLetgo ILI9341 has a real SDO pin,
+     * wired to GPIO6 for the KFDBG SCANLINE diagnostic (see kf_esp_pins.h's
+     * KF_ESP_PIN_LCD_MISO comment, and kf_dbg_bridge.cpp for what SCANLINE
+     * does with it). The Waveshare ST7789's eight-pin header has no SDO at
+     * all -- kf_panel_profile.h's has_read_line field is what tells this
+     * function which case it is in, per ADR 0039.
      *
-     * Left at -1 whenever KF_DBG_BRIDGE_ENABLE is 0, which reproduces this
-     * file's exact pre-diagnostic behaviour: no pin reserved, no side
-     * effect on anything.
+     * A plain `if`, not `#if`/`#else`: KF_DBG_BRIDGE_ENABLE is a compile-time
+     * 0/1 and kPanel (line 73) resolves at compile time too, so the compiler
+     * folds this exactly as a #if would, but the code on both sides of the
+     * condition is real, type-checked C++ in every configuration -- the same
+     * shape ADR 0035 chose for the KFDBG mutate gate, and for the same
+     * reason: less code that can silently drift out of sync with its
+     * `#else`.
      *
-     * When it IS reserved, there is a real cost beyond "one more pin is
-     * spoken for", and it is worth being honest about rather than burying
-     * in a diagnostic-only comment: GPIO6 is not this bus's native IOMUX
-     * MISO pin (that is GPIO13 -- already spent on I2C, see kf_esp_pins.h),
-     * and ESP-IDF's spi_bus_initialize() only grants the IOMUX fast path
-     * when EVERY configured pin -- MOSI, MISO, SCLK, CS -- matches the
+     * reserve_miso_for_read_line == false leaves miso_io_num at -1, which
+     * reproduces this file's exact pre-diagnostic behaviour: no pin
+     * reserved, no side effect on anything. That is now the ST7789's
+     * permanent state, on every KF_DBG_BRIDGE_ENABLE setting, not just a
+     * fallback for the bridge being off.
+     *
+     * When it IS reserved (only ever the ILI9341, and only when the bridge
+     * is compiled in), there is a real cost beyond "one more pin is spoken
+     * for", worth being honest about rather than burying in a
+     * diagnostic-only comment: GPIO6 is not this bus's native IOMUX MISO pin
+     * (that is GPIO13 -- already spent on I2C, see kf_esp_pins.h), and
+     * ESP-IDF's spi_bus_initialize() only grants the IOMUX fast path when
+     * EVERY configured pin -- MOSI, MISO, SCLK, CS -- matches the
      * peripheral's native set (confirmed by reading spicommon_bus_
-     * initialize_io()'s bus_uses_iomux_pins() in ESP-IDF's spi_common.c,
-     * not assumed). A non-native MISO therefore drops MOSI, SCLK and CS
-     * onto the GPIO matrix too, not just MISO -- for the WHOLE bus, on
-     * every KF_DBG_BRIDGE_ENABLE=1 build, not only while a SCANLINE command
-     * is actually running. docs/hardware-bringup.md's measured 40MHz write
-     * ceiling was measured on the IOMUX path (CLK12/MOSI11/CS10 are exactly
-     * SPI2's native pins) and has never been re-measured on the GPIO-matrix
-     * path this flag now forces -- worth re-running that clock sweep once
-     * real hardware with this flag on is back on the bench, rather than
-     * assuming 40MHz still holds. max_transfer_sz covers a full frame,
-     * since the no-swap path issues exactly one draw_bitmap() per frame. */
+     * initialize_io()'s bus_uses_iomux_pins() in ESP-IDF's spi_common.c, not
+     * assumed). A non-native MISO therefore drops MOSI, SCLK and CS onto the
+     * GPIO matrix too, not just MISO -- for the WHOLE bus, on every
+     * ILI9341 + KF_DBG_BRIDGE_ENABLE=1 build, not only while a SCANLINE
+     * command is actually running. docs/hardware-bringup.md's measured
+     * 40MHz write ceiling was measured on the IOMUX path (CLK12/MOSI11/CS10
+     * are exactly SPI2's native pins) and has never been re-measured on the
+     * GPIO-matrix path this combination forces -- worth re-running that
+     * clock sweep once real ILI9341 + bridge-enabled hardware is back on the
+     * bench, rather than assuming 40MHz still holds. The ST7789 never pays
+     * this cost at all: has_read_line == false keeps miso_io_num at -1
+     * unconditionally for that profile, so its bus stays on the IOMUX fast
+     * path the 40MHz figure was measured on -- moving this decision into the
+     * panel profile is what hands the ST7789 back the fast path it would
+     * otherwise have lost to a diagnostic pin it has no wiring for at all.
+     * That is reasoning from ESP-IDF's own bus-matching rule, not a fresh
+     * clock measurement -- there is no ST7789 on hand this session to
+     * measure with.
+     *
+     * max_transfer_sz covers a full frame, since the no-swap path issues
+     * exactly one draw_bitmap() per frame. */
+    const bool reserve_miso_for_read_line = KF_DBG_BRIDGE_ENABLE && kPanel.has_read_line;
+
     spi_bus_config_t bus_config{};
     bus_config.mosi_io_num = KF_ESP_PIN_LCD_MOSI;
-#if KF_DBG_BRIDGE_ENABLE
-    bus_config.miso_io_num = KF_ESP_PIN_LCD_MISO;
-#else
-    bus_config.miso_io_num = -1;
-#endif
+    bus_config.miso_io_num = reserve_miso_for_read_line ? KF_ESP_PIN_LCD_MISO : -1;
     bus_config.sclk_io_num = KF_ESP_PIN_LCD_SCLK;
     bus_config.quadwp_io_num = -1;
     bus_config.quadhd_io_num = -1;
@@ -357,37 +390,80 @@ kf_result kf_display_init(void) {
         }
     }
 
-    /* Backlight GPIO, plain push-pull output, defaults to off until the
-     * caller explicitly asks for one.
+    /* Backlight GPIO, plain push-pull output. Configured whenever this build
+     * did NOT just reserve GPIO6 for MISO above -- own_backlight_pin is
+     * exactly !reserve_miso_for_read_line, so the two blocks can never both
+     * claim the pin. This is now a runtime condition on the panel profile,
+     * not a `#if !KF_DBG_BRIDGE_ENABLE` -- see the MISO comment above for
+     * why that shape was wrong in general (it asked "is the bridge
+     * compiled in" when the real question is "does this profile have a
+     * read line").
      *
-     * Skipped entirely when KF_DBG_BRIDGE_ENABLE has just claimed this same
-     * pin (GPIO6) as the display's MISO, above -- see kf_esp_pins.h's
-     * KF_ESP_PIN_LCD_MISO comment for the collision. Configuring GPIO6 as a
-     * push-pull output here, while the SPI peripheral's input matrix is
-     * also listening on it for KFDBG SCANLINE's reads, would put the
-     * ESP32's own output driver in direct electrical contention with the
-     * panel's SDO pin -- not a theoretical concern, a dead short between two
-     * active drivers the moment they disagree. Skipping it costs nothing
-     * real: this board's LED pin is wired straight to 3V3 (see
-     * kf_esp_pins.h), so this GPIO has never actually controlled the
-     * backlight in hardware, and kf_display_set_backlight() degrades to a
-     * documented no-op below in this configuration rather than fighting the
-     * read line. */
-#if !KF_DBG_BRIDGE_ENABLE
-    gpio_config_t bl_config{};
-    bl_config.pin_bit_mask = (1ULL << KF_ESP_PIN_LCD_BL);
-    bl_config.mode = GPIO_MODE_OUTPUT;
-    bl_config.pull_up_en = GPIO_PULLUP_DISABLE;
-    bl_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    bl_config.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&bl_config);
-    gpio_set_level(KF_ESP_PIN_LCD_BL, 0);
-#endif
+     * Configuring GPIO6 as a push-pull output while the SPI peripheral's
+     * input matrix is ALSO listening on it for KFDBG SCANLINE's reads would
+     * put the ESP32's own output driver in direct electrical contention
+     * with the panel's SDO pin -- not a theoretical concern, a dead short
+     * between two active drivers the moment they disagree. That is exactly
+     * the ILI9341 + KF_DBG_BRIDGE_ENABLE=1 case, and own_backlight_pin is
+     * false there, so this block is skipped for it, same as before this
+     * change. On that same panel it costs nothing real either way: its LED
+     * pin is wired straight to 3V3 (kf_esp_pins.h), so this GPIO has never
+     * controlled the ILI9341's actual backlight in hardware regardless of
+     * which side of this `if` runs.
+     *
+     * The ST7789 is the profile this exists for: has_read_line == false
+     * means own_backlight_pin is true unconditionally for it, on every
+     * KF_DBG_BRIDGE_ENABLE setting, and its BL pin is real -- this is the
+     * only path in the whole tree that will ever drive it.
+     *
+     * Configured OFF here (matches the pin's reset state and the fact that
+     * nothing has been presented to the panel yet); turned on explicitly,
+     * below, once the panel is fully brought up. */
+    const bool own_backlight_pin = !reserve_miso_for_read_line;
+    if (own_backlight_pin) {
+        gpio_config_t bl_config{};
+        bl_config.pin_bit_mask = (1ULL << KF_ESP_PIN_LCD_BL);
+        bl_config.mode = GPIO_MODE_OUTPUT;
+        bl_config.pull_up_en = GPIO_PULLUP_DISABLE;
+        bl_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        bl_config.intr_type = GPIO_INTR_DISABLE;
+        gpio_config(&bl_config);
+        gpio_set_level(KF_ESP_PIN_LCD_BL, 0);
+    }
+    g_caps.has_backlight = own_backlight_pin;
 
-    KF_LOGI(TAG, "%s up: %dx%d, %lu Hz SPI, RGB565, %s framebuffer",
+    /* Turn the backlight on, now that the panel is fully brought up: the
+     * init table has run and rebuild_panel_io() above has already called
+     * esp_lcd_panel_disp_on_off(g_panel, true), so the controller is in a
+     * known, configured state rather than whatever it powered on with.
+     * There is still no frame in the panel's own RAM yet -- the first
+     * kf_display_present() call is what puts one there -- so this is "a
+     * known blank/undefined pattern, in the right orientation and colour
+     * space" rather than the worse "raw power-on noise" a light-first
+     * ordering would show.
+     *
+     * THIS IS THE CALL. Before this task, grep found no caller of
+     * kf_display_set_backlight() anywhere in the repository -- the function
+     * was declared, defined in all three HAL backends, and never invoked.
+     * On the ILI9341 that was invisible, because that module's LED pin is
+     * soldered straight to 3V3 and lights regardless of what software does.
+     * The Waveshare ST7789 has a real BL pin with nothing else driving it:
+     * without this call, a build against that profile boots, initialises
+     * the panel correctly, and shows a black screen with a perfectly
+     * healthy log -- the exact failure ADR 0039 exists to prevent. Skipped
+     * when !own_backlight_pin (only the ILI9341 + KF_DBG_BRIDGE_ENABLE=1
+     * combination), since kf_display_set_backlight() would have nothing to
+     * turn on in that configuration anyway -- see that function's own
+     * comment for what it does instead. */
+    if (own_backlight_pin) {
+        kf_display_set_backlight(255);
+    }
+
+    KF_LOGI(TAG, "%s up: %dx%d, %lu Hz SPI, RGB565, %s framebuffer, backlight %s",
             kPanel.name, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT,
             static_cast<unsigned long>(KF_DISPLAY_SPI_HZ),
-            kPanel.big_endian_fb ? "byte-swapped" : "native-endian");
+            kPanel.big_endian_fb ? "byte-swapped" : "native-endian",
+            own_backlight_pin ? "on" : "not owned by this build");
     return KF_OK;
 }
 
@@ -773,14 +849,29 @@ kf_result kf_display_present(const kf_color *framebuffer,
 kf_result kf_display_set_backlight(uint8_t level) {
     /* On/off only -- see this file's header comment.
      *
-     * A genuine no-op whenever KF_DBG_BRIDGE_ENABLE has claimed GPIO6 as
-     * MISO instead (see kf_display_init()'s backlight comment): the pin is
-     * never configured as a GPIO output in that build, so this still
-     * compiles and still returns KF_OK, but the level it writes has no
-     * electrical effect. Not a bug -- this GPIO has never controlled the
-     * real backlight on the hardware in hand regardless (the module's LED
-     * pin is tied straight to 3V3), so there is nothing this call could
-     * have done here that it is now failing to do. */
+     * kf_display_init() is this function's only caller today (right at the
+     * end of bring-up, once the panel is initialised -- see that function's
+     * "THIS IS THE CALL" comment for why calling it there, and calling it
+     * at all, is the point of this whole task). It gates the call on
+     * own_backlight_pin, so this body does not need to re-derive that here
+     * -- but a future second caller (a settings screen, a sleep/wake path)
+     * would reach this same gpio_set_level() unconditionally, so the
+     * degraded case is worth documenting on the function itself, not just
+     * at its one call site.
+     *
+     * A genuine no-op on the one profile/flag combination where this GPIO
+     * was claimed for something else: ILI9341 + KF_DBG_BRIDGE_ENABLE=1 (see
+     * kf_panel_profile.h's has_read_line and kf_display_init()'s MISO
+     * comment). In that configuration the pin is never put into
+     * GPIO_MODE_OUTPUT, so this call still compiles and still returns
+     * KF_OK, but the level it writes has no electrical effect -- ESP-IDF
+     * does not drive a pin's output register onto the pad unless the pin's
+     * mode says to. Not a bug in that specific case either: that module's
+     * LED pin is soldered straight to 3V3 regardless (kf_esp_pins.h), so
+     * there is nothing this call could have done there that it is now
+     * failing to do. Every other profile/flag combination -- which as of
+     * ADR 0039 includes the ST7789 unconditionally -- owns this pin for
+     * real and this call has a real, visible effect. */
     gpio_set_level(KF_ESP_PIN_LCD_BL, level > 0 ? 1 : 0);
     return KF_OK;
 }
@@ -903,6 +994,21 @@ void kf_esp_display_diag_end_probe(void) {
                 static_cast<unsigned long>(KF_DISPLAY_SPI_HZ));
     }
 }
+
+/* Mirrors kPanel.has_read_line (kf_panel_profile.h) out to kf_dbg_bridge.cpp,
+ * which has no other way to reach it -- kPanel itself is this file's own
+ * anonymous-namespace reference, not part of any header. SCANLINE and VSYNC
+ * both call this first and refuse outright when it is false, rather than
+ * reading a MISO pin that was never reserved on the bus (see
+ * kf_display_init()'s reserve_miso_for_read_line) and reporting whatever a
+ * floating input happens to return -- ADR 0039's whole point about
+ * SCANLINE. */
+bool kf_esp_display_has_read_line(void) { return kPanel.has_read_line; }
+
+/* The active profile's display name, e.g. "ST7789 (Waveshare 2in)", for the
+ * refusal text above -- so a human reading a KFDBG reply knows which panel
+ * without cross-referencing a build flag or a KF_PANEL value. */
+const char *kf_esp_display_panel_name(void) { return kPanel.name; }
 
 /* -----------------------------------------------------------------------
  * KFDBG VSYNC / KFDBG STATE's control surface over the beam-racing feature

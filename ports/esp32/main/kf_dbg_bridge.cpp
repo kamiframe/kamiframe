@@ -422,6 +422,35 @@ bool require_mutate_enabled(const char *line) {
     return false;
 }
 
+/* Guards SCANLINE and VSYNC, the two commands that only mean anything on a
+ * panel profile with a physical read line (kf_panel_profile.h's
+ * has_read_line, ADR 0039) -- called as the first line of handle_scanline()
+ * and handle_vsync() below, the same "check first, bail before doing any
+ * real work" shape require_mutate_enabled() above uses.
+ *
+ * Not a compile-time #if: has_read_line is a property of KF_PANEL_PROFILE,
+ * which is resolved at compile time, but reading it through
+ * kf_esp_display_has_read_line() rather than #ifdef-ing this file against a
+ * specific profile keeps kf_dbg_bridge.cpp panel-agnostic, matching every
+ * other file in this port that goes through kf_panel_profile.h's data
+ * rather than special-casing a controller.
+ *
+ * `label` is the command name to echo in the reply, e.g. "KFDBG SCANLINE" --
+ * neither caller has the raw command `line` in scope (both take already-
+ * parsed arguments), so this takes a fixed label the same way
+ * handle_scanline()'s own out-of-memory reply_err() calls already do. */
+bool require_read_line(const char *label) {
+    if (kf_esp_display_has_read_line()) {
+        return true;
+    }
+    char reason[96];
+    std::snprintf(reason, sizeof reason,
+                  "no read line on this panel (%s) -- nothing to read",
+                  kf_esp_display_panel_name());
+    reply_err(label, reason);
+    return false;
+}
+
 /* --------------------------------------------------------------------------
  * Command handlers. Each builds its DECODED content (plain text, or for
  * SHOT the RLE stream) and hands it to kf_dbg_enqueue_reply(), which does
@@ -746,6 +775,10 @@ void scanline_build_sample_array(const ScanlineSample *samples, int count, bool 
 }
 
 void handle_scanline(uint32_t read_hz) {
+    if (!require_read_line("KFDBG SCANLINE")) {
+        return;
+    }
+
     ScanlineSample *samples = static_cast<ScanlineSample *>(
         heap_caps_malloc(sizeof(ScanlineSample) * kScanlineSampleCount, MALLOC_CAP_SPIRAM));
     if (samples == nullptr) {
@@ -931,8 +964,21 @@ void handle_scanline(uint32_t read_hz) {
  * push_rect() for what the wait actually does. Takes effect immediately
  * (the very next push_rect() call reads the new setting; there is nothing
  * cached per frame to invalidate), which is the point: measure a run with
- * it on, flip it, measure again, all on the same board, no reflash. */
+ * it on, flip it, measure again, all on the same board, no reflash.
+ *
+ * Refuses via require_read_line() on a panel with no read line -- turning
+ * this on there would not be dangerous (push_rect()'s own
+ * kf_vsync_read_scan_row() already fails closed and writes immediately when
+ * a read fails, since MISO was never reserved on that profile either), but
+ * it would be pointless and silently so: every call would pay for a doomed
+ * SPI read attempt and get exactly the same behaviour as leaving this off.
+ * Refusing tells a human that up front instead of letting them believe the
+ * toggle did something. */
 void handle_vsync(bool enable) {
+    if (!require_read_line("KFDBG VSYNC")) {
+        return;
+    }
+
     kf_esp_display_vsync_set_enabled(enable);
     char content[32];
     const int n = std::snprintf(content, sizeof content, "VSYNC enabled=%d",
