@@ -328,6 +328,45 @@ def test_jump_command_building():
         check("teen_form past TEEN_FORM_DUST raises", True)
 
 
+def test_mutate_gate_rejection_is_actionable():
+    """A device with KF_DBG_MUTATE_ENABLE=0 (ADR 0035) replies `err` to
+    every mutating command instead of running it -- kf_dbg_bridge.cpp's
+    require_mutate_enabled() names the exact flag in that reply. This
+    proves _expect() (shared by every cmd_*() that can mutate the pet)
+    turns that into a KfDebugError carrying the device's message verbatim,
+    not a timeout or a bare protocol error -- same style as
+    test_timeout_is_actionable() above, for the sibling failure mode."""
+    print("a mutate-gated device rejects with a message naming the flag, "
+          "not a timeout")
+    device_message = ("mutating KFDBG commands are disabled on this build "
+                       "-- set KF_DBG_MUTATE_ENABLE=1 to re-enable (PING/"
+                       "SHOT/STATE/SCANLINE/VSYNC still work): KFDBG FEED 0")
+    link = FakeLink(reply_type="err", reply_payload=device_message.encode("utf-8"))
+    try:
+        kfd.cmd_care(link, _care_args("1"))
+        check("mutate-gated FEED raises KfDebugError", False)
+    except kfd.KfDebugError as e:
+        check("mutate-gated FEED raises KfDebugError", True)
+        check("error names KF_DBG_MUTATE_ENABLE, the flag to flip",
+              "KF_DBG_MUTATE_ENABLE" in str(e))
+        check("error is not a bare protocol error -- it's the device's own text",
+              "disabled on this build" in str(e))
+
+    # jump goes through the identical _expect() path -- one more mutating
+    # command, not a different code path, confirming the rejection is
+    # generic across cmd_*() rather than something only cmd_care() gets.
+    link = FakeLink(reply_type="err",
+                     reply_payload=device_message.replace(
+                         "KFDBG FEED 0", "KFDBG JUMP 3 0 0").encode("utf-8"))
+    try:
+        kfd.cmd_jump(link, _jump_args("teen"))
+        check("mutate-gated JUMP raises KfDebugError", False)
+    except kfd.KfDebugError as e:
+        check("mutate-gated JUMP raises KfDebugError", True)
+        check("JUMP's rejection also names KF_DBG_MUTATE_ENABLE",
+              "KF_DBG_MUTATE_ENABLE" in str(e))
+
+
 def main():
     test_shot_roundtrip()
     test_crc_mismatch_is_caught()
@@ -338,6 +377,7 @@ def main():
     test_care_action_aliases()
     test_care_command_building()
     test_jump_command_building()
+    test_mutate_gate_rejection_is_actionable()
 
     print()
     if FAILURES:
