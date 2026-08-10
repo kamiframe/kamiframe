@@ -596,6 +596,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless
                      --verify-creature-screen-debug-jump)
 
+    # Task 9 of the hardware bring-up plan: the stats band the owner asked
+    # for after playing the game on real hardware ("I also can't see the
+    # pet's stats anywhere now like how hungry/tired etc"). Proves the band
+    # is really painted, costs nothing extra against the creature's own
+    # <=2u dirty-rect budget while no need is changing, and DOES redraw --
+    # exactly the bar that changed -- the moment a need's quantised bar
+    # width actually moves. See headless_main.cpp's
+    # run_creature_screen_stats_check() and this task's own report.
+    add_test(NAME creature_screen_stats_check
+             COMMAND kamiframe-headless --verify-creature-screen-stats)
+
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and

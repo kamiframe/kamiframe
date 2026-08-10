@@ -27,6 +27,7 @@
  *     kamiframe-headless --verify-creature-screen-input
  *     kamiframe-headless --verify-creature-screen-egg
  *     kamiframe-headless --verify-creature-screen-death
+ *     kamiframe-headless --verify-creature-screen-stats
  *     kamiframe-headless --verify-lua-pet
  *     kamiframe-headless --verify-pet-screen [--expect-checksum HEX]
  *     kamiframe-headless --verify-demand-curve
@@ -3816,6 +3817,191 @@ static int run_creature_screen_debug_jump_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Task 9 of the hardware bring-up plan (docs/superpowers/plans/
+ * 2026-08-11-hardware-bringup.md). The owner's own words, after the game ran
+ * on real hardware: "I also can't see the pet's stats anywhere now like how
+ * hungry/tired etc." The old LVGL pet screen (kf_pet_screen.cpp) had bars for
+ * hunger, happiness and energy; the creature screen replaced it and left the
+ * reserved band (y=[260,320)) showing only the already-static care-button
+ * guide. This proves the stats band this task adds against the three claims
+ * that actually matter:
+ *
+ *   1. all three bars are really painted -- real framebuffer pixels, not
+ *      just an internal counter -- the moment the screen is entered;
+ *   2. a run of frames where NO need changes costs nothing extra against
+ *      the creature's own <=2u dirty-rect budget (run_creature_screen_
+ *      check()'s own bound, reused here rather than invented fresh, because
+ *      that IS the claim being tested: the band adds zero to it while
+ *      steady);
+ *   3. a need that changes enough to move its bar's QUANTISED width DOES
+ *      cause exactly that bar -- and only that bar -- to redraw on the very
+ *      next frame.
+ *
+ * Claim 2 alone cannot tell "redraws only on change" apart from "never
+ * redraws at all" -- a mechanism that draws nothing, ever, would also pass
+ * it, which is exactly the vacuous-pass trap this task's own brief names:
+ * "a test that only checks 'something was drawn' will pass against code
+ * that redraws every frame". Claim 3 is what closes that gap from the other
+ * side, and claim 1 is what stops both of them passing against a bar that
+ * is never drawn in the first place. */
+static int run_creature_screen_stats_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-stats-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    check(kf_assets_init() == KF_OK, "kf_assets_init");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* Not an egg -- CHILD keeps this fixture's own creature budget
+     * identical to run_creature_screen_check()'s, which is exactly the
+     * <=2u bound claim 2 below reuses; nothing about which stage the pet is
+     * in matters to whether the STATS band redraws. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->stage = KF_PET_STAGE_CHILD;
+
+    /* Claim 1: all three bars were actually painted on entry. A fresh pet
+     * (kf_pet_init(), kf/pet.h) starts every need at KF_PET_MILLIPERCENT_
+     * MAX, so every bar's own rect should already read back as fully
+     * filled -- compared against the rect's OWN width, not a hardcoded
+     * pixel count this file would otherwise have to keep in sync with
+     * kf_creature_screen.cpp's private bar width by hand. */
+    for (int i = 0; i < 3; ++i) {
+        const kf_rect r = kf_creature_screen_debug_stat_bar_bounds(i);
+        check(!kf_rect_is_empty(r),
+              "kf_creature_screen_debug_stat_bar_bounds() returned an "
+              "empty rect for a valid bar index -- the band was never "
+              "laid out");
+        check(r.y0 >= 260 && r.y1 <= 320,
+              "a stat bar's own rect fell outside the reserved band, "
+              "y=[260,320)");
+        const int16_t full_width = static_cast<int16_t>(r.x1 - r.x0);
+        check(kf_creature_screen_debug_stat_bar_filled_px(i) == full_width,
+              "a stat bar was not fully filled right after screen entry, "
+              "for a fresh pet whose needs all start full");
+    }
+
+    /* Same claim, sampled as an actual framebuffer pixel rather than
+     * trusting the internal counter above -- the same "content, not just a
+     * dirty flag" discipline run_creature_screen_check()'s own creature_
+     * pixel_ever_drawn already applies to the creature's sprite. The
+     * hunger bar's own left edge must show ITS fill colour, not the plain
+     * field background, once it is genuinely full. */
+    const kf_rect hunger_rect = kf_creature_screen_debug_stat_bar_bounds(0);
+    const kf_color background = kf_fb_pixels()[0];
+    const kf_color hunger_sample =
+        kf_fb_pixels()[static_cast<size_t>(hunger_rect.y0) *
+                            KF_DISPLAY_WIDTH +
+                        static_cast<size_t>(hunger_rect.x0)];
+    check(hunger_sample != background,
+          "the hunger bar's own rect still shows the plain field "
+          "background after screen entry -- the bar was never actually "
+          "painted onto the framebuffer");
+
+    /* Claim 2: a steady run of frames where no need changes must cost
+     * nothing extra against the creature's own dirty-rect budget. Nothing
+     * in this loop ever calls kf_pet_advance() or otherwise touches a
+     * need, so every one of these 120 frames is "steady" by construction. */
+    size_t steady_worst_rects = 0;
+    for (int i = 0; i < 120; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > steady_worst_rects) {
+            steady_worst_rects = static_cast<size_t>(d.count);
+        }
+    }
+    check(steady_worst_rects <= 2u,
+          "a stat bar redrew on a frame where no need actually changed -- "
+          "see update_stat_bar()'s own comment (kf_creature_screen.cpp) on "
+          "comparing the QUANTISED bar width, not the raw millipercent, "
+          "which is exactly what this bound would catch a regression of");
+    KF_LOGI(TAG, "creature-screen-stats: steady-state worst frame %zu rects",
+            steady_worst_rects);
+
+    /* Claim 3: changing ONE need enough to move its bar's quantised width
+     * does cause that bar -- and only that bar -- to redraw on the very
+     * next frame. Halving hunger moves it by roughly half the bar's own
+     * pixel width, far more than one quantisation step, so this is not
+     * relying on happening to land on a boundary by luck. */
+    const int16_t happiness_before =
+        kf_creature_screen_debug_stat_bar_filled_px(1);
+    const int16_t energy_before =
+        kf_creature_screen_debug_stat_bar_filled_px(2);
+    const int16_t hunger_before =
+        kf_creature_screen_debug_stat_bar_filled_px(0);
+    pet->hunger_mp = pet->hunger_mp / 2u;
+
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u);
+    const kf_dirty_rects changed = kf_fb_dirty_rects();
+
+    bool band_touched = false;
+    for (int r = 0; r < changed.count; ++r) {
+        if (changed.rects[r].y1 > 260) { band_touched = true; }
+    }
+    check(band_touched,
+          "halving pet->hunger_mp did not dirty anything in the reserved "
+          "stats band (y>=260) on the very next frame -- the bar never "
+          "redrew");
+
+    const int16_t hunger_after =
+        kf_creature_screen_debug_stat_bar_filled_px(0);
+    check(hunger_after < hunger_before,
+          "the hunger bar's own drawn width did not shrink after halving "
+          "pet->hunger_mp");
+
+    /* The OTHER two bars, whose needs did not change, must not have moved
+     * either -- proving this redraws exactly the bar that changed, not the
+     * whole band on any change. */
+    check(kf_creature_screen_debug_stat_bar_filled_px(1) == happiness_before,
+          "the happiness bar's drawn width moved even though pet-"
+          ">happiness_mp never changed");
+    check(kf_creature_screen_debug_stat_bar_filled_px(2) == energy_before,
+          "the energy bar's drawn width moved even though pet->energy_mp "
+          "never changed");
+
+    /* And the budget returns to steady once the change has been drawn:
+     * a further frame with hunger_mp unchanged from what was JUST drawn
+     * must cost nothing, proving this is "redraw on change", not "redraw
+     * forever once touched". */
+    kf_fb_clear_dirty();
+    kf_creature_screen_frame(33u);
+    const kf_dirty_rects settled = kf_fb_dirty_rects();
+    check(settled.count <= 2,
+          "the frame right after a stat-bar redraw still cost more than "
+          "the creature's own <=2u budget -- the band should have gone "
+          "quiet again immediately");
+
+    KF_LOGI(TAG, "creature-screen-stats: hunger %d -> %d px after halving "
+                 "pet->hunger_mp",
+            hunger_before, hunger_after);
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Playback (Task 6, animated-indexed-sprites plan): the cursor advances on
  * its own ~10fps clock regardless of the display's, wraps at the end,
  * resets when the resolved sprite changes, and -- the thing that would
@@ -5384,6 +5570,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_screen_egg = false;
     bool verify_creature_screen_death = false;
     bool verify_creature_screen_debug_jump = false;
+    bool verify_creature_screen_stats = false;
     bool verify_lua_pet = false;
     bool verify_pet_screen = false;
     bool verify_demand_curve = false;
@@ -5465,6 +5652,9 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i],
                                 "--verify-creature-screen-debug-jump") == 0) {
             verify_creature_screen_debug_jump = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-screen-stats") ==
+                   0) {
+            verify_creature_screen_stats = true;
         } else if (std::strcmp(argv[i], "--verify-lua-pet") == 0) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
@@ -5517,6 +5707,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-screen-death\n"
                         "kamiframe-headless "
                         "--verify-creature-screen-debug-jump\n"
+                        "kamiframe-headless --verify-creature-screen-stats\n"
                         "kamiframe-headless --verify-lua-pet\n"
                         "kamiframe-headless --verify-pet-screen "
                         "[--expect-checksum HEX]\n"
@@ -5637,6 +5828,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen_debug_jump) {
         return run_creature_screen_debug_jump_check();
+    }
+
+    if (verify_creature_screen_stats) {
+        return run_creature_screen_stats_check();
     }
 
     if (verify_lua_pet) {
