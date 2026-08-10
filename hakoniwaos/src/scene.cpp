@@ -111,13 +111,16 @@ struct SceneObject {
 
     /* Sprite name resolution cache: kf_assets_get() runs again only when
      * `resolved_name` (the name this cache was built for) stops matching
-     * `declared.sprite_name` -- the same one-lookup-per-name-change shape
-     * simulator/src/pet/kf_creature_screen.cpp's g_sprite_cache already
-     * uses, for the same reason (a linear scan over the asset directory,
-     * hakoniwaos/src/assets.cpp, is fine once per change and wasteful every
-     * frame for an object that is not even moving). Safe to hold onto:
-     * kf/assets.h's kf_assets_get() promises the pointer stays valid for
-     * the remainder of the program. */
+     * `declared.sprite_name` -- a linear scan over the asset directory
+     * (hakoniwaos/src/assets.cpp) is fine once per change and wasteful
+     * every frame for an object that is not even moving. This is what let
+     * Task 4 of the Lua game-layer plan (docs/superpowers/plans/
+     * 2026-08-12-lua-game-layer.md) delete simulator/src/pet/kf_creature_
+     * screen.cpp's own hand-rolled equivalent (g_sprite_cache) entirely:
+     * the scene now does this once, here, for every caller, instead of
+     * each caller needing its own copy. Safe to hold onto: kf/assets.h's
+     * kf_assets_get() promises the pointer stays valid for the remainder
+     * of the program. */
     char resolved_name[KF_SCENE_SPRITE_NAME_MAX + 1] = {};
     const kf_sprite *resolved_sprite = nullptr;
 };

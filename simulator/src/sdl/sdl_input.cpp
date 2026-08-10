@@ -26,7 +26,8 @@
  * number keys explicitly and said rewiring the keyboard was fine, so this
  * moves the five care actions off the D-pad/A entirely rather than adding
  * numbers alongside them -- one mapping to learn, matching the on-screen
- * guide (kf_creature_screen.cpp's draw_care_guide()) key for key, not two
+ * guide (the five text objects kf_creature_screen.cpp's kf_creature_screen_
+ * enter() declares to kf/scene.h, one per care action) key for key, not two
  * that happen to overlap.
  *
  * This is a DESKTOP-ONLY remap. The real device still has exactly seven
