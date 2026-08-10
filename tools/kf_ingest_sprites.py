@@ -16,17 +16,19 @@ For each sprite the manifest says should exist, this checks:
     outright, and an RGBA PNG where every pixel is fully opaque is flagged
     too, since that almost always means the background was never removed.
 
-PACKING ITSELF IS NOT REIMPLEMENTED HERE. Every sprite that passes
+PACKING ITSELF IS NOT REIMPLEMENTED HERE. Every entry that passes
 validation is handed to tools/kf_pack_assets.py's own pack() -- imported,
 not copied -- so there is exactly one place in the repo that knows the
 .kfpack byte layout (see that file's own docstring, and ADR 0033). This
-file's only original contribution is turning a transparent PNG into the
-{"name", "asset_type", "type_meta", "data"} shape pack() expects: replacing
-transparent pixels with an explicit RGB565 color key (kf_pack_assets.py's
-own format has no alpha channel, only a color key -- see its "MORE THAN ONE
-ASSET TYPE" comment) and encoding the rest as RGB565, exactly the way
-kf_pack_assets.make_png_sprite() already does for its own (alpha-less)
-input.
+file's own contribution is two-fold: turning a transparent PNG into RGB565
+with an explicit color key (kf_pack_assets.py's own format has no alpha
+channel, only a color key -- see its "MORE THAN ONE ASSET TYPE" comment),
+which validate_and_load() does per PNG; and grouping one animation's frames
+-- kf_character_manifest.py's EntrySpec, one .kfpack entry -- into a single
+8bpp palette-indexed asset, which build_entry() does per entry, quantizing
+across all of that entry's frames at once via kf_pack_assets.quantize_rgb565()
+so they share one palette (see build_entry()'s own docstring for why that
+has to happen per entry, not per frame or globally).
 """
 
 from __future__ import annotations
@@ -38,7 +40,13 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from kf_character_manifest import DEFAULT_MANIFEST_PATH, SpriteSpec, iter_sprites, load_manifest
+from kf_character_manifest import (
+    DEFAULT_MANIFEST_PATH,
+    EntrySpec,
+    SpriteSpec,
+    iter_entries,
+    load_manifest,
+)
 
 sys.path.insert(0, str(Path(__file__).parent))
 import kf_pack_assets as packer  # noqa: E402  (see module docstring: reuse, not reinvent)
@@ -67,7 +75,15 @@ class IngestResult:
     spec: SpriteSpec
     status: str  # "ok", "missing", "error"
     detail: str = ""
-    asset: dict | None = None  # populated when status == "ok"
+    entry_name: str = ""      # spec.entry_name, denormalized so
+                               # verify_lossless() can group frames back
+                               # into entries without re-touching the
+                               # manifest
+    rgb565: bytes | None = None  # populated when status == "ok": this
+                                  # frame's pixels, RGB565, 2 bytes/pixel,
+                                  # row-major -- the same bytes build_entry()
+                                  # quantizes and verify_lossless() compares
+                                  # the indexed pack back against
 
 
 def decode_png_rgba(data: bytes) -> tuple[int, int, bytes]:
@@ -170,15 +186,40 @@ def validate_and_load(spec: SpriteSpec, png_dir: Path) -> IngestResult:
             r, g, b = key_r, key_g, key_b
         pixels += struct.pack("<H", packer.rgb565(r, g, b))
 
-    key565 = packer.rgb565(*COLOR_KEY_RGB)
-    asset = {
-        "name": spec.sprite_name,
-        "asset_type": packer.ASSET_TYPE_SPRITE,
-        "type_meta": packer._sprite_type_meta(width, height, key565),
-        "data": bytes(pixels),
-    }
     return IngestResult(spec, "ok", f"{width}x{height}, "
-                         f"{transparent_pixels}/{width * height} px keyed out", asset)
+                         f"{transparent_pixels}/{width * height} px keyed out",
+                         entry_name=spec.entry_name, rgb565=bytes(pixels))
+
+
+def build_entry(entry: EntrySpec, results_by_name: dict[str, list[IngestResult]]) -> dict | None:
+    """Turns one EntrySpec's validated frames into one packable indexed
+    asset. The palette is built ACROSS ALL FRAMES OF THIS ENTRY at once, not
+    per frame: they share a payload and therefore must share a palette, or
+    index 7 would mean one colour in frame 0 and another in frame 1.
+
+    Per ENTRY, not per entity, and certainly not globally: measured, each of
+    this roster's sprites uses 6 to 27 distinct colours while the union
+    across just five entities is already 201, so a shared palette is a
+    ceiling that would be hit late, after the format froze. A per-entry
+    palette is ~64 bytes -- about 24KB across the whole projected roster,
+    against 7.5MB of pixels.
+
+    Returns None if this entry's frames did not all validate (a missing or
+    invalid PNG anywhere in the animation) -- there is no such thing as a
+    partial indexed entry, so the caller simply leaves it out of the pack,
+    the same way an individual bad sprite was always left out before this
+    task grouped frames into entries."""
+    frames = results_by_name.get(entry.entry_name, [])
+    if len(frames) != entry.frame_count:
+        return None
+    key565 = packer.rgb565(*COLOR_KEY_RGB)
+    per_frame = [list(struct.unpack(f"<{len(r.rgb565) // 2}H", r.rgb565))
+                 for r in frames]
+    palette, index_frames = packer.quantize_rgb565(per_frame, key565)
+    spec = frames[0].spec
+    return packer.make_indexed_asset(entry.entry_name, spec.width, spec.height,
+                                      index_frames, palette,
+                                      has_color_key=True, color_key=key565)
 
 
 def verify_pack(data: bytes, expected_names: set[str]) -> list[str]:
@@ -215,12 +256,71 @@ def verify_pack(data: bytes, expected_names: set[str]) -> list[str]:
                 problems.append(
                     f"entry '{name}': data_bytes {data_bytes} != w*h*2 "
                     f"({w}x{h} => {w * h * 2})")
+        elif asset_type == packer.ASSET_TYPE_SPRITE_INDEXED:
+            w, h, frame_count = struct.unpack_from("<HHH", data, entry_off + 36)
+            pal_count = data[entry_off + 42] + 1
+            pal_bytes_padded = ((pal_count * 2) + 3) & ~3
+            expected = pal_bytes_padded + frame_count * w * h
+            if data_bytes != expected:
+                problems.append(
+                    f"entry '{name}': data_bytes {data_bytes} != "
+                    f"palette_bytes_padded + frame_count*w*h ({expected})")
         seen_names.add(name)
 
     missing = expected_names - seen_names
     if missing:
         problems.append(f"{len(missing)} expected name(s) not found in pack: "
                          f"{sorted(missing)[:5]}{'...' if len(missing) > 5 else ''}")
+    return problems
+
+
+def verify_lossless(data: bytes, results: list[IngestResult]) -> list[str]:
+    """Expands every indexed entry in a freshly-written pack back to RGB565
+    and compares it, pixel for pixel, against the RGB565 those same PNGs
+    resolve to. Reads the pack's OWN bytes rather than reusing the packing
+    bookkeeping -- the same reasoning verify_pack() already gives: the check
+    cannot pass by the packer merely agreeing with itself.
+
+    This is the whole justification for choosing 8bpp over 4bpp. If it ever
+    reports a problem, the art has more than 256 colours in one entry or the
+    quantiser has a bug; either way the pack is no longer a lossless
+    re-encoding of the source and must not ship as one."""
+    problems = []
+    by_name: dict[str, list[IngestResult]] = {}
+    for r in results:
+        if r.status == "ok":
+            by_name.setdefault(r.entry_name, []).append(r)
+
+    version, entry_count, directory_offset = struct.unpack_from("<HHI", data, 4)
+    for i in range(entry_count):
+        e = directory_offset + i * packer.DIRECTORY_ENTRY_BYTES
+        name = data[e:e + packer.NAME_BYTES].split(b"\x00", 1)[0].decode("ascii")
+        asset_type = data[e + 32]
+        if asset_type != packer.ASSET_TYPE_SPRITE_INDEXED:
+            problems.append(f"entry '{name}': expected an indexed sprite, "
+                             f"got asset_type {asset_type}")
+            continue
+        w, h, frames = struct.unpack_from("<HHH", data, e + 36)
+        pal_count = data[e + 42] + 1
+        off, nbytes = struct.unpack_from("<II", data, e + 44)
+        pal_padded = ((pal_count * 2) + 3) & ~3
+        palette = list(struct.unpack_from(f"<{pal_count}H", data, off))
+        idx = data[off + pal_padded:off + nbytes]
+
+        expected = by_name.get(name, [])
+        if len(expected) != frames:
+            problems.append(f"entry '{name}': pack says {frames} frame(s), "
+                             f"{len(expected)} source PNG(s) fed it")
+            continue
+        for k, r in enumerate(expected):
+            src = struct.unpack(f"<{w * h}H", r.rgb565)
+            got = [palette[b] for b in idx[k * w * h:(k + 1) * w * h]]
+            if list(src) != got:
+                bad = next(j for j in range(w * h) if src[j] != got[j])
+                problems.append(
+                    f"entry '{name}' frame {k}: pixel {bad} expanded to "
+                    f"0x{got[bad]:04X}, source is 0x{src[bad]:04X} -- the "
+                    "indexed encoding is LOSSY, which it must never be")
     return problems
 
 
@@ -233,18 +333,32 @@ def main(argv=None) -> int:
     p.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
     p.add_argument("--strict", action="store_true",
                     help="write nothing if anything is missing or invalid (default: pack what validates, report the rest)")
+    p.add_argument("--verify-lossless", action="store_true",
+                    help="with --out: re-read the written pack's own bytes, expand every indexed "
+                         "entry back to RGB565 through its own palette, and compare pixel for "
+                         "pixel against the RGB565 the source PNGs decode to")
     args = p.parse_args(argv)
 
     raw = load_manifest(args.manifest)
-    targets = []
-    for spec in iter_sprites(raw):
-        if args.id and spec.entity_id != args.id:
-            continue
-        if args.stage and spec.stage != args.stage:
-            continue
-        if not spec.has_design_brief:
-            continue
-        targets.append(spec)
+
+    def entry_wanted(entry: EntrySpec) -> bool:
+        # Every frame of one entry shares one entity/stage/design-brief
+        # state (they are the same entity's same pose), so the first
+        # frame speaks for the whole entry -- this is just iter_sprites()'
+        # own per-spec filter, applied once per entry instead of once per
+        # frame, so an --id/--stage filter still selects whole animations,
+        # never half of one.
+        first = entry.frames[0]
+        if args.id and first.entity_id != args.id:
+            return False
+        if args.stage and first.stage != args.stage:
+            return False
+        if not first.has_design_brief:
+            return False
+        return True
+
+    entry_targets = [e for e in iter_entries(raw) if entry_wanted(e)]
+    targets = [frame for e in entry_targets for frame in e.frames]
 
     results = [validate_and_load(spec, args.png_dir) for spec in targets]
     ok = [r for r in results if r.status == "ok"]
@@ -276,10 +390,14 @@ def main(argv=None) -> int:
         return 1
 
     if args.out:
-        if not ok:
+        ok_by_name: dict[str, list[IngestResult]] = {}
+        for r in ok:
+            ok_by_name.setdefault(r.entry_name, []).append(r)
+        assets = [a for a in (build_entry(e, ok_by_name) for e in entry_targets) if a is not None]
+
+        if not assets:
             print("\nnothing validated -- not writing a pack", file=sys.stderr)
             return 1
-        assets = [r.asset for r in ok]
         data = packer.pack(assets)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with open(args.out, "wb") as f:
@@ -293,6 +411,17 @@ def main(argv=None) -> int:
                 print(f"  - {prob}", file=sys.stderr)
             return 1
         print(f"pack verification: OK ({len(assets)} entries independently re-parsed and matched)")
+
+        if args.verify_lossless:
+            problems = verify_lossless(data, ok)
+            if problems:
+                print(f"lossless verification FAILED ({len(problems)} problem(s)):", file=sys.stderr)
+                for prob in problems:
+                    print(f"  - {prob}", file=sys.stderr)
+                return 1
+            pixels = sum(len(r.rgb565) // 2 for r in ok)
+            print(f"lossless verification: OK ({len(assets)} entries, "
+                  f"{pixels:,} pixels expanded and matched)")
 
     return 1 if (missing or errors) else 0
 

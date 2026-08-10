@@ -177,6 +177,19 @@ class SpriteSpec:
     def filename(self) -> str:
         return f"{self.sprite_name}.png"
 
+    @property
+    def entry_name(self) -> str:
+        """The .kfpack DIRECTORY ENTRY name this sprite's frames pack into.
+
+        Identical to sprite_name today. It becomes the frame-less base name
+        in a follow-up commit, once kf_creature_sprite_name() stops emitting
+        a frame suffix -- see docs/superpowers/plans/2026-08-10-animated-
+        indexed-sprites.md Task 5. Introduced separately from sprite_name
+        (which names a FILE, and correctly keeps its frame number forever,
+        because a PNG really is one frame) so the two concepts can part
+        company without a second sweep through every caller."""
+        return self.sprite_name
+
 
 class ManifestError(ValueError):
     """A manifest that fails to load, or fails validation."""
@@ -369,6 +382,37 @@ def iter_sprites(raw: dict) -> Iterator[SpriteSpec]:
                                         meta, grudge_eligible=True)
 
 
+@dataclass(frozen=True)
+class EntrySpec:
+    """One .kfpack entry: every frame of one entity's one state in one
+    direction, in frame order. Frames live contiguously in a single entry
+    (ADR 0033's format, extended -- see docs/superpowers/plans/2026-08-10-
+    animated-indexed-sprites.md) so a player addresses frame k
+    arithmetically instead of by name."""
+    entry_name: str
+    frames: tuple[SpriteSpec, ...]
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.frames)
+
+
+def iter_entries(raw: dict) -> Iterator[EntrySpec]:
+    """iter_sprites(), grouped into pack entries. Order within a group is
+    frame order (SpriteSpec.frame is 1-based and iter_sprites() yields them
+    ascending); order between groups is iter_sprites()' own stable order."""
+    groups: dict[str, list[SpriteSpec]] = {}
+    order: list[str] = []
+    for spec in iter_sprites(raw):
+        if spec.entry_name not in groups:
+            groups[spec.entry_name] = []
+            order.append(spec.entry_name)
+        groups[spec.entry_name].append(spec)
+    for name in order:
+        frames = sorted(groups[name], key=lambda s: s.frame)
+        yield EntrySpec(entry_name=name, frames=tuple(frames))
+
+
 def validate_manifest(raw: dict) -> list[str]:
     """Returns a list of problems (empty if none). Does not raise -- the
     CLI decides what to do with a non-empty list; kf_ingest_sprites.py
@@ -385,6 +429,24 @@ def validate_manifest(raw: dict) -> list[str]:
         if spec.sprite_name in seen_names:
             problems.append(f"duplicate sprite name '{spec.sprite_name}'")
         seen_names.add(spec.sprite_name)
+
+    # Every entry's frame numbers must run 1..frame_count with no gap: a
+    # missing frame in the middle would otherwise silently shorten an
+    # animation (the pack format addresses frame k by arithmetic, not by
+    # name, so there is no "frame 3 is absent" marker it could detect on
+    # its own -- see EntrySpec's own comment).
+    for entry in iter_entries(raw):
+        expected = entry.frames[0].frame_count if entry.frames else 0
+        if entry.frame_count != expected:
+            problems.append(
+                f"entry '{entry.entry_name}': {entry.frame_count} frame(s) "
+                f"present, but frame_count says {expected}")
+        got = [f.frame for f in entry.frames]
+        want = list(range(1, entry.frame_count + 1))
+        if got != want:
+            problems.append(
+                f"entry '{entry.entry_name}': frame numbers {got} are not "
+                f"exactly 1..{entry.frame_count} with no gap")
 
     # Cross-check family membership: every family's teen_id/adults should
     # resolve, and every teen/adult with a family should be listed by it.
