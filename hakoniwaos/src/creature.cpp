@@ -109,12 +109,12 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
          * character_manifest.toml's [stages.egg] -- so every pose collapses
          * here regardless of what was asked for. Direction still varies:
          * the egg is a single design, not a single sprite. */
-        snprintf(out, out_len, "egg_idle_%s_01", dir_tok);
+        snprintf(out, out_len, "egg_idle_%s", dir_tok);
         return;
     }
     char stage_buf[16];
     stage_token(pet, stage_buf, sizeof(stage_buf));
-    snprintf(out, out_len, "%s_%s_%s_01", stage_buf, pose_name(pose), dir_tok);
+    snprintf(out, out_len, "%s_%s_%s", stage_buf, pose_name(pose), dir_tok);
 }
 
 namespace {

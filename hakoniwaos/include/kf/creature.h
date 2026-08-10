@@ -73,22 +73,32 @@ typedef enum {
     KF_CREATURE_DIR_COUNT
 } kf_creature_direction;
 
-/* Write the asset-pack name for this pet's current stage/branch, this pose,
- * and this facing direction into out, always NUL-terminated (including on
- * truncation, and when out is null or out_len is 0, in which case out is
- * left untouched). Names follow tools/character_manifest.toml's convention,
- * <stage><indices>_<pose>_<dir>_<frame>, because that manifest is what
+/* Write the .kfpack ENTRY name for this pet's current stage/branch, this
+ * pose, and this facing direction into out, always NUL-terminated
+ * (including on truncation, and when out is null or out_len is 0, in which
+ * case out is left untouched). Names follow tools/character_manifest.toml's
+ * convention, <stage><indices>_<pose>_<dir>, because that manifest is what
  * produced the art and its filenames are the only contract between the two.
  *
  * This takes the whole pet rather than just its stage because, from the teen
  * stage onward, the stage alone does not say which sprite: the roster
  * branches by kf_pet_state::teen_form and, for adults, also by
  * ::adult_branch. Egg/baby/child are shared single designs and ignore both
- * fields. Frame is always "01" -- multi-frame animation is unbuilt and out
- * of scope here.
+ * fields.
+ *
+ * NO FRAME NUMBER. A pack entry holds EVERY frame of an animation
+ * contiguously (see KF_ASSET_TYPE_SPRITE_INDEXED in kf/assets.h), so a name
+ * ending "_01" would claim to be frame one of something it is in fact all
+ * of. Which frame to draw is a runtime argument to kf_blit_frame()
+ * (kf/blit.h), not part of the name -- which also means an animated pose
+ * needs no naming change at all: the pose already picks the sprite, and an
+ * animated one simply has more frames behind the same name. PNG FILES on
+ * disk do keep a frame number, because one file really is one frame; see
+ * tools/kf_character_manifest.py's SpriteSpec.filename versus its
+ * .entry_name for where those two concepts part company.
  *
  * The egg has exactly one state ("idle") because it has nothing to react to,
- * so every pose collapses to egg_idle_<dir>_01 there.
+ * so every pose collapses to egg_idle_<dir> there.
  *
  * KF_CREATURE_POSE_DEAD has no art in the manifest yet -- the death scene is
  * unbuilt (care-loop spec section 7). It falls back to the sick sprite, which

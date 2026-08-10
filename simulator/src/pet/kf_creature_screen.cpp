@@ -121,11 +121,14 @@ kf_rect poop_rect(uint8_t index) {
  * sequencing -- it is pure positioning, an offset applied to where the
  * egg's sprite (or placeholder rect) is drawn, nothing more. The other
  * half -- the egg actually SQUISHING, i.e. deforming -- needs different
- * artwork per frame, and multi-frame animation does not exist anywhere in
- * this project yet (kf_creature_sprite_name()'s frame token is hardcoded
- * "01", see kf/creature.h). That half is not attempted here, and is not
- * faked with a scale transform either -- see this task's own report for
- * why stretching a static sprite would read as broken art, not squish.
+ * artwork per frame, and nothing in hakoniwaos/ plays a multi-frame
+ * animation back yet: the pack format can hold several frames behind one
+ * entry (KF_ASSET_TYPE_SPRITE_INDEXED, kf/assets.h) and kf_blit_frame()
+ * can address any of them, but no caller ever asks for anything but frame
+ * 0 today -- see kf/creature.h's kf_creature_sprite_name() comment for the
+ * entry-name side of that split. That half is not attempted here, and is
+ * not faked with a scale transform either -- see this task's own report
+ * for why stretching a static sprite would read as broken art, not squish.
  *
  * Integer triangle wave, not a lookup table or a sine call: hakoniwaos/
  * stays free of floating point AND of trig (see tools/check_no_heap.py and
@@ -221,19 +224,21 @@ uint32_t g_egg_bob_elapsed_ms = 0u;
  * dead becomes true. See kf_creature_screen_frame()'s own comment for why
  * this is special-cased ahead of the normal pose/sprite pipeline rather
  * than routed through it. */
-constexpr const char *kShrineSpriteName = "shrine_idle_s_01";
+constexpr const char *kShrineSpriteName = "shrine_idle_s";
 
 /* The shrine art (tools/character_manifest.toml) is one sprite, one
  * direction -- a shrine is scenery, not a creature with facings, so unlike
  * every other sprite this screen draws there is no stage/pose/dir lookup
- * here at all, just this one fixed name. Sized like the creature's own
- * 48x48 sprite footprint (hakoniwaos/src/creature.cpp's kSpriteSize is
- * private to that file, so this is a second, independent constant, not a
- * shared one -- the two happening to match today is not a claim that they
- * must stay in lockstep) for the placeholder-rectangle fallback below,
- * used until the art pipeline actually ships shrine_idle_s_01 -- see
- * kPlaceholderColor's own comment for why "visible and obviously wrong"
- * beats "invisible" whenever the pack does not have an asset yet. */
+ * here at all, just this one fixed name (a pack ENTRY name, no frame
+ * number -- see kf/creature.h's kf_creature_sprite_name() comment for why).
+ * Sized like the creature's own 48x48 sprite footprint (hakoniwaos/src/
+ * creature.cpp's kSpriteSize is private to that file, so this is a second,
+ * independent constant, not a shared one -- the two happening to match
+ * today is not a claim that they must stay in lockstep) for the
+ * placeholder-rectangle fallback below, used until the art pipeline
+ * actually ships shrine_idle_s -- see kPlaceholderColor's own comment for
+ * why "visible and obviously wrong" beats "invisible" whenever the pack
+ * does not have an asset yet. */
 constexpr int16_t kShrinePlaceholderSize = 48;
 
 /* Whether the shrine scene has been painted onto the panel yet for the
@@ -251,7 +256,7 @@ bool g_drawn_dead = false;
  * remainder -- same "deterministic over which side absorbs the leftover
  * pixel, not fussy about which" reasoning as poop_rect()'s own slot
  * centring above. Used only for the shrine today; kept general (a size,
- * not a hardcoded 48) because the real shrine_idle_s_01 sprite's actual
+ * not a hardcoded 48) because the real shrine_idle_s sprite's actual
  * dimensions, once the art pipeline ships it, are very unlikely to be
  * exactly 48x48. */
 kf_rect centered_in_field(int16_t width, int16_t height) {
@@ -268,7 +273,7 @@ kf_rect centered_in_field(int16_t width, int16_t height) {
  * comment on why the death scene deliberately does not go through the
  * creature's normal sprite-name/pose machinery at all. Falls back to
  * kPlaceholderColor, exactly like every other not-yet-in-the-pack sprite
- * this screen draws, when the art pipeline has not shipped shrine_idle_s_01
+ * this screen draws, when the art pipeline has not shipped shrine_idle_s
  * yet -- which it may not have: the concurrent art-generation task names
  * it exactly that, but this code has to handle it being absent gracefully
  * either way, the same contract every other kf_assets_get() call in this

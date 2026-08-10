@@ -21,7 +21,12 @@ pose_name(), direction_token() beside it) for the ground truth this module
 is deriving from. What follows restates it in this file's own terms, not a
 second, independent definition of it:
 
-    <stage_token><branch_indices>_<pose>_<dir>[_grudge]_<frame>
+    <stage_token><branch_indices>_<pose>_<dir>[_grudge]           (entries)
+    <stage_token><branch_indices>_<pose>_<dir>[_grudge]_<frame>   (files)
+
+A pack ENTRY holds every frame of an animation contiguously (kf/assets.h's
+KF_ASSET_TYPE_SPRITE_INDEXED), so it has no frame number -- see .entry_name
+below. A PNG FILE is one frame, so it keeps one -- see .filename below.
 
   - stage_token+branch_indices: "egg", "baby", "child", "teen<N>" (N = which
     of the 4 verb families, 0-based), or "adult<N><M>" (N = the same teen
@@ -59,16 +64,20 @@ second, independent definition of it:
     never collide with (or be mistaken for) a name the code actually asks
     for.
   - frame: always a 2-digit, 1-based frame index (01, 02, ...), even when
-    an entity only has one frame -- matching kf_creature_sprite_name()'s own
-    hardcoded "_01" for the (today, universal) single-frame case. Keeping
-    the shape constant regardless of frame count means a filename glob or a
-    Lua lookup never has to know in advance whether a given state is
-    animated.
+    an entity only has one frame -- present in the FILENAME only. Keeping
+    the shape constant regardless of frame count means a filename glob
+    never has to know in advance whether a given state is animated. It does
+    NOT appear in the entry name: kf_creature_sprite_name() never builds
+    one, because a runtime lookup asks for the whole animation, not a
+    single frame of it -- which frame to draw is a kf_blit_frame() argument
+    (kf/blit.h), decided at draw time, not baked into the name.
 
-Every part of that name is validated against ASSET_TYPE_SPRITE's 32-byte
-`name` field (tools/kf_pack_assets.py's own DIRECTORY_ENTRY_BYTES layout,
-31 usable characters after the implicit terminator) by validate_manifest()
-below -- see its docstring for what "usable" means here.
+Every ENTRY name is validated against ASSET_TYPE_SPRITE's 32-byte `name`
+field (tools/kf_pack_assets.py's own DIRECTORY_ENTRY_BYTES layout, 31 usable
+characters after the implicit terminator) by validate_manifest() below --
+see its docstring for what "usable" means here. FILENAMES are not checked
+against that limit: a PNG on disk is never written into the pack's 32-byte
+field, only read from and packed under its entry's (shorter) name.
 """
 
 from __future__ import annotations
@@ -179,16 +188,22 @@ class SpriteSpec:
 
     @property
     def entry_name(self) -> str:
-        """The .kfpack DIRECTORY ENTRY name this sprite's frames pack into.
+        """The .kfpack DIRECTORY ENTRY name this sprite's frames pack into:
+        the sprite name with its frame number removed, because an entry
+        holds every frame and a trailing "_01" on one would be a lie.
 
-        Identical to sprite_name today. It becomes the frame-less base name
-        in a follow-up commit, once kf_creature_sprite_name() stops emitting
-        a frame suffix -- see docs/superpowers/plans/2026-08-10-animated-
-        indexed-sprites.md Task 5. Introduced separately from sprite_name
-        (which names a FILE, and correctly keeps its frame number forever,
-        because a PNG really is one frame) so the two concepts can part
-        company without a second sweep through every caller."""
-        return self.sprite_name
+        Deliberately NOT the same as .filename: a PNG on disk is one frame
+        and keeps its number forever. This is the split that lets nine-frame
+        art sit in a directory unambiguously while the pack entry it feeds
+        stays honest about being the whole animation.
+
+        The authority for this shape is kf_creature_sprite_name()
+        (hakoniwaos/src/creature.cpp), which is what a runtime lookup
+        actually asks for; this property agrees with that function, never
+        the other way round."""
+        suffix = f"_{self.frame:02d}"
+        assert self.sprite_name.endswith(suffix)
+        return self.sprite_name[:-len(suffix)]
 
 
 class ManifestError(ValueError):
@@ -421,21 +436,28 @@ def validate_manifest(raw: dict) -> list[str]:
     seen_names: set[str] = set()
 
     for spec in iter_sprites(raw):
-        if len(spec.sprite_name) > PACK_NAME_MAX_CHARS:
-            problems.append(
-                f"sprite name '{spec.sprite_name}' is {len(spec.sprite_name)} "
-                f"chars, over the {PACK_NAME_MAX_CHARS}-char limit a "
-                f".kfpack entry name allows (32-byte field, ADR 0033)")
+        # Filenames are duplicate-checked here (one PNG per frame, so this
+        # runs once per frame); the 32-byte pack-field length limit is NOT
+        # checked against sprite_name below -- a filename is never written
+        # into that field, so it isn't bound by it. See the entry loop.
         if spec.sprite_name in seen_names:
             problems.append(f"duplicate sprite name '{spec.sprite_name}'")
         seen_names.add(spec.sprite_name)
 
-    # Every entry's frame numbers must run 1..frame_count with no gap: a
-    # missing frame in the middle would otherwise silently shorten an
-    # animation (the pack format addresses frame k by arithmetic, not by
-    # name, so there is no "frame 3 is absent" marker it could detect on
-    # its own -- see EntrySpec's own comment).
+    # Every entry's name must fit the pack's 32-byte field, and its frame
+    # numbers must run 1..frame_count with no gap: a missing frame in the
+    # middle would otherwise silently shorten an animation (the pack format
+    # addresses frame k by arithmetic, not by name, so there is no "frame 3
+    # is absent" marker it could detect on its own -- see EntrySpec's own
+    # comment). Checked once per entry, not once per frame: every frame of
+    # an entry shares its entry_name, so a per-frame loop would report the
+    # same over-length name frame_count times over.
     for entry in iter_entries(raw):
+        if len(entry.entry_name) > PACK_NAME_MAX_CHARS:
+            problems.append(
+                f"entry name '{entry.entry_name}' is {len(entry.entry_name)} "
+                f"chars, over the {PACK_NAME_MAX_CHARS}-char limit a "
+                f".kfpack entry name allows (32-byte field, ADR 0033)")
         expected = entry.frames[0].frame_count if entry.frames else 0
         if entry.frame_count != expected:
             problems.append(
@@ -508,21 +530,26 @@ def validate_manifest(raw: dict) -> list[str]:
 
 def _cmd_stats(raw: dict, args) -> int:
     specs = list(iter_sprites(raw))
+    entries = list(iter_entries(raw))
     problems = validate_manifest(raw)
 
     by_stage: dict[str, int] = {}
     for s in specs:
         by_stage[s.stage] = by_stage.get(s.stage, 0) + 1
 
-    longest = max(specs, key=lambda s: len(s.sprite_name))
+    # Entry names, not sprite (file) names: the pack's 32-byte field holds
+    # entry_name, so that is what the PACK_NAME_MAX_CHARS budget is against
+    # -- see validate_manifest() and THE NAMING CONVENTION above.
+    longest = max(entries, key=lambda e: len(e.entry_name))
 
     print(f"manifest: {args.manifest}")
     print(f"total sprites: {len(specs)}")
     for stage in ("egg", "baby", "child", "teen", "adult", "shrine"):
         print(f"  {stage:6s}: {by_stage.get(stage, 0)}")
     print(f"distinct entities: {len({s.entity_id for s in specs})}")
-    print(f"longest sprite name: '{longest.sprite_name}' "
-          f"({len(longest.sprite_name)} chars, limit {PACK_NAME_MAX_CHARS})")
+    print(f"total pack entries: {len(entries)}")
+    print(f"longest entry name: '{longest.entry_name}' "
+          f"({len(longest.entry_name)} chars, limit {PACK_NAME_MAX_CHARS})")
     if problems:
         print(f"\n{len(problems)} problem(s):")
         for p in problems:

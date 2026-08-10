@@ -38,19 +38,26 @@ To see the exact filenames expected for one creature:
 python3 tools/kf_character_manifest.py list --id chokimaru
 ```
 
-That's the naming convention: `<stage-token><branch-indices>_<pose>_<dir>
-[_grudge]_<frame number>` -- generic, not `<creature>_...`, because no real
-creature name is allowed to appear in a filename the code loads (every name
-in this manifest is an unverified trademark placeholder -- see
-`docs/sdk-style-guide.md`). `chokimaru`'s `id` still drives its *prompt*
-(see Step 2), but the file the runtime actually asks for is named after its
-generic stage and branch position instead -- e.g. `adult00_happy_s_01.png`,
-not `chokimaru_happy_01.png`. `hakoniwaos/src/creature.cpp`'s
-`kf_creature_sprite_name()` is the authority on this scheme, not this
-manifest -- see `tools/kf_character_manifest.py`'s own module docstring
-("THE NAMING CONVENTION") for the full breakdown of every token, including
-why `_grudge_` sits where it does even though no runtime lookup asks for it
-yet.
+That's the naming convention, and it has two forms: `<stage-token><branch-
+indices>_<pose>_<dir>[_grudge]` for the thing the *runtime* asks for, and
+the same string plus `_<frame number>.png` for the *picture files* on disk.
+Both generic, not `<creature>_...`, because no real creature name is
+allowed to appear anywhere the code loads (every name in this manifest is
+an unverified trademark placeholder -- see `docs/sdk-style-guide.md`).
+`chokimaru`'s `id` still drives its *prompt* (see Step 2), but its picture
+files are named after generic stage and branch position instead -- e.g.
+`adult00_happy_s_01.png`, not `chokimaru_happy_01.png`. Several picture
+files (one per frame) pack into one runtime lookup: `adult00_happy_s_01.png`
+is a *file*, but what `hakoniwaos/src/creature.cpp`'s
+`kf_creature_sprite_name()` actually builds, and what the code looks up in
+the `.kfpack`, is `adult00_happy_s` -- no frame number, because that lookup
+means "this pose's whole animation," not one picture of it. That function
+is the authority on this scheme, not this manifest -- see
+`tools/kf_character_manifest.py`'s own module docstring ("THE NAMING
+CONVENTION") for the full breakdown of every token, including why
+`_grudge_` sits where it does even though no runtime lookup asks for it
+yet, and `SpriteSpec.filename` vs. `.entry_name` for where the file and
+lookup names part company.
 
 ## Step 2: get a prompt for the image generator
 
@@ -207,7 +214,7 @@ roster (the remaining three teens and all ten adults are still unmade).
 
 - **The shrine is a new *kind* of manifest entry, not a new creature life
   stage.** `simulator/src/pet/kf_creature_screen.cpp` looks it up by the
-  literal name `shrine_idle_s_01`, never through
+  literal name `shrine_idle_s`, never through
   `kf_creature_sprite_name()` -- a shrine is scenery, not a creature with a
   pose to look up. It needed exactly one sprite (one state, one direction),
   which no existing entity did, so `tools/kf_character_manifest.py` grew a

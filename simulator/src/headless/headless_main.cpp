@@ -2428,16 +2428,18 @@ int run_creature_pose_check(void) {
         }
     }
 
-    /* Task 2: (pet, pose, dir) -> the asset-pack sprite name, per
-     * tools/character_manifest.toml's naming convention now that teen and
-     * adult sprites are branch-specific rather than shared:
-     * <stage><indices>_<pose>_<dir>_<frame>. Egg collapses every pose to
-     * egg_idle_<dir>_01 (the manifest gives the egg exactly one state,
-     * "idle") -- the case that matters most, because getting it wrong means
-     * the egg silently draws nothing. teen_form/adult_branch come from the
-     * pet, not the stage, which is why this takes a pet state rather than a
-     * bare stage now: from the teen stage onward, "which sprite" cannot be
-     * answered from the stage alone. */
+    /* Task 2 (and, for the name shape itself, Task 5): (pet, pose, dir) ->
+     * the asset-pack ENTRY name, per tools/character_manifest.toml's naming
+     * convention now that teen and adult sprites are branch-specific rather
+     * than shared: <stage><indices>_<pose>_<dir>, no frame number -- an
+     * entry holds every frame of the animation contiguously (kf/assets.h's
+     * KF_ASSET_TYPE_SPRITE_INDEXED), so there is no "frame one" to name.
+     * Egg collapses every pose to egg_idle_<dir> (the manifest gives the egg
+     * exactly one state, "idle") -- the case that matters most, because
+     * getting it wrong means the egg silently draws nothing. teen_form/
+     * adult_branch come from the pet, not the stage, which is why this
+     * takes a pet state rather than a bare stage now: from the teen stage
+     * onward, "which sprite" cannot be answered from the stage alone. */
     struct NameCase {
         kf_pet_stage stage;
         uint8_t teen_form;
@@ -2450,37 +2452,37 @@ int run_creature_pose_check(void) {
         /* Egg: collapses every pose to "idle", but not every direction --
          * exercises S, E and N across the collapse in one pass. */
         {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_S,
-         "egg_idle_s_01"},
+         "egg_idle_s"},
         {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_SICK, KF_CREATURE_DIR_E,
-         "egg_idle_e_01"},
+         "egg_idle_e"},
         {KF_PET_STAGE_EGG, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_N,
-         "egg_idle_n_01"},
+         "egg_idle_n"},
         /* Baby and child: shared single designs, no branch indices. */
         {KF_PET_STAGE_BABY, 0, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_S,
-         "baby_neutral_s_01"},
+         "baby_neutral_s"},
         {KF_PET_STAGE_BABY, 0, 0, KF_CREATURE_POSE_SLEEPING, KF_CREATURE_DIR_E,
-         "baby_sleeping_e_01"},
+         "baby_sleeping_e"},
         {KF_PET_STAGE_CHILD, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_N,
-         "child_happy_n_01"},
+         "child_happy_n"},
         /* Teen: branches by teen_form alone. form 0 and a non-zero form
          * (3), plus the dust form (4, KF_PET_TEEN_FORM_DUST). */
         {KF_PET_STAGE_TEEN, 0, 0, KF_CREATURE_POSE_OBJECTING, KF_CREATURE_DIR_S,
-         "teen0_objecting_s_01"},
+         "teen0_objecting_s"},
         {KF_PET_STAGE_TEEN, 3, 0, KF_CREATURE_POSE_NEUTRAL, KF_CREATURE_DIR_E,
-         "teen3_neutral_e_01"},
+         "teen3_neutral_e"},
         {KF_PET_STAGE_TEEN, 4, 0, KF_CREATURE_POSE_SICK, KF_CREATURE_DIR_N,
-         "teen4_sick_n_01"},
+         "teen4_sick_n"},
         /* Adult: branches by teen_form AND adult_branch. Non-zero of both,
          * checked against the length worked out by hand in the task brief. */
         {KF_PET_STAGE_ADULT, 0, 0, KF_CREATURE_POSE_HAPPY, KF_CREATURE_DIR_S,
-         "adult00_happy_s_01"},
+         "adult00_happy_s"},
         {KF_PET_STAGE_ADULT, 2, 1, KF_CREATURE_POSE_OBJECTING, KF_CREATURE_DIR_E,
-         "adult21_objecting_e_01"},
+         "adult21_objecting_e"},
         /* DEAD has no art yet and falls back to the sick sprite -- see
          * kf/creature.h. Not a defect; this is the one place that fallback
          * is pinned down by a test. */
         {KF_PET_STAGE_CHILD, 0, 0, KF_CREATURE_POSE_DEAD, KF_CREATURE_DIR_S,
-         "child_sick_s_01"},
+         "child_sick_s"},
     };
     for (const NameCase &c : names) {
         kf_pet_state named_pet{};
@@ -3028,7 +3030,7 @@ static int run_creature_screen_input_check(void) {
  * This check points the runtime pack override (kf_host_assets_set_pack_
  * path(), host_assets.h) at examples/creature_demo/assets.kfpack instead --
  * the real (if placeholder-tier) egg art the art-naming task generated,
- * egg_idle_{s,e,n}_01 and no "_w_" -- restoring the override to the
+ * egg_idle_{s,e,n} and no "_w_" -- restoring the override to the
  * default before returning so nothing later in this process inherits it.
  * Deliberately does NOT touch KF_ASSET_PACK or examples/hello_sprite/
  * assets.kfpack: headless_determinism, headless_fullscreen and asset_
@@ -3039,7 +3041,7 @@ static int run_creature_screen_input_check(void) {
  *
  * A fresh pet is stage EGG (kf_pet_init(), kf/pet.h) by default, which the
  * egg's single-state, three-direction design (kf_creature_sprite_name()
- * collapsing every pose to "egg_idle_<dir>_01") makes the simplest fixture
+ * collapsing every pose to "egg_idle_<dir>") makes the simplest fixture
  * here -- no need to advance the pet through any stage first, and
  * poop_count starts at 0, so the mess-drawing path never adds anything
  * else to the panel to confuse the pixel sampling below.
@@ -3098,7 +3100,7 @@ static int run_creature_screen_sprite_check(void) {
     check(!kf_rect_is_empty(creature_rect),
           "kf_creature_screen_debug_bounds() returned an empty rect");
 
-    /* egg_idle_s_01 et al. are drawn via kf_blit()'s colour-key skip, not a
+    /* egg_idle_s et al. are drawn via kf_blit()'s colour-key skip, not a
      * flat kf_fill_rect() -- see kf_ingest_sprites.py's alpha-to-colour-key
      * resolution in the art-naming report -- so a real sprite's rect will
      * contain more than one non-background colour. kPlaceholderColor
@@ -3157,7 +3159,7 @@ static int run_creature_screen_sprite_check(void) {
         kf_creature_screen_frame(0u);
     };
 
-    /* S, E and N: a known sprite name (egg_idle_<dir>_01) resolves and
+    /* S, E and N: a known sprite name (egg_idle_<dir>) resolves and
      * kf_blit()'s real pixels, not the placeholder colour -- three of
      * resolve_sprite()'s non-null branches (S and N repeat the "found on
      * first try" branch E also takes; the point is proving the direction
@@ -3165,7 +3167,7 @@ static int run_creature_screen_sprite_check(void) {
     draw(KF_CREATURE_DIR_S);
     check(has_real_sprite_content(),
           "facing S drew only background and/or the placeholder colour -- "
-          "egg_idle_s_01 should have resolved from examples/creature_demo/"
+          "egg_idle_s should have resolved from examples/creature_demo/"
           "assets.kfpack and kf_blit()'d real sprite pixels");
 
     /* Same direction again, immediately: exercises resolve_sprite()'s
@@ -3180,26 +3182,26 @@ static int run_creature_screen_sprite_check(void) {
     draw(KF_CREATURE_DIR_N);
     check(has_real_sprite_content(),
           "facing N drew only background and/or the placeholder colour -- "
-          "egg_idle_n_01 should have resolved and drawn real sprite "
+          "egg_idle_n should have resolved and drawn real sprite "
           "pixels");
 
     draw(KF_CREATURE_DIR_E);
     check(has_real_sprite_content(),
           "facing E drew only background and/or the placeholder colour -- "
-          "egg_idle_e_01 should have resolved and drawn real sprite "
+          "egg_idle_e should have resolved and drawn real sprite "
           "pixels");
     const std::vector<kf_color> east_pixels = snapshot();
 
-    /* W: the demo pack ships no egg_idle_w_01, so this is resolve_sprite()'s
-     * west-first-fallback branch -- kf_assets_get("egg_idle_w_01") misses,
-     * then kf_assets_get("egg_idle_e_01") hits and `mirrored` is set,
+    /* W: the demo pack ships no egg_idle_w, so this is resolve_sprite()'s
+     * west-first-fallback branch -- kf_assets_get("egg_idle_w") misses,
+     * then kf_assets_get("egg_idle_e") hits and `mirrored` is set,
      * exercising kf_blit_mirrored() for the first time anywhere in this
      * file's whole test suite. */
     draw(KF_CREATURE_DIR_W);
     check(has_real_sprite_content(),
           "facing W drew only background and/or the placeholder colour -- "
-          "with no egg_idle_w_01 in the pack this should have fallen back "
-          "to egg_idle_e_01 drawn mirrored");
+          "with no egg_idle_w in the pack this should have fallen back "
+          "to egg_idle_e drawn mirrored");
     const std::vector<kf_color> west_pixels = snapshot();
 
     /* Both snapshots cover the exact same fixed creature_rect (the
@@ -3227,7 +3229,7 @@ static int run_creature_screen_sprite_check(void) {
     check(mirrored_ok,
           "facing W's pixels are not facing E's pixels reversed "
           "column-for-column across the creature's rect -- the west "
-          "fallback should draw egg_idle_e_01 via kf_blit_mirrored(), not "
+          "fallback should draw egg_idle_e via kf_blit_mirrored(), not "
           "kf_blit() or any other transform");
 
     KF_LOGI(TAG,
@@ -3445,12 +3447,12 @@ static int run_creature_screen_egg_check(void) {
  * scene centres a single shrine in the field once pet->dead is true, and
  * nothing about it wanders or redraws once painted.
  *
- * Mounts the checked-in DEFAULT asset pack (no shrine_idle_s_01 in it, the
+ * Mounts the checked-in DEFAULT asset pack (no shrine_idle_s in it, the
  * same "art may not exist yet" situation every other check in this file
  * that uses the default pack already lives with -- see kPlaceholderColor's
  * own comment), so this exercises the placeholder-rectangle fallback
  * path, not real shrine art. That is deliberate, not a gap: the concurrent
- * art-generation task may not have shipped shrine_idle_s_01 into the
+ * art-generation task may not have shipped shrine_idle_s into the
  * default pack by the time this runs, and this check has to hold either
  * way -- exactly the same reasoning run_creature_screen_check() already
  * applies to the creature's own placeholder fallback. */
