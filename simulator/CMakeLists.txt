@@ -781,6 +781,13 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME creature_screen_budget_combination_check
              COMMAND kamiframe-headless
                      --verify-creature-screen-budget-combo)
+
+    # Task 2 of the Lua game layer plan (docs/superpowers/plans/
+    # 2026-08-12-lua-game-layer.md): the retained scene differ (kf/scene.h),
+    # proved on its own with no Lua involved -- see headless_main.cpp's
+    # run_scene_check() for the four things it checks, in order.
+    add_test(NAME scene_check
+             COMMAND kamiframe-headless --verify-scene)
 endif()
 
 # ---------------------------------------------------------------------------

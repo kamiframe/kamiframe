@@ -40,6 +40,7 @@
  *     kamiframe-headless --verify-creature-anim
  *     kamiframe-headless --verify-frame-counters
  *     kamiframe-headless --verify-creature-screen-budget-combo
+ *     kamiframe-headless --verify-scene
  *
  * Exit codes:
  *     0  everything asserted held
@@ -59,6 +60,7 @@
 #include "kf/hal/time.h"
 #include "kf/pet.h"
 #include "kf/rng.h"
+#include "kf/scene.h"
 #include "../host/host_assets.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
@@ -5725,6 +5727,189 @@ int run_indexed_blit_check(void) {
     return 0;
 }
 
+/* Task 2 of the Lua game layer plan (docs/superpowers/plans/
+ * 2026-08-12-lua-game-layer.md): proves the retained scene differ
+ * (kf/scene.h) in isolation. No Lua exists yet and nothing else in
+ * hakoniwaos/ calls this module -- Task 3 adds the Lua binding, Task 4
+ * rebuilds the C++ creature screen on top of it. Four checks, in the order
+ * the plan states them, and the first is the most important:
+ *
+ *   1. A committed frame with no changes marks zero dirty rectangles and
+ *      draws zero pixels -- the differ's entire reason to exist.
+ *   2. Moving one object into an overlapping position marks ONE dirty
+ *      rectangle spanning both the old and the new position, because
+ *      framebuffer.cpp's own touches_or_overlaps() merges them.
+ *   3. THE REAL PROOF, and the one that needs no golden constant: a scene
+ *      committed through kf_scene_commit() is memcmp-identical to the same
+ *      picture drawn by hand, in the same order, with kf_fill_rect() and
+ *      kf_blit_frame() called directly. Two objects at different layers,
+ *      so paint ORDER is actually exercised, not just final coverage.
+ *   4. Twelve independently-moving objects coalesce to at most
+ *      KF_MAX_DIRTY_RECTS rectangles covering well under the whole
+ *      framebuffer -- proving kf_scene_commit()'s own coalescer beats
+ *      kf_fb_mark_dirty()'s full-screen fallback on a scene shaped
+ *      specifically to trigger it (24 raw candidates, spread far enough
+ *      apart that none merge for free the way check 2's did).
+ *
+ * A fifth thing the task brief asks for -- that this check FAILS if
+ * kf_scene_commit()'s body is deleted -- is not code here: it was verified
+ * by hand, once, by actually deleting that body, rebuilding, watching this
+ * check go red, and reverting. A check cannot prove its own vacuity by
+ * asserting about itself; see this plan's own banner on tests that quietly
+ * stopped testing what they were written for. */
+static int run_scene_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_fb_clear_dirty(); /* kf_fb_init() marks the whole screen dirty as its
+                           * own starting state (framebuffer.cpp); clear it
+                           * so what follows only ever sees marks THIS check
+                           * made. */
+
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the creature demo pack mounts");
+    const kf_sprite *egg = kf_assets_get("egg_idle_s");
+    check(egg != nullptr, "egg_idle_s resolves in the mounted pack");
+
+    /* ---- 1. A commit with nothing changed draws nothing. ---- */
+    kf_scene_reset();
+    const kf_scene_id box1 = kf_scene_add_box(20, 20, KF_RGB(0, 200, 0));
+    kf_scene_set_pos(box1, 10, 10);
+    kf_scene_commit(); /* first commit ever for this object: forced full
+                         * redraw (kf_scene_reset()'s own contract), so this
+                         * one legitimately draws -- what matters is the
+                         * NEXT commit, below. */
+    kf_fb_clear_dirty(); /* simulate "the frame loop just presented" */
+
+    kf_draw_counters_reset();
+    kf_scene_commit(); /* nothing declared has changed since the commit above */
+    const kf_draw_counters idle_counters = kf_draw_counters_get();
+    check(idle_counters.opaque_pixels == 0u && idle_counters.keyed_pixels == 0u,
+          "a commit with no changes draws zero pixels");
+    check(kf_fb_dirty_rects().count == 0,
+          "a commit with no changes marks zero dirty rectangles");
+
+    /* ---- 2. Moving one object into an overlapping position merges old and
+     * new into one rectangle. Dirty state is already clean (0 rects) from
+     * check 1 immediately above. ---- */
+    const kf_rect old_bounds = kf_scene_bounds(box1); /* {10,10,30,30} */
+    kf_scene_set_pos(box1, 16, 16); /* new: {16,16,36,36} -- overlaps old_bounds */
+    const kf_rect new_bounds = kf_scene_bounds(box1);
+    kf_scene_commit();
+    const kf_dirty_rects moved = kf_fb_dirty_rects();
+    check(moved.count == 1,
+          "moving one object into an overlapping position marks exactly "
+          "one merged dirty rectangle, not two separate ones");
+    if (moved.count == 1) {
+        const kf_rect expect = kf_rect_union(old_bounds, new_bounds);
+        check(moved.rects[0].x0 == expect.x0 && moved.rects[0].y0 == expect.y0 &&
+                  moved.rects[0].x1 == expect.x1 && moved.rects[0].y1 == expect.y1,
+              "the merged rectangle's bounds cover both the old and the new "
+              "position");
+    }
+
+    /* ---- 3. The real proof: memcmp against a hand-drawn reference. ---- */
+    kf_scene_reset();
+    kf_scene_set_background_color(KF_RGB(20, 24, 28));
+    const kf_scene_id back_box = kf_scene_add_box(60, 60, KF_RGB(0, 80, 160));
+    kf_scene_set_pos(back_box, 40, 40);
+    kf_scene_set_layer(back_box, 0);
+    const kf_scene_id front_sprite = kf_scene_add_sprite("egg_idle_s");
+    kf_scene_set_pos(front_sprite, 60, 60); /* overlaps back_box */
+    kf_scene_set_layer(front_sprite, 1);
+    kf_scene_commit();
+
+    const size_t fb_bytes = KF_FRAMEBUFFER_BYTES;
+    std::vector<uint8_t> from_scene(fb_bytes);
+    std::memcpy(from_scene.data(), kf_fb_pixels(), fb_bytes);
+
+    /* Hand-drawn, same order the scene painted them in above: background,
+     * then the box (layer 0), then the sprite (layer 1). Both fully
+     * repaint the screen -- a full-screen fill plus two bounded blits --
+     * so whatever was in the framebuffer beforehand does not matter. */
+    kf_fill_rect(kf_rect{0, 0, static_cast<int16_t>(KF_DISPLAY_WIDTH),
+                          static_cast<int16_t>(KF_DISPLAY_HEIGHT)},
+                 KF_RGB(20, 24, 28));
+    kf_fill_rect(kf_rect{40, 40, 100, 100}, KF_RGB(0, 80, 160));
+    if (egg != nullptr) {
+        kf_blit_frame(egg, 60, 60, 0);
+    }
+    std::vector<uint8_t> by_hand(fb_bytes);
+    std::memcpy(by_hand.data(), kf_fb_pixels(), fb_bytes);
+
+    check(std::memcmp(from_scene.data(), by_hand.data(), fb_bytes) == 0,
+          "a scene committed through kf_scene_commit() is memcmp-identical "
+          "to the same picture drawn by hand, in the same order, with "
+          "kf_fill_rect()/kf_blit_frame() directly");
+
+    /* ---- 4. Twelve independently-moving objects coalesce; they do not
+     * collapse the framebuffer to its own full-screen fallback. ---- */
+    kf_scene_reset();
+    kf_scene_id spread[12];
+    constexpr int16_t kBoxSize = 10;
+    for (int i = 0; i < 12; ++i) {
+        /* A 4x3 grid across the 240x320 panel, 60px apart horizontally and
+         * 100px vertically against a 10px box -- far enough that no two
+         * objects' old OR new positions touch or overlap each other. This
+         * is deliberately the opposite shape from check 2's overlapping
+         * move: nothing here can merge for free. */
+        const int col = i % 4;
+        const int row = i / 4;
+        const int16_t x = static_cast<int16_t>(10 + col * 60);
+        const int16_t y = static_cast<int16_t>(10 + row * 100);
+        spread[i] = kf_scene_add_box(kBoxSize, kBoxSize, KF_RGB(200, 200, 0));
+        kf_scene_set_pos(spread[i], x, y);
+    }
+    kf_scene_commit(); /* establishes presented state for all 12 */
+    kf_fb_clear_dirty(); /* only the SECOND commit's marks matter below */
+
+    for (int i = 0; i < 12; ++i) {
+        const int col = i % 4;
+        const int row = i / 4;
+        /* Shift 30px right -- still inside this object's own grid cell, so
+         * its own old and new rectangles do not overlap, and the new
+         * position does not reach the next object's cell either. */
+        const int16_t x = static_cast<int16_t>(10 + col * 60 + 30);
+        const int16_t y = static_cast<int16_t>(10 + row * 100);
+        kf_scene_set_pos(spread[i], x, y);
+    }
+    kf_scene_commit();
+
+    const kf_dirty_rects spread_dirty = kf_fb_dirty_rects();
+    check(spread_dirty.count >= 1 && spread_dirty.count <= KF_MAX_DIRTY_RECTS,
+          "12 independently-moving objects coalesce to at most "
+          "KF_MAX_DIRTY_RECTS dirty rectangles");
+    uint32_t total_area = 0;
+    for (int i = 0; i < spread_dirty.count; ++i) {
+        total_area += kf_rect_area(spread_dirty.rects[i]);
+    }
+    const size_t total_bytes =
+        static_cast<size_t>(total_area) * sizeof(kf_color);
+    check(total_bytes < KF_FRAMEBUFFER_BYTES / 4u,
+          "the coalesced dirty area stays well under the full framebuffer "
+          "-- proving the coalescer beat kf_fb_mark_dirty()'s own "
+          "full-screen fallback rather than merely avoiding it by luck");
+    KF_LOGI(TAG,
+            "scene: 12-object move -> %d dirty rect(s), %zu of %d "
+            "framebuffer bytes",
+            spread_dirty.count, total_bytes, KF_FRAMEBUFFER_BYTES);
+
+    kf_scene_reset();
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+
+    if (ok) {
+        KF_LOGI(TAG, "scene: differ proved against a hand-drawn reference, "
+                      "coalescer beats the framebuffer's own fallback");
+    }
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -5770,6 +5955,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_anim = false;
     bool verify_frame_counters = false;
     bool verify_creature_screen_budget_combo = false;
+    bool verify_scene = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -5871,6 +6057,8 @@ int main(int argc, char *argv[]) {
                                 "--verify-creature-screen-budget-combo") ==
                    0) {
             verify_creature_screen_budget_combo = true;
+        } else if (std::strcmp(argv[i], "--verify-scene") == 0) {
+            verify_scene = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -5914,7 +6102,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-creature-anim\n"
                         "kamiframe-headless --verify-frame-counters\n"
                         "kamiframe-headless "
-                        "--verify-creature-screen-budget-combo\n");
+                        "--verify-creature-screen-budget-combo\n"
+                        "kamiframe-headless --verify-scene\n");
             return 0;
         }
     }
@@ -6074,6 +6263,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_screen_budget_combo) {
         return run_creature_screen_budget_combination_check();
+    }
+
+    if (verify_scene) {
+        return run_scene_check();
     }
 
     kf_app_init(mode);
