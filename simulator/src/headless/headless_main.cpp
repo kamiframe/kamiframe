@@ -39,6 +39,7 @@
  *     kamiframe-headless --verify-indexed-blit
  *     kamiframe-headless --verify-creature-anim
  *     kamiframe-headless --verify-frame-counters
+ *     kamiframe-headless --verify-creature-screen-budget-combo
  *
  * Exit codes:
  *     0  everything asserted held
@@ -4002,6 +4003,192 @@ static int run_creature_screen_stats_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Minor 6/7 of the pre-merge review (.superpowers/sdd/pre-merge-fixes-
+ * report.md): every dirty-rect budget check above exercises at most two of
+ * the three things that can move in the same frame, never all three
+ * together, and none of them do it against the real creature pack.
+ *
+ * run_creature_screen_check()'s own <=2u bound covers the creature's
+ * erase+draw and the mess row, but always against the checked-in DEFAULT
+ * pack (examples/hello_sprite/assets.kfpack), which has no creature art --
+ * every lookup this screen makes falls back to the placeholder rectangle,
+ * never a real blit. run_creature_screen_stats_check() covers a bar
+ * redraw, but calls kf_assets_init() with no pack override either (same
+ * default, same placeholder), and only ever touches ONE need (hunger_mp)
+ * at a time, never all three in the same frame. run_frame_counters_check()
+ * is the one check that DOES mount KF_CREATURE_DEMO_PACK_PATH, but its own
+ * dirty_rect_count bound is [1, KF_MAX_DIRTY_RECTS] -- 1 to 8 -- loose
+ * enough that the animated path costing anywhere in that whole range would
+ * not fail it.
+ *
+ * This drives the actual combination: the real, animated creature_demo
+ * pack (child's real "neutral" 9-frame idle, checked below against a
+ * placeholder to prove it -- not the pack's own single-frame egg), a
+ * poop_count that changes every frame, and all three needs pushed across a
+ * quantisation boundary every frame, together, while the creature is
+ * genuinely wandering (real dt_ms -- not the dt_ms==0 the sprite-only
+ * checks use to hold position and facing still). kf_pet_session_debug_
+ * jump_to_stage() is what makes three bars moving at once a realistic
+ * on-device event rather than a scenario invented for this test alone: it
+ * calls kf_pet_init() internally, which snaps hunger_mp/happiness_mp/
+ * energy_mp all back to KF_PET_MILLIPERCENT_MAX in the same call (see that
+ * function's own comment in kf_pet_session.cpp) -- so a KFDBG JUMP off a
+ * pet whose needs had decayed unevenly moves all three bars on the very
+ * next frame a real device draws. The loop below does not rely on landing
+ * on that one frame, though: it forces the same three-way change every
+ * iteration of a run of frames and keeps the worst dirty-rect count seen,
+ * the same "worst observed over many frames" shape every other budget
+ * check in this file already uses -- because the wander's own step size
+ * (hakoniwaos/src/creature.cpp's kSpeedPxPerSec) means whether the erase
+ * and draw rectangles happen to touch (merging to one) or not (staying
+ * two) varies frame to frame, not on a single hand-picked one. */
+static int run_creature_screen_budget_combination_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-screen-budget-combo-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    check(kf_assets_init() == KF_OK,
+          "kf_assets_init mounts examples/creature_demo/assets.kfpack");
+
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* Confirm the pack this check relies on actually carries the real,
+     * animated art this file's own header comment claims -- not the
+     * placeholder rectangle every OTHER dirty-rect budget check above
+     * measures against. All three directions, because the wander below is
+     * free to visit any of them. */
+    for (const char *name :
+         {"child_neutral_s", "child_neutral_e", "child_neutral_n"}) {
+        const kf_sprite *s = kf_assets_get(name);
+        check(s != nullptr && s->frame_count == 9u,
+              "the creature_demo pack's child neutral idle is not the "
+              "real 9-frame animated entry this check is supposed to be "
+              "measuring against");
+    }
+
+    /* Not an egg -- the egg neither wanders (kf_creature_update() is never
+     * called for it) nor animates through this screen's normal per-frame
+     * path, so it could never actually reach the worst case this check is
+     * looking for. kf_pet_session_debug_jump_to_stage()'s own "tops every
+     * need back up" behaviour (this function's header comment) is why a
+     * CHILD is realistic here even before the loop below starts forcing
+     * per-frame changes of its own. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->stage = KF_PET_STAGE_CHILD;
+
+    /* One untimed frame to let the screen notice the stage and the
+     * uneven starting needs below, and start the creature wandering, none
+     * of which the loop's own worst-case measurement should include. */
+    pet->hunger_mp = 20000u;    /* 20% -- decayed unevenly, on purpose: */
+    pet->happiness_mp = 55000u; /* three different quantised widths, so */
+    pet->energy_mp = 90000u;    /* the first loop iteration's toggle */
+                                 /* below is a real change for all three, */
+                                 /* not a no-op that happens to already */
+                                 /* match. */
+    kf_creature_screen_frame(0u);
+
+    size_t worst_rects = 0;
+    bool ever_touched_band = false;
+    bool ever_touched_field = false;
+    for (int i = 0; i < 300; ++i) {
+        /* Alternate both ends of the range every iteration, not just past
+         * SOME quantisation boundary -- guarantees each bar's QUANTISED
+         * width (update_stat_bar()'s own comment, kf_creature_screen.cpp)
+         * differs from what was drawn last iteration, every iteration,
+         * rather than leaving that to chance. Same reasoning for
+         * poop_count: two different in-range counts, neither of which
+         * ever repeats back to back. */
+        const bool phase = (i % 2) == 0;
+        pet->hunger_mp = phase ? 15000u : 85000u;
+        pet->happiness_mp = phase ? 85000u : 15000u;
+        pet->energy_mp = phase ? 30000u : 70000u;
+        pet->poop_count = phase ? 3u : 7u;
+
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > worst_rects) {
+            worst_rects = static_cast<size_t>(d.count);
+        }
+        for (int r = 0; r < d.count; ++r) {
+            if (d.rects[r].y1 > 260) { ever_touched_band = true; }
+            if (d.rects[r].y0 < 260) { ever_touched_field = true; }
+        }
+    }
+
+    check(ever_touched_band,
+          "300 frames of forced need changes never dirtied the stats "
+          "band (y>=260) -- the bars never actually redrew, so this "
+          "check was not measuring what it claims to");
+    check(ever_touched_field,
+          "300 frames of forced poop_count changes never dirtied the "
+          "field (y<260) -- the mess/creature drawing never actually "
+          "redrew, so this check was not measuring what it claims to");
+
+    /* The ANALYTICAL ceiling is 6: creature erase+draw (up to 2,
+     * run_creature_screen_check()'s own bound) + mess (1, changed every
+     * iteration above) + all three stat bars (up to 3, each changed every
+     * iteration above). What this loop actually MEASURES, run after run,
+     * seed after seed, is 5 -- the erase and draw rectangles merge into one
+     * (kf/framebuffer.h's kf_fb_mark_dirty() comment on touching/
+     * overlapping rects) on every single frame here, not just most of
+     * them, because kSpeedPxPerSec (hakoniwaos/src/creature.cpp, 18px/sec)
+     * moves the creature well under one pixel most 33ms ticks -- nowhere
+     * near enough for two 48x48 rectangles one step apart to fail to
+     * touch. Reaching the full 6 would need a DISCONTINUOUS reposition
+     * (a life-stage jump's re-centre, or a death/revive) landing on the
+     * exact same frame as this loop's forced mess+bars churn, which this
+     * check's fixed-stage wander never produces -- a real gap, called out
+     * here rather than papered over with a loose bound.
+     *
+     * Bounded at 5, the number actually measured, not at 6 or at
+     * KF_MAX_DIRTY_RECTS (8) the way run_frame_counters_check()'s loose
+     * check does: a bound of 6 would not fail if the creature's own
+     * erase+draw regressed from merging to not merging (e.g. a change to
+     * kSpeedPxPerSec, or to the merge threshold in touches_or_overlaps()),
+     * which is exactly the kind of regression this check exists to catch.
+     * If a future check drives that discontinuous-reposition case too and
+     * legitimately needs 6, raise this bound then, with that check's own
+     * measurement -- not preemptively, on the strength of arithmetic
+     * this loop does not actually exercise. */
+    check(worst_rects <= 5u,
+          "the creature+mess+stats combination cost more than the 5 dirty "
+          "rectangles this check has always measured as its worst case -- "
+          "see this check's own comment on why 5, not the 6-rectangle "
+          "analytical ceiling, is the right bound for what it drives");
+
+    KF_LOGI(TAG,
+            "creature-screen-budget-combo: worst frame %zu rects (bound 5, "
+            "analytical ceiling 6)",
+            worst_rects);
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Playback (Task 6, animated-indexed-sprites plan): the cursor advances on
  * its own ~10fps clock regardless of the display's, wraps at the end,
  * resets when the resolved sprite changes, and -- the thing that would
@@ -5582,6 +5769,7 @@ int main(int argc, char *argv[]) {
     bool verify_indexed_blit = false;
     bool verify_creature_anim = false;
     bool verify_frame_counters = false;
+    bool verify_creature_screen_budget_combo = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -5679,6 +5867,10 @@ int main(int argc, char *argv[]) {
             verify_creature_anim = true;
         } else if (std::strcmp(argv[i], "--verify-frame-counters") == 0) {
             verify_frame_counters = true;
+        } else if (std::strcmp(argv[i],
+                                "--verify-creature-screen-budget-combo") ==
+                   0) {
+            verify_creature_screen_budget_combo = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -5720,7 +5912,9 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-blit-mirror\n"
                         "kamiframe-headless --verify-indexed-blit\n"
                         "kamiframe-headless --verify-creature-anim\n"
-                        "kamiframe-headless --verify-frame-counters\n");
+                        "kamiframe-headless --verify-frame-counters\n"
+                        "kamiframe-headless "
+                        "--verify-creature-screen-budget-combo\n");
             return 0;
         }
     }
@@ -5876,6 +6070,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_frame_counters) {
         return run_frame_counters_check();
+    }
+
+    if (verify_creature_screen_budget_combo) {
+        return run_creature_screen_budget_combination_check();
     }
 
     kf_app_init(mode);

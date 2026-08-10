@@ -761,4 +761,19 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # adr-0036-frame-counter-window.md.
     add_test(NAME frame_counters_check
              COMMAND kamiframe-headless --verify-frame-counters)
+
+    # Minor 6/7 of the pre-merge review (.superpowers/sdd/pre-merge-fixes-
+    # report.md): the only check exercising the real, animated creature_demo
+    # pack's dirty-rect cost (frame_counters_check, above) bounds it loosely
+    # at [1, KF_MAX_DIRTY_RECTS], and the check that drives all three stat
+    # bars (creature_screen_stats_check, above) does it against the
+    # placeholder-only default pack and only ever moves one need at a time.
+    # Neither combines creature erase+draw, mess, and all three bars
+    # changing in the same frame -- measured at 5 of the available 8 (the
+    # analytical ceiling is 6; this check's own comment explains the gap
+    # between that and what it actually measures). See headless_main.cpp's
+    # run_creature_screen_budget_combination_check().
+    add_test(NAME creature_screen_budget_combination_check
+             COMMAND kamiframe-headless
+                     --verify-creature-screen-budget-combo)
 endif()
