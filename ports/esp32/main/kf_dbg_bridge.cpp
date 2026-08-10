@@ -68,20 +68,25 @@
  * injection cannot reliably clear -- see tools/kf_debug.py's `press`
  * --hold-ms comment for that specific, already-found bug).
  *
- * None of FEED/PLAY/REST/BATH/FLUSH/JUMP are gated behind
- * KF_DBG_INPUT_INJECT_ENABLE (the narrower flag that turns off BTN/
- * BTNHOLD specifically -- see kf_dbg_bridge.h). That flag's own purpose is
- * refusing remote *button* control while keeping PING/SHOT/STATE's
- * read-only introspection; these six are not button control at all, and
- * ADR 0031 already established the precedent this follows: ADVANCE/RESET/
- * MULT stay available whenever the bridge as a whole is on, not narrowed
- * by that flag, because they are not button injection either. RESET is
- * already a far more drastic state mutation than any single care action
- * (a full pet reset vs. one need bumped a little), so gating care/jump
- * more tightly than RESET while leaving RESET itself ungated would be an
- * inconsistent line to draw, not a more careful one. Turning off
- * KF_DBG_BRIDGE_ENABLE entirely removes all of it, same as everything
- * else in this file.
+ * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD -- every
+ * command that changes the pet or the simulation, eleven in all -- are
+ * gated behind KF_DBG_MUTATE_ENABLE (see kf_dbg_bridge.h and ADR 0035,
+ * which supersedes the paragraph this replaced). The nine of those that
+ * are not button injection (ADVANCE/RESET/MULT/FEED/PLAY/REST/BATH/FLUSH/
+ * JUMP) had no flag narrower than the whole-bridge switch before ADR 0035
+ * -- BTN/BTNHOLD alone were gated, by KF_DBG_INPUT_INJECT_ENABLE, on the
+ * reasoning that only button injection was "remote control". That
+ * boundary meant switching off button injection alone gave false
+ * assurance -- a serial cable could still refill a neglected pet's needs
+ * or jump it straight to adult, the ultimate cheat for a pet whose premise
+ * is that time and care are real. require_mutate_enabled(), called first
+ * thing in each of these eleven branches below (BTN/BTNHOLD included, now
+ * nested one level deeper under this flag rather than losing their own
+ * narrower gate), is the single choke point that now enforces the split
+ * -- see its own comment. PING/SHOT/STATE/SCANLINE/VSYNC stay gated by
+ * KF_DBG_BRIDGE_ENABLE alone, same as always: none of them changes
+ * anything. Turning off KF_DBG_BRIDGE_ENABLE entirely still removes all
+ * of it, same as everything else in this file.
  *
  * Wire format, confirmed against tools/kf_debug.py and tools/
  * kf_debug_selftest.py (the host side, already written and tested):
@@ -216,12 +221,13 @@ TaskHandle_t g_tx_task = nullptr;
  * moves to a different thread, this needs a lock -- it does not have one
  * today because it does not need one today, not as an oversight.
  *
- * #if KF_DBG_INPUT_INJECT_ENABLE, not just the bridge flag: a build that
- * keeps the bridge on but injection off (see kf_dbg_bridge.h) has no
- * reader or writer for this state at all -- handle_btn()/handle_btnhold()
- * skip the assignment and kf_dbg_input_mask() skips the read, both under
- * the identical #if -- so declaring it unconditionally in that
- * configuration would just be three more unused-variable warnings. -------
+ * #if KF_DBG_INPUT_INJECT_ENABLE, not just the bridge flag (or, since
+ * ADR 0035, the mutate flag it now nests inside -- see kf_dbg_bridge.h): a
+ * build that keeps mutation on but injection off has no reader or writer
+ * for this state at all -- handle_btn()/handle_btnhold() skip the
+ * assignment and kf_dbg_input_mask() skips the read, both under the
+ * identical #if -- so declaring it unconditionally in that configuration
+ * would just be three more unused-variable warnings. -------------------
  */
 #if KF_DBG_INPUT_INJECT_ENABLE
 /* BTN: applies for exactly the next kf_input_poll() call, then clears
@@ -240,10 +246,15 @@ uint64_t g_inject_hold_until_us = 0;
  * (called from app_main.cpp's loop, the same iteration, right after
  * kf_dbg_bridge_frame() returns) never run concurrently. Not under
  * #if KF_DBG_INPUT_INJECT_ENABLE like the button state above -- MULT is a
- * time-scale control, not button injection, so it stays available
- * whenever the bridge as a whole is on, the same as PING/SHOT/STATE. 1
- * means real time, unscaled -- matches sdl_debug_window.cpp's own default
- * before any multiplier button is clicked. */
+ * time-scale control, not button injection, so it is never narrowed by
+ * that flag specifically. It IS gated by KF_DBG_MUTATE_ENABLE, same as
+ * every other command that changes the pet or the simulation (ADR 0035):
+ * require_mutate_enabled(), checked first thing in KFDBG MULT's dispatch
+ * branch below, is what actually keeps g_time_multiplier at its default
+ * when mutation is off -- unlike PING/SHOT/STATE, which stay available
+ * whenever just the bridge is on. 1 means real time, unscaled -- matches
+ * sdl_debug_window.cpp's own default before any multiplier button is
+ * clicked. */
 uint32_t g_time_multiplier = 1;
 
 /* --------------------------------------------------------------------------
@@ -353,6 +364,61 @@ void reply_err(const char *line, const char *reason) {
     const int n = std::snprintf(buf, sizeof buf, "%s: %.64s", reason, line);
     kf_dbg_enqueue_reply("err", reinterpret_cast<uint8_t *>(buf),
                           n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+/* Plain compile-time constant, not a mutable global: KF_DBG_MUTATE_ENABLE
+ * is always literally 0 or 1, so `if (!kMutateEnabled)` below is a branch
+ * on a value known at compile time, not on state that changes at runtime.
+ * That does NOT mean the eleven handle_*() bodies this flag guards vanish
+ * from the binary the way KF_DBG_BRIDGE_ENABLE=0 makes this entire file
+ * vanish (see that flag's own #if near the top) -- confirmed by `nm`
+ * against a real KF_DBG_MUTATE_ENABLE=0 esp32s3 build (ADR 0035's
+ * Verified section): handle_feed()/handle_advance()/etc. are all still
+ * present as local symbols in the compiled object file, because
+ * process_command_line()'s eleven-way if/else chain is one large function
+ * and the compiler does not fold the constant far enough to prove each
+ * individual handler call unreachable at this optimization level.
+ * Functionally identical either way -- every one of those calls is
+ * unconditionally preceded by `if (!require_mutate_enabled(line)) return;`
+ * below, so none of them ever runs with the flag off -- but "unreachable,
+ * still linked in" is the honest description here, not "removed". That is
+ * the same shape KF_DBG_INPUT_INJECT_ENABLE=0 already has for BTN/
+ * BTNHOLD (handle_btn()/handle_btnhold() themselves stay linked at that
+ * flag's off setting too; only their #if/#else-swapped bodies change --
+ * see those functions below), which is the precedent this flag follows
+ * rather than reinventing: a single runtime check on a compile-time
+ * constant, not a second family of #if/#else bodies. See kf_dbg_bridge.h's
+ * own comment on KF_DBG_MUTATE_ENABLE for what it gates and why it is a
+ * separate flag from KF_DBG_BRIDGE_ENABLE. */
+constexpr bool kMutateEnabled = KF_DBG_MUTATE_ENABLE;
+
+/* Guards every KFDBG command that mutates the pet or the simulation --
+ * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD -- called
+ * as the first line of each of those eleven branches in
+ * process_command_line() below: `if (!require_mutate_enabled(line)) {
+ * return; }`. Returns true (and does nothing else) when mutation is
+ * allowed; otherwise replies `err` naming the exact flag to flip and
+ * returns false, so the caller can bail before doing any of that command's
+ * real work or even finishing its own argument parsing.
+ *
+ * The `err` reply, not a dropped command or a bare protocol error, is the
+ * point (ADR 0035's "host side" section): tools/kf_debug.py's own
+ * `_expect()` already turns any `err` reply into `KfDebugError(f"device
+ * rejected \`{command}\`: {payload}")`, so whatever text reply_err() sends
+ * here is what a developer actually reads on the host -- naming
+ * KF_DBG_MUTATE_ENABLE explicitly is what makes that message actionable
+ * instead of merely accurate. Matches every other inline validation in
+ * this file (parse_care_variation()'s own reply_err() calls, the range
+ * checks in process_command_line() below) in shape, just checked before
+ * any of them rather than after. */
+bool require_mutate_enabled(const char *line) {
+    if (kMutateEnabled) {
+        return true;
+    }
+    reply_err(line, "mutating KFDBG commands are disabled on this build "
+                     "-- set KF_DBG_MUTATE_ENABLE=1 to re-enable (PING/"
+                     "SHOT/STATE/SCANLINE/VSYNC still work)");
+    return false;
 }
 
 /* --------------------------------------------------------------------------
@@ -1154,6 +1220,9 @@ void process_command_line(const char *line) {
         }
         handle_scanline(read_hz);
     } else if (std::strcmp(tok1, "BTN") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         char tok2[16];
         uint32_t mask = 0;
         if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &mask)) {
@@ -1162,6 +1231,9 @@ void process_command_line(const char *line) {
         }
         handle_btn(mask);
     } else if (std::strcmp(tok1, "BTNHOLD") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         char tok2[16];
         char tok3[16];
         uint32_t mask = 0;
@@ -1173,6 +1245,9 @@ void process_command_line(const char *line) {
         }
         handle_btnhold(mask, ms);
     } else if (std::strcmp(tok1, "ADVANCE") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         char tok2[16];
         uint32_t seconds = 0;
         if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &seconds)) {
@@ -1181,8 +1256,14 @@ void process_command_line(const char *line) {
         }
         handle_advance(seconds);
     } else if (std::strcmp(tok1, "RESET") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         handle_reset();
     } else if (std::strcmp(tok1, "MULT") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         char tok2[16];
         uint32_t mult = 0;
         if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &mult)) {
@@ -1209,32 +1290,50 @@ void process_command_line(const char *line) {
         }
         handle_vsync(v != 0u);
     } else if (std::strcmp(tok1, "FEED") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         uint8_t variation = 0;
         if (!parse_care_variation(p, line, &variation)) {
             return;
         }
         handle_feed(variation);
     } else if (std::strcmp(tok1, "PLAY") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         uint8_t variation = 0;
         if (!parse_care_variation(p, line, &variation)) {
             return;
         }
         handle_play(variation);
     } else if (std::strcmp(tok1, "REST") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         uint8_t variation = 0;
         if (!parse_care_variation(p, line, &variation)) {
             return;
         }
         handle_rest(variation);
     } else if (std::strcmp(tok1, "BATH") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         uint8_t variation = 0;
         if (!parse_care_variation(p, line, &variation)) {
             return;
         }
         handle_bath(variation);
     } else if (std::strcmp(tok1, "FLUSH") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         handle_flush();
     } else if (std::strcmp(tok1, "JUMP") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
         /* One required arg (stage), two optional (teen_form, adult_branch)
          * -- both default to 0 when omitted, matching kf_pet_session_
          * debug_jump_to_stage()'s own "unset" default. See handle_jump()'s
@@ -1431,8 +1530,9 @@ void kf_dbg_bridge_init(void) {
     xTaskCreate(kf_dbg_tx_task, "kf_dbg_tx", kTaskStackBytes, nullptr, kTaskPriority,
                 &g_tx_task);
 
-    KF_LOGI(TAG, "KFDBG bridge up on UART%d (console baud), input inject %s",
-            static_cast<int>(kUartNum), KF_DBG_INPUT_INJECT_ENABLE ? "ON" : "OFF");
+    KF_LOGI(TAG, "KFDBG bridge up on UART%d (console baud), mutate %s, input inject %s",
+            static_cast<int>(kUartNum), KF_DBG_MUTATE_ENABLE ? "ON" : "OFF",
+            KF_DBG_INPUT_INJECT_ENABLE ? "ON" : "OFF");
 }
 
 void kf_dbg_bridge_frame(void) {

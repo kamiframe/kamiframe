@@ -162,21 +162,42 @@ esptool_py_flash_to_partition(flash "assets"
 ## the kf_lua_port.cpp <-> lua_core boundary have to agree on LUA_INTEGER's
 ## real width, not just its typedef'd name).
 ##
-## KF_DBG_BRIDGE_ENABLE / KF_DBG_INPUT_INJECT_ENABLE (ADR 0030) are NOT set
-## here -- both default to 1 in kf_dbg_bridge.h, which is correct for this
-## pre-release developer firmware. A SHIPPING build removes the bridge (and
-## therefore remote button injection) entirely by adding, right here:
+## KF_DBG_BRIDGE_ENABLE / KF_DBG_MUTATE_ENABLE / KF_DBG_INPUT_INJECT_ENABLE
+## (ADR 0030/0035) are NOT set here -- all three default to 1 in
+## kf_dbg_bridge.h, which is correct for this pre-release developer
+## firmware. Three flags, one nested inside the next, because KFDBG's
+## commands split into three risk tiers, not two:
+##
+##   - PING/SHOT/STATE/SCANLINE/VSYNC are read-only introspection --
+##     nothing a serial connection could learn that watching the screen
+##     couldn't.
+##   - FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD all
+##     change the pet or the simulation -- for a pet whose whole premise is
+##     that time and care are real, a serial cable reaching any of these is
+##     the cheat this split exists to gate.
+##   - BTN/BTNHOLD specifically can drive ANY UI flow reachable by button
+##     presses, not just the pet's state -- a strictly larger surface than
+##     the other nine mutating commands put together.
+##
+## A SHIPPING build removes the bridge (and therefore everything below)
+## entirely by adding, right here:
 ##     target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_DBG_BRIDGE_ENABLE=0)
 ## which compiles kf_dbg_bridge_init()/_frame()/_shutdown() down to empty
 ## functions and kf_dbg_input_mask() down to an unconditional `return 0` --
-## see kf_dbg_bridge.h's own comment on that flag. Setting only
-## KF_DBG_INPUT_INJECT_ENABLE=0 keeps PING/SHOT/STATE (read-only
-## introspection) while refusing remote control of the buttons, for a
-## build that wants the former without the latter. A build that removes
-## the bridge entirely this way also loses ADVANCE/RESET/MULT below, since
-## they are KFDBG commands like any other -- KF_PET_SESSION_ENABLE_DEBUG_
-## CONTROLS staying on costs nothing by itself in that configuration, it
-## simply has no caller left.
+## see kf_dbg_bridge.h's own comment on that flag. A build that wants
+## screenshots and state reads in the field without handing a serial
+## connection any way to touch the pet keeps the bridge on and adds:
+##     target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_DBG_MUTATE_ENABLE=0)
+## which leaves PING/SHOT/STATE/SCANLINE/VSYNC working and makes every
+## mutating command reply `err` instead of running (see kf_dbg_bridge.cpp's
+## require_mutate_enabled()). Setting only KF_DBG_INPUT_INJECT_ENABLE=0
+## narrows the mutate set further, refusing button injection specifically
+## while leaving named care/time-control commands available -- meaningless
+## on top of KF_DBG_MUTATE_ENABLE=0, since nothing nested inside an off
+## flag matters. A build that removes the bridge entirely also loses
+## ADVANCE/RESET/MULT/JUMP below, since they are KFDBG commands like any
+## other -- KF_PET_SESSION_ENABLE_DEBUG_CONTROLS staying on costs nothing
+## by itself in that configuration, it simply has no caller left.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PET_SESSION_ENABLE_DEBUG_CONTROLS=1
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0

@@ -24,8 +24,10 @@
  * way to tell "real" and "injected" apart once merged, by design: core's
  * debounce (app.cpp) is meant to see one raw mask, not two sources to
  * reconcile. Behind KF_DBG_INPUT_INJECT_ENABLE (defaults on; see that
- * flag's own comment for what a shipping build should do), and a no-op
- * (always returns 0) whenever the bridge is compiled out entirely.
+ * flag's own comment for what a shipping build should do), which since
+ * ADR 0035 nests inside KF_DBG_MUTATE_ENABLE rather than the bridge flag
+ * directly -- BTN/BTNHOLD are two of the commands that flag gates -- and a
+ * no-op (always returns 0) whenever the bridge is compiled out entirely.
  */
 
 #include "kf/hal/input.h"

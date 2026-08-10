@@ -80,16 +80,40 @@ extern "C" {
 #endif
 
 /* --------------------------------------------------------------------------
- * Compile-time flags. Two, on purpose: one master switch for the whole
- * bridge, and a second, narrower one for the input-injection half of it,
- * so a build can keep read-only introspection (PING/SHOT/STATE) while
- * refusing to let a serial connection drive the pet's buttons -- see this
- * header's own comment on KF_DBG_INPUT_INJECT_ENABLE below.
+ * Compile-time flags. THREE, split by what they gate, not by how big the
+ * gate is: a master switch for the whole bridge, and two narrower ones
+ * nested inside it -- one for every command that MUTATES the pet or the
+ * simulation, one (nested a level further, inside that) for button
+ * injection specifically. See ADR 0035 for why the boundary moved here:
+ * the original two-flag split (this file's history, and ADR 0030) drew the
+ * line at "button injection vs. everything else", which left ADVANCE/
+ * RESET/MULT/FEED/PLAY/REST/BATH/FLUSH/JUMP -- every command that actually
+ * changes the pet's state or the simulation's clock -- reachable with only
+ * the master switch on, regardless of the narrower flag's setting. For a
+ * pet whose whole premise is that time and care are real, that let a
+ * serial cable fake both. The line now runs observe vs. mutate instead:
  *
- * Both default ON. This is pre-release developer firmware with no user on
- * the other end of that UART yet; see the ADR's "Shipping a build with
- * this off" section for exactly what to flip, and where, before this ever
- * reaches a product. -------------------------------------------------- */
+ *   KF_DBG_BRIDGE_ENABLE   the whole channel. Off means none of this
+ *                          exists in the binary (see its own comment
+ *                          below) -- neither flag beneath it means
+ *                          anything without it.
+ *   KF_DBG_MUTATE_ENABLE   every command that changes the pet or the
+ *                          simulation: FEED/PLAY/REST/BATH/FLUSH/JUMP/
+ *                          ADVANCE/RESET/MULT/BTN/BTNHOLD. Off leaves
+ *                          PING/SHOT/STATE/SCANLINE/VSYNC (pure
+ *                          introspection) working -- a serial connection
+ *                          can watch the device, never drive it.
+ *   KF_DBG_INPUT_INJECT_ENABLE   nested inside KF_DBG_MUTATE_ENABLE:
+ *                          narrows the mutate set further to exclude
+ *                          JUST BTN/BTNHOLD. See its own comment below
+ *                          for why this narrower cut still earns its
+ *                          keep now that mutation as a whole has its own
+ *                          flag.
+ *
+ * All three default ON. This is pre-release developer firmware with no
+ * user on the other end of that UART yet; see ADR 0035's "Shipping a
+ * build with this off" section for exactly what to flip, and where,
+ * before this ever reaches a product. -------------------------------- */
 
 /* The whole bridge: UART ownership, both tasks, both queues, every KFDBG
  * command. 0 compiles every one of kf_dbg_bridge_init()/_frame()/
@@ -102,16 +126,43 @@ extern "C" {
 #define KF_DBG_BRIDGE_ENABLE 1
 #endif
 
+/* Every command that mutates the pet or the simulation: FEED, PLAY, REST,
+ * BATH, FLUSH, JUMP, ADVANCE, RESET, MULT, BTN, BTNHOLD -- see ADR 0035.
+ * 0 makes process_command_line() (kf_dbg_bridge.cpp) reply `err` to each of
+ * those, naming this flag, instead of running them; PING/SHOT/STATE/
+ * SCANLINE/VSYNC are untouched by this flag, since none of them changes
+ * anything. Independent of KF_DBG_INPUT_INJECT_ENABLE below -- that flag
+ * narrows the mutate set further, it does not widen it -- so setting only
+ * this one to 0 is what a build wants for "observation only": the bridge
+ * stays up, screenshots and state reads keep working, nothing can touch
+ * the pet. Meaningless whenever the bridge as a whole is off, same
+ * "no channel to arrive on" reasoning KF_DBG_INPUT_INJECT_ENABLE's own
+ * comment already gives for BTN/BTNHOLD specifically. */
+#ifndef KF_DBG_MUTATE_ENABLE
+#define KF_DBG_MUTATE_ENABLE KF_DBG_BRIDGE_ENABLE
+#endif
+
 /* Button injection specifically (KFDBG BTN / KFDBG BTNHOLD OR-ing into
- * esp_input.cpp's real GPIO reads). Independent of the flag above so a
- * build can keep PING/SHOT/STATE -- pure introspection, nothing a remote
- * connection couldn't already learn by watching the screen -- while
- * refusing remote control of the pet. Meaningless (and, per
+ * esp_input.cpp's real GPIO reads) -- nested inside KF_DBG_MUTATE_ENABLE
+ * above, not the bridge flag directly, since BTN/BTNHOLD are themselves
+ * two of the eleven commands that flag already gates (ADR 0035). Kept as
+ * its own flag, rather than folded away now that mutation as a whole has
+ * a gate, because button injection is a strictly larger attack surface
+ * than every other mutating command put together: FEED/PLAY/REST/BATH/
+ * FLUSH/JUMP/ADVANCE/RESET/MULT each has one bounded, enumerable effect on
+ * the pet, but a BTN mask can drive ANY UI flow reachable by button
+ * presses -- including menu screens this file has never heard of and
+ * never will need to. A build that wants remote care actions and time
+ * control (say, for a support technician) without handing a serial
+ * connection the ability to navigate arbitrary menus can set
+ * KF_DBG_INPUT_INJECT_ENABLE=0 while leaving KF_DBG_MUTATE_ENABLE=1; a
+ * build with mutation off entirely gets this for free, since nothing
+ * beneath an off master switch matters. Meaningless (and, per
  * kf_dbg_input_mask()'s own #if, compiled to an unconditional `return 0`)
  * whenever the bridge as a whole is off, since BTN/BTNHOLD have no command
  * channel to arrive on in that case. */
 #ifndef KF_DBG_INPUT_INJECT_ENABLE
-#define KF_DBG_INPUT_INJECT_ENABLE KF_DBG_BRIDGE_ENABLE
+#define KF_DBG_INPUT_INJECT_ENABLE KF_DBG_MUTATE_ENABLE
 #endif
 
 /* --------------------------------------------------------------------------
