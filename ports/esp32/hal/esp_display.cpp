@@ -376,14 +376,35 @@ kf_result kf_display_init(void) {
         return KF_ERR_IO;
     }
 
-    if (kPanel.big_endian_fb) {
+    /* ALLOCATED FOR EVERY PANEL, not just big-endian ones. push_rect() stages
+     * every row through these strips on both paths -- the byte-swapping one
+     * and the plain memcpy one -- because the staging serves two jobs and only
+     * one of them is endianness:
+     *
+     *   1. Byte order, for panels whose RAMCTRL leaves RGB565 big-endian on
+     *      the wire (big_endian_fb).
+     *   2. Contiguity and DMA-capability, for EVERY panel. The framebuffer
+     *      lives in KF_ARENA_FRAMEBUFFER (external PSRAM), and a dirty
+     *      rectangle narrower than the screen is not contiguous there -- its
+     *      rows are KF_DISPLAY_WIDTH apart. esp_lcd_panel_draw_bitmap() wants
+     *      one contiguous DMA-capable run, so the rows have to be gathered
+     *      into internal RAM either way.
+     *
+     * This was conditional on big_endian_fb until 2026-08-11 and it crashed
+     * the first time a native-endian panel was selected: the ST7789 profile
+     * sets big_endian_fb = false, so the strips stayed null, and push_rect()'s
+     * memcpy wrote 480 bytes to address 0 on the very first present. It never
+     * fired before because the ILI9341 -- big_endian_fb = true -- was the only
+     * profile anything had ever run. A latent null deref, not a regression in
+     * the panel-profile work that surfaced it. */
+    {
         constexpr size_t kStripBytes = static_cast<size_t>(KF_DISPLAY_WIDTH) *
                                         kSwapStripRows * sizeof(uint16_t);
         for (int i = 0; i < kSwapBufferCount; ++i) {
             g_swap_strip[i] = static_cast<uint16_t *>(
                 heap_caps_malloc(kStripBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
             if (g_swap_strip[i] == nullptr) {
-                KF_LOGE(TAG, "could not allocate byte-swap strip %d (%zu bytes)",
+                KF_LOGE(TAG, "could not allocate transfer strip %d (%zu bytes)",
                         i, kStripBytes);
                 return KF_ERR_EXHAUSTED;
             }
