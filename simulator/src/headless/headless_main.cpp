@@ -54,6 +54,7 @@
 #include "kf/blit.h"
 #include "kf/budget.h"
 #include "kf/creature.h"
+#include "kf/font.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
 #include "kf/hal/power.h"
@@ -5754,8 +5755,12 @@ int run_indexed_blit_check(void) {
  *      kf_fb_mark_dirty()'s full-screen fallback on a scene shaped
  *      specifically to trigger it (24 raw candidates, spread far enough
  *      apart that none merge for free the way check 2's did).
+ *   5. A text object that never sets its own colours paints white on black
+ *      -- kf_scene_add_text() takes no colour arguments, so scene.cpp's
+ *      field initialiser is the whole of that contract, and nothing else
+ *      in the suite would notice it changing.
  *
- * A fifth thing the task brief asks for -- that this check FAILS if
+ * A further thing the task brief asks for -- that this check FAILS if
  * kf_scene_commit()'s body is deleted -- is not code here: it was verified
  * by hand, once, by actually deleting that body, rebuilding, watching this
  * check go red, and reverting. A check cannot prove its own vacuity by
@@ -5901,6 +5906,44 @@ static int run_scene_check(void) {
             "scene: 12-object move -> %d dirty rect(s), %zu of %d "
             "framebuffer bytes",
             spread_dirty.count, total_bytes, KF_FRAMEBUFFER_BYTES);
+
+    /* ---- 5. A text object that never calls kf_scene_set_colors() paints
+     * white on black. kf_scene_add_text() takes no colour arguments, so this
+     * default is the ONLY thing standing between `kf.text("HI")` in a script
+     * that never calls `:color()` and invisible black-on-black text -- and
+     * it lives in one field initialiser inside scene.cpp, where nothing else
+     * would notice it changing. ADR 0040's "Two RenderStates per object"
+     * section is the reason that initialiser is under pressure: it is the
+     * single non-zero one in the whole SceneObject, so it is what decides
+     * whether g_objects lands in .bss or .data. Pinning the OBSERVABLE
+     * default here means that section can be fixed without the fix being
+     * allowed to quietly change what a script sees. ---- */
+    kf_scene_reset();
+    kf_scene_set_background_color(KF_BLACK);
+    const kf_scene_id label = kf_scene_add_text("HI");
+    kf_scene_set_pos(label, 12, 24);
+    kf_scene_commit();
+
+    std::vector<uint8_t> default_text(fb_bytes);
+    std::memcpy(default_text.data(), kf_fb_pixels(), fb_bytes);
+
+    kf_fill_rect(kf_rect{0, 0, static_cast<int16_t>(KF_DISPLAY_WIDTH),
+                          static_cast<int16_t>(KF_DISPLAY_HEIGHT)},
+                 KF_BLACK);
+    std::vector<uint8_t> bare_bg(fb_bytes);
+    std::memcpy(bare_bg.data(), kf_fb_pixels(), fb_bytes);
+    kf_text_draw(12, 24, "HI", KF_WHITE, KF_BLACK);
+    std::vector<uint8_t> white_on_black(fb_bytes);
+    std::memcpy(white_on_black.data(), kf_fb_pixels(), fb_bytes);
+
+    /* Non-vacuity first: if the font drew nothing at all, the comparison
+     * below would pass against a black-on-black scene for the wrong reason. */
+    check(std::memcmp(white_on_black.data(), bare_bg.data(), fb_bytes) != 0,
+          "the reference text actually marks pixels -- so the default-colour "
+          "comparison below is not comparing two blank screens");
+    check(std::memcmp(default_text.data(), white_on_black.data(), fb_bytes) == 0,
+          "a text object that never calls kf_scene_set_colors() paints white "
+          "on black, the same as kf_text_draw(..., KF_WHITE, KF_BLACK)");
 
     kf_scene_reset();
     kf_assets_shutdown();

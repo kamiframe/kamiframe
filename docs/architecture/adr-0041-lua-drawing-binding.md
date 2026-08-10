@@ -281,6 +281,34 @@ is `hakoniwaos/src/scene.cpp`'s file, not `sdk/lua/`'s, and is out of this
 task's scope to fix — noted here because this task is what made the cost
 visible, not because it introduced it.
 
+**Resolved, 2026-08-10 — the `.data` half of it.** `g_objects` now lands in
+`.bss`, recovering **14,352 bytes of flash** (firmware image 683,760 →
+669,408). The 224-bytes-per-object figure is unchanged and is not a bug;
+ADR 0040's "Two file-static arrays, nothing else" section now carries the
+corrected number, where it belongs, along with why two `RenderState`s of
+copied strings add up to 224.
+
+Worth recording is what the fix could *not* be. Zeroing `RenderState::fg`
+directly — the obvious reading of the finding above — is an observable
+rendering change, not a free one: `kf_scene_add_text()` takes no colour
+arguments, so that initialiser is the whole of the default behind
+`kf.text("HI")` in a script that never calls `:color()`, and defaulting it
+to `KF_BLACK` turns every un-coloured label black-on-black. (`kf.box()`
+requires its colour argument, and a sprite ignores `fg` entirely per
+`kf_scene_set_colors()`'s contract, so text was the only kind at risk —
+and the only kind with no other source for the value.) The white is now
+applied at runtime by `kf_scene_add_text()` instead, which leaves the
+static array all-zero without changing a pixel.
+
+That distinction was verified rather than assumed. The naive change was
+applied, built and run first: `run_scene_check()`, `lua_draw_check`,
+`headless_determinism` and `headless_fullscreen` **all passed** — nothing
+in a 43-test suite with two golden frame checksums noticed that default
+text had gone invisible, because nothing in it ever drew a text object
+without setting its colours. `run_scene_check()` check 5 was added to close
+that hole, memcmps a default text object against `kf_text_draw(...,
+KF_WHITE, KF_BLACK)`, and goes red on the naive version.
+
 ## Not verified
 
 No scene declared through this binding has rendered on real hardware. The

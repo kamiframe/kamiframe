@@ -89,8 +89,57 @@ would lie about both.
 
 64 is not a guess: the entire current home screen (creature, up to four
 poops, three stat bars, three stat labels, five care-guide labels) is under
-ten objects, so 64 leaves an order of magnitude of headroom at roughly 40
-bytes per object — a couple of KB of static storage.
+ten objects, so 64 leaves an order of magnitude of headroom.
+
+**Corrected, 2026-08-10.** This section originally said "roughly 40 bytes
+per object — a couple of KB of static storage." That was an estimate, and
+it was wrong by 5.6x. `xtensa-esp32s3-elf-nm --print-size --size-sort` on
+the real ESP32 build measures `g_objects` at `0x3800` = **14,336 bytes —
+224 bytes per object**. The estimate ignored what the two design decisions
+directly above this one actually cost when multiplied out: strings are
+copied rather than held by pointer (73 bytes of name and text buffer per
+`RenderState`), and each object holds *two* `RenderState`s, `declared` and
+`presented`, so those buffers are paid for twice. That is 90 bytes per
+`RenderState`, 180 per object, plus a 32-byte `resolved_name` cache and the
+per-object bookkeeping — 224 with the xtensa ABI's padding.
+
+Both decisions are still right; the ADR simply never multiplied them out.
+14KB of the ESP32-S3's 512KB internal SRAM is affordable and the headroom
+argument survives, but the honest figure is 14KB of static storage, not "a
+couple of KB." **Anyone raising `KF_SCENE_MAX_OBJECTS` should price it at
+224 bytes a slot** — 128 objects would be 28KB, which is a real decision
+rather than a free one.
+
+**The array also spent its first life in `.data` rather than `.bss`, and no
+longer does.** Every field in `SceneObject` is zero-initialised except one:
+`RenderState::fg` defaulted to `KF_WHITE` (`0xFFFF`). A single non-zero
+field anywhere in the array means the array is not all-zero, so the
+toolchain cannot leave it to the runtime's boot-time zero-fill — the full
+14,336 bytes of initial contents had to be stored in flash and copied into
+RAM at boot. `.bss` costs RAM only; `.data` costs the same RAM *plus* an
+equal number of bytes of flash, permanently.
+
+The fix was not to change the default colour. `kf_scene_add_text()` takes
+no colour arguments, so that initialiser is the entire contract behind
+`kf.text("HI")` with no `:color()` call, and zeroing it would have silently
+turned every un-coloured label black-on-black. Instead the white is applied
+at runtime, by `kf_scene_add_text()` itself, leaving the static array
+all-zero. Same rendering, `.bss` placement:
+
+| | Section | `g_objects` | Firmware image |
+|---|---|---|---|
+| Before | `.data` (`d`) | 14,336 bytes | 683,760 |
+| After | `.bss` (`b`) | 14,336 bytes | 669,408 |
+
+**14,352 bytes of flash recovered, RAM unchanged**, verified by
+`xtensa-esp32s3-elf-nm` on `kamiframe-firmware.elf` from a real `idf.py
+build` either side of the change. The behaviour that was at risk is now
+pinned by `run_scene_check()`'s check 5
+(`simulator/src/headless/headless_main.cpp`), which memcmps a default text
+object against `kf_text_draw(..., KF_WHITE, KF_BLACK)`; it was confirmed to
+fail against the naive "just default `fg` to `KF_BLACK`" version, and no
+other check in the suite — including both golden checksums — noticed that
+change at all.
 
 **What happens when a game declares more items than the scene holds.**
 `kf_scene_add_sprite()` / `_add_text()` / `_add_box()` return `0` — never a

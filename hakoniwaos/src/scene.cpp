@@ -36,6 +36,17 @@ constexpr kf_color kPlaceholderColor = KF_RGB(255, 0, 128);
  * consult a resolved kf_sprite's own width/height. */
 constexpr int16_t kSpriteSize = 48;
 
+/* What a text object paints in until something calls kf_scene_set_colors().
+ * kf_scene_add_text() takes no colour arguments, so this IS the default a
+ * script sees from `kf.text("HI")` with no `:color()` call -- white on the
+ * KF_BLACK that RenderState::bg already defaults to. Applied by
+ * kf_scene_add_text() at runtime rather than as RenderState::fg's own
+ * initialiser, purely so g_objects stays zero-initialised; both comments
+ * carry the detail, and run_scene_check()'s check 5
+ * (simulator/src/headless/headless_main.cpp) fails if this stops being what
+ * a default text object actually paints. */
+constexpr kf_color kDefaultTextFg = KF_WHITE;
+
 constexpr kf_rect kEmptyRect = {0, 0, 0, 0};
 constexpr kf_rect kFullScreenRect = {
     0, 0, static_cast<int16_t>(KF_DISPLAY_WIDTH),
@@ -68,7 +79,15 @@ struct RenderState {
     bool mirrored = false;
 
     char text[KF_SCENE_TEXT_MAX + 1] = {};
-    kf_color fg = KF_WHITE;
+    /* Deliberately zero (KF_BLACK), NOT the white a text object actually
+     * defaults to -- kf_scene_add_text() applies that white at runtime, and
+     * kDefaultTextFg below is where the reason lives. Every other field in
+     * this struct and in SceneObject is already zero-initialised, so this
+     * one initialiser decides whether g_objects lands in .bss (zero-filled
+     * at boot, RAM only) or .data (baked into flash and copied to RAM at
+     * boot, costing 14,336 bytes of flash on top of the RAM). Anything
+     * added here later should stay zero for the same reason. */
+    kf_color fg = KF_BLACK;
     /* Box objects only ever read `fg`; `bg` exists for text's two-colour
      * cell (kf_text_draw()) and is simply unused on a box object -- see
      * kf_scene_set_colors()'s own comment. */
@@ -481,6 +500,22 @@ kf_scene_id kf_scene_add_text(const char *str) {
     SceneObject *obj = find(id);
     copy_truncated(obj->declared.text, sizeof(obj->declared.text), str, id,
                    "text");
+    /* Applied here rather than as RenderState::fg's initialiser so that
+     * g_objects stays all-zero at load time and therefore lands in .bss --
+     * see RenderState::fg's own comment for the 14,336 bytes of flash that
+     * buys. This is the only assignment that makes the difference: a box
+     * gets its fg from kf_scene_add_box()'s required argument, and a sprite
+     * ignores fg entirely (kf_scene_set_colors()'s contract, kf/scene.h),
+     * so text is the one kind with no other source for it.
+     *
+     * `presented.fg` is deliberately left at zero: it is only ever read by
+     * changed(), and a brand-new object is already reported as changed by
+     * the presented.visible false -> declared.visible true transition
+     * allocate() sets up (see RenderState::visible's own comment). The one
+     * case where fg could decide changed() by itself -- an object created
+     * and hidden before its first commit, with empty text -- produces two
+     * empty rectangles, which add_candidate() drops. */
+    obj->declared.fg = kDefaultTextFg;
     return id;
 }
 
