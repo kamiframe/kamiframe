@@ -56,6 +56,21 @@ target_link_libraries(kamiframe_host_common
 # directly, so a different pack legitimately produces different numbers.
 # Point it back at the default before trusting a test run:
 #   cmake -B build -DKF_ASSET_PACK=${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack
+#
+# NOT changed to match the device. ports/esp32/main/CMakeLists.txt flashes
+# examples/creature_demo/assets.kfpack (94 entries, real art, animated
+# idles), not this hello_sprite pack -- see that file's own comment on the
+# switch. This default stays put deliberately: the golden checksums
+# headless_determinism/headless_fullscreen/asset_pipeline_check are pinned
+# against IT, and moving it would break every one of them for no gain here.
+# The practical upshot is that from that switch onward, a desktop build run
+# with no override shows the placeholder rectangle (kPlaceholderColor,
+# kf_creature_screen.cpp) where a real device shows an animated creature --
+# not a bug, just this default and the device's flashed pack having
+# diverged. To see what the device sees:
+#   cmake -B build -DKF_ASSET_PACK=${CMAKE_SOURCE_DIR}/examples/creature_demo/assets.kfpack
+# then rebuild -- and see the EXPECT TESTS TO FAIL note just above, because
+# that command has the exact same effect this whole comment is about.
 set(KF_ASSET_PACK "${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets.kfpack"
     CACHE FILEPATH "Asset pack the host builds mount by default")
 
