@@ -18,8 +18,10 @@ pet session, and ADR 0026 for the DS3231 real-time clock driver.
 This directory used to be a documented skeleton, never compiled. It now
 builds and boots: `idf.py build` produces a real `kamiframe-firmware.elf`/
 `.bin` for the esp32s3 target, `hakoniwaos`'s entire source list compiles
-through the real xtensa cross-compiler as part of that build, and
-`wokwi-cli .` (Chris's own machine, his own token -- this environment
+through the real xtensa cross-compiler as part of that build. Which panel it
+drives is a build-time choice, `idf.py -DKF_PANEL=st7789 build` (default
+`ili9341`) -- see "What ADR 0039 added" below and `main/CMakeLists.txt`'s own
+comment on `KF_PANEL`. And `wokwi-cli .` (Chris's own machine, his own token -- this environment
 cannot generate one) ran an earlier hello-world build of that same binary
 through Wokwi's `board-esp32-s3-devkitc-1` simulation and captured a clean
 boot: real ROM bootloader output, into `app_main()`, printing every line
@@ -396,6 +398,37 @@ These are already true and need to stay true:
   stay linked in, just unreachable -- see
   `docs/architecture/adr-0035-kfdbg-mutate-gate.md`'s "Decision" #4 for
   why. Not run against real hardware.
+
+## What ADR 0039 added
+
+- `kf_panel_profile.h` gained `bool has_read_line`, true for the ILI9341
+  (real SDO, wired to GPIO6 for KFDBG SCANLINE) and false for the ST7789
+  (its eight-pin header has no SDO at all). Whether GPIO6 is a read line or
+  the backlight is now a property of the active panel profile, not a side
+  effect of whether the debug bridge happens to be compiled in.
+- **A real, previously-nonexistent bug fixed:** grep found no caller of
+  `kf_display_set_backlight()` anywhere in the tree before this task. On the
+  ILI9341 that was invisible -- its LED pin is soldered straight to 3V3 --
+  but the ST7789's BL pin is real, and a build against that profile would
+  have booted, initialised the panel correctly, and shown nothing: a black
+  screen with a perfectly healthy log. `kf_display_init()` now calls it,
+  once, right after the panel is fully brought up, whenever this build owns
+  the pin.
+- `KFDBG SCANLINE` and `KFDBG VSYNC` now refuse with `err` (naming the
+  panel) on a profile with no read line, instead of reading a MISO pin that
+  was never reserved on the bus and reporting whatever a floating input
+  returns.
+- New CMake cache variable `KF_PANEL` (`ili9341` default, or `st7789`),
+  validated at configure time: `idf.py -DKF_PANEL=st7789 build`.
+- **`idf.py build` succeeded, zero warnings, in BOTH panel configurations**
+  -- `kamiframe-firmware.bin` at 661,104 bytes (ili9341) and 660,944 bytes
+  (st7789), 58% of the app partition free either way. `-DKF_PANEL=bogus`
+  confirmed to fail `cmake` configure with a named error rather than a
+  compiler error inside a header.
+- **Not run against real hardware.** The ST7789 profile has still never
+  driven a physical panel -- the first unit was faulty and was returned
+  (ADR 0024). See `docs/architecture/adr-0039-panel-read-line-and-backlight.md`'s
+  "Not verified" section.
 
 ## What still has to be written
 

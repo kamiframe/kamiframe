@@ -1,17 +1,19 @@
 ## SPDX-License-Identifier: Apache-2.0
 ## Copyright the Kamiframe contributors.
 ##
-## ESP-IDF project entry point. Builds a plain hello-world (ADR 0019) --
-## Phase 1's second named hardware exit trigger, see README.md in this
-## directory. The ESP32 HAL backends kf_app_frame() needs still do not
-## exist; that is Phase 1b, which this slice's own README section explains
-## starts only after this hello-world boots.
+## ESP-IDF project entry point. ADR 0019's hello-world (Phase 1's second
+## named hardware exit trigger, see README.md in this directory) is gone --
+## Phase 1b built the real ESP32 HAL backends kf_app_frame() needs, and this
+## now builds the whole firmware: app_main.cpp's real kf_app_init()/
+## kf_app_frame() loop against those backends in ../hal/, not a stub. See
+## ../main/CMakeLists.txt for what actually gets compiled and why.
 ##
 ##     cd ports/esp32
 ##     idf.py set-target esp32s3
-##     idf.py build
-##     idf.py flash monitor         # needs real hardware
-##     idf.py wokwi                 # needs a WOKWI_CLI_TOKEN, see wokwi.toml
+##     idf.py build                       # KF_PANEL defaults to ili9341
+##     idf.py -DKF_PANEL=st7789 build     # the primary panel -- ADR 0039
+##     idf.py flash monitor               # needs real hardware
+##     idf.py wokwi                       # needs a WOKWI_CLI_TOKEN, see wokwi.toml
 
 cmake_minimum_required(VERSION 3.20)
 

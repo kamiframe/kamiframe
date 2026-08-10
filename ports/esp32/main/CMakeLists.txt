@@ -203,3 +203,34 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0
     LUA_32BITS
 )
+
+## KF_PANEL (ADR 0039): a normal CMake cache variable, not a #define someone
+## has to remember to edit, selecting which table in
+## ../hal/kf_panel_profile.h this build drives. Passed on the command line:
+##
+##     idf.py -DKF_PANEL=st7789 build      # the primary panel
+##     idf.py -DKF_PANEL=ili9341 build     # explicit default, same as a
+##                                            plain `idf.py build`
+##
+## Defaults to ili9341 -- the only panel that has ever put a pixel on glass
+## (ADR 0027) -- for the same "do not default to a black screen on the one
+## board in the world running this firmware" reasoning kf_panel_profile.h's
+## own KF_PANEL_PROFILE fallback already states. Tasks 5-8 of the hardware
+## bring-up plan all build with -DKF_PANEL=st7789 explicitly, since the
+## ST7789 is the panel actually going on the bench.
+##
+## Validated here, at CMake configure time, rather than left for the
+## compiler to discover: a typo (e.g. KF_PANEL=st7889) that reached
+## kf_panel_profile.h as KF_PANEL_PROFILE=kf_panel_st7889 would fail with
+## "use of undeclared identifier kf_panel_st7889" deep inside a header,
+## which reads like a code bug, not a command-line mistake. Catching it here
+## turns that into one clear FATAL_ERROR naming the actual typo instead.
+set(KF_PANEL "ili9341" CACHE STRING "Panel profile: ili9341 or st7789")
+if(NOT KF_PANEL STREQUAL "ili9341" AND NOT KF_PANEL STREQUAL "st7789")
+    message(FATAL_ERROR
+        "KF_PANEL must be 'ili9341' or 'st7789', got '${KF_PANEL}' -- see "
+        "../hal/kf_panel_profile.h for the profiles this can select.")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    KF_PANEL_PROFILE=kf_panel_${KF_PANEL}
+)
