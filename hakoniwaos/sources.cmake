@@ -20,6 +20,7 @@ set(HAKONIWAOS_SRCS
     src/pet.cpp
     src/creature.cpp
     src/assets.cpp
+    src/scene.cpp
     src/app.cpp
     src/demo.cpp        # placeholder content, deleted when the app loader lands
 )
