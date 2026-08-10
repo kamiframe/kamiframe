@@ -136,10 +136,27 @@ def generate_one(
         lua_rel_path = lua_path.relative_to(repo_root).as_posix()
     except ValueError:
         lua_rel_path = str(lua_path)
-    source = lua_path.read_text(encoding="utf-8")
+    # newline="" on the read and newline="\n" on the write, both deliberate,
+    # because this generator's output is BYTE-compared by cmd_check() below.
+    #
+    # Read: newline="" disables universal-newline translation, so a .lua file
+    # is embedded exactly as it sits on disk. The repo pins every text file to
+    # LF (.gitattributes `* text=auto eol=lf`), so that is what this sees on
+    # every platform -- and if someone ever does check in a CRLF .lua, the
+    # right outcome is that the drift test notices rather than that the two
+    # platforms silently disagree about what was embedded.
+    #
+    # Write: newline="\n" stops Python's text mode translating \n to the
+    # platform line ending. Without it, on Windows only, write_text() emits
+    # CRLF while the checked-in header is LF, and filecmp's byte comparison
+    # can NEVER pass -- which is exactly how this shipped: green on Linux and
+    # macOS, red on the Windows CI job, with a message ("content differs from
+    # its .lua source") that points at the .lua file rather than at the
+    # platform. Nothing about the source had drifted at all.
+    source = lua_path.read_text(encoding="utf-8", newline="")
     header_text = render_header(source, name, lua_rel_path)
     header_path.parent.mkdir(parents=True, exist_ok=True)
-    header_path.write_text(header_text, encoding="utf-8")
+    header_path.write_text(header_text, encoding="utf-8", newline="\n")
 
 
 def cmd_regenerate(repo_root: pathlib.Path) -> int:

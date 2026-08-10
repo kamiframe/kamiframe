@@ -8,3 +8,11 @@
 *.wav binary
 *.bin binary
 *.kfa binary
+
+# Asset packs. Marked explicitly rather than left to `text=auto`'s
+# NUL-byte heuristic: a .kfpack is raw RGB565 or 8bpp indexed pixel data,
+# and if a pack ever happened to carry no NUL inside git's sample window it
+# would be line-ending-normalised on a Windows checkout -- silently
+# corrupting every sprite in it. It works today by luck of the header
+# layout, and "works by luck" is not a property to ship 556KB of art on.
+*.kfpack binary
