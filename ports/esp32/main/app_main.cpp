@@ -95,6 +95,7 @@
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
 
+#include "kf_app_post_frame.h"
 #include "kf_dbg_bridge.h"
 #include "kf_lua_demo_creature_script.h"
 #include "kf_lua_port.h"
@@ -122,6 +123,16 @@ constexpr const char *TAG = "app_main";
  * visible over a few minutes) without flooding the monitor. */
 constexpr uint64_t kPetLogIntervalUs = 10ull * 1000ull * 1000ull;
 
+/* Set once per loop iteration by app_main(), bracketing exactly the segment
+ * kf_app_post_frame.h's own comment describes -- the work a PORT does after
+ * kf_app_frame() returns. 0 before the first iteration completes. No lock:
+ * written and read on the same thread (the main frame-loop thread), always
+ * written before KFDBG STATE could possibly read it within one iteration --
+ * same single-thread reasoning kf_dbg_bridge.h already gives for
+ * kf_dbg_input_mask()/kf_dbg_time_multiplier(), just running the other
+ * direction (a port exposing state to the bridge, not the reverse). */
+uint32_t g_post_frame_us = 0;
+
 void log_pet_state() {
     const kf_pet_state *pet = kf_pet_session_state();
     KF_LOGI(TAG,
@@ -138,6 +149,11 @@ void log_pet_state() {
 }
 
 } // namespace
+
+/* Definition for kf_app_post_frame.h's declaration -- linkage (extern "C")
+ * comes from that header's own declaration, already seen by this point via
+ * the #include above; nothing further needed here for it to match. */
+uint32_t kf_app_post_frame_us(void) { return g_post_frame_us; }
 
 extern "C" void app_main(void) {
     /* Kept from ADR 0019's hello-world verbatim: this banner is what Chris's
@@ -286,6 +302,19 @@ extern "C" void app_main(void) {
         last_frame_us = now_us;
         const uint32_t multiplier = kf_dbg_time_multiplier();
 
+        /* Brackets exactly the segment kf_app_post_frame.h describes: the
+         * work a PORT does after kf_app_frame() returned above -- pet
+         * session, screen nav (which is what actually draws the creature;
+         * see hakoniwaos/src/app.cpp's kf_draw_counters_reset() comment,
+         * ADR 0036, for why Core cannot see or time this itself), LVGL's
+         * pump when it runs, and Lua's own frame. Task 7 reads this
+         * alongside cpu_us (kf_frame_stats, timed separately inside
+         * kf_app_frame() by Core) to see the two segments apart rather than
+         * folded into one number that would answer neither "is the render
+         * path over budget" nor "is the rest of the loop over budget"
+         * precisely. */
+        const uint64_t post_frame_start_us = kf_time_mono_us();
+
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_screen_nav_frame(real_dt_ms);
         if (kf_screen_nav_wants_lvgl()) {
@@ -298,6 +327,9 @@ extern "C" void app_main(void) {
          * delta deliberately does not get the multiplier folded in, per
          * this loop's header comment. */
         kf_lua_port_frame(0);
+
+        g_post_frame_us = static_cast<uint32_t>(kf_time_mono_us() -
+                                                  post_frame_start_us);
 
         if (now_us >= next_pet_log_us) {
             log_pet_state();

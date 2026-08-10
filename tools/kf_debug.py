@@ -596,6 +596,28 @@ def cmd_shot(link, args):
     print(f"wrote {out_path} ({FB_WIDTH}x{FB_HEIGHT})")
 
 
+def _format_budget_line(obj):
+    """One extra line summarising the frame-budget fields KFDBG STATE
+    carries (ADR 0036: draw/transfer/cpu/post time, dirty-rect area, pixel
+    counts by bucket, and the rolling summary) -- on top of, not instead
+    of, the per-key dump _print_state_line() already prints, since those
+    already show every field including these; this just puts the numbers
+    Chris actually came here to sanity-check on one line together.
+
+    .get() with a "?" default throughout, not obj["draw_us"] etc.: an
+    older firmware on the bench predates every one of these keys (a real
+    bring-up scenario, not a hypothetical), and a KeyError here would read
+    as a hardware fault rather than a version mismatch."""
+    g = lambda key: obj.get(key, "?")  # noqa: E731
+    return (f"budget: draw={g('draw_us')}us xfer={g('transfer_us')}us "
+            f"cpu={g('cpu_us')}us post={g('post_us')}us "
+            f"rects={g('dirty_rects')} ({g('dirty_pct')}%) "
+            f"px={g('opaque_px')}+{g('keyed_px')} "
+            f"over_budget={g('over_budget')} worst={g('worst_us')}us "
+            f"p99={g('p99_us')}us frames={g('frames')} "
+            f"over={g('over_budget_frames')}")
+
+
 def _print_state_line(payload, as_json):
     text = payload.decode("utf-8", "replace")
     if as_json:
@@ -610,6 +632,7 @@ def _print_state_line(payload, as_json):
         return
     for key, value in obj.items():
         print(f"{key}: {value}")
+    print(_format_budget_line(obj))
 
 
 def cmd_state(link, args):
@@ -854,6 +877,22 @@ def cmd_jump(link, args):
     print(f"jump -- {payload.decode('utf-8', 'replace')}")
 
 
+def _format_watch_summary(obj):
+    """The curated line `watch` prints once per poll -- fps/cpu_us/post_us/
+    dirty_rects (ADR 0036), the frame-budget numbers this command exists to
+    watch move in real time, not the full key dump `state` prints: this is
+    the command Chris will actually stare at for minutes at a time during
+    bring-up, and every other field (pet stats, vsync counters, ...) is a
+    `kf_debug.py state` away and would just make each line harder to read
+    at a glance here. .get() with a "?" default, not obj["fps"] etc., for
+    the same reason _format_budget_line() gives: older firmware on the
+    bench predates these keys, and a KeyError mid-watch would look like the
+    device dropped off the wire, not like a version mismatch."""
+    g = lambda key: obj.get(key, "?")  # noqa: E731
+    return (f"fps={g('fps')} cpu_us={g('cpu_us')} "
+            f"post_us={g('post_us')} rects={g('dirty_rects')}")
+
+
 def cmd_watch(link, args):
     print("watching state, Ctrl-C to stop", file=sys.stderr)
     try:
@@ -861,8 +900,7 @@ def cmd_watch(link, args):
             payload = _expect(link, "KFDBG STATE", "json")
             text = payload.decode("utf-8", "replace")
             try:
-                obj = json.loads(text)
-                summary = " ".join(f"{k}={v}" for k, v in obj.items())
+                summary = _format_watch_summary(json.loads(text))
             except ValueError:
                 summary = text
             print(f"{time.strftime('%H:%M:%S')} {summary}")

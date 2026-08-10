@@ -33,6 +33,8 @@ Usage:
 
 import argparse
 import base64
+import contextlib
+import io
 import json
 import struct
 import sys
@@ -367,6 +369,78 @@ def test_mutate_gate_rejection_is_actionable():
               "KF_DBG_MUTATE_ENABLE" in str(e))
 
 
+# The full ADR 0036 key set a real STATE reply carries, on top of the
+# pre-existing fields test_state_and_pong_are_plain_text() above already
+# covers -- used by both tests below, once with every value present and
+# once with all of it stripped out to simulate older firmware.
+_BUDGET_KEYS = {
+    "draw_us": 115, "transfer_us": 923, "cpu_us": 1038, "post_us": 42,
+    "dirty_rects": 1, "dirty_pct": 3, "opaque_px": 2304, "keyed_px": 2304,
+    "over_budget": False, "worst_us": 1200, "p99_us": 1100,
+    "frames": 300, "over_budget_frames": 0,
+}
+
+
+def _state_args():
+    return argparse.Namespace(json=False)
+
+
+def test_state_budget_line_with_every_key_present():
+    print("`state`'s human output gains a budget line carrying ADR 0036's "
+          "new fields")
+    obj = {"stage": 2, "hunger_mp": 50000, **_BUDGET_KEYS}
+    link = FakeLink(reply_type="json",
+                     reply_payload=json.dumps(obj).encode("utf-8"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        kfd.cmd_state(link, _state_args())
+    text = out.getvalue()
+    check("per-key dump still prints the pre-existing fields",
+          "stage: 2" in text)
+    check("a budget line is printed",
+          "budget:" in text)
+    for key, value in _BUDGET_KEYS.items():
+        check(f"budget line carries {key}", str(value) in text)
+
+
+def test_state_budget_line_missing_keys_does_not_crash():
+    print("`state` against firmware that predates ADR 0036 prints '?' "
+          "instead of raising KeyError")
+    obj = {"stage": 0, "hunger_mp": 100000}  # none of _BUDGET_KEYS present
+    link = FakeLink(reply_type="json",
+                     reply_payload=json.dumps(obj).encode("utf-8"))
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            kfd.cmd_state(link, _state_args())
+        check("cmd_state does not raise when budget keys are absent", True)
+    except KeyError:
+        check("cmd_state does not raise when budget keys are absent", False)
+        return
+    text = out.getvalue()
+    check("missing budget fields print '?' rather than being omitted",
+          "draw=?us" in text and "cpu=?us" in text and "post=?us" in text)
+
+
+def test_watch_summary_formatter():
+    print("_format_watch_summary() carries fps/cpu_us/post_us/rects, and "
+          "does not raise when they are absent")
+    full = {"fps": "30.0", "cpu_us": 1038, "post_us": 42, "dirty_rects": 1}
+    line = kfd._format_watch_summary(full)
+    check("full object formats every field",
+          line == "fps=30.0 cpu_us=1038 post_us=42 rects=1")
+
+    empty = {"stage": 0}  # simulates firmware older than ADR 0036
+    try:
+        line = kfd._format_watch_summary(empty)
+        check("missing keys do not raise", True)
+    except KeyError:
+        check("missing keys do not raise", False)
+        return
+    check("missing keys format as '?'",
+          line == "fps=? cpu_us=? post_us=? rects=?")
+
+
 def main():
     test_shot_roundtrip()
     test_crc_mismatch_is_caught()
@@ -378,6 +452,9 @@ def main():
     test_care_command_building()
     test_jump_command_building()
     test_mutate_gate_rejection_is_actionable()
+    test_state_budget_line_with_every_key_present()
+    test_state_budget_line_missing_keys_does_not_crash()
+    test_watch_summary_formatter()
 
     print()
     if FAILURES:

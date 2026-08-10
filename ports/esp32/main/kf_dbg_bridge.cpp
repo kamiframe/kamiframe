@@ -119,6 +119,7 @@
 
 #if KF_DBG_BRIDGE_ENABLE
 
+#include "kf_app_post_frame.h"
 #include "kf_dbg_codec.h"
 #include "kf_esp_display_diag.h"
 #include "kf_esp_display_vsync.h"
@@ -518,12 +519,40 @@ void handle_state() {
     kf_esp_display_vsync_get_stats(&vsync_rects_written, &vsync_rects_waited,
                                     &vsync_avg_wait_us);
 
+    /* post_us: the segment Core cannot see or time itself -- everything a
+     * PORT draws after kf_app_frame() returns (the creature, on this
+     * build). See kf_app_post_frame.h and app_main.cpp's own comment on
+     * where this is measured. ADR 0036 is the reason it exists at all:
+     * before that task, there was no wire field carrying ANY of the budget
+     * numbers below except fps/frame_us, and keyed_px would have read 0 on
+     * every device regardless of what this line reports. */
+    const uint32_t post_us = kf_app_post_frame_us();
+
     /* Single-line, minified JSON -- see the ADR for the exact key set;
      * field names are not fixed by the protocol spec (tools/kf_debug.py
      * prints whatever keys arrive rather than expecting specific ones), so
      * this is a firmware-side choice, documented once here and in the ADR
-     * rather than duplicated in a comment at every field. */
-    char json[512];
+     * rather than duplicated in a comment at every field.
+     *
+     * cpu_us duplicates frame_us's value under ADR 0036's new name --
+     * frame_us stays exactly as it was (existing hosts and habits depend on
+     * it, per this task's own brief), cpu_us is the name Tasks 5-8 and
+     * tools/kf_debug.py's new budget line actually read, matching kf/
+     * app.h's kf_frame_stats::cpu_us field name instead of this file's
+     * older, unrelated one.
+     *
+     * 1024, not 512: the literal text of the format string below (every
+     * key name, quote, colon and comma, no substitutions) is 430 bytes;
+     * the worst-case width of every substituted value -- uint64_t fields
+     * as 20 digits, uint32_t/size_t fields as 10, the two %s fields as
+     * "false" (5) -- sums to 342; plus the NUL snprintf always writes,
+     * that is 773 in the worst case ADR 0036 measured this against. 512
+     * fit the OLD 16-field JSON with room to spare but not this one -- the
+     * thirteen new fields alone add ~206 bytes of literal key text before
+     * a single digit is counted. 1024 clears the worst case with margin
+     * for a future field or two without the buffer becoming the next
+     * thing that needs raising. */
+    char json[1024];
     const int n = std::snprintf(
         json, sizeof json,
         "{\"stage\":%d,\"hunger_mp\":%lu,\"happiness_mp\":%lu,\"energy_mp\":%lu,"
@@ -531,7 +560,11 @@ void handle_state() {
         "\"time_multiplier\":%lu,\"heap_free_internal\":%zu,"
         "\"heap_free_psram\":%zu,\"fps\":%lu.%lu,\"frame_us\":%lu,"
         "\"vsync_enabled\":%s,\"vsync_rects_written\":%lu,"
-        "\"vsync_rects_waited\":%lu,\"vsync_avg_wait_us\":%lu}",
+        "\"vsync_rects_waited\":%lu,\"vsync_avg_wait_us\":%lu,"
+        "\"draw_us\":%lu,\"transfer_us\":%lu,\"cpu_us\":%lu,\"post_us\":%lu,"
+        "\"dirty_rects\":%u,\"dirty_pct\":%u,\"opaque_px\":%lu,"
+        "\"keyed_px\":%lu,\"over_budget\":%s,\"worst_us\":%lu,"
+        "\"p99_us\":%lu,\"frames\":%llu,\"over_budget_frames\":%llu}",
         static_cast<int>(pet->stage), static_cast<unsigned long>(pet->hunger_mp),
         static_cast<unsigned long>(pet->happiness_mp),
         static_cast<unsigned long>(pet->energy_mp),
@@ -545,7 +578,20 @@ void handle_state() {
         vsync_enabled ? "true" : "false",
         static_cast<unsigned long>(vsync_rects_written),
         static_cast<unsigned long>(vsync_rects_waited),
-        static_cast<unsigned long>(vsync_avg_wait_us));
+        static_cast<unsigned long>(vsync_avg_wait_us),
+        static_cast<unsigned long>(last->draw_us),
+        static_cast<unsigned long>(last->transfer_us),
+        static_cast<unsigned long>(last->cpu_us),
+        static_cast<unsigned long>(post_us),
+        static_cast<unsigned>(last->dirty_rect_count),
+        static_cast<unsigned>(last->dirty_percent),
+        static_cast<unsigned long>(last->opaque_pixels),
+        static_cast<unsigned long>(last->keyed_pixels),
+        last->over_budget ? "true" : "false",
+        static_cast<unsigned long>(summary.worst_us),
+        static_cast<unsigned long>(summary.p99_us),
+        static_cast<unsigned long long>(summary.frames),
+        static_cast<unsigned long long>(summary.over_budget_frames));
 
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
         KF_LOGE(TAG, "STATE: JSON build failed or truncated (n=%d, cap=%zu)", n,
