@@ -21,6 +21,95 @@ ticking at its own ~10fps regardless of what the display is doing.
 (stdlib Python, no Pillow), CTest via `kamiframe-headless --verify-*` check
 modes.
 
+## Status: all six tasks COMPLETE, 2026-08-10
+
+| Task | Commits | Measured result |
+|---|---|---|
+| 1 — format and dual-format reader | `e06b643`, fixes `4cf367d` `23600b1` `6591a7e` `5d10489` | reader parses both formats |
+| entry cap raise (unplanned) | `088ced1` | `KF_ASSETS_MAX_ENTRIES` 64 → 512 |
+| 2 — blitter | `8f2faa7` | indexed blit pixel-identical to RGB565 |
+| 3 — convert default pack | `918d487` | 2,116 → **1,156 B**, golden checksums unmoved |
+| 4 — ingest packs animations | `c24e0c5`, `4fc5d71` | creature pack 438,056 → **224,496 B** |
+| 5 — drop the `_01` suffix | `2bd9a58` | longest entry name 26 chars of 31 |
+| 6 — playback clock | `2f9dcb4`, `c688769` | 37/37, dirty-rect assertions unchanged |
+
+**The losslessness bet paid off.** Both golden rendering checksums stayed
+byte-identical through the whole migration, which is the strongest available
+proof that 8bpp costs nothing in quality on this art.
+
+**Anyone picking this up should know:** the format works and plays frames, but
+at the time of writing every *shipped* sprite is still single-frame, so the
+playback path is a no-op against the art in the repo. Animated art is a
+separate generation spend, not a code gap.
+
+## Decisions taken DURING execution — not in the original plan
+
+Recorded here because the plan is what the next implementer reads. Do not
+re-litigate these.
+
+**KFDBG gating: split observe from mutate** (Chris, 2026-08-10). The old
+boundary was accidental — `KF_DBG_INPUT_INJECT_ENABLE` gated only button
+injection while `ADVANCE`/`RESET`/`MULT`/care/jump ran ungated, so switching off
+injection gave false assurance that a serial cable could not cheat the pet.
+Now: `KF_DBG_BRIDGE_ENABLE` gates read-only commands (`PING`, `SHOT`, `STATE`,
+`SCANLINE`, `VSYNC`, `WATCH`); a mutate flag gates everything that changes the
+pet or simulation (`FEED`, `PLAY`, `REST`, `BATH`, `FLUSH`, `JUMP`, `ADVANCE`,
+`RESET`, `MULT`, `BTN`). Dev builds enable both; release is observe-only or off.
+
+**Stop generating sleeping poses.** `KF_CREATURE_POSE_SLEEPING` is unreachable —
+Core has no sleep field, so nothing can select it. Roughly 140 generations were
+already spent on sleeping art the game cannot display. Do not generate more
+until the sleep plan lands.
+
+**Adults are deferred and split across two billing periods** (Chris,
+2026-08-10). 19 forms at ~82 generations each is ~1,558, plus ~632 to animate
+the roster, against ~1,127 remaining. Rather than scope down or top up, the
+work splits across two monthly allowances at no extra cost.
+
+**Animation scope: idle first.** One `animate_object` v3 call covering the three
+directions the game uses costs ~5 generations and returns 8-16 frames, so
+animating the idle pose of every creature that has art is ~35 generations.
+That is the cheapest way to make the whole game feel alive.
+
+**Measured PixelLab costs** (clean, one call at a time, balance read either
+side — see `.superpowers/sdd/pixellab-cost-experiment*.md`):
+
+| Tool | Cost |
+|---|---|
+| `create_8_direction_object` | 20 |
+| `create_object_state` | 20 |
+| `create_character` v3 (base) | 2 |
+| `create_character_state` | 20 |
+| `animate_object` v3, 3 directions | ~5 |
+
+Two cost-reduction hypotheses were tested and **both failed**: pose variants on
+the cheap `create_character` path still cost 20, and animation frames cannot
+serve as standalone poses (they read as transitional, and a back view has no
+face to emote with). Do not re-test these without new information.
+
+**Do not measure generation cost with two agents running.** They share one
+global counter and each will attribute the other's spend to itself. This
+produced a figure that was wrong by 14x before it was caught.
+
+## READ THIS BEFORE DISPATCHING ANY TASK FROM THIS PLAN
+
+**This document's code listings are copied verbatim by implementers, and it has
+manufactured five defects that way.** Three were comments contradicting their
+own code; one was a real `ValueError` — `make_indexed_asset(..., has_color_key=True)`
+with no `color_key=` — that Task 4's implementer hit at runtime; one was
+`kf_arena_init_all()` called four times against an assert that fires on the
+second call, which cost two implementers time because Task 1 fixed it in the
+source and nobody fixed it here.
+
+Two rules follow, and the second matters more:
+
+1. When a review finds a bad comment or pattern, grep **this file** as well as
+   the source tree. A defect here costs one defect *per remaining task*.
+2. **Update this plan when a decision is made, before dispatching the task it
+   affects** — not afterwards, and not by appending amendments to a generated
+   brief. Briefs are generated *from* this file, so a stale line here is
+   re-served to every implementer that follows.
+
 ## The two decisions already taken, and why
 
 **8bpp indexed, not 4bpp.** Measured against the real art in

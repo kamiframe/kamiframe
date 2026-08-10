@@ -8,24 +8,46 @@
 
 **Tech Stack:** C++17, CMake, the existing `kf_blit`/`kf_fb_mark_dirty` framebuffer path, `kf/font.h` bitmap text (ADR 0010), CTest via `kamiframe-headless --verify-*` check modes.
 
-## Status as of 2026-08-09
+## Status: COMPLETE as of 2026-08-10
 
-Tasks 1, 2 and 3 are **done, committed and reviewed clean**, along with a
-mirrored blit added as a prerequisite for Task 4. 26/26 tests pass, Core is
-heap-free.
+All five planned tasks are done, reviewed, and their review findings fixed and
+re-reviewed. Four further tasks were added during execution because watching the
+simulator revealed gaps the plan had not anticipated.
 
-| Task | Commits |
-|---|---|
-| 1 — pose selection | `41d7d4c` |
-| 2 — sprite naming | `702eb0b`, fixed by `aafa753` |
-| 3 — the wander | `1a2970c` |
-| mirrored blit | `cb08dff` |
+| Task | Commits | Note |
+|---|---|---|
+| 1 — pose selection | `41d7d4c` | |
+| 2 — sprite naming | `702eb0b`, fixed `aafa753` | defect: emitted `teen`/`adult`, no such sprites exist |
+| 3 — the wander | `1a2970c` | |
+| mirrored blit | `cb08dff` | prerequisite for Task 4 |
+| 4 — screen owns its pixels | `cd05806`, fixed `b0d8b10` | |
+| 5 — mess | `ffde2ce`, fixed `65cc8b2` `33302b8` `a64aa07` | |
+| 6 — care input (unplanned) | `f2a5751` | Task 4 removed the only way to feed the pet |
+| 7 — egg bob, shrine, guide, keys (unplanned) | `79d77d9` `d39fc1e` `c2973f7` | |
+| 8 — debug stage jump (unplanned) | `688c4b3` `7e14a8b` `055d226` | |
+| 9 — cross-workstream fixes (unplanned) | `0ca8059` `2b8c964` `6e1d4fb` `b44241f` `5779c66` | |
 
-**Resume at Task 4.** A fuller handoff — including the review findings, the
-gotchas that cost time, and what is waiting on Chris — lives in
-`.superpowers/sdd/progress.md`. That file is gitignored, so it exists only in
-the worktree where the work was done; this section is the committed copy of
-what a fresh checkout needs to carry on.
+**Superseded by `2026-08-10-animated-indexed-sprites.md`** for anything about
+sprite storage or animation. That plan carries the format migration this one
+deliberately left out.
+
+### The two failure modes this plan taught, both worth carrying forward
+
+**Each piece correct alone, broken where they meet.** Task 8's stage-jump let a
+pet un-die and revert to egg; Task 7's screen assumed neither could happen. The
+result was a shrine painted over a living creature and an egg bobbing outside
+its own field. Neither test suite crossed the boundary. Cross-feature tests are
+the fix, and Task 9 added one.
+
+**Tests that quietly stop testing what they were written for.** Twice. The
+dirty-rect budget check silently began measuring a stationary egg once the egg
+gate landed, and an anti-vacuity assertion turned out to pass with the entire
+drawing path deleted. Both were caught by review, not by failing.
+
+A fuller handoff — review findings, gotchas, and what is waiting on Chris —
+lives in `.superpowers/sdd/progress.md`. That file is gitignored, so it exists
+only in the worktree where the work was done; this section is the committed copy
+of what a fresh checkout needs.
 
 Decisions taken after this plan was first written, all binding:
 
