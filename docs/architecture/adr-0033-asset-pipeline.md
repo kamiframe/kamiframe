@@ -193,6 +193,23 @@ header, and reads the sprite's width/height from the returned struct at
 runtime rather than from compile-time macros (this needed care around
 `-Wsign-conversion`, see the comment in `kf_demo_init()`).
 
+### Superseded in part
+
+`docs/superpowers/plans/2026-08-10-animated-indexed-sprites.md`'s Task 1
+added a third `kf_asset_type`, `ASSET_TYPE_SPRITE_INDEXED` (2), so the claim
+above that `ASSET_TYPE_SPRITE` (0) is "the only type anything loads today" is
+no longer true — `hakoniwaos/src/assets.cpp` decodes both, and
+`kf_assets_get()` returns a `kf_sprite` for either. That plan's Task 3 then
+regenerated `examples/hello_sprite/assets.kfpack` itself, so it now holds
+`test_sprite` as an 8bpp palette-indexed, colour-keyed blob (32 colours, 1156
+bytes) rather than the 2048-byte raw RGB565 blob described above —
+losslessly, per that task's own checksum-guarded proof
+(`headless_determinism`/`headless_fullscreen`'s golden FNV-1a checksums did
+not move). The directory entry shape (52 bytes) and `FORMAT_VERSION` (still
+1) are unchanged — exactly the extension path this ADR's own "Cost to
+change" section predicted: one new `kf_asset_type` value, one `type_meta`
+layout, one decode branch, no format-version bump.
+
 ## Alternatives considered
 
 **A pre-hashed lookup table**, computed by the packer and re-derived by the

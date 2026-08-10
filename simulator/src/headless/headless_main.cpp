@@ -101,6 +101,19 @@
 #error "KF_INDEXED_FIXTURE_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
 #endif
 
+/* run_indexed_asset_check()'s and run_indexed_blit_check()'s RGB565
+ * reference. Before the animated-indexed-sprites plan's Task 3, "the
+ * default pack" (examples/hello_sprite/assets.kfpack) WAS this reference --
+ * both checks mounted it plainly, expecting test_sprite to come back
+ * KF_SPRITE_FORMAT_RGB565. Task 3 converted the default pack to indexed, so
+ * that reference moved to its own permanent, checked-in fixture holding
+ * exactly what the default pack used to: the same test_sprite generator,
+ * packed as ASSET_TYPE_SPRITE. Same reasoning as the two defines above: a
+ * compile-time define private to this target. */
+#ifndef KF_RGB565_FIXTURE_PACK_PATH
+#error "KF_RGB565_FIXTURE_PACK_PATH must be defined by the build -- see simulator/CMakeLists.txt"
+#endif
+
 extern "C" void kf_host_entropy_pin(uint32_t value);
 
 namespace {
@@ -4504,11 +4517,13 @@ int run_lua_creature_check() {
 
 /* Proves the asset pipeline (ADR 0033) end to end: kf_assets_init() mounts
  * and parses the checked-in pack (examples/hello_sprite/assets.kfpack, the
- * same file kf_demo_init() loads "test_sprite" from), kf_assets_get() finds
- * it with the size and color key tools/kf_pack_assets.py --test-sprite
- * always writes, and -- the actual "matches what the packer wrote" proof --
- * its pixel bytes are byte-identical to the pack FILE's own bytes at the
- * offset ITS OWN directory entry names, read directly here with a small,
+ * same file kf_demo_init() loads "test_sprite" from -- ASSET_TYPE_SPRITE_
+ * INDEXED since the animated-indexed-sprites plan's Task 3), kf_assets_get()
+ * finds it with the size, frame count and colour key tools/kf_pack_assets.py
+ * --test-sprite --indexed always writes, and -- the actual "matches what the
+ * packer wrote" proof -- expanding every index through the pack FILE's own
+ * palette bytes reproduces exactly the colour the loaded sprite yields, at
+ * the offset ITS OWN directory entry names, read directly here with a small,
  * independent parse that does not go through kf/assets.cpp at all. That
  * last part matters: without it, this check would only prove kf/assets.cpp
  * agrees with itself, not that it read the file correctly.
@@ -4539,14 +4554,21 @@ int run_asset_check() {
           "kf_assets_get(\"test_sprite\") finds the packed sprite by name");
 
     if (sprite != nullptr) {
+        check(sprite->format == KF_SPRITE_FORMAT_INDEXED8,
+              "the checked-in default pack is now indexed -- see "
+              "docs/superpowers/plans/2026-08-10-animated-indexed-sprites.md");
         check(sprite->width == 32u && sprite->height == 32u,
               "test_sprite is 32x32, the fixed size "
               "tools/kf_pack_assets.py --test-sprite always writes");
+        check(sprite->frame_count == 1u, "test_sprite is a single frame");
         check(sprite->has_color_key, "test_sprite carries a color key");
-        check(sprite->pixels[0] == sprite->color_key,
+        check(sprite->indices[0] == KF_SPRITE_KEY_INDEX,
               "the sprite's own corner pixel (outside the body ellipse in "
-              "the generator's math) reads back as the color key -- a real "
-              "decoded pixel, not zeroed or garbage memory");
+              "the generator's math) reads back as the colour-key INDEX -- a "
+              "real decoded pixel, not zeroed or garbage memory");
+        check(sprite->palette[KF_SPRITE_KEY_INDEX] == sprite->color_key,
+              "palette entry 0 is the colour key, the convention "
+              "KF_SPRITE_KEY_INDEX names");
 
         /* Independently re-open and parse the pack FILE, byte for byte,
          * without reusing kf/assets.cpp's reader at all. */
@@ -4595,47 +4617,72 @@ int run_asset_check() {
                       "'test_sprite'");
 
                 const uint8_t asset_type = entry[32];
-                check(asset_type == 0u,
+                check(asset_type == 2u,
                       "the pack file's own directory marks this entry as "
-                      "ASSET_TYPE_SPRITE (0)");
+                      "ASSET_TYPE_SPRITE_INDEXED (2)");
 
-                uint16_t width = 0u, height = 0u, color_key = 0u;
-                uint8_t has_color_key = 0u;
+                uint16_t width = 0u, height = 0u, frame_count = 0u;
                 std::memcpy(&width, entry + 36, sizeof(width));
                 std::memcpy(&height, entry + 38, sizeof(height));
-                std::memcpy(&color_key, entry + 40, sizeof(color_key));
-                has_color_key = entry[42];
-                check(width == sprite->width && height == sprite->height &&
-                          color_key == sprite->color_key &&
-                          (has_color_key != 0u) == sprite->has_color_key,
-                      "the sprite metadata (width/height/color_key/"
-                      "has_color_key) in the file's own type_meta matches "
-                      "what kf_assets_get() reported");
+                std::memcpy(&frame_count, entry + 40, sizeof(frame_count));
+                const uint16_t palette_count =
+                    static_cast<uint16_t>(entry[42]) + 1u;
+                const bool has_color_key = (entry[43] & 0x01u) != 0u;
 
-                uint32_t data_offset = 0u;
-                uint32_t data_bytes = 0u;
+                check(width == sprite->width && height == sprite->height &&
+                          frame_count == sprite->frame_count &&
+                          palette_count == sprite->palette_count &&
+                          has_color_key == sprite->has_color_key,
+                      "the metadata in the file's own type_meta matches what "
+                      "kf_assets_get() reported");
+
+                uint32_t data_offset = 0u, data_bytes = 0u;
                 std::memcpy(&data_offset, entry + 44, sizeof(data_offset));
                 std::memcpy(&data_bytes, entry + 48, sizeof(data_bytes));
 
                 check(static_cast<uint64_t>(data_offset) + data_bytes <=
                           raw.size(),
-                      "the pixel data the directory names actually fits "
-                      "inside the file");
-                check(data_bytes == static_cast<uint32_t>(sprite->width) *
-                                         sprite->height * 2u,
-                      "data_bytes recorded in the file's own directory "
-                      "matches width*height*2");
+                      "the payload the directory names actually fits inside "
+                      "the file");
 
+                const uint32_t palette_padded =
+                    ((static_cast<uint32_t>(palette_count) * 2u) + 3u) & ~3u;
+                check(data_bytes == palette_padded +
+                                        static_cast<uint32_t>(frame_count) *
+                                            width * height,
+                      "data_bytes recorded in the file's own directory "
+                      "matches padded palette + frames*w*h");
+
+                /* The real "matches what the packer wrote" proof, now that a
+                 * pixel is two file reads instead of one: expand every index
+                 * through the file's OWN palette bytes and compare against
+                 * the colours the loaded sprite yields. Done with this
+                 * check's own arithmetic, not the parser's, for the same
+                 * reason this whole block re-parses by hand. Guarded by the
+                 * bounds check above so a corrupt data_offset/data_bytes
+                 * cannot turn this check into an out-of-bounds read of its
+                 * own. */
                 if (static_cast<uint64_t>(data_offset) + data_bytes <=
                     raw.size()) {
-                    check(std::memcmp(sprite->pixels, raw.data() + data_offset,
-                                       data_bytes) == 0,
-                          "the sprite kf_assets_get() handed back is "
-                          "byte-identical to the pack file's own pixel "
-                          "bytes at the offset its directory names -- the "
-                          "loaded asset genuinely matches what the packer "
-                          "wrote, not a stale, shifted, or byte-swapped "
-                          "read");
+                    bool payload_matches = true;
+                    const uint8_t *pal_raw = raw.data() + data_offset;
+                    const uint8_t *idx_raw = pal_raw + palette_padded;
+                    for (uint32_t i = 0;
+                         i < static_cast<uint32_t>(width) * height; ++i) {
+                        const uint8_t slot = idx_raw[i];
+                        const uint16_t from_file =
+                            static_cast<uint16_t>(pal_raw[slot * 2u]) |
+                            static_cast<uint16_t>(pal_raw[slot * 2u + 1u]
+                                                   << 8);
+                        if (from_file != sprite->palette[sprite->indices[i]]) {
+                            payload_matches = false;
+                            break;
+                        }
+                    }
+                    check(payload_matches,
+                          "every pixel expanded from the file's own palette "
+                          "and index bytes matches what the loaded sprite "
+                          "yields");
                 }
             }
         }
@@ -4653,11 +4700,16 @@ int run_asset_check() {
  * test_sprite already carries. If the palette lookup were subtly wrong (an
  * off-by-one index, a byte-swapped palette entry, a misplaced frame
  * boundary) this is the check that would catch it, not merely notice that
- * *something* decoded. Mounts examples/hello_sprite/assets_indexed.kfpack
- * through the runtime override (host_assets.h) and restores the default
- * before returning, so nothing later in this process inherits it and
- * headless_determinism/headless_fullscreen/asset_pipeline_check keep seeing
- * the pack they were checksummed against. */
+ * *something* decoded. Mounts examples/hello_sprite/assets_rgb565.kfpack for
+ * the RGB565 reference and examples/hello_sprite/assets_indexed.kfpack for
+ * the indexed side, both through the runtime override (host_assets.h), and
+ * restores the default before returning, so nothing later in this process
+ * inherits it and headless_determinism/headless_fullscreen/
+ * asset_pipeline_check keep seeing the pack they were checksummed against.
+ * Since Task 3 (animated-indexed-sprites plan) converted the default pack
+ * itself to indexed, this check can no longer get its RGB565 reference from
+ * "the default pack" the way it originally did -- see
+ * KF_RGB565_FIXTURE_PACK_PATH's own comment above. */
 int run_indexed_asset_check(void) {
     bool ok = true;
     auto check = [&ok](bool cond, const char *what) {
@@ -4669,11 +4721,14 @@ int run_indexed_asset_check(void) {
 
     kf_arena_init_all();
 
-    /* The RGB565 original, from the default pack, read first. */
-    check(kf_assets_init() == KF_OK, "default pack mounts");
+    /* The RGB565 original, read first -- from its own fixture pack, not
+     * "the default pack", since Task 3 converted the default pack to
+     * indexed (see KF_RGB565_FIXTURE_PACK_PATH's comment above). */
+    kf_host_assets_set_pack_path(KF_RGB565_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the RGB565 fixture pack mounts");
     const kf_sprite *rgb = kf_assets_get("test_sprite");
     check(rgb != nullptr && rgb->format == KF_SPRITE_FORMAT_RGB565,
-          "the default pack's test_sprite is still RGB565");
+          "the RGB565 fixture's test_sprite is really RGB565");
     std::vector<kf_color> expected;
     if (rgb != nullptr) {
         expected.assign(
@@ -4922,6 +4977,10 @@ int run_blit_mirror_check(void) {
  * constant to make it: draw the RGB565 test_sprite and the indexed one at
  * the same place into the same framebuffer, and compare the two results
  * byte for byte. If 8bpp indexing lost anything for this art, this fails.
+ * The RGB565 side is read from its own dedicated fixture pack, not "the
+ * default pack" -- since Task 3 (animated-indexed-sprites plan) converted
+ * the default pack to indexed, the default pack can no longer supply an
+ * RGB565 sprite at all (see KF_RGB565_FIXTURE_PACK_PATH's own comment).
  *
  * Also pins frame addressing (frame k reads k*w*h into the payload), the
  * out-of-range clamp, mirrored equivalence, and the draw-counter bucket. */
@@ -4934,9 +4993,11 @@ int run_indexed_blit_check(void) {
     kf_arena_init_all();
     kf_fb_init();
 
-    check(kf_assets_init() == KF_OK, "default pack mounts");
+    kf_host_assets_set_pack_path(KF_RGB565_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the RGB565 fixture pack mounts");
     const kf_sprite *rgb = kf_assets_get("test_sprite");
-    check(rgb != nullptr, "RGB565 test_sprite found");
+    check(rgb != nullptr && rgb->format == KF_SPRITE_FORMAT_RGB565,
+          "RGB565 test_sprite found, and really RGB565");
 
     const size_t fb_bytes =
         static_cast<size_t>(KF_DISPLAY_WIDTH) * KF_DISPLAY_HEIGHT * sizeof(kf_color);
@@ -4977,8 +5038,8 @@ int run_indexed_blit_check(void) {
         std::vector<uint8_t> ix_mirror(fb_bytes);
         std::memcpy(ix_mirror.data(), kf_fb_pixels(), fb_bytes);
         kf_assets_shutdown();
-        kf_host_assets_set_pack_path(nullptr);
-        check(kf_assets_init() == KF_OK, "default pack remounts");
+        kf_host_assets_set_pack_path(KF_RGB565_FIXTURE_PACK_PATH);
+        check(kf_assets_init() == KF_OK, "the RGB565 fixture pack remounts");
         const kf_sprite *rgb2 = kf_assets_get("test_sprite");
         kf_fill(KF_RGB(8, 16, 24));
         if (rgb2 != nullptr) { kf_blit_mirrored(rgb2, 40, 50); }

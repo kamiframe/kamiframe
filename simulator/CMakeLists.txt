@@ -210,6 +210,20 @@ if(KAMIFRAME_BUILD_HEADLESS)
         KF_INDEXED_FIXTURE_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets_indexed.kfpack"
     )
 
+    # Same reasoning, same mechanism, two entries above: run_indexed_asset_
+    # check() and run_indexed_blit_check() (headless_main.cpp) both need an
+    # RGB565 test_sprite to compare the indexed decode/blit against. Before
+    # the animated-indexed-sprites plan's Task 3, they read that RGB565
+    # sprite from "the default pack" (examples/hello_sprite/assets.kfpack)
+    # directly, with no override. Task 3 converted the default pack itself
+    # to indexed, so that reference moved to its own permanent, checked-in
+    # fixture -- ASSET_TYPE_SPRITE's 'test_sprite', the exact bytes the
+    # default pack used to hold -- read via the same runtime
+    # kf_host_assets_set_pack_path() override, restored before returning.
+    target_compile_definitions(kamiframe-headless PRIVATE
+        KF_RGB565_FIXTURE_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/hello_sprite/assets_rgb565.kfpack"
+    )
+
     # Golden-frame test. Runs the real firmware for 300 frames and checks the
     # rendered output byte for byte, via an FNV-1a hash of every presented
     # framebuffer.
@@ -640,13 +654,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
 
     # Proves the asset pipeline (ADR 0033) end to end: kf_assets_init()
     # mounts and parses the checked-in pack
-    # (examples/hello_sprite/assets.kfpack), kf_assets_get("test_sprite")
-    # finds it with the right size/color-key, and its pixel bytes are
-    # byte-identical to the pack FILE's own bytes at the offset its
-    # directory names -- read independently, not through
-    # hakoniwaos/src/assets.cpp's own parser, so this is a real "matches
-    # what the packer wrote" proof rather than the parser grading itself.
-    # See headless_main.cpp's run_asset_check().
+    # (examples/hello_sprite/assets.kfpack, ASSET_TYPE_SPRITE_INDEXED since
+    # the animated-indexed-sprites plan's Task 3), kf_assets_get("test_sprite")
+    # finds it with the right size/frame-count/colour-key, and -- the real
+    # "matches what the packer wrote" proof -- every pixel, expanded by hand
+    # through the pack FILE's own palette and index bytes at the offset its
+    # directory names, matches the colour the loaded sprite yields. Read
+    # independently, not through hakoniwaos/src/assets.cpp's own parser, so
+    # this cannot pass by the parser merely agreeing with itself. See
+    # headless_main.cpp's run_asset_check().
     add_test(NAME asset_pipeline_check
              COMMAND kamiframe-headless --verify-assets)
 
