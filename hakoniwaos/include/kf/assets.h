@@ -150,6 +150,26 @@ kf_result kf_assets_init(void);
  * what kf/demo.cpp does, calling this once at init rather than per draw. */
 const kf_sprite *kf_assets_get(const char *name);
 
+/* How many directory entries the mounted pack has, of any kf_asset_type --
+ * the pair with kf_assets_name_at() below exists for exactly one caller,
+ * Task 3 of the Lua game layer plan's `kf.sprites()`: "print every name in
+ * the pack" is how the audience constraint (CLAUDE.md) turns a typo'd
+ * sprite name into something a script author fixes themselves rather than
+ * stares at a blank panel over. 0 before kf_assets_init() has run. */
+int kf_assets_count(void);
+
+/* The name of directory entry `index` (valid range [0, kf_assets_count())),
+ * or NULL if `index` is out of range or the pack is not mounted. Returns
+ * every entry regardless of kf_asset_type -- unlike
+ * kf_assets_get(), which only ever hands back sprites -- because
+ * `kf.sprites()`'s whole job is telling a script author what a name
+ * resolves to being wrong about, and a name that exists but is not (yet) a
+ * sprite is still useful information. The returned pointer has the same
+ * "valid for the remainder of the program" lifetime kf_assets_get()'s own
+ * comment already promises, for the identical reason: it points into the
+ * same permanent KF_ARENA_ASSETS table row. */
+const char *kf_assets_name_at(int index);
+
 void kf_assets_shutdown(void);
 
 #ifdef __cplusplus

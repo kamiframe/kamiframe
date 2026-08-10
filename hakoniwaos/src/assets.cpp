@@ -312,6 +312,15 @@ const kf_sprite *kf_assets_get(const char *name) {
     return &e->sprite;
 }
 
+int kf_assets_count(void) { return g_up ? g_entry_count : 0; }
+
+const char *kf_assets_name_at(int index) {
+    if (!g_up || index < 0 || index >= g_entry_count) {
+        return nullptr;
+    }
+    return g_entries[index].name;
+}
+
 void kf_assets_shutdown(void) {
     if (!g_up) {
         return;
