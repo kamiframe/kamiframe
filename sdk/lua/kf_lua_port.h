@@ -6,10 +6,14 @@
  * loaded script. One call to bring Lua up, one call per frame to run the
  * script's on_frame, one call to tear it down.
  *
- * This is simulator-only, on purpose -- the same reasoning ADR 0013 already
- * gave for LVGL: Lua is not wired into hakoniwaos/ (core) or ports/esp32/ in
- * this slice, only into the desktop and headless backends, so nothing here
- * claims ESP32-readiness it has not earned. See ADR 0014.
+ * This IS wired into ports/esp32/, not just the desktop and headless
+ * backends: ADR 0028 is the decision that put it there --
+ * ports/esp32/main/CMakeLists.txt compiles kf_lua_alloc.cpp and this file's
+ * kf_lua_port.cpp straight into `main`, and app_main.cpp:216 calls
+ * kf_lua_port_init() on boot, the same call sdl_main.cpp and
+ * headless_main.cpp make on desktop. hakoniwaos/ (core) is the one boundary
+ * this genuinely stays out of, on purpose: Lua is game/SDK glue that sits
+ * on top of Core's HAL and arenas (ADR 0014), not part of Core itself.
  */
 
 #ifndef KF_LUA_PORT_H

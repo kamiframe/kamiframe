@@ -16,9 +16,10 @@
  *
  * uint32_t, not size_t, for the sizes stored in a Tag: this arena is
  * KF_ARENA_LUA_BYTES (1MB in kf/budget.h today), which fits uint32_t with
- * enormous headroom, and a fixed-width field means the on-disk layout
- * cannot change between a 64-bit desktop build and a 32-bit ESP32 build the
- * day this slice's "simulator-only" scoping (see kf_lua_port.h) is lifted.
+ * enormous headroom, and a fixed-width field means the layout this
+ * allocator's own bookkeeping uses is identical between the 64-bit desktop
+ * build and the 32-bit ESP32 build (ADR 0028) that both compile this exact
+ * file today -- see kf_lua_port.h for where Lua is wired in on each target.
  */
 
 #include "kf_lua_alloc.h"
