@@ -127,8 +127,19 @@ idf_component_register(
 ## once ESP-IDF's own project.cmake (included by ../CMakeLists.txt) has
 ## defined esptool_py_flash_to_partition(), which is why this call lives
 ## here rather than earlier in the file.
+##
+## The CREATURE pack, not hello_sprite's. Switched 2026-08-11, once
+## esp_partition_mmap() had been confirmed on real silicon against the small
+## 1,156-byte pack -- the deliberate order the bring-up plan asks for, since a
+## mapping fault and a rendering fault look identical from the outside and the
+## small pack rules the first one out cheaply. With that proven, this is the
+## pack the game actually wants: 94 entries, 556,488 bytes, six creatures with
+## animated idles, well inside the 12MB partition (../partitions.csv).
+##
+## Flashing takes noticeably longer than the test pack did. That is 556KB
+## crossing a serial link, not a fault.
 esptool_py_flash_to_partition(flash "assets"
-    "${CMAKE_CURRENT_LIST_DIR}/../../../examples/hello_sprite/assets.kfpack")
+    "${CMAKE_CURRENT_LIST_DIR}/../../../examples/creature_demo/assets.kfpack")
 
 ## See kf_pet_session.h's "DEBUG ONLY" section and kf_pet_session.cpp's
 ## top-of-file comment: the pet session's debug tools now split across TWO
