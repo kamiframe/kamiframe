@@ -998,3 +998,30 @@ mistakes them for oversights.
   clean fix for the whole-object overdraw described under "Coalescing". It would
   touch every blit call site to buy something nothing is currently short of.
   Named so the next reader knows it was considered, not missed.
+
+---
+
+## Comments in Lua cost flash and boot time — found during Task 1
+
+This project's house style is unusually thorough comments explaining *why*, and
+that has been free everywhere until now: a C++ comment vanishes at compile time.
+
+**A Lua comment does not.** The script is embedded verbatim, ships to the device
+inside the firmware image, and is parsed by the Lua VM at every boot.
+
+Task 1's implementer wrote a full essay header on `creature.lua`, ported from
+the C++ prose it replaced, and it put **~3.4 KB of comment text into flash**.
+Trimming it to ~550 bytes is the difference between a +3.5 KB and a +544 byte
+firmware delta.
+
+**So, for `.lua` files specifically:**
+
+- Explain *why* where the reasoning is load-bearing, in as few words as it takes.
+- Put the long-form reasoning in the C++ binding, an ADR, or the SDK docs — all
+  of which are free — and point at it from the script.
+- Remember the demo script is also the reference other developers copy. Prose
+  that teaches earns its bytes; prose that restates the code does not.
+
+This does **not** relax the rule for C++ or Python in this repo. It is a real
+constraint that applies only to text the device parses at runtime, and it will
+apply to every game cartridge shipped on this platform.
