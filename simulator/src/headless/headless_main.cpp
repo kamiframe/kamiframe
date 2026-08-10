@@ -36,6 +36,7 @@
  *     kamiframe-headless --verify-indexed-assets
  *     kamiframe-headless --verify-blit-mirror
  *     kamiframe-headless --verify-indexed-blit
+ *     kamiframe-headless --verify-creature-anim
  *
  * Exit codes:
  *     0  everything asserted held
@@ -2758,15 +2759,17 @@ static int run_creature_screen_check(void) {
           "removed");
 
     /* The creature's own erase-then-draw (kf_fill_rect(g_previous, ...)
-     * then kf_blit()/kf_blit_mirrored()) measures as ONE dirty rectangle in
+     * then kf_blit_frame()/kf_blit_frame_mirrored(), Task 6 of the
+     * animated-indexed-sprites plan) measures as ONE dirty rectangle in
      * practice, not two: kSpeedPxPerSec (hakoniwaos/src/creature.cpp) is
      * slow enough that a single frame's movement is always far smaller
      * than the 48x48 sprite itself, so the erase rect (g_previous) and the
      * draw rect (now) always overlap or touch and get unioned by
      * kf_fb_mark_dirty() (kf/framebuffer.h's own comment) -- confirmed by
      * the "1 rects" this check actually logs below. The bound stays <=2u
-     * anyway, not <=1u: nothing about kf_fill_rect()/kf_blit()'s contract
-     * GUARANTEES that merge, only this screen's current, slow wander speed
+     * anyway, not <=1u: nothing about kf_fill_rect()/kf_blit_frame()'s
+     * contract GUARANTEES that merge, only this screen's current, slow
+     * wander speed
      * does, so a rect of real headroom stays in the budget rather than a
      * check that would fail the moment the creature moves faster than one
      * sprite width per frame. (This check used to measure 2 rects, not 1
@@ -3023,9 +3026,9 @@ static int run_creature_screen_input_check(void) {
  * screen_check() just above this one) mounts the checked-in DEFAULT asset
  * pack, which has no creature art at all, so every kf_assets_get() call
  * that function makes returns nullptr there and only the placeholder-
- * colour fallback ever runs -- kf_blit(), kf_blit_mirrored(), and the
- * "_w_"-not-found -> mirrored "_e_" fallback are never exercised through
- * the real drawing path by anything else in this file.
+ * colour fallback ever runs -- kf_blit_frame(), kf_blit_frame_mirrored(),
+ * and the "_w_"-not-found -> mirrored "_e_" fallback are never exercised
+ * through the real drawing path by anything else in this file.
  *
  * This check points the runtime pack override (kf_host_assets_set_pack_
  * path(), host_assets.h) at examples/creature_demo/assets.kfpack instead --
@@ -3054,10 +3057,21 @@ static int run_creature_screen_input_check(void) {
  * on dt_ms == 0, touching neither position nor facing) -- which also means
  * the creature's on-screen position never changes across this whole check,
  * so kf_creature_screen_debug_bounds() is sampled once and reused: it is
- * the exact rectangle kf_blit()/kf_blit_mirrored() draw into for every
- * direction below, not a bounding box inferred from pixel content (which
- * would only be as tight as this particular sprite's transparent margins
- * happen to be, and is not something a test should assume is symmetric). */
+ * the exact rectangle kf_blit_frame()/kf_blit_frame_mirrored() (Task 6 of
+ * the animated-indexed-sprites plan; kf_blit()/kf_blit_mirrored() were what
+ * drew here before that landed) draw into for every direction below, not a
+ * bounding box inferred from pixel content (which would only be as tight as
+ * this particular sprite's transparent margins
+ * happen to be, and is not something a test should assume is symmetric).
+ *
+ * dt_ms == 0 also means the animation cursor (kf_creature::anim, kf/
+ * creature.h) never advances here either: kf_creature_tick_anim() is a
+ * no-op on dt_ms == 0 regardless of which of its two callers (the wander
+ * branch, gated off by the same dt_ms == 0 in kf_creature_update(), or the
+ * egg branch calling it directly) would otherwise have reached it. Moot for
+ * this check anyway -- every sprite examples/creature_demo/assets.kfpack
+ * ships is a single frame, so kf_creature_anim_wrap() would clamp the
+ * cursor to 0 even if it had moved. */
 static int run_creature_screen_sprite_check(void) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() /
@@ -3100,9 +3114,11 @@ static int run_creature_screen_sprite_check(void) {
     check(!kf_rect_is_empty(creature_rect),
           "kf_creature_screen_debug_bounds() returned an empty rect");
 
-    /* egg_idle_s et al. are drawn via kf_blit()'s colour-key skip, not a
-     * flat kf_fill_rect() -- see kf_ingest_sprites.py's alpha-to-colour-key
-     * resolution in the art-naming report -- so a real sprite's rect will
+    /* egg_idle_s et al. are drawn via kf_blit_frame()'s colour-key skip
+     * (frame 0 -- every sprite in this pack has exactly one, kf_blit()'s
+     * own equivalence per kf/blit.h), not a flat kf_fill_rect() -- see
+     * kf_ingest_sprites.py's alpha-to-colour-key resolution in the
+     * art-naming report -- so a real sprite's rect will
      * contain more than one non-background colour. kPlaceholderColor
      * (kf_creature_screen.cpp) is a flat kf_fill_rect() over the whole
      * creature rect instead: every pixel in it is this ONE colour and
@@ -3160,7 +3176,7 @@ static int run_creature_screen_sprite_check(void) {
     };
 
     /* S, E and N: a known sprite name (egg_idle_<dir>) resolves and
-     * kf_blit()'s real pixels, not the placeholder colour -- three of
+     * kf_blit_frame()'s real pixels, not the placeholder colour -- three of
      * resolve_sprite()'s non-null branches (S and N repeat the "found on
      * first try" branch E also takes; the point is proving the direction
      * actually reaches the pack, not enumerating branches redundantly). */
@@ -3168,7 +3184,7 @@ static int run_creature_screen_sprite_check(void) {
     check(has_real_sprite_content(),
           "facing S drew only background and/or the placeholder colour -- "
           "egg_idle_s should have resolved from examples/creature_demo/"
-          "assets.kfpack and kf_blit()'d real sprite pixels");
+          "assets.kfpack and kf_blit_frame()'d real sprite pixels");
 
     /* Same direction again, immediately: exercises resolve_sprite()'s
      * cache-hit branch (SpriteCache::valid, matching requested_name) --
@@ -3195,8 +3211,8 @@ static int run_creature_screen_sprite_check(void) {
     /* W: the demo pack ships no egg_idle_w, so this is resolve_sprite()'s
      * west-first-fallback branch -- kf_assets_get("egg_idle_w") misses,
      * then kf_assets_get("egg_idle_e") hits and `mirrored` is set,
-     * exercising kf_blit_mirrored() for the first time anywhere in this
-     * file's whole test suite. */
+     * exercising kf_blit_frame_mirrored() for the first time anywhere in
+     * this file's whole test suite. */
     draw(KF_CREATURE_DIR_W);
     check(has_real_sprite_content(),
           "facing W drew only background and/or the placeholder colour -- "
@@ -3206,7 +3222,7 @@ static int run_creature_screen_sprite_check(void) {
 
     /* Both snapshots cover the exact same fixed creature_rect (the
      * creature never moved -- see this function's own header comment), so
-     * kf_blit_mirrored()'s W-fallback output must be E's own pixels
+     * kf_blit_frame_mirrored()'s W-fallback output must be E's own pixels
      * reversed column-for-column across that whole rect, including
      * whatever colour-keyed (transparent) columns fall inside it: kf/
      * blit.h's own comment says the bounding box is identical to kf_blit()'s
@@ -3229,8 +3245,8 @@ static int run_creature_screen_sprite_check(void) {
     check(mirrored_ok,
           "facing W's pixels are not facing E's pixels reversed "
           "column-for-column across the creature's rect -- the west "
-          "fallback should draw egg_idle_e via kf_blit_mirrored(), not "
-          "kf_blit() or any other transform");
+          "fallback should draw egg_idle_e via kf_blit_frame_mirrored(), "
+          "not kf_blit_frame() or any other transform");
 
     KF_LOGI(TAG,
             "creature-screen-sprites: S/E/N resolved real sprite pixels, W "
@@ -3792,6 +3808,160 @@ static int run_creature_screen_debug_jump_check(void) {
     kf_store_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
 
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Playback (Task 6, animated-indexed-sprites plan): the cursor advances on
+ * its own ~10fps clock regardless of the display's, wraps at the end,
+ * resets when the resolved sprite changes, and -- the thing that would
+ * quietly wreck the frame budget if it were wrong -- costs no extra dirty
+ * rectangles, because the screen already redrew the creature every frame
+ * anyway (see kf_creature_screen_frame()'s own comment on the erase-then-
+ * draw pattern this relies on).
+ *
+ * Isolates its own storage directory the same way every other check that
+ * calls kf_pet_session_init() does (run_creature_screen_check() et al.):
+ * kf_pet_load_and_advance() falls back to a fresh pet on a missing save, so
+ * skipping this would not fail outright, but it would leave this check
+ * reading and writing whatever relative "kf_save" directory happens to be
+ * lying around from a previous ctest run in the same build directory --
+ * exactly the shared-state flakiness every neighbouring check already
+ * avoids. */
+static int run_creature_anim_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-creature-anim-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    /* The clock, in isolation: pure Core, no screen, no assets. */
+    kf_creature c;
+    const kf_rect field = {0, 0, 240, 260};
+    kf_rng_seed(1u);
+    kf_creature_init(&c, field);
+    check(c.anim.frame == 0u, "a fresh creature starts on frame 0");
+
+    /* 100ms of animation at a 33ms display tick is 3 ticks with 1ms of
+     * remainder carried, not 3 ticks with the remainder thrown away. */
+    kf_creature_tick_anim(&c, 33u);
+    kf_creature_tick_anim(&c, 33u);
+    check(c.anim.frame == 0u, "66ms is not yet a frame");
+    kf_creature_tick_anim(&c, 33u);
+    check(c.anim.frame == 0u, "99ms is still not a frame, at 100ms each");
+    kf_creature_tick_anim(&c, 33u);
+    check(c.anim.frame == 1u, "the cursor advanced exactly once by 132ms");
+    check(c.anim.accum_ms == 32u,
+          "and kept the 32ms remainder rather than resetting to zero");
+
+    /* Ten seconds at 33ms should be 100 frames' worth of advance, give or
+     * take one tick's rounding -- the accumulator carrying its remainder is
+     * what makes this true rather than 9.1fps drift. */
+    kf_creature_init(&c, field);
+    uint32_t advances = 0u;
+    uint16_t last = c.anim.frame;
+    for (int i = 0; i < 303; ++i) {
+        kf_creature_tick_anim(&c, 33u);
+        if (c.anim.frame != last) { ++advances; last = c.anim.frame; }
+    }
+    check(advances >= 99u && advances <= 100u,
+          "10 seconds of 33ms ticks advances ~100 frames, not ~91 -- the "
+          "accumulator is carrying its remainder");
+
+    /* Wrapping. */
+    kf_creature_init(&c, field);
+    c.anim.frame = 2u;
+    kf_creature_anim_wrap(&c, 3u);
+    check(c.anim.frame == 2u, "an in-range cursor is left alone");
+    c.anim.frame = 7u;
+    kf_creature_anim_wrap(&c, 3u);
+    check(c.anim.frame == 0u,
+          "a cursor past the end of a shorter animation resets to 0 rather "
+          "than wrapping to a frame the previous pose happened to be on");
+
+    /* On screen, against the real animated fixture, and against the budget.
+     * The pack has no egg/pose art at all (it only carries test_sprite and
+     * test_sprite_anim), so every frame draws the placeholder rectangle --
+     * that is fine, this loop is proving the BUDGET holds while animation
+     * is wired in, not proving the fixture's art gets drawn (the block
+     * below, against the real sprite pointer, proves that instead). */
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_host_assets_set_pack_path(KF_INDEXED_FIXTURE_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "indexed fixture mounts");
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    size_t worst_rects = 0;
+    for (int i = 0; i < 300; ++i) {
+        kf_fb_clear_dirty();
+        kf_creature_screen_frame(33u);
+        const kf_dirty_rects d = kf_fb_dirty_rects();
+        if (static_cast<size_t>(d.count) > worst_rects) {
+            worst_rects = static_cast<size_t>(d.count);
+        }
+    }
+    check(worst_rects <= 2u,
+          "animating the creature costs no extra dirty rectangles -- the "
+          "screen already erased and redrew it every frame");
+
+    /* End to end, against the real fixture rather than a synthetic frame
+     * count: the format supports nine frames, but nothing in the repo has
+     * shipped animated art yet (see this task's own report), so the only
+     * real multi-frame entry anywhere is the fixture's test_sprite_anim.
+     * Drives the same kf_creature_tick_anim()/kf_creature_anim_wrap() pair
+     * the screen uses, directly against its real frame_count and its real
+     * index bytes, so this fails if the cursor and the fixture ever
+     * disagree about how many frames there are -- not just if the wrap
+     * logic agrees with itself against a made-up number. */
+    const kf_sprite *anim = kf_assets_get("test_sprite_anim");
+    check(anim != nullptr && anim->frame_count == 3u,
+          "the fixture's animated sprite is still a real 3-frame entry");
+    if (anim != nullptr) {
+        kf_creature anim_c;
+        kf_creature_init(&anim_c, field);
+        const size_t stride =
+            static_cast<size_t>(anim->width) * anim->height;
+        uint16_t visited[4] = {};
+        for (int i = 0; i < 4; ++i) {
+            kf_creature_anim_wrap(&anim_c, anim->frame_count);
+            visited[i] = anim_c.anim.frame;
+            kf_creature_tick_anim(&anim_c, KF_ANIM_FRAME_MS);
+        }
+        check(visited[0] == 0u && visited[1] == 1u && visited[2] == 2u &&
+                  visited[3] == 0u,
+              "the cursor walks all three of the fixture's real frames in "
+              "order, then wraps back to the first");
+        check(std::memcmp(anim->indices + visited[0] * stride,
+                           anim->indices + visited[1] * stride, stride) != 0,
+              "frame 0 and frame 1 of the fixture are genuinely different "
+              "pixel content, not the same picture drawn three times");
+        check(std::memcmp(anim->indices + visited[1] * stride,
+                           anim->indices + visited[2] * stride, stride) != 0,
+              "frame 1 and frame 2 of the fixture are genuinely different "
+              "pixel content too");
+    }
+
+    kf_pet_session_shutdown();
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    if (ok) {
+        KF_LOGI(TAG,
+                "creature-anim: cursor keeps its own clock, budget unmoved");
+    }
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
@@ -5132,6 +5302,7 @@ int main(int argc, char *argv[]) {
     bool verify_indexed_assets = false;
     bool verify_blit_mirror = false;
     bool verify_indexed_blit = false;
+    bool verify_creature_anim = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -5222,6 +5393,8 @@ int main(int argc, char *argv[]) {
             verify_blit_mirror = true;
         } else if (std::strcmp(argv[i], "--verify-indexed-blit") == 0) {
             verify_indexed_blit = true;
+        } else if (std::strcmp(argv[i], "--verify-creature-anim") == 0) {
+            verify_creature_anim = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -5260,7 +5433,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-assets\n"
                         "kamiframe-headless --verify-indexed-assets\n"
                         "kamiframe-headless --verify-blit-mirror\n"
-                        "kamiframe-headless --verify-indexed-blit\n");
+                        "kamiframe-headless --verify-indexed-blit\n"
+                        "kamiframe-headless --verify-creature-anim\n");
             return 0;
         }
     }
@@ -5404,6 +5578,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_indexed_blit) {
         return run_indexed_blit_check();
+    }
+
+    if (verify_creature_anim) {
+        return run_creature_anim_check();
     }
 
     kf_app_init(mode);

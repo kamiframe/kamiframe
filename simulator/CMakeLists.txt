@@ -702,4 +702,20 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # kf_blit_frame()/kf_blit_frame_mirrored().
     add_test(NAME indexed_blit_check
              COMMAND kamiframe-headless --verify-indexed-blit)
+
+    # Task 6 of the animated-indexed-sprites plan, the payoff the other five
+    # were groundwork for: the animation cursor (kf_anim, hakoniwaos/include/
+    # kf/creature.h) advances on its own ~10fps clock independent of the
+    # display's, carries its accumulator's remainder rather than drifting,
+    # wraps back to 0 rather than reading past a shorter animation's end, and
+    # -- the load-bearing claim -- costs no extra dirty rectangles, because
+    # kf_creature_screen_frame() already erases and redraws the creature
+    # every frame regardless of whether it moved. Also proves the cursor
+    # against the real 3-frame fixture (examples/hello_sprite/
+    # assets_indexed.kfpack's test_sprite_anim), not just a synthetic frame
+    # count, so this fails if the wrap logic and the fixture's real
+    # frame_count ever disagree. See headless_main.cpp's
+    # run_creature_anim_check().
+    add_test(NAME creature_anim_check
+             COMMAND kamiframe-headless --verify-creature-anim)
 endif()

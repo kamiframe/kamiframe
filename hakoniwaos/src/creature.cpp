@@ -185,6 +185,8 @@ void kf_creature_init(kf_creature *c, kf_rect field) {
     c->dwell_ms = kDwellMinMs;
     c->reaction_hold_ms = 0u;
     c->seen_care_actions = 0u;
+    c->anim.accum_ms = 0u;
+    c->anim.frame = 0u;
     choose_target(c, field);
     /* c->dir has to be a defined value from the moment this returns --
      * kDwellMinMs is never 0, so a fresh creature sits through its first
@@ -198,8 +200,25 @@ void kf_creature_init(kf_creature *c, kf_rect field) {
     c->dir = direction_for_delta(c->target_x - c->x, c->target_y - c->y);
 }
 
+void kf_creature_tick_anim(kf_creature *c, uint32_t dt_ms) {
+    if (c == nullptr || dt_ms == 0u) { return; }
+    c->anim.accum_ms += dt_ms;
+    while (c->anim.accum_ms >= KF_ANIM_FRAME_MS) {
+        c->anim.accum_ms -= KF_ANIM_FRAME_MS;
+        c->anim.frame = static_cast<uint16_t>(c->anim.frame + 1u);
+    }
+}
+
+void kf_creature_anim_wrap(kf_creature *c, uint16_t frame_count) {
+    if (c == nullptr) { return; }
+    if (frame_count == 0u || c->anim.frame >= frame_count) {
+        c->anim.frame = 0u;
+    }
+}
+
 void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms) {
     if (c == nullptr || dt_ms == 0u) { return; }
+    kf_creature_tick_anim(c, dt_ms);
 
     if (c->reaction_hold_ms > dt_ms) {
         c->reaction_hold_ms -= dt_ms;

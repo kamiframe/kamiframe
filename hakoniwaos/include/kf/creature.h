@@ -113,6 +113,41 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
  * is smooth without floating point in Core. */
 #define KF_CREATURE_SUB 16
 
+/* How long one animation frame is held, in milliseconds.
+ *
+ * 100ms is 10fps, in the middle of the 8-12fps band hand-drawn character
+ * animation reads best at, and DELIBERATELY UNRELATED to the display's
+ * KF_TARGET_FPS of 30: animation timing is an art decision and refresh rate
+ * is a hardware one, and tying them together would mean a panel that ran at
+ * 60 made every creature move twice as fast. The accumulator below is what
+ * keeps the two independent. */
+#define KF_ANIM_FRAME_MS 100u
+
+/* An animation cursor. Integer milliseconds only -- hakoniwaos/ has no
+ * floating point (kf/budget.h's own reasoning: the device's FPU is for Lua,
+ * and Core stays exact and cheap).
+ *
+ * accum_ms CARRIES ITS REMAINDER across advances rather than resetting to
+ * zero. At a 33ms display tick, three ticks is 99ms and four is 132ms; a
+ * reset-to-zero cursor would take four ticks every time and run at 7.6fps
+ * instead of 10, and a nine-frame cycle would come out 40% slow. Carrying
+ * the remainder makes the AVERAGE rate exactly KF_ANIM_FRAME_MS regardless
+ * of what dt_ms happens to be, which also means the same dt_ms sequence
+ * produces the same frame sequence on every machine -- what the headless
+ * checks' synthetic clock relies on.
+ *
+ * `frame` runs UNBOUNDED here -- kf_creature_tick_anim() below has no idea
+ * how many frames the resolved sprite has, and is not being taught: that
+ * would mean handing Core's wander a sprite pointer for no reason. Bringing
+ * it back into range for a particular sprite is kf_creature_anim_wrap()'s
+ * job, called by whoever just resolved that sprite (simulator/src/pet/
+ * kf_creature_screen.cpp's resolve_sprite()/draw path today), not this
+ * struct's own concern. */
+typedef struct {
+    uint32_t accum_ms;
+    uint16_t frame;
+} kf_anim;
+
 /* Presentation state for one creature. Not saved -- where the creature
  * happens to be standing is not worth persisting, and a fresh position on
  * load is indistinguishable from a remembered one. */
@@ -131,14 +166,43 @@ typedef struct {
     uint32_t dwell_ms;      /* how long it still intends to stand still */
     uint32_t reaction_hold_ms;
     uint32_t seen_care_actions; /* to notice when another care action lands */
+    kf_anim anim;            /* the sprite's own playback cursor, see kf_anim
+                               * above -- ticked by kf_creature_tick_anim(),
+                               * NOT by kf_creature_update() alone (see that
+                               * function's own comment for why the egg needs
+                               * a second caller). */
 } kf_creature;
 
 /* Place the creature in the middle of the field and give it a first idea. */
 void kf_creature_init(kf_creature *c, kf_rect field);
 
 /* Advance one frame's worth of walking about. Pure apart from kf/rng.h, so a
- * seed reproduces a walk exactly. */
+ * seed reproduces a walk exactly. Calls kf_creature_tick_anim() first thing,
+ * before the dwell early return, so a dwelling (or sleeping, once that
+ * exists) creature still animates in place. */
 void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms);
+
+/* Advance the creature's animation cursor by one frame's worth of wall time.
+ *
+ * Called first thing by kf_creature_update(), AND directly by a caller that
+ * deliberately skips the wander -- today that is the egg (simulator/src/pet/
+ * kf_creature_screen.cpp), which sits still by design and would otherwise be
+ * the one thing in the game that never animates, precisely backwards from
+ * what was asked for. One implementation, two callers, rather than a second
+ * copy of the same arithmetic -- the same shape handle_care_buttons() in
+ * that file already uses for exactly this reason. A null c or a dt_ms of 0
+ * is a no-op. */
+void kf_creature_tick_anim(kf_creature *c, uint32_t dt_ms);
+
+/* Bring the cursor back in range for an animation of `frame_count` frames,
+ * resetting to 0 when it is past the end (or when frame_count is 0). Called
+ * when the resolved sprite CHANGES: a 9-frame walk leaves the cursor at 7,
+ * and a 3-frame objecting pose has no frame 7 -- kf_blit_frame() (kf/blit.h)
+ * would clamp that to frame 0 anyway, so nothing reads out of bounds, but
+ * the animation would visibly jump. Resets rather than wraps, so a pose
+ * change starts at the beginning of its own cycle instead of somewhere
+ * arbitrary inherited from the pose before it. A null c is a no-op. */
+void kf_creature_anim_wrap(kf_creature *c, uint16_t frame_count);
 
 /* Where the sprite currently sits, in whole pixels -- what to blit and what
  * to mark dirty. */
