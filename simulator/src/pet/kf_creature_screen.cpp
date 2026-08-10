@@ -52,22 +52,39 @@ constexpr kf_rect kScreen = {0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT};
 
 constexpr kf_color kBackground = KF_RGB(232, 240, 216);
 
-/* Stands in for a creature sprite the asset pack does not have yet -- the
- * checked-in default pack (examples/hello_sprite/assets.kfpack) carries
+/* Stands in for a creature sprite the asset pack does not have -- this claim
+ * now has to be split by target, where it did not used to need to be.
+ *
+ * On DESKTOP, the checked-in default pack (examples/hello_sprite/
+ * assets.kfpack, simulator/CMakeLists.txt's KF_ASSET_PACK) still carries
  * exactly one sprite, "test_sprite", so every kf_creature_sprite_name()
- * lookup this screen makes returns nullptr from kf_assets_get() today, on
- * every stage/pose/direction, on both desktop and the device. Drawing
- * nothing in that case would make the screen look BROKEN rather than
- * unfinished, and would make the dirty-rect budget test below pass
- * vacuously (no draw, no dirty rectangle, nothing to measure) -- see
+ * lookup this screen makes still returns nullptr from kf_assets_get() there,
+ * on every stage/pose/direction, unless a developer overrides KF_ASSET_PACK
+ * to point at examples/creature_demo/assets.kfpack (see that CMakeLists.txt
+ * variable's own comment on the incantation for that).
+ *
+ * On the DEVICE, that is no longer true: ports/esp32/main/CMakeLists.txt
+ * flashes examples/creature_demo/assets.kfpack instead of hello_sprite's --
+ * 94 entries, real art, animated idles -- so on real hardware these lookups
+ * now succeed for every stage this screen draws, and this placeholder is
+ * not expected to appear there at all. A magenta box on a real panel is a
+ * fault to chase, not the "on both desktop and the device" expected state
+ * this comment used to describe before that pack switched.
+ *
+ * Drawing nothing in the still-missing case (desktop's default pack, or any
+ * future pack still short an entry) would make the screen look BROKEN
+ * rather than unfinished, and would make the dirty-rect budget test below
+ * pass vacuously (no draw, no dirty rectangle, nothing to measure) -- see
  * run_creature_screen_check()'s own comment. So: visible and obviously
  * wrong beats invisible and indistinguishable from a rendering bug, the
  * same reasoning kf_creature_sprite_name() already applies to the DEAD pose
  * falling back to the sick sprite (kf/creature.h). Hot pink, deliberately
  * nothing any finished creature art would plausibly ship in -- it reads as
  * "placeholder" on sight, the same way a missing-texture checkerboard does
- * in other engines. Disappears the moment the pack carries real creature
- * sprites; nothing else about this file changes when that happens. */
+ * in other engines. Already gone on the device, as of the pack switch
+ * above; on desktop it disappears only once a developer points
+ * KF_ASSET_PACK at real creature art too -- nothing else about this file
+ * changes either time. */
 constexpr kf_color kPlaceholderColor = KF_RGB(255, 0, 128);
 
 /* Mess (Task 5). pet->poop_count (kf/pet.h) is a COUNT, 0..KF_PET_MAX_POOPS,
