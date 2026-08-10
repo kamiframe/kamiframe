@@ -37,6 +37,7 @@
  *     kamiframe-headless --verify-blit-mirror
  *     kamiframe-headless --verify-indexed-blit
  *     kamiframe-headless --verify-creature-anim
+ *     kamiframe-headless --verify-frame-counters
  *
  * Exit codes:
  *     0  everything asserted held
@@ -3969,6 +3970,93 @@ static int run_creature_anim_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Task 1 of the hardware bring-up plan (docs/superpowers/plans/
+ * 2026-08-11-hardware-bringup.md): proves the frame budget counters are not
+ * structurally zero on the KF_DEMO_NONE path a real device runs.
+ *
+ * Before hakoniwaos/src/app.cpp moved kf_draw_counters_reset() from the top
+ * of kf_app_frame() to immediately after kf_draw_counters_get(), this would
+ * have failed forever, not by accident: on KF_DEMO_NONE, kf_demo_update()/
+ * kf_demo_draw() both return immediately (hakoniwaos/src/demo.cpp), so
+ * nothing draws inside kf_app_frame() at all -- the creature is drawn by a
+ * PORT after kf_app_frame() returns, exactly the way app_main.cpp:247-290
+ * drives it: kf_app_frame(), THEN kf_screen_nav_frame() (which routes to
+ * the creature screen when it is the active one). This check drives the
+ * creature screen directly through kf_creature_screen_frame() -- the same
+ * entry point run_creature_screen_check() above already uses to advance it
+ * -- rather than through kf_screen_nav_frame(), which would also require
+ * standing up LVGL (kf_lvgl_port_init()/kf_screen_nav_init()) for nothing
+ * this check needs: the point is the ORDER (kf_app_frame() returns, THEN
+ * something draws), not the routing that gets there on a real device.
+ *
+ * Needs the real creature_demo pack (KF_CREATURE_DEMO_PACK_PATH), not the
+ * default pack run_creature_screen_check() mounts: only a real, colour-
+ * keyed sprite blit posts to the KEYED bucket kf/blit.h describes. The
+ * placeholder kf_fill_rect() the default pack falls back to (no creature
+ * art in it) posts to the OPAQUE bucket instead -- which would make
+ * keyed_pixels legitimately 0 for a reason that has nothing to do with the
+ * bug this check exists to catch, exactly the vacuous-pass trap this
+ * task's brief warns about (see also 2026-08-09-creature-on-screen.md). */
+static int run_frame_counters_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-frame-counters-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    kf_app_init(KF_DEMO_NONE);
+    kf_pet_session_init();
+    kf_creature_screen_init();
+
+    /* At least 3 iterations, not 1: the counters' window is now one frame
+     * BEHIND the draw that fills it -- kf_app_frame() reads and resets the
+     * PREVIOUS iteration's counters before this iteration's kf_creature_
+     * screen_frame() call below has drawn anything new (see app.cpp's
+     * kf_draw_counters_reset() comment for exactly why). A 1-iteration
+     * loop would read a window nothing had drawn into yet and prove
+     * nothing about the lag; 3 exercises the steady state past that first
+     * edge, the same reasoning this task's brief gives. */
+    for (int i = 0; i < 3; ++i) {
+        check(kf_app_frame(), "kf_app_frame returned false");
+        kf_creature_screen_frame(33u);
+    }
+
+    const kf_frame_stats *last = kf_app_last_frame();
+    check(last->keyed_pixels > 0,
+          "keyed_pixels is 0 -- the counters' window does not overlap the "
+          "creature's draw. This is the exact defect this check exists to "
+          "catch: it would stay 0 even if the indexed blit were a hundred "
+          "times slower than assumed.");
+    check(last->keyed_pixels >= 2000 && last->keyed_pixels <= 8000,
+          "keyed_pixels is outside the expected order of magnitude for a "
+          "single 48x48 creature sprite draw -- a window, not an exact "
+          "figure, because pose and mess legitimately move the exact "
+          "count from frame to frame");
+    check(last->dirty_rect_count >= 1 &&
+              last->dirty_rect_count <= KF_MAX_DIRTY_RECTS,
+          "dirty_rect_count is outside [1, KF_MAX_DIRTY_RECTS]");
+
+    KF_LOGI(TAG,
+            "frame-counters: keyed_pixels=%u opaque_pixels=%u "
+            "dirty_rect_count=%u",
+            last->keyed_pixels, last->opaque_pixels, last->dirty_rect_count);
+
+    kf_pet_session_shutdown();
+    kf_app_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -5306,6 +5394,7 @@ int main(int argc, char *argv[]) {
     bool verify_blit_mirror = false;
     bool verify_indexed_blit = false;
     bool verify_creature_anim = false;
+    bool verify_frame_counters = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -5398,6 +5487,8 @@ int main(int argc, char *argv[]) {
             verify_indexed_blit = true;
         } else if (std::strcmp(argv[i], "--verify-creature-anim") == 0) {
             verify_creature_anim = true;
+        } else if (std::strcmp(argv[i], "--verify-frame-counters") == 0) {
+            verify_frame_counters = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -5437,7 +5528,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-indexed-assets\n"
                         "kamiframe-headless --verify-blit-mirror\n"
                         "kamiframe-headless --verify-indexed-blit\n"
-                        "kamiframe-headless --verify-creature-anim\n");
+                        "kamiframe-headless --verify-creature-anim\n"
+                        "kamiframe-headless --verify-frame-counters\n");
             return 0;
         }
     }
@@ -5585,6 +5677,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_creature_anim) {
         return run_creature_anim_check();
+    }
+
+    if (verify_frame_counters) {
+        return run_frame_counters_check();
     }
 
     kf_app_init(mode);

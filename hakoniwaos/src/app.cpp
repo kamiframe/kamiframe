@@ -348,7 +348,6 @@ bool kf_app_frame(void) {
 
     /* Everything allocated last frame is gone. Nothing may survive here. */
     kf_arena_reset(KF_ARENA_SCRATCH);
-    kf_draw_counters_reset();
 
     kf_input_raw raw{};
     if (kf_input_poll(&raw) == KF_OK) {
@@ -408,6 +407,32 @@ bool kf_app_frame(void) {
 
     const kf_draw_counters counters = kf_draw_counters_get();
     const uint32_t draw_us = estimate_draw_us(counters);
+
+    /* Reset HERE, not at the top of this function -- ADR 0036. This window
+     * is NOT "this frame's drawing"; it is "everything drawn since the last
+     * time this counter was read", which runs from just after the PREVIOUS
+     * call's kf_draw_counters_get() above to just after THIS call's. On
+     * KF_DEMO_NONE (every real device build) that window covers drawing a
+     * port does AFTER kf_app_frame() returns -- kf_screen_nav_frame() on
+     * ESP32/desktop, kf_creature_screen_frame() directly in
+     * headless_main.cpp's run_frame_counters_check() -- because Core has no
+     * way to know a port draws anything out here at all. A reset at the top
+     * of this function would zero the counters again before that drawing
+     * had ever been read, which is exactly why keyed_pixels/opaque_pixels
+     * used to read 0 forever on KF_DEMO_NONE regardless of how expensive
+     * the indexed blit actually was.
+     *
+     * This is deliberately the SAME window kf_fb_dirty_rects()/
+     * kf_fb_clear_dirty() above already use for the same reason: the
+     * creature's dirty rectangles survive kf_fb_clear_dirty() because they
+     * are marked by that same out-of-band draw, and are read back exactly
+     * one kf_app_frame() call later. Counters and dirty rectangles now
+     * describe the same set of drawing, one frame late, on every backend --
+     * not "per frame" in the sense of "this function's own execution". The
+     * KF_DEMO_FULLSCREEN --stress path is unaffected: kf_demo_draw() draws
+     * INSIDE this function, so its one draw and its one get()/reset() land
+     * in the same call, same as before this moved. */
+    kf_draw_counters_reset();
 
     g.last.frame_index = g.frame_index;
     g.last.cpu_us = cpu_us;

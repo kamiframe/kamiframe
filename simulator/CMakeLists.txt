@@ -718,4 +718,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_creature_anim_check().
     add_test(NAME creature_anim_check
              COMMAND kamiframe-headless --verify-creature-anim)
+
+    # Task 1 of the hardware bring-up plan: proves keyed_pixels and
+    # dirty_rect_count are not structurally zero on the KF_DEMO_NONE path a
+    # real device runs -- before this task, kf_draw_counters_reset() sat at
+    # the TOP of kf_app_frame(), inside a window nothing draws in on that
+    # path (the creature is drawn by a port AFTER kf_app_frame() returns),
+    # so this number would have read 0 forever regardless of how the
+    # indexed blit actually performed. See headless_main.cpp's
+    # run_frame_counters_check() and docs/architecture/
+    # adr-0036-frame-counter-window.md.
+    add_test(NAME frame_counters_check
+             COMMAND kamiframe-headless --verify-frame-counters)
 endif()
