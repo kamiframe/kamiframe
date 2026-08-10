@@ -119,23 +119,32 @@ kf_rect poop_rect(uint8_t index) {
  * often" (the project owner's own words), the buildable half of that ask.
  * Moving up and down a few pixels needs no new art and no frame
  * sequencing -- it is pure positioning, an offset applied to where the
- * egg's sprite (or placeholder rect) is drawn, nothing more. The other
- * half -- the egg actually SQUISHING, i.e. deforming -- needs different
- * artwork per frame. That art does not exist yet (every entity in the
- * manifest still ships one frame per state), but the CODE half of it does:
- * the animated-indexed-sprites plan's Task 6 wired resolve_sprite()'s
- * draw path below through kf_creature_anim_wrap()/kf_blit_frame(), so an
- * egg_idle_<dir> entry that shipped several squish frames would already
- * play them, in step with this same bob, with no further code change --
- * see kf_creature_tick_anim()'s call in the egg branch just below, and
+ * egg's sprite is drawn, nothing more. The other half -- the egg actually
+ * SQUISHING, i.e. deforming -- needed different artwork per frame, which
+ * this bob deliberately never provided (positioning a sprite cannot deform
+ * it) and which the animated-indexed-sprites plan's Task 6 built the CODE
+ * side for without waiting on the art: it wired resolve_sprite()'s draw
+ * path below through kf_creature_anim_wrap()/kf_blit_frame(), so any
+ * egg_idle_<dir> entry that shipped several squish frames would play them,
+ * in step with this same bob, with no further code change -- see
+ * kf_creature_tick_anim()'s call in the egg branch just below, and
  * kf/creature.h's kf_creature_sprite_name() comment for the entry-name
- * side of that split. Until that art exists this constant multiplies
- * `frame_count == 1` sprites, which is exactly frame 0 every time (see
- * kf_creature_anim_wrap()), so today this bob is still positional-only in
- * practice, not because the deforming half is unbuilt but because nothing
- * has asked it to deform yet. Not faked with a scale transform either --
- * see the animated-indexed-sprites plan's Task 6 report for why stretching
- * a static sprite would read as broken art, not squish.
+ * side of that split.
+ *
+ * That art now exists (tools/character_manifest.toml's [stages.egg],
+ * `frames = 9`; see .superpowers/sdd/first-animations-report.md for the
+ * generation record) -- a subtle squash-and-stretch settle, generated to
+ * deform in place with no net travel of its own, specifically so it
+ * layers under this positional bob rather than fighting it: the ART
+ * squishes the egg's shape frame to frame, the CODE offset below still
+ * moves the whole drawn result up and down, and the two compose for free
+ * because kf_blit_frame() draws whichever frame the animation clock
+ * currently points at wherever this function says to draw it. Retiring
+ * the bob in favour of the art alone was the other option the plan named;
+ * this is the "coexist" branch of that choice, an art/product call, not a
+ * code one. Not faked with a scale transform either -- see the
+ * animated-indexed-sprites plan's Task 6 report for why stretching a
+ * static sprite would read as broken art, not squish.
  *
  * Integer triangle wave, not a lookup table or a sine call: hakoniwaos/
  * stays free of floating point AND of trig (see tools/check_no_heap.py and
@@ -923,11 +932,17 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
          * frame (not just on a change) as the belt to that braces: it is
          * what actually stops a stale, past-the-end frame from ever
          * reaching kf_blit_frame() below, rather than merely making it rare.
-         * frame_count == 1 for every real sprite in the repo today (see
-         * this task's own report), so this is a no-op in practice until
-         * animated art ships -- the fixture pack's test_sprite_anim is the
-         * one exception, which is what proves this path plays more than
-         * frame 0 at all. */
+         * frame_count == 1 was true for every real sprite in the repo when
+         * this task landed (proven then only by the fixture pack's
+         * test_sprite_anim, so this call was a no-op in practice). It is no
+         * longer universally true: the roster's first animated poses
+         * (egg's "idle" and every other animated entity's "neutral" -- see
+         * tools/character_manifest.toml's state_frames entries and
+         * .superpowers/sdd/first-animations-report.md) now carry
+         * frame_count == 9, and this is the call that keeps their cursor
+         * legal on every pose/direction change. Still a no-op for every
+         * sprite that remains single-frame -- kf_creature_anim_wrap()
+         * clamps into [0, frame_count), and [0, 1) only ever contains 0. */
         kf_creature_anim_wrap(&g_creature, sprite->frame_count);
         if (mirrored) {
             kf_blit_frame_mirrored(sprite, now.x0, now.y0, g_creature.anim.frame);

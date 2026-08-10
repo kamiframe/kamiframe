@@ -3115,10 +3115,13 @@ static int run_creature_screen_sprite_check(void) {
           "kf_creature_screen_debug_bounds() returned an empty rect");
 
     /* egg_idle_s et al. are drawn via kf_blit_frame()'s colour-key skip
-     * (frame 0 -- every sprite in this pack has exactly one, kf_blit()'s
-     * own equivalence per kf/blit.h), not a flat kf_fill_rect() -- see
-     * kf_ingest_sprites.py's alpha-to-colour-key resolution in the
-     * art-naming report -- so a real sprite's rect will
+     * (frame 0 -- egg_idle now carries 9 frames, see
+     * .superpowers/sdd/first-animations-report.md, but every draw() below
+     * passes dt_ms == 0, so g_creature.anim.frame never advances off 0;
+     * this is still kf_blit()'s own frame-0 equivalence per kf/blit.h, not
+     * a claim that the sprite itself is single-frame), not a flat
+     * kf_fill_rect() -- see kf_ingest_sprites.py's alpha-to-colour-key
+     * resolution in the art-naming report -- so a real sprite's rect will
      * contain more than one non-background colour. kPlaceholderColor
      * (kf_creature_screen.cpp) is a flat kf_fill_rect() over the whole
      * creature rect instead: every pixel in it is this ONE colour and

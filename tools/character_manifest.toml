@@ -55,7 +55,15 @@ names_unverified = true
 default_size = 48
 
 # Default frame count per state. Overridable per entity with an
-# entity-level `frames = N` (applies to every one of that entity's states).
+# entity-level `frames = N` (applies to every one of that entity's states --
+# right for an entity with only one state, like the egg's "idle", wrong for
+# an entity where only one of several poses is animated), or more precisely
+# with an entity-level `state_frames = { state = N, ... }` table that
+# overrides just the named state(s) and leaves every other state at its
+# usual 1. See tools/kf_character_manifest.py's _state_frame_count() for
+# the full reasoning -- introduced for the roster's first animation pass,
+# where every creature but the egg keeps happy/objecting/sick/sleeping as
+# single frames and animates only "neutral".
 default_frames = 1
 
 # The five care-loop states every entity gets by default (care-loop spec
@@ -97,6 +105,14 @@ stage = "egg"
 kind = "shared"
 name_verified = false
 states = ["idle"]  # see the file-level comment above: no decay, nothing to react to yet
+# The egg's one state IS its animated idle, so the entity-wide override is
+# unambiguous here (contrast baby/child/teens below, which need
+# state_frames instead because only ONE of their several states animates).
+# 9 frames, ~10fps playback (KF_ANIM_FRAME_MS) -- a subtle squash-and-stretch
+# settle, generated 2026-08-09 via PixelLab animate_object v3 from source
+# object ce666e73-338e-40ab-9e2d-7ef4c1e43efd. See
+# .superpowers/sdd/first-animations-report.md for the generation record.
+frames = 9
 has_design_brief = true
 object = "none yet -- unhatched"
 read = "A small, chubby, round egg with its own understated surface markings -- soft speckles or a faint spiral, its own decoration rather than a blank shell -- while still not hinting at what's inside, because nothing has been decided yet at this stage."
@@ -108,7 +124,16 @@ render_note = "Draw (or, if generated larger, scale down and pad) so the egg occ
 stage = "baby"
 kind = "shared"
 name_verified = false
-# states/frames/size: inherit [meta] defaults (full 5 care states)
+# states/size: inherit [meta] defaults (full 5 care states). frames stays
+# the [meta] default of 1 for four of those five states -- only "neutral"
+# (the pose visible at rest, the first animation pass's target) is
+# animated, via state_frames below rather than the entity-wide `frames`
+# override, which would wrongly ask for 9 frames of happy/objecting/sick/
+# sleeping too. 9 frames, ~10fps playback, a calm floating breathing sway
+# with one slow blink, generated 2026-08-09 via PixelLab animate_object v3
+# from source object 4f84a1dd-62be-487c-8689-1f3fdbf1920c. See
+# .superpowers/sdd/first-animations-report.md for the generation record.
+state_frames = { neutral = 9 }
 has_design_brief = true
 object = "none yet -- not solid enough to hold one"
 read = "A small, chubby drifting spirit wisp: a round, blobby body -- wide and soft, not tapered thin -- with no limbs and no ground contact, its underside rounding off into a soft blunt point rather than trailing to nothing or resting on anything. A vague, barely-there ghostly face -- two simple dark eye marks and a small open mouth, in the manga shorthand for a departed spirit rather than anything detailed or frightening."
@@ -121,6 +146,18 @@ kind = "shared"
 id = "marumaru"
 display_name = "Marumaru"
 name_verified = false
+# Only "neutral" is animated -- see baby's state_frames comment above for
+# why this is a state_frames entry and not the entity-wide `frames`
+# override. 9 frames, ~10fps playback, a calm breathing settle with a
+# slight tilt (no limbs to walk with -- an earlier spike asked this exact
+# legless-lump entity for a walk cycle and it read as a barely-perceptible
+# bob, which is why this pass asked for idle instead), generated
+# 2026-08-09 via PixelLab animate_object v3 from source object
+# 37f7629b-87fb-4ec6-871d-18ef0b28bce1 (an object that already carried two
+# earlier, unused animation groups from that walk-cycle spike and an
+# objecting-pose test -- neither is what this manifest entry names or
+# points at). See .superpowers/sdd/first-animations-report.md.
+state_frames = { neutral = 9 }
 has_design_brief = true
 object = "none yet -- an uncut blank"
 read = "A smooth, featureless lump with a face. No teeth, no bristles, no edge -- object-shaped, but nothing has been made from it yet."
@@ -174,7 +211,7 @@ name_verified = false
 has_design_brief = true
 read = "Slim and upright, with one huge mirror-bright edge running down its front like it was sliced flat on one side."
 quirk = "Tries to cut things that don't need cutting. Has never nicked itself."
-note = "Bible section 9 flags this as the name most likely to fail verification: hamaru is a very common Japanese verb meaning 'to fit into' or 'to be hooked on'."
+note = "Bible section 9 flags this as the name most likely to fail verification: hamaru is a very common Japanese verb meaning 'to fit into' or 'to be hooked on'. NOT ANIMATED in the first animation pass (2026-08-09): unlike the other three teens, hamaru has no completed 8-direction PixelLab object in the account to animate from -- list_objects/get_object turned up source art for nigimaru, tenmaru and ayumaru (matched against the shipped teen1/teen2/teen3 PNGs to confirm), but no equivalent for hamaru, and its shipped teen0_neutral_s_01.png does not match any object currently in the account closely enough to animate from without redrawing the design. Still a single frame; see .superpowers/sdd/first-animations-report.md."
 
 [[teens]]
 id = "nigimaru"
@@ -185,6 +222,14 @@ name_verified = false
 has_design_brief = true
 read = "A round creature that is mostly two oversized open hands, held ready at all times."
 quirk = "Grabs at everything that passes. Has never dropped anything, because it has never held anything."
+# Only "neutral" is animated -- see baby's state_frames comment (above,
+# [stages.baby]) for why this is a state_frames entry, not `frames`. 9
+# frames, ~10fps playback, hands held open and flexing/twitching in
+# anticipation while the body breathes, feet planted (no walking),
+# generated 2026-08-09 via PixelLab animate_object v3 from source object
+# d8451d8b-9e28-41d4-88c0-2f82bd0acba1. See
+# .superpowers/sdd/first-animations-report.md.
+state_frames = { neutral = 9 }
 
 [[teens]]
 id = "tenmaru"
@@ -195,6 +240,14 @@ name_verified = false
 has_design_brief = true
 read = "Small and pristine, with a single perfectly round dark spot on its underside that it has never once used."
 quirk = "Desperate to leave a mark and too nervous to try."
+# Only "neutral" is animated -- see baby's state_frames comment (above,
+# [stages.baby]) for why this is a state_frames entry, not `frames`. 9
+# frames, ~10fps playback, a tight nervous breathing shiver that settles
+# back to pristine stillness (never releasing the energy, per the quirk),
+# generated 2026-08-09 via PixelLab animate_object v3 from source object
+# a1c1a913-744a-48a7-af84-1f6a63b959fa. See
+# .superpowers/sdd/first-animations-report.md.
+state_frames = { neutral = 9 }
 
 [[teens]]
 id = "ayumaru"
@@ -205,6 +258,21 @@ name_verified = false
 has_design_brief = true
 read = "All legs and almost no body, over-tall, walking constantly and arriving nowhere."
 quirk = "Has never worn through a sole."
+# Only "neutral" is animated -- see baby's state_frames comment (above,
+# [stages.baby]) for why this is a state_frames entry, not `frames`. This
+# is IDLE, deliberately not a walk cycle, even though "walking constantly"
+# is this creature's whole quirk: the brief for this animation pass is the
+# at-rest pose, and a legless-blob entity elsewhere in this same pass
+# (marumaru/child) already showed what asking for a walk cycle produces
+# when the creature has nothing built for it -- see marumaru's own
+# state_frames comment above. ayumaru DOES have legs, so its idle is a
+# restless weight-shift and knee-bounce that never actually steps forward,
+# not a held-still pose -- the closest an idle can get to "arriving
+# nowhere" without becoming a walk. 9 frames, ~10fps playback, generated
+# 2026-08-09 via PixelLab animate_object v3 from source object
+# 91db8844-a8be-44d4-904c-378030ebb087. See
+# .superpowers/sdd/first-animations-report.md.
+state_frames = { neutral = 9 }
 
 # ---------------------------------------------------------------------------
 # The four verb families themselves. Grouping-only, used for gap-count

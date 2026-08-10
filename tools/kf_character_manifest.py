@@ -232,10 +232,38 @@ def _entity_states(entity: dict, meta: dict) -> list[str]:
     return states
 
 
-def _entity_frames(entity: dict, meta: dict) -> int:
-    frames = entity.get("frames", meta["default_frames"])
+def _state_frame_count(entity: dict, meta: dict, state: str) -> int:
+    """How many frames THIS ONE STATE gets. Checks, in order: an entry in
+    the entity's own `state_frames = { state = N, ... }` table; the
+    entity-wide `frames = N` override; meta['default_frames'].
+
+    `state_frames` exists because `frames` alone is entity-WIDE -- every
+    one of that entity's states gets the same count (_sprites_for_entity
+    used to call this with no `state` argument at all, before the first
+    animated roster entry). That is exactly right for an entity with one
+    state (the egg's "idle" is its only state, so `frames = N` unambiguously
+    means "the idle animation has N frames"), and exactly wrong for an
+    entity where only ONE pose out of several is animated -- which is every
+    other animated entry in this roster's first animation pass: baby,
+    child and the teens each keep happy/objecting/sick/sleeping as single
+    frames and animate only "neutral". Setting the entity-wide `frames`
+    override on one of those would silently tell kf_ingest_sprites.py to
+    expect N frames of every state, including four states nobody drew,
+    and it would try to draw N-1 sprites that don't exist -- see
+    tools/kf_ingest_sprites.py's build_entry(): an entry with any missing
+    frame is dropped from the pack whole, so the failure mode is not an
+    error message, it is happy/objecting/sick/sleeping silently vanishing
+    from the pack. `state_frames` lets ONE state's count move without
+    disturbing the others' default of 1."""
+    state_frames = entity.get("state_frames", {})
+    if state in state_frames:
+        frames = state_frames[state]
+    else:
+        frames = entity.get("frames", meta["default_frames"])
     if frames < 1:
-        raise ManifestError(f"entity '{entity.get('id')}': frames must be >= 1, got {frames}")
+        raise ManifestError(
+            f"entity '{entity.get('id')}': frames for state '{state}' "
+            f"must be >= 1, got {frames}")
     return frames
 
 
@@ -281,13 +309,16 @@ def _sprites_for_entity(entity: dict, entity_id: str, code_token: str, stage: st
     real creature id, kept on the yielded SpriteSpec as prompt metadata only
     -- see THE NAMING CONVENTION at the top of this file."""
     states = _entity_states(entity, meta)
-    frame_count = _entity_frames(entity, meta)
     width, height = _entity_size(entity, meta)
     directions = _entity_directions(entity)
     grudge = grudge_eligible and entity.get("grudge", False)
     variants: list[str | None] = [None, GRUDGE_VARIANT] if grudge else [None]
 
     for state in states:
+        # Per-STATE, not per-entity -- see _state_frame_count()'s own
+        # docstring for why an entity-wide count would be wrong the moment
+        # only one of an entity's several poses is animated.
+        frame_count = _state_frame_count(entity, meta, state)
         for variant in variants:
             for direction in directions:
                 for frame in range(1, frame_count + 1):
