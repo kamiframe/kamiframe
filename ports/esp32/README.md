@@ -341,6 +341,29 @@ These are already true and need to stay true:
   format, the partition table's reasoning (including the OTA question),
   and why bulk pixel data deliberately never touches `KF_ARENA_ASSETS`.
 
+## What ADR 0034 added
+
+- Six new KFDBG commands -- `FEED`/`PLAY`/`REST`/`BATH`/`FLUSH <variation>`
+  and `JUMP <stage> [teen_form] [adult_branch]` -- giving the device the
+  same care-action and life-stage-jump control the desktop simulator has
+  had via number keys 1-5 and `sdl_debug_window.cpp`'s stage-jump buttons.
+  Built specifically so a dead pet (an uncared-for one dies of neglect
+  around the child stage) doesn't make every later life stage's sprites
+  permanently unreachable on real hardware.
+- Care commands call `kf_pet_session_feed()`/`_play()`/`_rest()`/`_bath()`/
+  `_flush()` directly rather than routing through `KFDBG BTN`'s button
+  injection, even though a real press reaches the same functions --
+  explicit `variation` beats reconstructing a keyboard-only cycling
+  counter over a serial link, and it sidesteps Core's debounce, which a
+  one-shot `BTN` injection cannot reliably clear anyway.
+  `tools/kf_debug.py` gained `care <1-5|name> [--variation N]` and `jump
+  <stage> [--teen-form N] [--adult-branch N]`, with `care`'s digit form
+  matching the desktop's own 1-5 key order.
+- **`idf.py build` succeeded**, zero warnings, `kamiframe-firmware.bin` at
+  660,112 bytes (58% of the app partition free) -- not run against real
+  hardware; see `docs/architecture/adr-0034-kfdbg-care-and-stage-jump.md`
+  for exactly what that leaves unchecked.
+
 ## What still has to be written
 
 - **Confirming the demo creature is actually driving the pet screen**, not
