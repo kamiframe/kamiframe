@@ -4395,6 +4395,31 @@ static int run_frame_counters_check(void) {
     kf_pet_session_init();
     kf_creature_screen_init();
 
+    /* Task 4 of the Lua game-layer plan (docs/superpowers/plans/
+     * 2026-08-12-lua-game-layer.md): the creature screen is now retained --
+     * kf_creature_screen_frame() declares the creature to kf/scene.h and
+     * kf_scene_commit() paints only what actually changed since last frame
+     * (kf/scene.h's own "A frame in which nothing was changed produces zero
+     * dirty rectangles and draws nothing" comment). A fresh pet is an EGG
+     * (kf_pet_init(), kf/pet.h), which does not wander -- it only bobs by
+     * egg_bob_offset_y()'s own wave, which is exactly 0 for the first three
+     * 33ms ticks this loop drives (kEggBobQuarterMs is 750ms). Left as an
+     * egg, every one of these frames would genuinely declare the SAME
+     * position and sprite as the frame before it, kf_scene_commit() would
+     * correctly draw nothing, and keyed_pixels would read 0 for a true
+     * reason having nothing to do with the defect this check exists to
+     * catch -- exactly the "check passes because the drawing was deleted"
+     * trap this file's own banner and 2026-08-09-creature-on-screen.md warn
+     * about, this time sprung by a genuinely-idle frame rather than a
+     * genuinely-missing draw call. Forcing CHILD here (the same lever
+     * run_creature_screen_check() already uses) makes every one of the
+     * frames below a real wander tick, so the creature's declared position
+     * differs from the last-presented one on every single frame and a real
+     * kf_blit_frame() keyed draw happens for real -- not because the bound
+     * below was loosened to let a silent frame through. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->stage = KF_PET_STAGE_CHILD;
+
     /* At least 3 iterations, not 1: the counters' window is now one frame
      * BEHIND the draw that fills it -- kf_app_frame() reads and resets the
      * PREVIOUS iteration's counters before this iteration's kf_creature_
@@ -4402,10 +4427,34 @@ static int run_frame_counters_check(void) {
      * kf_draw_counters_reset() comment for exactly why). A 1-iteration
      * loop would read a window nothing had drawn into yet and prove
      * nothing about the lag; 3 exercises the steady state past that first
-     * edge, the same reasoning this task's brief gives. */
+     * edge, the same reasoning this task's brief gives.
+     *
+     * dt_ms=1000, not the usual 33: what kf_app_last_frame() reports after
+     * this loop is the SECOND-TO-LAST kf_creature_screen_frame() call's
+     * draw (index 1 of 0..2 -- the lag above means the last call's own
+     * draw is never read by anyone). A fresh kf_creature starts on a fixed
+     * kDwellMinMs=400ms dwell before its wander ever takes its first step
+     * (hakoniwaos/src/creature.cpp), and kf_creature_update() returns
+     * without moving on the very tick that dwell reaches 0, not just while
+     * it is still positive -- so a real 33ms tick would need roughly
+     * ceil(400/33)=13 of them just to clear the dwell, and this loop only
+     * runs 3. 1000ms clears the whole dwell on iteration 0 (and starts
+     * animating, but does not move -- the same "returns on the tick dwell
+     * hits zero" rule) and then genuinely walks the creature ~18px on
+     * iteration 1, so iteration 1's draw -- the one this check actually
+     * reads -- contains a real, non-vacuous kf_blit_frame() of the CHILD
+     * stage's real, colour-keyed sprite, not a frame where nothing changed
+     * and kf_scene_commit() correctly drew nothing. See this function's own
+     * header comment on why relying on the CHILD sprite alone (set once,
+     * before this loop) is not enough by itself: that produces exactly one
+     * real draw, at iteration 0, and the lag above means iteration 0's own
+     * draw is read into kf_app_last_frame() by iteration 1's kf_app_frame()
+     * call -- then immediately overwritten, still holding that value, by
+     * iteration 2's kf_app_frame() call reading iteration 1's draw, which
+     * without real movement would be genuinely empty. */
     for (int i = 0; i < 3; ++i) {
         check(kf_app_frame(), "kf_app_frame returned false");
-        kf_creature_screen_frame(33u);
+        kf_creature_screen_frame(1000u);
     }
 
     const kf_frame_stats *last = kf_app_last_frame();
