@@ -95,6 +95,7 @@ idf_component_register(
         ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp
+        ../../../sdk/lua/kf_lua_scene.cpp
         kf_dbg_bridge.cpp
         kf_dbg_codec.cpp
     INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../sdk/lua" "../../../sdk/lua/generated"

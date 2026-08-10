@@ -94,11 +94,13 @@
 #include "kf/app.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "kf/scene.h"
 
 #include "kf_app_post_frame.h"
 #include "kf_dbg_bridge.h"
 #include "kf_lua_demo_creature_script.h"
 #include "kf_lua_port.h"
+#include "kf_lua_scene.h"
 #include "kf_lvgl_port.h"
 #include "kf_pet_session.h"
 #include "kf_screen_nav.h"
@@ -327,6 +329,22 @@ extern "C" void app_main(void) {
          * delta deliberately does not get the multiplier folded in, per
          * this loop's header comment. */
         kf_lua_port_frame(0);
+
+        /* kf_scene_commit() belongs to the frame loop, not the Lua binding
+         * (Task 3 of docs/superpowers/plans/2026-08-12-lua-game-layer.md)
+         * -- same ordering and the same reasoning as sdl_main.cpp's
+         * identical call, including the kf_lua_scene_declared_anything()
+         * guard: without it, the very first frame after boot would paint
+         * one solid KF_BLACK frame over whatever the creature screen or
+         * LVGL just drew, because hakoniwaos/src/scene.cpp's own
+         * g_force_full_redraw starts true and nothing here ever calls
+         * kf_scene_reset() (that is Task 4's job). See kf_lua_scene.h's
+         * own comment on this predicate for the full reasoning; the demo
+         * creature script still only logs, so this stays a no-op device-
+         * side for the whole of this task. */
+        if (kf_lua_scene_declared_anything()) {
+            kf_scene_commit();
+        }
 
         g_post_frame_us = static_cast<uint32_t>(kf_time_mono_us() -
                                                   post_frame_start_us);

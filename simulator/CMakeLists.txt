@@ -161,6 +161,7 @@ include(fetch_lua)
 add_library(kamiframe_lua_port STATIC
     ../sdk/lua/kf_lua_alloc.cpp
     ../sdk/lua/kf_lua_port.cpp
+    ../sdk/lua/kf_lua_scene.cpp
 )
 target_include_directories(kamiframe_lua_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../sdk/lua)
@@ -210,13 +211,26 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # the moment ctest's working directory is not the repo root, which is not
     # a promise it makes. PRIVATE and on this target alone, not KF_ASSET_PACK
     # or kamiframe_host_common's shared define -- this is not a new default
-    # pack, only run_creature_screen_sprite_check() (headless_main.cpp) ever
-    # reads this macro, via a runtime kf_host_assets_set_pack_path() override
-    # it restores before returning, exactly the mechanism host_assets.h's own
-    # header comment describes and the same one kamiframe-sim's `--pack` flag
-    # already uses. Every other test keeps mounting the untouched default.
+    # pack. Read via a runtime kf_host_assets_set_pack_path() override each
+    # reader restores before returning, exactly the mechanism host_assets.h's
+    # own header comment describes and the same one kamiframe-sim's `--pack`
+    # flag already uses. Every other test keeps mounting the untouched
+    # default. Originally run_creature_screen_sprite_check()'s alone;
+    # run_scene_check() (Task 2) and run_lua_draw_check() (Task 3 of
+    # docs/superpowers/plans/2026-08-12-lua-game-layer.md) both read it too
+    # now, for egg_idle_s specifically.
     target_compile_definitions(kamiframe-headless PRIVATE
         KF_CREATURE_DEMO_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/creature_demo/assets.kfpack"
+    )
+
+    # Task 3 of the Lua game layer plan: an absolute, source-tree-relative
+    # path to the minimal-pet example, so run_lua_draw_check() can read the
+    # actual checked-in file rather than a copy pasted into this .cpp --
+    # "if it does not work verbatim ... one of the two is wrong" only means
+    # something if the check runs the real file. Same baked-in-at-configure
+    # reasoning as KF_CREATURE_DEMO_PACK_PATH just above.
+    target_compile_definitions(kamiframe-headless PRIVATE
+        KF_HELLO_PET_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/examples/hello_pet/pet.lua"
     )
 
     # Same reasoning, same mechanism, one entry above: run_indexed_asset_
@@ -788,6 +802,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_scene_check() for the four things it checks, in order.
     add_test(NAME scene_check
              COMMAND kamiframe-headless --verify-scene)
+
+    # Task 3 of the Lua game layer plan (docs/superpowers/plans/
+    # 2026-08-12-lua-game-layer.md): the Lua binding over kf/scene.h --
+    # proved by diffing a scene DECLARED FROM LUA against the same picture
+    # drawn by hand with kf_fill_rect()/kf_blit_frame() directly, exactly
+    # scene_check's own proof but with a script in the loop, plus two anti-
+    # vacuity checks (the 65th object, a removed object) and the minimal-
+    # pet example run verbatim from disk. See headless_main.cpp's
+    # run_lua_draw_check() for the seven things it checks, in order.
+    add_test(NAME lua_draw_check
+             COMMAND kamiframe-headless --verify-lua-draw)
 endif()
 
 # ---------------------------------------------------------------------------

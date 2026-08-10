@@ -5,6 +5,7 @@
 #include "kf_lua_port.h"
 
 #include "kf_lua_alloc.h"
+#include "kf_lua_scene.h"
 
 #include "../pet/kf_pet_session.h"
 
@@ -384,6 +385,10 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
 
     register_bindings(g.L);
     register_pet_bindings(g.L);
+    /* Task 3 of the Lua game layer plan: the drawing surface over kf/
+     * scene.h. Runs after register_bindings() on purpose -- it adds to the
+     * `kf` table that call just created, rather than creating its own. */
+    kf_lua_scene_register(g.L);
 
     g.disabled_after_error = false;
     g.last_call_us = 0;
@@ -437,6 +442,12 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms) {
                           1000u);
         g.last_call_us = now_us;
     }
+
+    /* kf.on_button handlers fire before on_frame, each in their own
+     * lua_pcall (kf_lua_scene.cpp), so a button press this frame is
+     * already reflected in whatever pet.* state on_frame goes on to read
+     * -- not one frame behind it. */
+    kf_lua_scene_dispatch_buttons(g.L);
 
     lua_getglobal(g.L, "on_frame");
     if (!lua_isfunction(g.L, -1)) {

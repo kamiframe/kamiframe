@@ -16,6 +16,7 @@
 #include "kf/app.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "kf/scene.h"
 #include "host_assets.h"
 #include "sdl_debug_window.h"
 #include "sdl_shared.h"
@@ -24,6 +25,7 @@
 #include "../lvgl/kf_screen_nav.h"
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
 #include "../../../sdk/lua/kf_lua_port.h"
+#include "../../../sdk/lua/kf_lua_scene.h"
 #include "../pet/kf_pet_session.h"
 
 #include <SDL3/SDL.h>
@@ -244,6 +246,27 @@ int main(int argc, char *argv[]) {
             kf_lvgl_port_pump(0);
         }
         kf_lua_port_frame(0);
+        /* kf_scene_commit() belongs to the frame loop, not the Lua binding
+         * (Task 3 of docs/superpowers/plans/2026-08-12-lua-game-layer.md)
+         * -- present happens at the top of the NEXT kf_app_frame(), so a
+         * scene committed here reaches the panel on the following frame,
+         * the same as the creature screen's own drawing.
+         *
+         * Guarded on kf_lua_scene_declared_anything(): kf_scene_reset() is
+         * never called this task (Task 4's job) or ever by this file, so
+         * hakoniwaos/src/scene.cpp's own g_force_full_redraw starts true
+         * and stays true until the process's first kf_scene_commit() ever
+         * runs -- by design, so that first commit repaints correctly with
+         * no reset needed. Calling it unconditionally here, before any
+         * script has declared a single object, would paint one solid
+         * KF_BLACK frame over whatever the creature screen or LVGL just
+         * drew. The demo creature script (examples/creature_demo/
+         * creature.lua) still only logs, so this stays a no-op for the
+         * whole of this task -- see kf_lua_scene.h's own comment on this
+         * predicate for the full reasoning. */
+        if (kf_lua_scene_declared_anything()) {
+            kf_scene_commit();
+        }
         update_title(static_cast<uint64_t>(frames));
         frames++;
         if (max_frames > 0 && frames >= max_frames) {
