@@ -5,9 +5,13 @@
  * LVGL screen (Task 4 of the pet-screen plan; see kf_screen_nav.cpp for the
  * routing that puts this here). Draws straight into the framebuffer through
  * kf/blit.h -- kf_fill_rect() to erase the creature's previous position,
- * kf_blit()/kf_blit_mirrored() to draw the sprite kf_creature_sprite_name()
- * (kf/creature.h) resolves for the pet's current pose and the wander's
- * current facing -- rather than through any LVGL widget tree. This is the
+ * kf_blit_frame()/kf_blit_frame_mirrored() (Task 6 of the animated-indexed-
+ * sprites plan; kf_blit()/kf_blit_mirrored() were the pre-Task-6 two-
+ * argument calls, still exactly frame 0 of the same sprite per kf/blit.h's
+ * own comment) to draw the sprite kf_creature_sprite_name() (kf/creature.h)
+ * resolves for the pet's current pose and the wander's current facing, at
+ * whatever frame kf_creature::anim's cursor is on -- rather than through any
+ * LVGL widget tree. This is the
  * "core owns the pixels, a thin per-frame loop drives it" split kf/demo.cpp
  * already established for the placeholder bouncing sprite this replaces as
  * Home's owner; kf_creature.h itself lives in hakoniwaos/ for the same
@@ -41,7 +45,10 @@ void kf_creature_screen_init(void);
  * 48x48 rectangle back to the field's background, then draw the sprite (or,
  * if the asset pack has no art for this pet's stage/pose/direction yet, a
  * placeholder rectangle -- see kf_creature_screen.cpp's own comment) at its
- * new position. Exactly two kf_fill_rect()/kf_blit() calls' worth of dirty
+ * new position, at whatever frame its animation cursor is on (kf_creature::
+ * anim, ticked separately -- see kf_creature_tick_anim()'s own comment,
+ * kf/creature.h, for why advancing that cursor never changes this count).
+ * Exactly two kf_fill_rect()/kf_blit_frame() calls' worth of dirty
  * rectangles per frame, by construction -- see kf_screen_nav.h's own
  * per-frame contract for why only the active screen's update runs at all,
  * and headless_main.cpp's run_creature_screen_check() for what pins this
@@ -152,5 +159,13 @@ void kf_creature_screen_debug_set_direction(kf_creature_direction dir);
  * is correct), and the bob is a draw-time-only offset the wander state
  * never sees or is affected by. */
 kf_rect kf_creature_screen_debug_bounds(void);
+
+/* The creature's own animation cursor -- exactly g_creature.anim.frame
+ * (kf/creature.h's kf_anim, ticked by kf_creature_tick_anim() and wrapped
+ * against the resolved sprite's frame_count every draw, see
+ * kf_creature_screen_frame()'s own comment on both). Lets a headless check
+ * confirm the cursor is really advancing/wrapping as this screen drives it,
+ * without duplicating kf_anim's accumulator arithmetic in the test. */
+uint16_t kf_creature_screen_debug_anim_frame(void);
 
 #endif /* KF_CREATURE_SCREEN_H */

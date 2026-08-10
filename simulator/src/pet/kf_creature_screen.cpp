@@ -121,14 +121,21 @@ kf_rect poop_rect(uint8_t index) {
  * sequencing -- it is pure positioning, an offset applied to where the
  * egg's sprite (or placeholder rect) is drawn, nothing more. The other
  * half -- the egg actually SQUISHING, i.e. deforming -- needs different
- * artwork per frame, and nothing in hakoniwaos/ plays a multi-frame
- * animation back yet: the pack format can hold several frames behind one
- * entry (KF_ASSET_TYPE_SPRITE_INDEXED, kf/assets.h) and kf_blit_frame()
- * can address any of them, but no caller ever asks for anything but frame
- * 0 today -- see kf/creature.h's kf_creature_sprite_name() comment for the
- * entry-name side of that split. That half is not attempted here, and is
- * not faked with a scale transform either -- see this task's own report
- * for why stretching a static sprite would read as broken art, not squish.
+ * artwork per frame. That art does not exist yet (every entity in the
+ * manifest still ships one frame per state), but the CODE half of it does:
+ * the animated-indexed-sprites plan's Task 6 wired resolve_sprite()'s
+ * draw path below through kf_creature_anim_wrap()/kf_blit_frame(), so an
+ * egg_idle_<dir> entry that shipped several squish frames would already
+ * play them, in step with this same bob, with no further code change --
+ * see kf_creature_tick_anim()'s call in the egg branch just below, and
+ * kf/creature.h's kf_creature_sprite_name() comment for the entry-name
+ * side of that split. Until that art exists this constant multiplies
+ * `frame_count == 1` sprites, which is exactly frame 0 every time (see
+ * kf_creature_anim_wrap()), so today this bob is still positional-only in
+ * practice, not because the deforming half is unbuilt but because nothing
+ * has asked it to deform yet. Not faked with a scale transform either --
+ * see the animated-indexed-sprites plan's Task 6 report for why stretching
+ * a static sprite would read as broken art, not squish.
  *
  * Integer triangle wave, not a lookup table or a sine call: hakoniwaos/
  * stays free of floating point AND of trig (see tools/check_no_heap.py and
@@ -388,6 +395,20 @@ void resolve_sprite(const kf_pet_state *pet, kf_creature_pose pose,
         *out_mirrored = g_sprite_cache.mirrored;
         return;
     }
+
+    /* The requested name just changed (or this is the very first call) --
+     * a cache miss is exactly the moment the resolved sprite could have
+     * changed, which is precisely when the animation cursor needs to reset
+     * (kf_creature_anim_wrap()'s own comment, kf/creature.h): a 9-frame
+     * walk cycle can leave g_creature.anim.frame at 7, and a 3-frame
+     * objecting pose resolved next has no frame 7. kf_creature_anim_wrap()
+     * (called just before every draw, below) would clamp that back to a
+     * safe frame anyway, but only after visibly jumping mid-cycle for one
+     * frame -- resetting here means a pose change always starts its new
+     * cycle at frame 0, not wherever the previous pose's cursor happened to
+     * be. */
+    g_creature.anim.frame = 0u;
+    g_creature.anim.accum_ms = 0u;
 
     const kf_sprite *sprite = kf_assets_get(name);
     bool mirrored = false;
@@ -779,6 +800,15 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
             kf_creature_init(&g_creature, kField);
         }
         g_egg_bob_elapsed_ms += dt_ms;
+        /* kf_creature_update() below is the wander's only caller of
+         * kf_creature_tick_anim() (hakoniwaos/src/creature.cpp), and the
+         * egg takes the OTHER branch, never calling it -- so without this,
+         * the egg would be the one sprite in the game that never animates,
+         * which is precisely backwards from what was asked for. See
+         * kf_creature_tick_anim()'s own comment (kf/creature.h) for why
+         * this is a second caller of the same function rather than a
+         * second copy of its arithmetic. */
+        kf_creature_tick_anim(&g_creature, dt_ms);
     } else {
         kf_creature_update(&g_creature, kField, dt_ms);
     }
@@ -788,9 +818,12 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
      * one when the creature did not move this frame, since the erase below
      * and the draw further down then touch the exact same rectangle and
      * merge into one (see kf/framebuffer.h's own comment on
-     * kf_fb_mark_dirty()) -- both marked by kf_fill_rect()/kf_blit()/
-     * kf_blit_mirrored() themselves. See run_creature_screen_check() for
-     * what pins this budget down. */
+     * kf_fb_mark_dirty()) -- both marked by kf_fill_rect()/kf_blit_frame()/
+     * kf_blit_frame_mirrored() themselves. See run_creature_screen_check()
+     * for what pins this budget down, and this task's own report for why
+     * advancing which FRAME gets drawn below never changes this count --
+     * the erase and the draw happen every frame regardless, moving or not,
+     * animating or not. */
     kf_fill_rect(g_previous, kBackground);
 
     /* Mess (Task 5). Static by construction: this only ever paints on a
@@ -884,10 +917,22 @@ void kf_creature_screen_frame(uint32_t dt_ms) {
         now.y1 = static_cast<int16_t>(now.y1 + offset);
     }
     if (sprite != nullptr) {
+        /* Bring the cursor back in range for THIS sprite before reading it
+         * -- resolve_sprite()'s cache-miss branch already reset it to 0 the
+         * frame the resolved sprite changed, but this still runs every
+         * frame (not just on a change) as the belt to that braces: it is
+         * what actually stops a stale, past-the-end frame from ever
+         * reaching kf_blit_frame() below, rather than merely making it rare.
+         * frame_count == 1 for every real sprite in the repo today (see
+         * this task's own report), so this is a no-op in practice until
+         * animated art ships -- the fixture pack's test_sprite_anim is the
+         * one exception, which is what proves this path plays more than
+         * frame 0 at all. */
+        kf_creature_anim_wrap(&g_creature, sprite->frame_count);
         if (mirrored) {
-            kf_blit_mirrored(sprite, now.x0, now.y0);
+            kf_blit_frame_mirrored(sprite, now.x0, now.y0, g_creature.anim.frame);
         } else {
-            kf_blit(sprite, now.x0, now.y0);
+            kf_blit_frame(sprite, now.x0, now.y0, g_creature.anim.frame);
         }
     } else {
         /* No art in the pack for this pet yet -- see kPlaceholderColor's
@@ -973,4 +1018,8 @@ uint32_t kf_creature_screen_debug_reaction_hold_ms(void) {
 
 int16_t kf_creature_screen_debug_egg_bob_offset_y(void) {
     return egg_bob_offset_y(g_egg_bob_elapsed_ms);
+}
+
+uint16_t kf_creature_screen_debug_anim_frame(void) {
+    return g_creature.anim.frame;
 }
