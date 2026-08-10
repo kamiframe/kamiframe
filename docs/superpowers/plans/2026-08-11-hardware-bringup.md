@@ -21,7 +21,35 @@ production code; five are procedures with a code change attached.
 `esp_lcd` over SPI2 + DMA, `tools/kf_debug.py` over UART0 at 115200,
 Wokwi CI simulator, CTest via `kamiframe-headless --verify-*` check modes.
 
-## Status: NOT STARTED, written 2026-08-11
+## Status: PARTLY LANDED — Tasks 1, 4 and 9 are done
+
+Written 2026-08-11 and overtaken the same night, because the owner had the
+board wired and wanted to flash.
+
+| Task | State | Commits |
+|---|---|---|
+| 1 — make the frame budget measurable | **done** | `73e76fd`, `7e2d466` |
+| 4 — panel profile owns the backlight | **done** | `b730559`, `61fae4b` |
+| 9 — the stats band (added later) | **done** | `fe06c8b`, `4fbc9fa` |
+| 2, 3, 5-8 | not started | — |
+
+**The board ran the game before most of this plan did.** Tasks 2, 3 and 5-8 were
+overtaken by events: the owner flashed, hit a crash, and bring-up proceeded live.
+What that produced anyway:
+
+- `esp_partition_mmap()` **confirmed on real silicon** — the plan's single
+  biggest risk, retired against the 1,156-byte pack exactly as sequenced, then
+  the 556 KB creature pack.
+- A null-pointer crash in `push_rect()` fixed (`1a33021`) — `g_swap_strip[]` was
+  allocated only for big-endian panels but used by both paths, latent since the
+  strips were introduced and unreachable until a native-endian profile existed.
+- The wrong panel profile flashed first (ST7789 against a connected ILI9341),
+  which is what surfaced that crash.
+- Frame budget measured on device: **969µs against 33,333µs**, 34x headroom.
+
+Task 1 matters to later work beyond this plan: the `KFDBG STATE` budget fields
+it added are what `2026-08-12-lua-game-layer.md` relies on to measure the Lua
+layer's cost on hardware.
 
 No task below has been executed. Everything in "What is true today" was
 measured in the session that wrote this plan, on this machine, in this
