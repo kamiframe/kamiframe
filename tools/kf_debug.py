@@ -22,6 +22,12 @@ Wire protocol (fixed; the device side implements the exact same spec):
         KFDBG MULT <n>
         KFDBG SCANLINE [read_hz]
         KFDBG VSYNC <0|1>
+        KFDBG FEED <variation>
+        KFDBG PLAY <variation>
+        KFDBG REST <variation>
+        KFDBG BATH <variation>
+        KFDBG FLUSH
+        KFDBG JUMP <stage> [teen_form] [adult_branch]
 
     Device -> host, a framed block. Ordinary firmware log lines may appear
     interleaved between (never inside) these blocks and are skipped:
@@ -53,6 +59,11 @@ Usage:
     python3 tools/kf_debug.py [--port PORT] watch [--interval 1.0]
     python3 tools/kf_debug.py [--port PORT] scanline [--read-hz 2000000]
     python3 tools/kf_debug.py [--port PORT] vsync on|off
+    python3 tools/kf_debug.py [--port PORT] care 1            # feed, variation 0
+    python3 tools/kf_debug.py [--port PORT] care feed 2       # feed, variation 2
+    python3 tools/kf_debug.py [--port PORT] care 5            # flush (no variation)
+    python3 tools/kf_debug.py [--port PORT] jump teen         # start of teen stage
+    python3 tools/kf_debug.py [--port PORT] jump teen --teen-form 1
 
 See tools/README.md for a plain-language walkthrough.
 """
@@ -89,6 +100,37 @@ BUTTON_BITS = {
     "B": 1 << 5,
     "MENU": 1 << 6,
 }
+
+# How many ways there are to do each of feed/play/rest/bath, mirrored from
+# KF_PET_CARE_VARIATION_COUNT (hakoniwaos/include/kf/pet.h) for the same
+# reason BUTTON_BITS above mirrors kf/types.h -- no machine-readable link
+# to the C build, on purpose, so if Core's count ever changes this needs a
+# matching edit, not a silent mismatch.
+CARE_VARIATION_COUNT = 3
+
+# The five care actions, in the same order the desktop simulator binds them
+# to number keys 1-5 (simulator/src/sdl/sdl_input.cpp,
+# simulator/src/pet/kf_creature_screen.cpp's handle_care_buttons()) --
+# feed/play/rest/bath/flush. `care <n>` below accepts either the digit or
+# the name, so a script that has memorised "1=feed" from the desktop
+# keyboard binding works here unchanged. flush takes no variation, per
+# kf_pet_flush() (kf/pet.h).
+CARE_ACTIONS = ["feed", "play", "rest", "bath", "flush"]
+CARE_ACTION_ALIASES = {str(i + 1): name for i, name in enumerate(CARE_ACTIONS)}
+CARE_ACTION_ALIASES.update({name: name for name in CARE_ACTIONS})
+
+# Life stages, mirrored from the kf_pet_stage enum in
+# hakoniwaos/include/kf/pet.h -- same "no machine-readable link" caveat as
+# BUTTON_BITS/CARE_VARIATION_COUNT above.
+STAGE_NAMES = {"egg": 0, "baby": 1, "child": 2, "teen": 3, "adult": 4}
+
+# KF_PET_TEEN_FORM_DUST (kf/pet.h): deliberately equal to
+# KF_PET_TEEN_FORM_COUNT (4), one past the four named teen forms -- a real,
+# reachable form (an uncared-for teen), not an error value. `jump`'s
+# --teen-form accepts 0..KF_PET_TEEN_FORM_DUST inclusive, matching the
+# device side's own range (see handle_jump()'s comment in
+# ports/esp32/main/kf_dbg_bridge.cpp) rather than silently clamping it away.
+TEEN_FORM_DUST = 4
 
 def resolve_shot_path(out):
     """Where a screenshot should land.
@@ -369,6 +411,24 @@ def parse_buttons(spec):
     if mask == 0:
         raise KfDebugError("no buttons given")
     return mask
+
+
+def parse_stage(text):
+    """'teen' -> 3, '3' -> 3 -- accepts either a name (STAGE_NAMES above)
+    or a raw 0-4 decimal, since KFDBG JUMP's own wire syntax takes the raw
+    enum value and a name is friendlier to type at a prompt."""
+    t = text.strip().lower()
+    if t in STAGE_NAMES:
+        return STAGE_NAMES[t]
+    try:
+        v = int(t)
+    except ValueError:
+        valid = ", ".join(STAGE_NAMES)
+        raise KfDebugError(
+            f"unknown stage '{text}' -- use a name ({valid}) or 0-4") from None
+    if not 0 <= v <= 4:
+        raise KfDebugError(f"stage must be 0-4 (or a name), got {v}")
+    return v
 
 
 # --------------------------------------------------------------------------
@@ -702,6 +762,84 @@ def cmd_vsync(link, args):
           f"{payload.decode('utf-8', 'replace')}")
 
 
+def cmd_care(link, args):
+    """Fire one of the five care actions -- feed/play/rest/bath/flush --
+    against the live pet, by name or by the same 1-5 digit the desktop
+    simulator binds these to (see CARE_ACTION_ALIASES above).
+
+    Calls KFDBG FEED/PLAY/REST/BATH/FLUSH directly, NOT `press A`/`press
+    UP`/etc. (KFDBG BTN). Two reasons, matching the device-side reasoning
+    in ports/esp32/main/kf_dbg_bridge.cpp's handle_feed() comment:
+
+      1. On the desktop keyboard, which of the KF_PET_CARE_VARIATION_COUNT
+         variations a press fires is an implicit counter that cycles with
+         each press of the SAME key -- state this CLI has no way to see or
+         resync with (a fresh `kf_debug.py` process every invocation has
+         no memory of how many times a real device's button was pressed
+         before). Passing --variation explicitly here is unambiguous every
+         time, which is what a scriptable command needs.
+      2. A bare `press` defaults to a 120ms hold specifically because a
+         one-shot injection does not clear Core's debounce filter (see
+         that command's own --hold-ms comment) -- worth paying for
+         testing input handling itself, irrelevant noise for testing a
+         care action's effect. KFDBG FEED et al. skip debounce entirely by
+         calling the session function directly, same as the device side.
+    """
+    action = CARE_ACTION_ALIASES.get(args.action)
+    if action is None:
+        valid = ", ".join(f"{i + 1}={name}" for i, name in enumerate(CARE_ACTIONS))
+        raise KfDebugError(f"unknown care action '{args.action}' -- valid: {valid}")
+
+    if action == "flush":
+        if args.variation is not None:
+            raise KfDebugError("flush takes no --variation (kf_pet_flush() has none)")
+        payload = _expect(link, "KFDBG FLUSH", "ack")
+        print(f"flush -- {payload.decode('utf-8', 'replace')}")
+        return
+
+    variation = args.variation if args.variation is not None else 0
+    if not 0 <= variation < CARE_VARIATION_COUNT:
+        raise KfDebugError(
+            f"variation must be 0..{CARE_VARIATION_COUNT - 1}, got {variation}")
+    payload = _expect(link, f"KFDBG {action.upper()} {variation}", "ack")
+    print(f"{action} variation={variation} -- {payload.decode('utf-8', 'replace')}")
+
+
+def cmd_jump(link, args):
+    """Jump the pet to the START of a life stage -- alive, not sick, not
+    dead, every need topped up -- without living through the real
+    (hour-to-week-scale) stage durations first.
+
+    Exists for exactly the case an uncared-for pet on real hardware makes
+    otherwise unreachable: a pet neglected past the child stage dies, and a
+    dead pet is frozen permanently, so nothing later than that is ever
+    visible on a real device without this.
+
+    teen_form/adult_branch default to 0 (kf_pet_session_debug_jump_to_
+    stage()'s own "unset" behaviour) and are only meaningful once `stage`
+    has passed their own branch point -- see that function's header
+    comment in simulator/src/pet/kf_pet_session.h. teen_form's valid range
+    is 0..TEEN_FORM_DUST (4) INCLUSIVE: the dust form is a real, reachable
+    form (an uncared-for teen), not an error value, so this CLI accepts it
+    like any other in-range input rather than silently clamping it away.
+    adult_branch's valid range depends on which teen_form was picked (a
+    per-family adult count Core computes, not something this host-side
+    script duplicates) -- out-of-range input there is not rejected here;
+    the device falls it back to 0 itself, same as an omitted value.
+    """
+    stage = parse_stage(args.stage)
+    teen_form = args.teen_form if args.teen_form is not None else 0
+    if not 0 <= teen_form <= TEEN_FORM_DUST:
+        raise KfDebugError(
+            f"--teen-form must be 0..{TEEN_FORM_DUST} ({TEEN_FORM_DUST} = the "
+            f"dust form), got {teen_form}")
+    adult_branch = args.adult_branch if args.adult_branch is not None else 0
+    if adult_branch < 0:
+        raise KfDebugError(f"--adult-branch must be >= 0, got {adult_branch}")
+    payload = _expect(link, f"KFDBG JUMP {stage} {teen_form} {adult_branch}", "ack")
+    print(f"jump -- {payload.decode('utf-8', 'replace')}")
+
+
 def cmd_watch(link, args):
     print("watching state, Ctrl-C to stop", file=sys.stderr)
     try:
@@ -838,6 +976,30 @@ def build_parser():
     vsync.add_argument("setting", choices=["on", "off"],
                         help="on or off")
 
+    # 1-5 accepted alongside the names, matching the desktop simulator's own
+    # number-key binding (sdl_input.cpp) key for key -- see CARE_ACTION_
+    # ALIASES above.
+    care = sub.add_parser("care", parents=[common],
+                           help="fire a care action: feed/play/rest/bath/flush "
+                                "(1-5, same order as the desktop's number keys)")
+    care.add_argument("action", choices=sorted(CARE_ACTION_ALIASES),
+                       help="1=feed 2=play 3=rest 4=bath 5=flush, or the name")
+    care.add_argument("--variation", type=int, default=None,
+                       help=f"0..{CARE_VARIATION_COUNT - 1} (default 0; "
+                            "flush takes none)")
+
+    jump = sub.add_parser("jump", parents=[common],
+                           help="jump the pet to the start of a life stage "
+                                "(alive, fully fed) -- for looking at a "
+                                "stage's sprites without raising it for real")
+    jump.add_argument("stage", help="egg|baby|child|teen|adult, or 0-4")
+    jump.add_argument("--teen-form", type=int, default=None,
+                       help=f"0-{TEEN_FORM_DUST} ({TEEN_FORM_DUST} = the dust "
+                            "form); meaningful once stage >= teen (default 0)")
+    jump.add_argument("--adult-branch", type=int, default=None,
+                       help="meaningful once stage == adult; out-of-range "
+                            "falls back to 0 on the device (default 0)")
+
     return p
 
 
@@ -866,6 +1028,10 @@ def main(argv=None):
                 cmd_watch(link, args)
             elif args.command == "vsync":
                 cmd_vsync(link, args)
+            elif args.command == "care":
+                cmd_care(link, args)
+            elif args.command == "jump":
+                cmd_jump(link, args)
     except KfDebugError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

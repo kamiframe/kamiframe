@@ -31,6 +31,7 @@ Usage:
     python3 tools/kf_debug_selftest.py
 """
 
+import argparse
 import base64
 import json
 import struct
@@ -208,12 +209,135 @@ def test_button_masks():
         check("unknown button name raises", True)
 
 
+def test_stage_parsing():
+    print("stage name/number parsing matches kf_pet_stage (kf/pet.h)")
+    check("'egg' -> 0", kfd.parse_stage("egg") == 0)
+    check("'teen' -> 3", kfd.parse_stage("teen") == 3)
+    check("'ADULT' -> 4 (case-insensitive)", kfd.parse_stage("ADULT") == 4)
+    check("'2' -> 2 (raw number still accepted)", kfd.parse_stage("2") == 2)
+    try:
+        kfd.parse_stage("hatchling")
+        check("unknown stage name raises", False)
+    except kfd.KfDebugError:
+        check("unknown stage name raises", True)
+    try:
+        kfd.parse_stage("5")
+        check("out-of-range stage number raises", False)
+    except kfd.KfDebugError:
+        check("out-of-range stage number raises", True)
+
+
+def test_care_action_aliases():
+    print("care action 1-5 aliases match the desktop's number-key order "
+          "(sdl_input.cpp: feed/play/rest/bath/flush)")
+    check("'1' -> feed", kfd.CARE_ACTION_ALIASES["1"] == "feed")
+    check("'2' -> play", kfd.CARE_ACTION_ALIASES["2"] == "play")
+    check("'3' -> rest", kfd.CARE_ACTION_ALIASES["3"] == "rest")
+    check("'4' -> bath", kfd.CARE_ACTION_ALIASES["4"] == "bath")
+    check("'5' -> flush", kfd.CARE_ACTION_ALIASES["5"] == "flush")
+    check("name aliases are identities",
+          all(kfd.CARE_ACTION_ALIASES[n] == n for n in kfd.CARE_ACTIONS))
+
+
+class FakeLink:
+    """Stand-in for SerialLink, for testing the KFDBG command STRING each
+    cmd_*() function builds -- without a real serial port. Records every
+    command sent and returns one canned reply, exactly the shape _expect()
+    (kf_debug.py) needs from whatever `link` it's given."""
+
+    def __init__(self, reply_type="ack", reply_payload=b""):
+        self.sent = []
+        self._reply_type = reply_type
+        self._reply_payload = reply_payload
+
+    def send(self, command):
+        self.sent.append(command)
+
+    def read_frame(self, overall_timeout=None):
+        return self._reply_type, self._reply_payload
+
+
+def _care_args(action, variation=None):
+    return argparse.Namespace(action=action, variation=variation)
+
+
+def test_care_command_building():
+    print("`care` builds the exact KFDBG FEED/PLAY/REST/BATH/FLUSH wire command")
+    link = FakeLink()
+    kfd.cmd_care(link, _care_args("1"))
+    check("care 1 (default variation) -> KFDBG FEED 0",
+          link.sent[-1] == "KFDBG FEED 0")
+
+    link = FakeLink()
+    kfd.cmd_care(link, _care_args("play", variation=2))
+    check("care play --variation 2 -> KFDBG PLAY 2",
+          link.sent[-1] == "KFDBG PLAY 2")
+
+    link = FakeLink()
+    kfd.cmd_care(link, _care_args("5"))
+    check("care 5 (flush) -> KFDBG FLUSH, no variation appended",
+          link.sent[-1] == "KFDBG FLUSH")
+
+    try:
+        kfd.cmd_care(FakeLink(), _care_args("5", variation=1))
+        check("flush rejects an explicit --variation", False)
+    except kfd.KfDebugError:
+        check("flush rejects an explicit --variation", True)
+
+    try:
+        kfd.cmd_care(FakeLink(), _care_args("feed", variation=3))
+        check("out-of-range variation (>= CARE_VARIATION_COUNT) raises", False)
+    except kfd.KfDebugError:
+        check("out-of-range variation (>= CARE_VARIATION_COUNT) raises", True)
+
+    try:
+        kfd.cmd_care(FakeLink(), _care_args("nope"))
+        check("unknown care action raises", False)
+    except kfd.KfDebugError:
+        check("unknown care action raises", True)
+
+
+def _jump_args(stage, teen_form=None, adult_branch=None):
+    return argparse.Namespace(stage=stage, teen_form=teen_form,
+                               adult_branch=adult_branch)
+
+
+def test_jump_command_building():
+    print("`jump` builds the exact KFDBG JUMP wire command, defaults included")
+    link = FakeLink()
+    kfd.cmd_jump(link, _jump_args("teen"))
+    check("jump teen (no teen_form/adult_branch) -> KFDBG JUMP 3 0 0",
+          link.sent[-1] == "KFDBG JUMP 3 0 0")
+
+    link = FakeLink()
+    kfd.cmd_jump(link, _jump_args("adult", teen_form=1, adult_branch=2))
+    check("jump adult --teen-form 1 --adult-branch 2 -> KFDBG JUMP 4 1 2",
+          link.sent[-1] == "KFDBG JUMP 4 1 2")
+
+    # KF_PET_TEEN_FORM_DUST (4) is a real, reachable form -- must NOT be
+    # silently clamped away by this host-side CLI, only range-checked.
+    link = FakeLink()
+    kfd.cmd_jump(link, _jump_args("teen", teen_form=kfd.TEEN_FORM_DUST))
+    check("teen_form == TEEN_FORM_DUST (4) is accepted, not clamped",
+          link.sent[-1] == "KFDBG JUMP 3 4 0")
+
+    try:
+        kfd.cmd_jump(FakeLink(), _jump_args("teen", teen_form=5))
+        check("teen_form past TEEN_FORM_DUST raises", False)
+    except kfd.KfDebugError:
+        check("teen_form past TEEN_FORM_DUST raises", True)
+
+
 def main():
     test_shot_roundtrip()
     test_crc_mismatch_is_caught()
     test_timeout_is_actionable()
     test_state_and_pong_are_plain_text()
     test_button_masks()
+    test_stage_parsing()
+    test_care_action_aliases()
+    test_care_command_building()
+    test_jump_command_building()
 
     print()
     if FAILURES:
