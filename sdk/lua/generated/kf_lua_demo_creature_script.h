@@ -1,50 +1,30 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * The demo creature -- see README.md's "What's in the box" table ("Write
- * creatures in Lua against a small, documented API") and its Licensing
- * section ("The demo creature's code is Apache 2.0"). Not a proof script:
- * every earlier Lua script in this codebase (kf_lua_proof_script.h,
- * kf_lua_pet_proof_script.h) exists to prove a MECHANISM works and says so
- * in its own header comment. This one exists to be looked at. It is the
- * first Lua script in this repository that expresses actual creature
- * behaviour -- reacting to the pet's own state -- entirely in Lua, against
- * the pet.* and kf.* surface ADR 0016 built and nothing else, which is the
- * whole promise of "no C required" made real for the first time.
- *
- * There is no sprite, no audio, and no second screen yet (see ADR 0017's
- * "Later" section), so the only channel this script has to say anything is
- * kf.log() -- every message below shows up in the console, not on the
- * pet screen. That is a real, current limitation, not a design choice this
- * script is making on purpose; see docs/architecture/adr-0018-demo-
- * creature-script.md for what a richer expression channel would need.
- *
- * Behaviour: classify each of the three needs into one of four bands
- * (critical / low / ok / full) every frame, and log a short, in-character
- * line only on the frame a need actually CROSSES into a new band -- not
- * every frame it happens to be in one, which would be constant noise at
- * 30fps. The "ok" band is deliberately silent in both directions: it is
- * the pet's normal resting state, and a message every time a need drifts
- * a little either side of the low/full boundaries would drown out the
- * bands that are actually meant to prompt a person to do something.
- *
- * Also reacts to life-stage transitions (ADR 0021), the same "log only on
- * the frame it actually changes" pattern as the need bands above, via
- * pet.stage()/pet.teen_form()/pet.adult_branch(). Deliberately generic
- * flavour text, not a real creature's actual voice or character name --
- * this file is placeholder demo content (see this header's own first
- * paragraph), same status as every need-band message above it; Chris's
- * real characters are a separate, later effort with his designer, and
- * kf/pet.h's own header comment already draws the line that teen_form/
- * adult_branch are opaque indices, not names, so that is genuinely all
- * this script (or any script, today) has to say about which branch a pet
- * took -- it logs the raw index, it does not invent a name for it.
+ * GENERATED FILE -- do not edit by hand. Regenerate with:
+ *     python3 tools/kf_embed_lua.py
+ * from examples/creature_demo/creature.lua. lua_embed_check
+ * (simulator/CMakeLists.txt) regenerates every embedded header into a
+ * temp directory and diffs it against what is checked in here on every
+ * `ctest` run, so a hand edit -- or a stale header after the .lua source
+ * changed -- fails the build instead of silently drifting.
  */
 
 #ifndef KF_LUA_DEMO_CREATURE_SCRIPT_H
 #define KF_LUA_DEMO_CREATURE_SCRIPT_H
 
 inline constexpr const char *kKfLuaDemoCreatureScriptSource = R"lua(
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright the Kamiframe contributors.
+--
+-- This CODE is Apache-2.0; the creature's art is not -- see ART-LICENSE.md
+-- (this directory) and LICENSING.md. Placeholder flavour text throughout,
+-- not a real creature's voice; teen_form/adult_branch below are logged as
+-- raw indices, never invented names (kf/pet.h draws that line; full
+-- rationale: docs/architecture/adr-0018-demo-creature-script.md). Kept
+-- short: embedded verbatim into flash by tools/kf_embed_lua.py and parsed
+-- by the Lua VM at every boot.
+
 -- kf_pet_millipercent is 0..100000 (kf/pet.h) -- these thresholds are
 -- fractions of that same range, not raw percent, so they read directly
 -- against pet.hunger()/happiness()/energy()'s own return values.

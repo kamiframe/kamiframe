@@ -22,8 +22,8 @@
 
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_screen_nav.h"
-#include "../lua/kf_lua_demo_creature_script.h"
-#include "../lua/kf_lua_port.h"
+#include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
+#include "../../../sdk/lua/kf_lua_port.h"
 #include "../pet/kf_pet_session.h"
 
 #include <SDL3/SDL.h>

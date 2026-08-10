@@ -93,11 +93,11 @@ idf_component_register(
         ../hal/esp_assets.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
         ../../../simulator/src/pet/kf_creature_screen.cpp
-        ../../../simulator/src/lua/kf_lua_alloc.cpp
-        ../../../simulator/src/lua/kf_lua_port.cpp
+        ../../../sdk/lua/kf_lua_alloc.cpp
+        ../../../sdk/lua/kf_lua_port.cpp
         kf_dbg_bridge.cpp
         kf_dbg_codec.cpp
-    INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../simulator/src/lua"
+    INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../sdk/lua" "../../../sdk/lua/generated"
     REQUIRES
         hakoniwaos
         lua

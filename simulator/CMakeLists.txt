@@ -147,18 +147,23 @@ target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
 # 0016) is what ties it to kamiframe_pet_port above.
 #
 # Built unconditionally, same as kamiframe_host_common and
-# kamiframe_lvgl_port above: both desktop backends link it. Lives here, not
-# in hakoniwaos/, for exactly the reason ADR 0013 already gives for LVGL:
-# this slice does not claim Lua works on the ESP32 build.
+# kamiframe_lvgl_port above: both desktop backends link it. Lives in
+# ../sdk/lua, not here and not in hakoniwaos/: it IS wired into
+# ports/esp32/ (ADR 0028 -- see sdk/lua/kf_lua_port.h), which is exactly why
+# it does not belong in hakoniwaos/ core -- Lua is SDK/game glue on top of
+# Core's HAL and arenas, present on both desktop and device, not part of
+# Core itself. ports/esp32/main/CMakeLists.txt compiles the same two files
+# from that same directory directly, by relative path, the same one-
+# canonical-copy pattern it already uses for kf_pet_session.cpp.
 # ---------------------------------------------------------------------------
 include(fetch_lua)
 
 add_library(kamiframe_lua_port STATIC
-    src/lua/kf_lua_alloc.cpp
-    src/lua/kf_lua_port.cpp
+    ../sdk/lua/kf_lua_alloc.cpp
+    ../sdk/lua/kf_lua_port.cpp
 )
 target_include_directories(kamiframe_lua_port
-    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lua)
+    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../sdk/lua)
 target_link_libraries(kamiframe_lua_port
     PUBLIC hakoniwaos lua_core kamiframe_pet_port kamiframe_options)
 
@@ -777,3 +782,24 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless
                      --verify-creature-screen-budget-combo)
 endif()
+
+# ---------------------------------------------------------------------------
+# lua_embed_check -- Task 1 of docs/superpowers/plans/2026-08-12-lua-game-
+# layer.md. Every script embedded into a header by tools/kf_embed_lua.py
+# (today: examples/creature_demo/creature.lua ->
+# sdk/lua/generated/kf_lua_demo_creature_script.h) is CHECKED IN rather than
+# generated at configure time, so a build stays self-contained and offline
+# and a reviewer can see the exact bytes that ship (see the plan's
+# "Decisions already taken"). This test is what keeps that checked-in copy
+# honest: it regenerates every mapped header into a temp directory and
+# diffs, failing with the fix command if the .lua source and its header have
+# drifted apart -- e.g. someone edited creature.lua and forgot to
+# regenerate, or hand-edited the generated header directly.
+#
+# No kamiframe-headless build dependency -- this is pure Python, run
+# directly against the checked-out source tree, so it is registered
+# unconditionally rather than nested inside KAMIFRAME_BUILD_HEADLESS above.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME lua_embed_check
+         COMMAND ${Python3_EXECUTABLE}
+                 ${CMAKE_CURRENT_LIST_DIR}/../tools/kf_embed_lua.py --check)

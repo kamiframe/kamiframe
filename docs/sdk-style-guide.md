@@ -11,7 +11,7 @@ against it on purpose, not by accident.
 
 Someone who has never written Lua, and does not think of themselves as a
 programmer, should be able to open the demo creature script
-(`kf_lua_demo_creature_script.h`) and guess what most lines do just by
+(`examples/creature_demo/creature.lua`) and guess what most lines do just by
 reading them. `pet.feed()` and `pet.hunger()` already pass that test. The
 model here is the same one WordPress and jQuery succeed on: a small,
 well-named function library that reads like plain English, sitting on top
