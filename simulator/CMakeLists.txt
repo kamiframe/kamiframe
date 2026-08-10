@@ -571,10 +571,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # The death scene (spec: "Death without a player holds on the last
     # creature's scene" -- docs/superpowers/specs/2026-08-09-core-care-loop-
     # design.md): once pet->dead, the screen special-cases a single shrine
-    # sprite (or its placeholder, until the art pipeline ships
-    # shrine_idle_s_01) centred in the field, and stops drawing anything
-    # else -- no wander, no per-frame redraw once painted. See
-    # headless_main.cpp's run_creature_screen_death_check().
+    # sprite (or its placeholder) centred in the field, and stops drawing
+    # anything else -- no wander, no per-frame redraw once painted. This
+    # test mounts no pack override, so it runs against the checked-in
+    # default (examples/hello_sprite/assets.kfpack), which does not carry
+    # shrine_idle_s -- the placeholder branch is genuinely what this test
+    # exercises, not a stand-in for art that does not exist yet: the art
+    # pipeline has shipped shrine_idle_s since, it just lives in examples/
+    # creature_demo/assets.kfpack (entry 34), a pack this test does not
+    # mount. See headless_main.cpp's run_creature_screen_death_check().
     add_test(NAME creature_screen_death_check
              COMMAND kamiframe-headless --verify-creature-screen-death)
 

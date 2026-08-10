@@ -173,7 +173,8 @@ note = "The name is literally the Japanese fill-in-the-blank placeholder (equiva
 # tools/kf_character_manifest.py's iter_sprites() picks this table up
 # alongside egg/baby/child for exactly that reason (see its own comment).
 # simulator/src/pet/kf_creature_screen.cpp looks this sprite up by the
-# literal name "shrine_idle_s_01", not through hakoniwaos/src/creature.cpp's
+# literal name "shrine_idle_s" (no frame-number suffix -- see that file's
+# kShrineSpriteName), not through hakoniwaos/src/creature.cpp's
 # kf_creature_sprite_name() -- a shrine is scenery, not a creature with a
 # pose/direction to look up -- so it needs exactly one state and one
 # direction, unlike every other entity in this file. The `directions`
