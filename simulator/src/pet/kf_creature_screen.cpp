@@ -20,21 +20,29 @@ namespace {
 
 constexpr const char *TAG = "creature-screen";
 
-/* The bottom 60 rows are reserved for a stats band a later plan adds (see
- * kf_screen_nav.cpp's own comment on kf_pet_screen.cpp staying unreachable
- * rather than deleted) -- the creature/mess/shrine drawing this file does
- * every frame only ever touches y=[0,260): kField is where the creature
- * walks, gets erased, and gets redrawn every frame, and nothing below
- * y=260 ever gets sprite, placeholder or mess content from this file. That
- * is a different claim from "this file never touches those rows at all":
- * kScreen and kf_creature_screen_enter()'s own comment cover the full-panel
- * wipe, and kf_creature_screen_enter() ALSO now paints the care-button
- * guide (draw_care_guide(), below) into this exact band -- a DELIBERATE,
- * explicitly-temporary exception, not an oversight: see draw_care_guide()'s
- * own comment for why it is there and why it is going away once the real
- * stats HUD lands. Both exceptions run once per screen entry, never from
- * the per-frame path, so neither changes this paragraph's per-FRAME claim
- * about kField. */
+/* The bottom 60 rows are the reserved stats band (Task 9 of the hardware
+ * bring-up plan, docs/superpowers/plans/2026-08-11-hardware-bringup.md --
+ * see kf_screen_nav.cpp's own comment on kf_pet_screen.cpp staying
+ * unreachable rather than deleted for how this band came to be empty in the
+ * first place) -- the creature/mess/shrine drawing this file does every
+ * frame only ever touches y=[0,260): kField is where the creature walks,
+ * gets erased, and gets redrawn every frame, and nothing below y=260 ever
+ * gets sprite, placeholder or mess content from this file. That is a
+ * different claim from "this file never touches those rows at all", and as
+ * of Task 9 it is no longer even "only kf_creature_screen_enter() touches
+ * that band": kScreen and kf_creature_screen_enter()'s own comment cover the
+ * full-panel wipe and the ONE-TIME paint of the care-button guide
+ * (draw_care_guide()) and the three stat bars' fixed labels
+ * (draw_stat_labels()) into this band, but the stat bars' own FILL portion
+ * (update_stat_bars(), below) is also called every frame from kf_creature_
+ * screen_frame() -- deliberately, and safely, because it redraws a bar's
+ * rect only on the rare frame its quantised width actually changed (see
+ * update_stat_bar()'s own comment), not every frame the way the guide/label
+ * text never does. So: the guide and the labels stay exactly the
+ * "painted once, on entry, never again" fixtures this paragraph used to
+ * describe the WHOLE band as; the bars are the one deliberate exception,
+ * and they are change-gated specifically so they cost nothing against the
+ * per-frame dirty-rect budget while steady. */
 constexpr kf_rect kField = {0, 0, 240, 260};
 
 /* The full display, used only by kf_creature_screen_enter()'s entry repaint
@@ -553,6 +561,253 @@ void handle_care_buttons(const kf_pet_state *pet, uint32_t pressed) {
     }
 }
 
+/* ------------------------------------------------------------------------
+ * Stats band (Task 9, docs/superpowers/plans/2026-08-11-hardware-bringup.md)
+ *
+ * The owner's own words, after the game ran on real hardware: "I also can't
+ * see the pet's stats anywhere now like how hungry/tired etc." He is right:
+ * the old LVGL pet screen (kf_pet_screen.cpp) had bars for hunger, happiness
+ * and energy, and this screen took over Home without replacing them -- see
+ * kField's own comment for how the band ended up empty in the first place.
+ * Three bars, one per need kf_pet_state carries (kf/pet.h): hunger_mp,
+ * happiness_mp, energy_mp, each 0..KF_PET_MILLIPERCENT_MAX (100000)
+ * millipercent -- an integer, not a float (hakoniwaos/ stays free of
+ * floating point, tools/check_no_heap.py), and NOT a plain percentage: a
+ * bar's fill fraction is need_mp / KF_PET_MILLIPERCENT_MAX, not need_mp / 100.
+ *
+ * THE TRAP (this task's own brief, and Task 5 of the creature plan sprang
+ * it once already for the mess row): a need decays over MINUTES, far slower
+ * than the ~33ms frame tick, so the raw millipercent value changes almost
+ * every single frame even though the bar's own on-screen appearance barely
+ * ever does. Comparing the raw value and redrawing on any change would cost
+ * three more dirty rectangles on nearly every frame, forever -- and past
+ * KF_MAX_DIRTY_RECTS (8, kf/framebuffer.h) the whole framebuffer collapses
+ * to one screen-sized box and re-transfers ~31ms against a 33.3ms budget:
+ * invisible on a Mac, the entire budget on the device. The fix is the same
+ * one g_drawn_poops already uses for the mess row: QUANTISE the need to the
+ * bar's own pixel width first (stat_bar_filled_px(), below) and compare
+ * THAT integer, not the millipercent it came from. A kStatsBarW-wide bar
+ * then redraws at most kStatsBarW times across a need's whole 0..100% span,
+ * not once per frame.
+ *
+ * THE OTHER TRAP (also already sprung twice on this branch, once for the
+ * mess and once for the shrine): kf_creature_screen_enter() repaints the
+ * whole 240x320 panel, which wipes whatever a bar last drew. Whatever
+ * tracks "what is currently painted" -- g_drawn_stat_px, below -- has to be
+ * reset there, or a bar that happened to already be showing the right
+ * quantised width would never repaint after a screen re-entry and would
+ * silently show stale content (or, right after a fresh kf_creature_screen_
+ * init(), no content at all) forever. See kf_creature_screen_enter()'s own
+ * comment for exactly where this happens.
+ *
+ * COEXISTING WITH THE GUIDE. The care-button guide (draw_care_guide(),
+ * below) already lives in this same 240x60 band, and Task 9's own brief is
+ * explicit that it must not simply be deleted: on a real device it is MORE
+ * useful than on desktop, not less -- the seven buttons are unlabelled
+ * tactile switches, so the guide is the only thing on screen that says what
+ * any of them do. Both fit: three 8px-tall bar rows at the top of the band
+ * (kStatsRowsY0=262 downward) leave the guide's own row room lower down
+ * (kGuideTextY, redefined below, now centred in the REMAINING space under
+ * the bars rather than the whole band) with clear margins on every side --
+ * see the static_asserts below for what actually enforces that, rather than
+ * this paragraph's arithmetic alone. */
+
+/* Order matches kf_pet_state's own hunger_mp/happiness_mp/energy_mp field
+ * order exactly, and is reused as the array index everywhere below --
+ * kStatHunger == 0, etc. This is NOT kf_pet_care_action (Feed/Play/Rest/
+ * Bath, kf/pet.h) -- a different, unrelated enumeration that happens to
+ * also start at 0; do not confuse a stat's index with a care action's. */
+enum { kStatHunger = 0, kStatHappiness = 1, kStatEnergy = 2, kStatCount = 3 };
+
+constexpr const char *kStatLabels[kStatCount] = {"HUNGER", "HAPPY", "ENERGY"};
+
+/* One fill colour per bar, chosen so the three read apart from each other
+ * at a glance without reading the label -- orange/yellow/blue rather than
+ * three shades of the same hue. The TRACK colour (the "not filled" portion)
+ * is shared across all three bars on purpose: an empty bar communicates
+ * "not full", and which need it is comes from the label and the row
+ * position, not from a second colour axis. Plain flat colours, no
+ * gradient -- the same "nothing subtle being attempted" reasoning
+ * kPlaceholderColor's own comment gives, just not a deliberately-wrong
+ * colour this time: this is real, if simple, UI. */
+constexpr kf_color kStatFillColors[kStatCount] = {
+    KF_RGB(214, 118, 40), /* hunger: orange */
+    KF_RGB(224, 196, 32), /* happiness: yellow */
+    KF_RGB(60, 140, 210), /* energy: blue */
+};
+constexpr kf_color kStatTrackColor = KF_RGB(190, 190, 190);
+
+/* Layout. Three rows, top of the band, each KF_FONT_CELL_H (8px, kf/font.h)
+ * tall with a 1px gap between rows (kStatsRowPitch=9) -- label text and bar
+ * share the row rather than stacking, which is what keeps three bars inside
+ * the top half of a 60-row band with real margin left for the guide below. */
+constexpr int16_t kStatsRowsY0 = 262; /* 2px below kField's own y1 (260) */
+constexpr int16_t kStatsRowPitch = static_cast<int16_t>(KF_FONT_CELL_H + 1);
+constexpr int16_t kStatsLabelX0 = 2;
+
+/* A compile-time strlen for the static_assert just below: kStatLabels holds
+ * `const char *` (pointers), so sizeof() on one of its elements measures the
+ * POINTER's own size (8 bytes), not the string it points at -- a mistake
+ * this file caught at build time on its very first attempt (sizeof(ptr)-1
+ * came out to 7 for every label, pointer-size-minus-one, regardless of which
+ * string), which is exactly why this exists instead. Plain recursion is a
+ * constexpr function's only tool before C++14's relaxed rules, but this
+ * project builds C++17, so a loop would work too -- recursion here purely
+ * because it is the shorter, more obviously terminating way to write it. */
+constexpr size_t const_strlen(const char *s) {
+    return (*s == '\0') ? 0u : 1u + const_strlen(s + 1);
+}
+
+/* The widest label this band draws is 6 characters ("HUNGER"/"ENERGY");
+ * kf_text_width(str) (kf/font.h) is exactly strlen(str)*KF_FONT_CELL_W, so
+ * this constant IS what kf_text_width() would return for either of them --
+ * computed once here, at compile time, rather than called at every draw,
+ * because BOTH draw_stat_labels() (the label text) and stat_bar_rect() (the
+ * bar that must start clear of it) need the identical answer and must never
+ * be allowed to disagree about it. The static_assert is what stops a longer
+ * label silently drifting out of sync with this arithmetic if one is ever
+ * added or renamed. */
+constexpr int16_t kStatsLabelZoneChars = 6;
+constexpr int16_t kStatsLabelZoneW =
+    static_cast<int16_t>(kStatsLabelZoneChars * KF_FONT_CELL_W);
+static_assert(const_strlen(kStatLabels[kStatHunger]) <=
+                      static_cast<size_t>(kStatsLabelZoneChars) &&
+                  const_strlen(kStatLabels[kStatHappiness]) <=
+                      static_cast<size_t>(kStatsLabelZoneChars) &&
+                  const_strlen(kStatLabels[kStatEnergy]) <=
+                      static_cast<size_t>(kStatsLabelZoneChars),
+              "kStatsLabelZoneChars must be >= every label's own length -- "
+              "see the block comment above kStatsLabelZoneW for why");
+
+constexpr int16_t kStatsBarX0 =
+    static_cast<int16_t>(kStatsLabelX0 + kStatsLabelZoneW + 4);
+constexpr int16_t kStatsBarW = 190;
+constexpr int16_t kStatsBarH = KF_FONT_CELL_H;
+static_assert(kStatsBarX0 + kStatsBarW <= kField.x1,
+              "a stat bar would spill past the field's own right edge "
+              "(240px) -- shrink kStatsBarW or kStatsLabelZoneChars");
+
+/* Bottom of the third (last) bar row -- the top edge of whatever space is
+ * left in the band for the guide, below. */
+constexpr int16_t kStatsBandBottomOfBars = static_cast<int16_t>(
+    kStatsRowsY0 + (kStatCount - 1) * kStatsRowPitch + kStatsBarH);
+static_assert(kStatsBandBottomOfBars < KF_DISPLAY_HEIGHT,
+              "the three stat bar rows do not fit above the band's own "
+              "bottom edge (320) -- see kStatsRowPitch/kStatsRowsY0");
+
+/* Bounding rect of stat bar `index`'s full 0..100% track, in framebuffer
+ * space. `index` outside [0,kStatCount) returns an empty rect -- see
+ * kf_creature_screen_debug_stat_bar_bounds()'s own header comment
+ * (kf_creature_screen.h) for why that is a deliberate, testable contract
+ * rather than undefined behaviour. */
+kf_rect stat_bar_rect(int index) {
+    if (index < 0 || index >= kStatCount) { return kf_rect{0, 0, 0, 0}; }
+    const int16_t y0 =
+        static_cast<int16_t>(kStatsRowsY0 + index * kStatsRowPitch);
+    return kf_rect{kStatsBarX0, y0,
+                    static_cast<int16_t>(kStatsBarX0 + kStatsBarW),
+                    static_cast<int16_t>(y0 + kStatsBarH)};
+}
+
+/* How many of a bar's kStatsBarW pixels should be painted "filled" for a
+ * need reading `mp` -- the quantisation this whole mechanism exists for,
+ * see the block comment above kStatHunger for why. Plain integer division,
+ * floors: `mp` is already kf_pet_millipercent (kf/pet.h), an exact integer,
+ * so this introduces no rounding hakoniwaos/ would have to apologise for
+ * (no float anywhere near it, tools/check_no_heap.py). Widening to
+ * uint32_t before multiplying: 100000 * 190 is ~1.9e7, comfortably inside
+ * uint32_t, but 100000 alone already exceeds int16_t's range, so the
+ * multiplication has to happen at uint32_t width regardless of what the
+ * result narrows back down to. */
+int16_t stat_bar_filled_px(kf_pet_millipercent mp) {
+    const uint32_t px = (static_cast<uint32_t>(mp) *
+                          static_cast<uint32_t>(kStatsBarW)) /
+                         KF_PET_MILLIPERCENT_MAX;
+    return static_cast<int16_t>(px);
+}
+
+/* What update_stat_bar() last actually painted for each bar, in the same
+ * quantised pixel units stat_bar_filled_px() returns -- exactly g_drawn_
+ * poops's own "-1 means nothing painted yet, or the screen was just
+ * entered" shape, one slot per bar instead of one shared count. -1 can
+ * never collide with a real value: stat_bar_filled_px() only ever returns
+ * [0, kStatsBarW], and kStatsBarW (190) is well short of int16_t's range,
+ * so -1 stays a safe, unambiguous sentinel forever. Reset to -1 by
+ * kf_creature_screen_enter() -- see that function's own comment -- which is
+ * what forces every bar to repaint on the very next call, matching
+ * whatever the panel wipe just erased them to. */
+int16_t g_drawn_stat_px[kStatCount] = {-1, -1, -1};
+
+/* Draws (or, on a steady frame, does nothing to) stat bar `index`, for a
+ * need reading `mp`. A no-op unless the QUANTISED width actually differs
+ * from what is already painted -- see the block comment above kStatHunger
+ * for why comparing this integer, not the raw millipercent, is what keeps
+ * three independently, continuously decaying needs off the per-frame
+ * dirty-rect budget: called every frame (update_stat_bars(), below) but
+ * only ever draws on the rare frame a bar's on-screen appearance would
+ * actually differ.
+ *
+ * Up to two kf_fill_rect() calls when the bar is neither fully empty nor
+ * fully full -- the filled portion in its own colour, the remainder in the
+ * shared track colour -- but the two rects always share an edge (the
+ * filled/empty boundary), so kf_fb_mark_dirty() (kf/framebuffer.h's own
+ * comment on touching/overlapping rects merging) folds them into ONE
+ * tracked dirty rectangle, not two. That is what keeps a single bar's
+ * redraw costing exactly the "1 rect per changed bar" the design note this
+ * task's plan gives budgets for, not 2. */
+void update_stat_bar(int index, kf_pet_millipercent mp) {
+    const int16_t filled = stat_bar_filled_px(mp);
+    if (filled == g_drawn_stat_px[index]) { return; /* steady: nothing to do */ }
+    const kf_rect full = stat_bar_rect(index);
+    if (filled > 0) {
+        kf_fill_rect(kf_rect{full.x0, full.y0,
+                              static_cast<int16_t>(full.x0 + filled), full.y1},
+                     kStatFillColors[index]);
+    }
+    if (filled < kStatsBarW) {
+        kf_fill_rect(kf_rect{static_cast<int16_t>(full.x0 + filled), full.y0,
+                              full.x1, full.y1},
+                     kStatTrackColor);
+    }
+    g_drawn_stat_px[index] = filled;
+}
+
+/* Draws the three bars' fixed LABEL text only -- "HUNGER"/"HAPPY"/"ENERGY",
+ * never redrawn again once painted. Called only from kf_creature_screen_
+ * enter(), exactly like draw_care_guide() just below it and for the
+ * identical reason: label text never changes once painted, so drawing it
+ * from the per-frame path would cost three more rectangles every frame for
+ * nothing. Safe at no extra rect-count cost there for the same reason
+ * draw_care_guide() already is: it runs right after kScreen's own fill,
+ * which already marks the entire panel dirty as one rectangle, so every
+ * kf_text_draw() call below merges into that rather than adding rectangles
+ * of its own. The BAR fill itself is a separate concern, drawn by
+ * update_stat_bars() below, not this function. */
+void draw_stat_labels(void) {
+    for (int i = 0; i < kStatCount; ++i) {
+        const int16_t y =
+            static_cast<int16_t>(kStatsRowsY0 + i * kStatsRowPitch);
+        kf_text_draw(kStatsLabelX0, y, kStatLabels[i], KF_BLACK, kBackground);
+    }
+}
+
+/* Refreshes all three bars for the pet's CURRENT needs -- a no-op for any
+ * bar whose quantised width has not moved since the last call (update_
+ * stat_bar()'s own comment). Called both from kf_creature_screen_enter()
+ * (once, right after the -1 reset just below draws it there -- see that
+ * function's own comment for why the FIRST paint after an entry happens
+ * here rather than being duplicated as its own special case) and from
+ * kf_creature_screen_frame() every frame after that. Reads hunger_mp/
+ * happiness_mp/energy_mp straight off `pet` (kf/pet.h) -- they already ARE
+ * millipercent, 0..KF_PET_MILLIPERCENT_MAX, exactly stat_bar_filled_px()'s
+ * own input range, not a percentage and not any other scale. */
+void update_stat_bars(const kf_pet_state *pet) {
+    update_stat_bar(kStatHunger, pet->hunger_mp);
+    update_stat_bar(kStatHappiness, pet->happiness_mp);
+    update_stat_bar(kStatEnergy, pet->energy_mp);
+}
+/* ------------------------------------------------------------------------ */
+
 /* The on-screen button guide: the project owner could not tell which key
  * did what (there is no menu, no icon, nothing on screen -- see
  * handle_care_buttons()'s own header comment on this being an input
@@ -571,11 +826,12 @@ void handle_care_buttons(const kf_pet_state *pet, uint32_t pressed) {
  * report for why the device-facing wording is a design decision for the
  * project owner, not something to guess at here.
  *
- * Lives in the reserved stats band, y=[260,320) (kField's own comment) --
- * TEMPORARILY: a later plan gives that band to a real stats HUD, and this
- * guide is a development affordance the HUD will displace, not a
- * permanent fixture. Nothing else in this file draws into that band today
- * except this. */
+ * Lives in the reserved stats band, y=[260,320) (kField's own comment),
+ * BELOW the three stat bars Task 9 added (kStatsBandBottomOfBars and
+ * everything above it) -- not a temporary occupant of the whole band any
+ * more now that the real stats HUD has landed alongside it, per that task's
+ * own brief: "do not simply delete the guide", because on the real device
+ * it is MORE useful than on desktop, not a fixture the HUD displaces. */
 constexpr const char *kGuideLabels[5] = {
     "1:FEED", "2:PLAY", "3:REST", "4:BATH", "5:FLUSH",
 };
@@ -595,11 +851,20 @@ static_assert(kGuideSlotWidth * 5 == kField.x1,
               "kGuideSlotWidth * 5 must equal kField.x1 -- see the block "
               "comment above kGuideLabels for why");
 
-/* Vertically centred inside the reserved band, not pinned to its top edge
- * -- purely cosmetic, but a label glued to the seam with the field above
- * it would read as misplaced rather than intentional. */
+/* Centred in whatever room is left UNDER the stat bars, not in the whole
+ * band any more (contrast the old formula, which measured from y=260) --
+ * kStatsBandBottomOfBars down through KF_DISPLAY_HEIGHT is the guide's own
+ * remaining sub-region now, and this centres inside exactly that, the same
+ * "vertically centred, not pinned to an edge" cosmetic reasoning as
+ * before, just measured from the new floor. */
 constexpr int16_t kGuideTextY = static_cast<int16_t>(
-    260 + (KF_DISPLAY_HEIGHT - 260 - KF_FONT_CELL_H) / 2);
+    kStatsBandBottomOfBars +
+    (KF_DISPLAY_HEIGHT - kStatsBandBottomOfBars - KF_FONT_CELL_H) / 2);
+static_assert(kGuideTextY >= kStatsBandBottomOfBars,
+              "the guide's text row must not overlap the stat bars above it");
+static_assert(kGuideTextY + KF_FONT_CELL_H <= KF_DISPLAY_HEIGHT,
+              "the guide's text row must not run past the panel's own "
+              "bottom edge");
 
 /* Draws all five labels once. Called only from kf_creature_screen_enter()
  * -- see kf_creature_screen_frame()'s own comment (the dirty-rect trap)
@@ -635,6 +900,16 @@ void kf_creature_screen_init(void) {
 void kf_creature_screen_frame(uint32_t dt_ms) {
     if (!g_up) { return; }
     const kf_pet_state *pet = kf_pet_session_state();
+
+    /* Task 9: refresh the stats band before anything else this frame does,
+     * including before the death branch just below -- a dead pet's last
+     * known needs are still worth showing (the shrine scene freezes
+     * everything else about the display the same way, see draw_shrine_
+     * scene()'s own comment), and this call is a no-op on any frame none of
+     * the three needs actually moved (update_stat_bar()'s own comment), so
+     * placing it unconditionally here costs nothing on the steady frames
+     * that make up the overwhelming majority of a running screen. */
+    update_stat_bars(pet);
 
     /* The death scene (spec: "Death without a player holds on the last
      * creature's scene") is NOT a creature pose, and is handled entirely
@@ -977,15 +1252,20 @@ void kf_creature_screen_enter(void) {
      * check measures. Said plainly so the byte cost is not mistaken for
      * zero just because the rect cost is.
      *
-     * The reserved stats band (kField's own comment, above) mostly stays
-     * exactly this blank fill -- background colour, nothing drawn on top
-     * of it -- until the stats band that owns it lands, with ONE
-     * deliberate, explicitly-temporary exception: draw_care_guide() below
-     * paints the button guide into it. That call has to come AFTER this
-     * fill, not before, or the fill would immediately wipe the labels it
-     * just drew. */
+     * The reserved stats band (kField's own comment, above) gets its own
+     * two fixtures painted on top of this blank fill: the care-button guide
+     * (draw_care_guide()) and, as of Task 9, the three stat bars' fixed
+     * labels (draw_stat_labels()) -- both calls have to come AFTER this
+     * fill, not before, or the fill would immediately wipe whatever they
+     * just drew. The bars' own FILL portion is deliberately NOT painted
+     * here by a third call -- see update_stat_bars() being invoked below,
+     * after g_drawn_stat_px is reset, for why that one step is shared with
+     * the per-frame path rather than duplicated as its own special case
+     * here (the same choice mess-drawing already makes: g_drawn_poops's own
+     * comment, just below). */
     kf_fill_rect(kScreen, kBackground);
     draw_care_guide();
+    draw_stat_labels();
     g_previous = kf_creature_bounds(&g_creature);
 
     /* The death scene must be invalidated on entry too, the same reasoning
@@ -1013,6 +1293,24 @@ void kf_creature_screen_enter(void) {
      * stays kf_creature_screen_frame()'s job, run once, the very next time
      * it is called. */
     g_drawn_poops = -1;
+
+    /* Stat bars (Task 9): same -1-sentinel reasoning as g_drawn_poops just
+     * above, one slot per bar (g_drawn_stat_px's own comment) -- the fill
+     * just wiped whatever was painted, but does not touch the pet's needs
+     * themselves, so left alone every bar would read "unchanged" on the
+     * next comparison and stay invisible. UNLIKE the mess, this function
+     * DOES paint the bars itself, right here, rather than leaving it for
+     * the very next kf_creature_screen_frame() call: a bar showing nothing
+     * at all until the first per-frame tick would be a visible, if
+     * momentary, blank band on every screen entry, and update_stat_bars()
+     * is idempotent and cheap to call an extra time -- unlike mess, which
+     * has a real "-1 means skip the redundant clear" branch that this
+     * function's own fill above already makes correct without needing the
+     * call at all. This paint merges into the very same dirty rectangle
+     * kScreen's fill above already opened (kf/framebuffer.h's kf_fb_mark_
+     * dirty() comment on touching rects merging), so it costs nothing extra
+     * against the per-entry rect budget either. */
+    update_stat_bars(kf_pet_session_state());
 }
 
 void kf_creature_screen_debug_set_direction(kf_creature_direction dir) {
@@ -1037,4 +1335,13 @@ int16_t kf_creature_screen_debug_egg_bob_offset_y(void) {
 
 uint16_t kf_creature_screen_debug_anim_frame(void) {
     return g_creature.anim.frame;
+}
+
+kf_rect kf_creature_screen_debug_stat_bar_bounds(int index) {
+    return stat_bar_rect(index);
+}
+
+int16_t kf_creature_screen_debug_stat_bar_filled_px(int index) {
+    if (index < 0 || index >= kStatCount) { return -1; }
+    return g_drawn_stat_px[index];
 }

@@ -168,4 +168,39 @@ kf_rect kf_creature_screen_debug_bounds(void);
  * without duplicating kf_anim's accumulator arithmetic in the test. */
 uint16_t kf_creature_screen_debug_anim_frame(void);
 
+/* Task 9 (docs/superpowers/plans/2026-08-11-hardware-bringup.md): the stats
+ * band's three need bars, hunger/happiness/energy in that order -- index 0,
+ * 1, 2 respectively, kf_pet_state's own field order (kf/pet.h) -- which this
+ * header exposes ONLY as much as the corresponding creature/egg/shrine
+ * accessors above already expose about THEIR own drawing, and for the same
+ * reason: so a headless check can sample the right pixels or compare the
+ * right number without reaching into kf_creature_screen.cpp's private
+ * layout constants (kStatsRowsY0, kStatsBarW, etc) or duplicating their
+ * arithmetic.
+ *
+ * The bounding rect of bar `index`'s full 0..100% track -- NOT however much
+ * of it happens to be filled right now, which depends on the pet's live
+ * need and is exactly what a test is trying to sample, not something to
+ * bake into the rect it asks for. `index` outside [0,3) returns an empty
+ * rect rather than reading past an internal array -- a test passing a bad
+ * index should get an obviously-wrong empty rect it can assert against, not
+ * undefined behaviour. */
+kf_rect kf_creature_screen_debug_stat_bar_bounds(int index);
+
+/* How many of bar `index`'s own pixels are CURRENTLY painted as "filled" --
+ * exactly the quantised value update_stat_bars() (kf_creature_screen.cpp)
+ * most recently drew, and the same integer it compares every subsequent
+ * frame's live need against before deciding whether to redraw at all. See
+ * that function's own comment for why comparing THIS quantised pixel
+ * count, not the need's raw millipercent, is what keeps three independently
+ * decaying needs off the per-frame dirty-rect budget. Lets a test confirm a
+ * bar reflects the pet's current need (quantised) and confirm that same
+ * bar's redraw is skipped on a frame where nothing changed, without
+ * duplicating the quantisation arithmetic or reverse-engineering it from
+ * raw pixels. -1 (kf_creature_screen.cpp's own sentinel, g_drawn_stat_px)
+ * means "nothing painted for this bar yet" -- true only before the first
+ * kf_creature_screen_enter(), which every real caller runs before this
+ * could be observed. `index` outside [0,3) also returns -1. */
+int16_t kf_creature_screen_debug_stat_bar_filled_px(int index);
+
 #endif /* KF_CREATURE_SCREEN_H */
