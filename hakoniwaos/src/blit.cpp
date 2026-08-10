@@ -153,6 +153,26 @@ void kf_blit_frame(const kf_sprite *sprite, int16_t x, int16_t y,
                     uint16_t frame) {
     KF_ASSERT(sprite != nullptr, "kf_blit_frame(nullptr)");
 
+    /* Checked here, before the screen clip below, not after it -- these are
+     * caller-bug invariants about the SPRITE (a format claiming data it does
+     * not have), not about where it happens to land on screen. A fully
+     * off-screen call is exactly the case that must NOT go quiet: it is the
+     * one place a garbage sprite (e.g. an animation cursor that survived a
+     * pointer that was never set up) is most likely to slip past unnoticed,
+     * because nothing it does after this point touches the framebuffer to
+     * make the bug visible any other way. See kf/blit.h's own comment on
+     * the two-argument kf_blit()/kf_blit_mirrored() forms keeping output
+     * "identical by construction" -- true of the pixels they draw, but
+     * assertion coverage is a property of where these checks sit in the
+     * function, not of what a wrapper calls, so it does not follow for
+     * free and has to be kept true here explicitly instead. */
+    if (sprite->format == KF_SPRITE_FORMAT_INDEXED8) {
+        KF_ASSERT(sprite->indices != nullptr && sprite->palette != nullptr,
+                  "indexed sprite has no indices or no palette");
+    } else {
+        KF_ASSERT(sprite->pixels != nullptr, "sprite has no pixels");
+    }
+
     const kf_rect want = {x, y,
                           clamp16(static_cast<int32_t>(x) + sprite->width,
                                   INT16_MIN, INT16_MAX),
@@ -167,15 +187,11 @@ void kf_blit_frame(const kf_sprite *sprite, int16_t x, int16_t y,
     const int src_y0 = c.y0 - y;
 
     if (sprite->format == KF_SPRITE_FORMAT_INDEXED8) {
-        KF_ASSERT(sprite->indices != nullptr && sprite->palette != nullptr,
-                  "indexed sprite has no indices or no palette");
         blit_indexed_rows(sprite, c, src_y0, src_x0, +1,
                            frame_indices(sprite, frame));
         kf_fb_mark_dirty(c);
         return;
     }
-
-    KF_ASSERT(sprite->pixels != nullptr, "sprite has no pixels");
 
     kf_color *fb = kf_fb_pixels();
     const int width = c.x1 - c.x0;
@@ -222,6 +238,16 @@ void kf_blit_frame_mirrored(const kf_sprite *sprite, int16_t x, int16_t y,
                              uint16_t frame) {
     KF_ASSERT(sprite != nullptr, "kf_blit_frame_mirrored(nullptr)");
 
+    /* Checked before the screen clip below -- see kf_blit_frame()'s own
+     * comment on this same ordering for why a fully off-screen call must
+     * not skip it. */
+    if (sprite->format == KF_SPRITE_FORMAT_INDEXED8) {
+        KF_ASSERT(sprite->indices != nullptr && sprite->palette != nullptr,
+                  "indexed sprite has no indices or no palette");
+    } else {
+        KF_ASSERT(sprite->pixels != nullptr, "sprite has no pixels");
+    }
+
     /* Same bounding box and same clip against the screen as kf_blit_frame()
      * -- mirroring changes which columns are read, not where the sprite sits
      * or how big the clipped region is. */
@@ -255,15 +281,11 @@ void kf_blit_frame_mirrored(const kf_sprite *sprite, int16_t x, int16_t y,
     const int src_x_start = (x + sprite->width - 1) - c.x0;
 
     if (sprite->format == KF_SPRITE_FORMAT_INDEXED8) {
-        KF_ASSERT(sprite->indices != nullptr && sprite->palette != nullptr,
-                  "indexed sprite has no indices or no palette");
         blit_indexed_rows(sprite, c, src_y0, src_x_start, -1,
                            frame_indices(sprite, frame));
         kf_fb_mark_dirty(c);
         return;
     }
-
-    KF_ASSERT(sprite->pixels != nullptr, "sprite has no pixels");
 
     kf_color *fb = kf_fb_pixels();
     const int width = c.x1 - c.x0;
