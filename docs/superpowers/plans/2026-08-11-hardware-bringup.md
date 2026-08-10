@@ -1872,3 +1872,77 @@ mistakes them for oversights.
   *path* runs on hardware, not that anything visibly animates yet. That is a
   generation spend, not a code gap, and it changes nothing in this plan when it
   lands.
+
+---
+
+### Task 9: The stats band — the player can see how the pet is doing
+
+Added 2026-08-11, after the game ran on hardware. The owner's words: *"I also
+can't see the pet's stats anywhere now like how hungry/tired etc."*
+
+He is right, and it is a regression in what he can see rather than an omission.
+The old LVGL pet screen (`simulator/src/lvgl/kf_pet_screen.cpp`) had bars for
+hunger, happiness and energy. Task 4 of the creature-on-screen plan routed Home
+to the custom-drawn creature screen and made that LVGL screen unreachable,
+reserving rows 260-319 for a replacement band and drawing nothing in it. That
+plan named the gap in its own "deliberately does not do" section. This closes it.
+
+**Files:**
+- Modify: `simulator/src/pet/kf_creature_screen.cpp` (draw the band)
+- Modify: `simulator/src/pet/kf_creature_screen.h` if a debug accessor helps a test
+- Test: `simulator/src/headless/headless_main.cpp`
+- Modify: `simulator/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: `kf_pet_state`'s need values (read `kf/pet.h` for their real names,
+  ranges and units — do not assume percentages), `kf_text_draw()` /
+  `kf_text_width()` from `kf/font.h` (ADR 0010), `kf_fill_rect()`.
+- Produces: no new public API beyond any test accessor.
+
+**Design note — the trap is the dirty-rect budget, and it is the same trap
+Task 5 of the creature plan already sprang once.**
+
+The creature costs 1 rectangle standing still and 2 walking, out of
+`KF_MAX_DIRTY_RECTS` = 8. Three bars plus their labels redrawn every frame
+would add rectangles on every frame forever, and past 8 the framebuffer
+collapses to one screen-sized box and re-transfers ~31ms against a 33.3ms
+budget. On desktop that is invisible; on the device it is the whole budget.
+
+Needs decay over minutes, so the *displayed* value changes far more slowly than
+the frame rate. **Redraw a bar only when its rendered appearance would
+actually differ** — quantise the need to the bar's pixel width first and
+compare that, not the underlying value. A bar 60px wide changes at most 60
+times over a full decay. This is the same "draw once, leave it alone" discipline
+the mess already uses (`g_drawn_poops`), and the same reasoning belongs in the
+comment.
+
+**The band already has an occupant.** The care guide sits at y=286
+(`kGuideTextY`). Stats and guide must coexist in 240x60, or the guide moves.
+Note the guide is *more* useful on hardware than on desktop — the board's seven
+buttons are unlabelled tactile switches — so do not simply delete it. If both
+genuinely do not fit legibly, say so and propose rather than silently dropping
+one.
+
+**Entry repaint.** `kf_creature_screen_enter()` repaints the whole 240x320
+panel, which wipes the band. Whatever tracks "what is currently drawn" must
+reset there, exactly as the mess tracking had to. That bug has been made twice
+on this branch already.
+
+- [ ] **Step 1: Write the failing test** — assert the band is drawn, that a
+      steady frame with unchanged needs costs no extra rectangles, and that a
+      changed need does redraw. A test that only checks "something was drawn"
+      will pass against code that redraws every frame, which is the failure
+      this task must prevent.
+- [ ] **Step 2: Confirm it fails for the reason you expect.**
+- [ ] **Step 3: Implement**, quantising before comparing.
+- [ ] **Step 4:** `cmake --build build -j8 && ctest --test-dir build` — must not
+      regress, and `run_creature_screen_check()`'s existing `worst_rects <= 2`
+      assertion must still pass **unchanged**.
+- [ ] **Step 5:** Verify the ESP32 target still builds (`-DKF_PANEL=ili9341`).
+- [ ] **Step 6:** Commit.
+
+**How you would know it worked on hardware:** `python3 tools/kf_panel.py`
+shows live hunger/happiness/energy in its readout; the band on the panel should
+agree with it. A KFDBG `shot` gives a PNG to compare against the simulator's
+own band — they are the same code, so they should be pixel-identical for the
+same pet state.
