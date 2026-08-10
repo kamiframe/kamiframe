@@ -132,8 +132,9 @@ is a new value in this table plus a new decoder, not a new file format:
         quantize_rgb565() (below), which always seeds the palette with the
         key colour first, plus make_indexed_asset()'s own check that
         palette[0] really is the caller's declared color_key.
-        tools/kf_ingest_sprites.py has no indexed-sprite support yet -- it
-        will need the same guarantee when Task 4 gives it one.
+        tools/kf_ingest_sprites.py routes through both when it builds a
+        pack entry (its build_entry()), so a real creature pack gets the
+        same guarantee.
 
         NO FORMAT VERSION BUMP. This is a new asset_type in the existing
         52-byte directory entry, which is precisely the extension path

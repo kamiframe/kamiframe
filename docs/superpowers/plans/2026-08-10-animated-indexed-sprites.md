@@ -372,8 +372,9 @@ typedef enum {
  * that means tools/kf_pack_assets.py's quantize_rgb565(), which always
  * seeds the palette with the key colour at slot 0, plus
  * make_indexed_asset()'s own check that palette[0] matches the declared
- * key. tools/kf_ingest_sprites.py has no indexed-sprite support at all yet
- * -- Task 4 is what gives it this same guarantee. */
+ * key. tools/kf_ingest_sprites.py routes through both when it builds a
+ * pack entry (its build_entry()), so a real creature pack gets the same
+ * guarantee. */
 #define KF_SPRITE_KEY_INDEX 0u
 
 /* An immutable sprite, possibly with more than one frame. Pixels live in
@@ -462,9 +463,9 @@ docstring, after the `ASSET_TYPE_AUDIO_CLIP` paragraph:
         producer is what guarantees it -- quantize_rgb565() (below), which
         always seeds the palette with the key colour first, plus
         make_indexed_asset()'s own check that palette[0] matches the
-        declared color_key. tools/kf_ingest_sprites.py has no indexed-sprite
-        support yet; it will need the same guarantee when Task 4 gives it
-        one.
+        declared color_key. tools/kf_ingest_sprites.py routes through both
+        when it builds a pack entry (its build_entry()), so a real creature
+        pack gets the same guarantee.
 
         NO FORMAT VERSION BUMP. This is a new asset_type in the existing
         52-byte directory entry, which is precisely the extension path
@@ -1449,8 +1450,13 @@ def build_entry(entry, results_by_name) -> dict | None:
     spec = frames[0].spec
     return packer.make_indexed_asset(entry.entry_name, spec.width, spec.height,
                                       index_frames, palette,
-                                      has_color_key=True)
+                                      has_color_key=True, color_key=key565)
 ```
+
+(`color_key=key565` is required, not optional, here: `make_indexed_asset()`
+raises `ValueError` if `has_color_key=True` and `color_key` is `None` --
+this is the same trap the earlier "carries bad comments" warning describes,
+caught by actually running Step 2/5 rather than trusting the listing.)
 
 Add the indexed branch to `verify_pack()` (it currently only knows
 `data_bytes == w*h*2` for `ASSET_TYPE_SPRITE`), and wire `--verify-lossless`
@@ -1464,12 +1470,21 @@ python3 tools/kf_ingest_sprites.py examples/creature_demo/sprites \
     -o examples/creature_demo/assets.kfpack --strict --verify-lossless
 ls -l examples/creature_demo/assets.kfpack
 ```
-Expected: `ok: 49`, `pack verification: OK`, `lossless verification: OK (49
-entries, 112,896 pixels expanded and matched)`, and a file of roughly **116 KB**
-against the previous **228,356 bytes** — a 49% reduction, which is the 2:1
-pixel saving less ~64 bytes of palette and 52 bytes of directory per entry.
+Expected (as of this figure's original writing, 49 sprites on disk): `ok: 49`,
+`pack verification: OK`, `lossless verification: OK (49 entries, 112,896
+pixels expanded and matched)`, and a file of roughly **116 KB** against the
+previous **228,356 bytes** — a 49% reduction, which is the 2:1 pixel saving
+less ~64 bytes of palette and 52 bytes of directory per entry.
 
-If `--strict` reports a colour overflow instead, that is real news, not a bug:
+**Stale by the time Task 4 actually ran:** `examples/creature_demo/sprites`
+had grown to **94** PNGs (see this task's own top-of-file note), and the
+roster manifest wants 379, so `--strict` fails on the 285 not yet drawn --
+that gap is real and pre-existing, not something this task introduces or
+should paper over by inventing placeholder art. Drop `--strict` for the
+actual run; the honest result is `ok: 94`, and the pack drops from its
+previous RGB565 size of 438,056 bytes (94 entries) by very close to half.
+
+If a run reports a colour overflow instead, that is real news, not a bug:
 some sprite has more than 256 colours and the "8bpp is lossless for this art"
 premise no longer holds for it. Stop and report it rather than quantising.
 

@@ -94,8 +94,9 @@ typedef enum {
  * task that means tools/kf_pack_assets.py's quantize_rgb565(), which always
  * seeds the palette with the key colour at slot 0, plus
  * make_indexed_asset()'s own check that palette[0] matches the declared key.
- * tools/kf_ingest_sprites.py has no indexed-sprite support at all yet --
- * Task 4 is what gives it this same guarantee. */
+ * tools/kf_ingest_sprites.py routes through both when it builds a pack
+ * entry (its build_entry()), so a real creature pack gets the same
+ * guarantee. */
 #define KF_SPRITE_KEY_INDEX 0u
 
 /* An immutable sprite, possibly with more than one frame. Pixels live in
