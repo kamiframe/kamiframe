@@ -41,6 +41,7 @@
  *     kamiframe-headless --verify-frame-counters
  *     kamiframe-headless --verify-creature-screen-budget-combo
  *     kamiframe-headless --verify-scene
+ *     kamiframe-headless --verify-lua-draw
  *
  * Exit codes:
  *     0  everything asserted held
@@ -69,6 +70,7 @@
 #include "../lvgl/kf_pet_screen.h"
 #include "../lvgl/kf_screen_nav.h"
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
+#include "../../../sdk/lua/kf_lua_alloc.h"
 #include "../../../sdk/lua/kf_lua_port.h"
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_proof_script.h"
@@ -81,6 +83,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -5910,6 +5914,230 @@ static int run_scene_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Task 3 of the Lua game layer plan: the Lua binding over kf/scene.h
+ * (sdk/lua/kf_lua_scene.cpp), proved the same way run_scene_check() proves
+ * Core itself -- memcmp against a hand-drawn reference -- but with a script
+ * declaring the scene instead of this file calling kf_scene_*() directly.
+ * See docs/architecture/adr-0041-lua-drawing-binding.md. */
+static int run_lua_draw_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) { KF_LOGE(TAG, "FAILED: %s", what); ok = false; }
+    };
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_fb_clear_dirty();
+    kf_scene_reset();
+
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the creature demo pack mounts");
+    const kf_sprite *egg = kf_assets_get("egg_idle_s");
+    check(egg != nullptr, "egg_idle_s resolves in the mounted pack");
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+    /* ---- 1. A background and one sprite, declared from Lua, committed,
+     * and memcmp-identical to the same picture drawn by hand with
+     * kf_fill_rect()/kf_blit_frame() -- exactly run_scene_check()'s check
+     * 3, but with a script in the loop instead of this file calling
+     * kf_scene_*() directly. ---- */
+    constexpr const char *kDrawScript = R"lua(
+kf.background(kf.color(20, 24, 28))
+body = kf.sprite("egg_idle_s")
+body:move(60, 60)
+)lua";
+    check(kf_lua_port_init(kDrawScript, "=lua_draw_check"),
+          "the draw-check script loads and its top-level code runs");
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+
+    const size_t fb_bytes = KF_FRAMEBUFFER_BYTES;
+    std::vector<uint8_t> from_lua(fb_bytes);
+    std::memcpy(from_lua.data(), kf_fb_pixels(), fb_bytes);
+
+    kf_fill_rect(kf_rect{0, 0, static_cast<int16_t>(KF_DISPLAY_WIDTH),
+                          static_cast<int16_t>(KF_DISPLAY_HEIGHT)},
+                 KF_RGB(20, 24, 28));
+    if (egg != nullptr) {
+        kf_blit_frame(egg, 60, 60, 0);
+    }
+    std::vector<uint8_t> by_hand(fb_bytes);
+    std::memcpy(by_hand.data(), kf_fb_pixels(), fb_bytes);
+
+    check(std::memcmp(from_lua.data(), by_hand.data(), fb_bytes) == 0,
+          "a scene declared from Lua and committed is memcmp-identical to "
+          "the same picture drawn by hand with kf_fill_rect()/"
+          "kf_blit_frame() directly");
+
+    /* ---- 2. A second commit with no script changes draws zero pixels --
+     * the same headline property run_scene_check()'s check 1 proves for
+     * Core alone. ---- */
+    kf_fb_clear_dirty();
+    kf_draw_counters_reset();
+    kf_scene_commit();
+    const kf_draw_counters idle = kf_draw_counters_get();
+    check(idle.opaque_pixels == 0u && idle.keyed_pixels == 0u,
+          "a second commit with no script changes draws zero pixels");
+    check(kf_fb_dirty_rects().count == 0,
+          "a second commit with no script changes marks zero dirty "
+          "rectangles");
+
+    kf_lua_port_shutdown();
+
+    /* ---- 3. A bad sprite name draws the magenta placeholder, not
+     * nothing -- CLAUDE.md's own "a mistyped sprite name should say so"
+     * rule, checked on the panel rather than merely asserted. Core logs
+     * the name (hakoniwaos/src/scene.cpp's resolve_sprite()); this checks
+     * the pixel. ---- */
+    kf_scene_reset();
+    constexpr const char *kBadSpriteScript = R"lua(
+kf.background(kf.color(20, 24, 28))
+body = kf.sprite("does_not_exist_in_the_pack")
+body:move(60, 60)
+)lua";
+    check(kf_lua_port_init(kBadSpriteScript, "=lua_draw_check_bad_sprite"),
+          "the bad-sprite-name script loads");
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    const kf_color *pixels =
+        reinterpret_cast<const kf_color *>(kf_fb_pixels());
+    /* (70, 70) is inside the 48x48 sprite bounds declared at (60, 60). */
+    const kf_color sampled = pixels[70 * KF_DISPLAY_WIDTH + 70];
+    check(sampled == KF_RGB(255, 0, 128),
+          "a bad sprite name draws the magenta placeholder rather than "
+          "nothing");
+    kf_lua_port_shutdown();
+
+    /* ---- 4. 64 live objects (KF_SCENE_MAX_OBJECTS) keep Lua's own arena
+     * well under the quarter-of-the-arena ceiling the plan sets, leaving
+     * the script itself three quarters. ---- */
+    kf_scene_reset();
+    constexpr const char *kManyObjectsScript = R"lua(
+kf.background(kf.color(0, 0, 0))
+objs = {}
+for i = 1, 64 do
+    objs[i] = kf.sprite("egg_idle_s")
+    objs[i]:move(i, i)
+end
+)lua";
+    check(kf_lua_port_init(kManyObjectsScript, "=lua_draw_check_64_objects"),
+          "a script creating 64 objects (KF_SCENE_MAX_OBJECTS) loads "
+          "without error");
+    const kf_lua_alloc_stats stats64 = kf_lua_alloc_get_stats();
+    constexpr size_t kLiveBytesCeiling = 256u * 1024u;
+    check(stats64.live_bytes < kLiveBytesCeiling,
+          "kf_lua_alloc_get_stats().live_bytes stays under 256KB with 64 "
+          "scene objects live");
+    KF_LOGI(TAG, "lua-draw: 64 live scene objects -> %zu live bytes (< %zu)",
+            stats64.live_bytes, kLiveBytesCeiling);
+    kf_lua_port_shutdown();
+
+    /* ---- 5. Anti-vacuity: the 65th object raises a script error naming
+     * the limit, rather than the top-level chunk quietly finishing with a
+     * userdata missing its methods. Prove kf_lua_port_init() itself
+     * reports the failure, not just that some later call would have. ---- */
+    kf_scene_reset();
+    constexpr const char *kOverflowScript = R"lua(
+objs = {}
+for i = 1, 65 do
+    objs[i] = kf.sprite("egg_idle_s")
+end
+)lua";
+    const bool overflow_loaded =
+        kf_lua_port_init(kOverflowScript, "=lua_draw_check_overflow");
+    check(!overflow_loaded,
+          "the 65th kf.sprite() call raises a script error naming "
+          "KF_SCENE_MAX_OBJECTS rather than succeeding");
+    if (overflow_loaded) {
+        /* Should not happen -- see the check above -- but if the limit
+         * were ever silently lifted, tearing the VM down cleanly here
+         * keeps the rest of this function's state sane rather than
+         * compounding one failure into a second, unrelated one below. */
+        kf_lua_port_shutdown();
+    }
+
+    /* ---- 6. Anti-vacuity: a method called on a removed object raises a
+     * script error rather than silently operating on a slot something
+     * else now owns. The script catches its own error with pcall() and
+     * reports which happened through kf.report() -- proof this binding's
+     * error, not some unrelated failure, is what fired. ---- */
+    kf_scene_reset();
+    constexpr const char *kRemovedScript = R"lua(
+o = kf.sprite("egg_idle_s")
+o:remove()
+local ok = pcall(function() o:move(1, 2) end)
+kf.report(ok and 1 or 0)
+)lua";
+    check(kf_lua_port_init(kRemovedScript, "=lua_draw_check_removed"),
+          "the removed-object script loads");
+    check(kf_lua_port_last_report() == 0,
+          "calling a method on a removed object raises a script error, "
+          "caught by the script's own pcall rather than crashing the VM");
+    kf_lua_port_shutdown();
+
+    /* ---- 7. The minimal-pet example (examples/hello_pet/pet.lua), read
+     * from disk and run verbatim -- the plan's own acceptance test for
+     * this API (docs/superpowers/plans/2026-08-12-lua-game-layer.md, "The
+     * minimal pet, in Lua": "if it does not work verbatim ... one of the
+     * two is wrong"). Needs a live pet session -- pet.stage()/pet.hunger()
+     * are read every frame, pet.feed()/pet.play() are wired to the two
+     * button handlers -- unlike every check above, so this brings its own
+     * store/power/session lifecycle up and back down around it. ---- */
+    {
+        std::ifstream pet_lua_file(KF_HELLO_PET_SCRIPT_PATH);
+        check(pet_lua_file.good(), "examples/hello_pet/pet.lua opens");
+        const std::string pet_lua_source(
+            (std::istreambuf_iterator<char>(pet_lua_file)),
+            std::istreambuf_iterator<char>());
+
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-lua-draw-hello-pet-" +
+             std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (hello_pet)");
+        check(kf_power_init() == KF_OK, "kf_power_init (hello_pet)");
+        kf_pet_session_init();
+
+        kf_scene_reset();
+        check(kf_lua_port_init(pet_lua_source.c_str(),
+                                "=examples/hello_pet/pet.lua"),
+              "examples/hello_pet/pet.lua loads and its top-level code "
+              "runs, verbatim from the plan");
+        for (int i = 0; i < 5; ++i) {
+            kf_pet_session_frame(kFixedDtMs);
+            kf_lua_port_frame(kFixedDtMs);
+            kf_scene_commit();
+        }
+        check(kf_lua_port_frame_count() == 5u,
+              "examples/hello_pet/pet.lua's on_frame runs for 5 frames "
+              "with no script error");
+        kf_lua_port_shutdown();
+
+        kf_pet_session_shutdown();
+        kf_power_shutdown();
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    kf_scene_reset();
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+
+    if (ok) {
+        KF_LOGI(TAG, "lua-draw: a scene declared from Lua matches the "
+                      "hand-drawn reference; idle, placeholder, overflow, "
+                      "removed-object and hello_pet all behave as "
+                      "specified");
+    }
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -5956,6 +6184,7 @@ int main(int argc, char *argv[]) {
     bool verify_frame_counters = false;
     bool verify_creature_screen_budget_combo = false;
     bool verify_scene = false;
+    bool verify_lua_draw = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -6059,6 +6288,8 @@ int main(int argc, char *argv[]) {
             verify_creature_screen_budget_combo = true;
         } else if (std::strcmp(argv[i], "--verify-scene") == 0) {
             verify_scene = true;
+        } else if (std::strcmp(argv[i], "--verify-lua-draw") == 0) {
+            verify_lua_draw = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -6103,7 +6334,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-frame-counters\n"
                         "kamiframe-headless "
                         "--verify-creature-screen-budget-combo\n"
-                        "kamiframe-headless --verify-scene\n");
+                        "kamiframe-headless --verify-scene\n"
+                        "kamiframe-headless --verify-lua-draw\n");
             return 0;
         }
     }
@@ -6267,6 +6499,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_scene) {
         return run_scene_check();
+    }
+
+    if (verify_lua_draw) {
+        return run_lua_draw_check();
     }
 
     kf_app_init(mode);
