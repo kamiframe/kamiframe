@@ -1027,7 +1027,7 @@ def build_parser():
 
     vsync = sub.add_parser("vsync", parents=[common],
                             help="turn beam-racing (wait for the scan before "
-                                 "writing) on or off, default on")
+                                 "writing) on or off, default off")
     vsync.add_argument("setting", choices=["on", "off"],
                         help="on or off")
 
