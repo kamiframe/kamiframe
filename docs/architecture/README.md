@@ -41,6 +41,8 @@ future us in month eight asking the same question with less patience.
 | [0031](adr-0031-kfdbg-time-control.md) | Time control over KFDBG, and splitting the pet session's debug flag in two | Accepted |
 | [0032](adr-0032-panel-tearing-and-selection.md) | Screen tearing, what we tried, and what the kit's panel must expose | Accepted |
 | [0033](adr-0033-asset-pipeline.md) | The asset pipeline: sprites packed into flash, memory-mapped, not copied | Accepted |
+| [0034](adr-0034-kfdbg-care-and-stage-jump.md) | KFDBG parity for care actions and life-stage jump | Accepted |
+| [0035](adr-0035-kfdbg-mutate-gate.md) | Splitting KFDBG by observe vs. mutate | Accepted |
 
 Open evaluations, deliberately not decided:
 

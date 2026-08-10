@@ -150,6 +150,24 @@ session.
 (`egg`/`baby`/`child`/`teen`/`adult`) or the raw `0-4`, more forgiving to
 type at a prompt than the wire's own raw-enum-only syntax.
 
+### Superseded in part
+
+"Decision" #3 above ("Not gated behind `KF_DBG_INPUT_INJECT_ENABLE`") is
+superseded by ADR 0035: all six commands added by this ADR are now gated
+by `KF_DBG_MUTATE_ENABLE`, a new flag that gates every KFDBG command
+changing the pet or the simulation, `ADVANCE`/`RESET`/`MULT`/`BTN`/
+`BTNHOLD` included. The precedent this section leaned on -- "`RESET` is
+already a far more drastic state mutation than any single care action...
+so gating care/jump more tightly than `RESET` while leaving `RESET` itself
+ungated would be an inconsistent line to draw" -- was correct as an
+argument against gating these six *more tightly* than `RESET`, but it
+was read (by this ADR and by ADR 0031 before it) as an argument for
+leaving all of them ungated beyond the whole-bridge switch, which left the
+entire set open to a serial connection with nothing more than
+`KF_DBG_BRIDGE_ENABLE=1`. `KF_DBG_MUTATE_ENABLE` resolves this the way the
+precedent actually pointed: `RESET` and these six sit at exactly the same
+gate, not at two different ones and not at none.
+
 ## What this slice does NOT reach
 
 - **`tools/kf_panel.py` is untouched** -- owned by a separate, concurrent

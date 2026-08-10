@@ -364,6 +364,39 @@ These are already true and need to stay true:
   hardware; see `docs/architecture/adr-0034-kfdbg-care-and-stage-jump.md`
   for exactly what that leaves unchecked.
 
+## What ADR 0035 added
+
+- A third KFDBG compile-time flag, `KF_DBG_MUTATE_ENABLE`, splitting the
+  protocol by observe vs. mutate rather than by button-injection vs.
+  everything else. `KF_DBG_BRIDGE_ENABLE` now gates the read-only commands
+  specifically (`PING`/`SHOT`/`STATE`/`SCANLINE`/`VSYNC`, plus `WATCH`,
+  host-side-only repeated `STATE` polling); the new flag gates every
+  command that changes the pet or the simulation
+  (`FEED`/`PLAY`/`REST`/`BATH`/`FLUSH`/`JUMP`/`ADVANCE`/`RESET`/`MULT`/
+  `BTN`/`BTNHOLD`). `KF_DBG_INPUT_INJECT_ENABLE` keeps its name and job
+  (narrowing `BTN`/`BTNHOLD` specifically) but now nests inside the new
+  flag instead of the bridge flag directly. All three default on.
+- Closes a real gap: before this, switching off button injection alone
+  gave false assurance -- a serial cable could still call `KFDBG FEED` or
+  `KFDBG JUMP` and refill a neglected pet's needs or jump it straight to
+  adult, regardless of `KF_DBG_INPUT_INJECT_ENABLE`'s setting, as long as
+  the bridge as a whole was on.
+- Enforced at one choke point, `require_mutate_enabled()`, called first
+  thing in each of the eleven mutating branches in
+  `process_command_line()`. Off, it replies `err` naming the exact flag to
+  flip, rather than a timeout or a bare protocol error --
+  `tools/kf_debug.py`'s existing `_expect()` already turns that into a
+  comprehensible `KfDebugError` with no host-side code change needed;
+  `tools/kf_debug_selftest.py` gained a check proving it.
+- **`idf.py build` succeeded, zero warnings, in BOTH the default
+  configuration and `KF_DBG_MUTATE_ENABLE=0`** -- `kamiframe-firmware.bin`
+  at 660,336 bytes and 660,368 bytes respectively (58% of the app
+  partition free either way). The flag-off build is very slightly
+  *larger*, not smaller: `nm` confirms the guarded `handle_*()` functions
+  stay linked in, just unreachable -- see
+  `docs/architecture/adr-0035-kfdbg-mutate-gate.md`'s "Decision" #4 for
+  why. Not run against real hardware.
+
 ## What still has to be written
 
 - **Confirming the demo creature is actually driving the pet screen**, not

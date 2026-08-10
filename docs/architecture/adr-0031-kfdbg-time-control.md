@@ -131,6 +131,24 @@ mult()` above is not. When the bridge as a whole is off
 time, unscaled) rather than 0 -- "behaves exactly as if this feature did
 not exist," not "the pet freezes."
 
+### Superseded in part
+
+The claim in "Decision" #2 that `ADVANCE`/`RESET`/`MULT` "stay available
+whenever the bridge as a whole is on" was true when written and is no
+longer true as of ADR 0035: all three are now gated by `KF_DBG_MUTATE_
+ENABLE`, a new flag nested inside `KF_DBG_BRIDGE_ENABLE` that gates every
+KFDBG command changing the pet or the simulation, not only these three.
+The reasoning that led here was sound and is not itself wrong -- these
+commands genuinely are not button injection, so `KF_DBG_INPUT_INJECT_
+ENABLE` was correctly judged the wrong flag for them -- but stopping at
+"therefore ungated" left them reachable with nothing more than the
+whole-bridge switch, which is exactly the gap ADR 0035 closes. The claim
+in "Decision" #3 that `kf_dbg_time_multiplier()` "is not gated behind
+`KF_DBG_INPUT_INJECT_ENABLE` for the same reason `handle_mult()` above is
+not" is still accurate as far as it goes (it remains true that neither is
+gated by that specific flag); what changed is that both are now gated by
+`KF_DBG_MUTATE_ENABLE` instead.
+
 ## What this slice does NOT reach
 
 - **No GUI.** `tools/kf_panel.py` is owned by a separate, concurrent task;

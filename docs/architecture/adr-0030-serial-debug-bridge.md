@@ -194,6 +194,25 @@ the arena system: this code does not exist in a build with
 `KF_DBG_BRIDGE_ENABLE=0`, so it has no business claiming a permanent share
 of a budget the rest of the firmware has to live inside forever.
 
+### Superseded in part
+
+ADR 0035 adds a third flag, `KF_DBG_MUTATE_ENABLE`, and moves the boundary
+this ADR drew. At the time this ADR was written, `PING`/`SHOT`/`STATE` and
+`BTN`/`BTNHOLD` were the entire protocol, so "one flag for the whole
+bridge, a narrower one for button injection" was a complete split. ADR
+0031 and ADR 0034 then added nine more commands
+(`ADVANCE`/`RESET`/`MULT`/`FEED`/`PLAY`/`REST`/`BATH`/`FLUSH`/`JUMP`) that
+change the pet or the simulation without adding a gate narrower than this
+ADR's whole-bridge switch for any of them, which meant `KF_DBG_INPUT_
+INJECT_ENABLE=0` alone no longer gave "read-only" -- it gave "no button
+injection, but every other mutation still reachable." `KF_DBG_MUTATE_
+ENABLE` (ADR 0035) is the fix: it gates all eleven mutating commands
+together, and `KF_DBG_INPUT_INJECT_ENABLE` now nests inside it rather than
+inside `KF_DBG_BRIDGE_ENABLE` directly. The reasoning above for why
+`KF_DBG_INPUT_INJECT_ENABLE` exists at all -- button injection is a
+strictly larger surface than the introspection commands -- still holds and
+is not superseded; only which flag it nests inside changed.
+
 ## What this slice does NOT reach
 
 - **Never run against a real device.** Every claim below about the wire
