@@ -1001,6 +1001,70 @@ mistakes them for oversights.
 
 ---
 
+## Status: Tasks 1-3 COMPLETE, 2026-08-10 overnight
+
+| Task | Commits | Result |
+|---|---|---|
+| 1 — real `.lua` file, generator, `sdk/` | `8155af5`, `9bf948f` | `examples/creature_demo/creature.lua` exists; drift test guards the generated header |
+| 2 — the retained scene differ, in Core | `bc1f938`, `9f7e81f`, `b25692a` | `kf/scene.h`; 12 moving objects coalesce to 8 rects / 11,200 of 153,600 bytes; ADR 0040 |
+| 3 — the Lua drawing binding | `76e087b`, `b427335`, `58deb89`, `1905f11` | `sdk/lua/kf_lua_scene.*`; `examples/hello_pet/pet.lua`; ADR 0041 |
+
+**43/43, Core heap-free, ESP32 firmware 683,792 bytes (57% of partition free).
+Both golden rendering checksums unmoved. Nothing renders differently yet** —
+the creature screen is still C++ and stays so until Task 4. That separation is
+what let all three land without risking tomorrow's hardware redeploy.
+
+**Resume at Task 4.** It rebuilds the C++ creature screen on the scene, with ten
+existing creature-screen tests as its judge, and deserves a fresh session.
+
+### The API that came out of it
+
+```
+kf.sprite(name) · kf.text(str) · kf.box(w,h,color) · kf.background(color_or_name)
+kf.color(r,g,b) · kf.WHITE/BLACK/RED/... · kf.on_button(name,fn)
+kf.width() · kf.height() · kf.sprites()
+
+obj:move(x,y) · obj:x([n]) · obj:y([n]) · obj:show() · obj:hide()
+obj:visible([bool]) · obj:layer([n]) · obj:remove()
+obj:sprite([name]) · obj:flip([bool])   -- sprite only
+obj:set([str])                          -- text only
+obj:color([fg[,bg]])                    -- text or box
+obj:size([w,h])                         -- box only
+```
+
+No-arg reads, args write. No dirty rectangles, frame indices, colour keys, byte
+order or memory management anywhere in the surface — all of that stayed in Core,
+which was the whole point of retained mode.
+
+### What a script can and cannot do to the device
+
+**Cannot crash it.** Unknown sprite names draw the magenta placeholder and log
+by name. Scene overflow, wrong-kind calls and use-after-remove all raise named
+Lua errors, caught by `kf_lua_port_frame()`'s existing `lua_pcall` — `on_frame`
+is disabled until re-init and the last good frame stays on screen. Button
+handlers each run in their own `pcall`. Numeric arguments are clamped, never
+wrapped.
+
+**Can still hang it.** `while true do end` freezes the frame loop; there is no
+execution-time guard. Deferred to Task 9 and it should not slip — it stops being
+theoretical the moment Lua owns the screen.
+
+### Found in passing, worth fixing before it spreads
+
+`g_objects[64]` in Task 2's `scene.cpp` measures **224 bytes per object — 5.6x
+ADR 0040's own estimate — and lands in `.data` rather than `.bss`**, so it costs
+both flash and RAM, because `RenderState::fg` defaults to a non-zero
+`KF_WHITE`. Task 3 flagged it rather than reaching into Task 2's file. A
+zero-default with the white applied at draw time would move the whole array back
+to `.bss`.
+
+Also open: `kf.on_button` has no dedicated headless check. It was code-reviewed
+against `kf_screen_nav_frame()`'s identical read, and adding one risks moving
+the golden checksums — the same tradeoff `run_creature_screen_input_check()`
+already made.
+
+---
+
 ## Comments in Lua cost flash and boot time — found during Task 1
 
 This project's house style is unusually thorough comments explaining *why*, and
