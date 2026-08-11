@@ -269,18 +269,19 @@ kf.clock_set()     -- true once the clock has been set; false on a fresh device
 Writing is deliberately **not** part of the same surface. Setting the clock is a
 device-settings action, not a game action, so it is `kf.set_clock(hour, minute)`
 and it is documented as "the Settings screen calls this; your game almost
-certainly should not". It takes two integers, applies today's date and the
-device UTC offset itself, and returns `true`/`false` — the script never sees an
-epoch second.
+certainly should not". It takes two integers, applies today's date itself, and
+returns `true`/`false` — the script never sees an epoch second.
 
 The `int64_t` epoch does not disappear, it just stops being anyone's problem
 above the HAL. A new Core module, `kf/clock.h`, does integer-only civil-time
 conversion (days-since-epoch to y/m/d and back, the standard integer algorithm
 — no `float`, no libc `localtime`, so it is legal in `hakoniwaos/` and
-identical on both targets) and owns the device UTC offset. Sleep's night-window
-test and the Lua binding then call the *same* function, which is the real reason
-it belongs in Core rather than in the binding: two implementations of "what hour
-is it locally" is how the clock and the bedtime end up disagreeing.
+identical on both targets). It is **stateless**: the RTC holds local time
+directly, so there is nothing to store and nothing to apply — see "Timezone:
+settled by Chris" at the end of this document. Sleep's night-window test and the
+Lua binding call the *same* function, which is the real reason it belongs in
+Core rather than in the binding: two implementations of "what hour is it
+locally" is how the clock and the bedtime end up disagreeing.
 
 **Editing with seven buttons and no keyboard.** A four-field cursor —
 `HOUR → MINUTE → AM/PM → SAVE` — with:
@@ -938,17 +939,18 @@ near the board.
       — every character in it is in the font's set (`kf/font.h`: digits, `:`,
       and uppercase letters). `kf.time()` on a device whose clock has never
       been set returns `"--:-- --"`, not a lie and not an empty string.
-- [ ] `kf.set_clock()` preserves today's date and the seconds field, applies
-      the device UTC offset, and calls `kf_time_set_wall()`. It returns `false`
+- [ ] `kf.set_clock()` preserves today's date and the seconds field and
+      calls `kf_time_set_wall()` directly — the epoch it writes IS local time,
+      so there is no offset to apply. It returns `false`
       rather than raising when the backend refuses (`KF_ERR_UNAVAILABLE` on a
       read-only clock is a documented HAL return), so a script can say so on
       screen.
-- [ ] The UTC offset persists under its own storage key — `"clock"`, well
-      inside `KF_STORE_MAX_KEY_LEN` 15 — as a tiny versioned blob, **not** in
-      the pet save. The care-loop spec makes it device-wide; putting it in the
-      pet save would make it per-creature and would force `kSaveVersion` 8→9
-      for a value that has nothing to do with a pet. Read it at boot, before
-      the first frame.
+- [ ] **Nothing about the clock persists outside the RTC itself.** There is no
+      UTC offset to store, because the RTC holds local time directly. Resist
+      adding a storage key "ready for" the internet-sync feature: a field
+      nothing sets is wrong the first time something reads it, and once it is in
+      a save format it has to be carried forever. When sync lands it sets the
+      clock; it does not reinterpret stored timestamps.
 - [ ] The Settings screen is a Lua screen group (Task 1), declared in
       `examples/creature_demo/creature.lua`, registered third so MENU cycles
       `HOME → INFO → SETTINGS → HOME`. **Budget: 14 objects** — title, the four
@@ -1174,9 +1176,11 @@ The game's half. Uses the 18 single-frame sleeping sprites that already ship.
   `run_lua_vs_cpp_screen_check()` meaningful, and mixing it into a plan that is
   already changing screens, the clock and sleep would make any divergence
   unattributable.
-- **It does not learn the timezone automatically.** The spec's eventual intent
-  is BLE or WiFi so nobody ever sets a clock. Task 4 sets a fixed offset by
-  hand, which is what the spec asks for now.
+- **It does not learn the time automatically.** Chris wants WiFi sync
+  eventually — *"Eventually I do want to hook it to the internet so it can tell
+  what local time is. Feature for later though."* Task 4 has the owner set the
+  clock by hand on the Settings screen, and the RTC then holds local time
+  directly. There is no offset anywhere; see "Timezone: settled by Chris".
 - **It does not implement sleeping by ambient darkness.** The spec explicitly
   defers it: *"Clock first."* The sensor is on the target spec, needs a
   simulator fallback, and is a larger build than the clock-driven version.
