@@ -68,6 +68,62 @@ Demo creature code is Apache; its characters and artwork are **not** licensed fo
 - **LVGL vs a custom sprite engine.** That's a deliberate later evaluation, a week each. Don't prejudge it in early slices.
 - The creature class name.
 
+## If you are the operator, these two things are your job
+
+The operator is whoever is coordinating and dispatching subagents — usually an
+Opus-tier session. Subagents cannot do either of these, because both need
+context that spans more than one task.
+
+**1. Keep the plan documents true, and fix them the moment they are not.**
+
+Task briefs are *generated from* the plan. So a stale line in a plan is not a
+documentation problem — it is re-served to every implementer that follows, and
+they copy it faithfully. This has manufactured six defects on this project:
+three comments that contradicted their own code, a real `ValueError` in a code
+listing, a function called four times against an assert that fires on the
+second call, and a requirement to build and persist a config field that a
+previous task had deliberately decided not to implement.
+
+So:
+
+- **Update the plan when a decision is made, before dispatching the task it
+  affects** — not afterwards, and not by appending amendments to a generated
+  brief.
+- When a review finds a bad comment or pattern in the source, **grep the plan
+  document too.** A defect there costs one defect per remaining task.
+- When a task changes a design, **sweep the sections of every later task** that
+  described the old one. The task that made the change usually fixes its own
+  section and flags the rest; finishing that sweep is the operator's job.
+- Code listings in plans get copied verbatim, bugs included. Prefer describing
+  a requirement over pasting code nobody has run.
+
+**2. Do not take a subagent's assertions at face value — especially "this is
+impossible" or "this cannot happen".**
+
+Subagents report confidently and are sometimes wrong, and a wrong claim that
+goes unchallenged becomes a decision. The expensive ones on this project:
+
+- Two agents ran concurrently, each measured the same shared counter, and each
+  attributed the other's spend to itself — producing a cost figure wrong by
+  **14x** that then shaped a budget decision.
+- A comment asserted a pet could never come back from dead; a debug lever in the
+  same commit range made it routine, and a shrine painted over a living
+  creature.
+- A comment claimed a panel had no backlight pin to drive. The first run on the
+  new panel was a black screen with a clean log.
+
+So: when a subagent says something is impossible, unreachable, already handled,
+or not worth checking — **verify it cheaply yourself before building on it.**
+One grep or one command is usually enough. The same applies to your own claims:
+if you told Chris a number, and a later measurement contradicts it, say so
+plainly and give the corrected one.
+
+Related, and cheap to check: **a test that passes is not evidence it tests
+anything.** Three tests on this project quietly stopped testing what they were
+written for, including one that passed with the entire drawing path deleted.
+Ask implementers to prove non-vacuity by breaking the thing under test and
+watching the assertion fail.
+
 ## Model selection — tell Chris when to switch
 
 Before starting a substantive task, if a different model would suit it better, say so in **one line**, then proceed. Fire at transitions, roughly once per session. Never interrupt mid-task unless something has genuinely changed. `/model` switches mid-session.
