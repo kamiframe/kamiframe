@@ -56,10 +56,13 @@ kf_result kf_time_set_wall(int64_t epoch_seconds);
 
 /* Give the rest of the system a chance to run for roughly this long.
  *
- * NOT a power-saving sleep: that is kf/hal/power.h, which does not exist yet.
- * This is the "I have finished this frame early" yield. On the device it will
- * be a FreeRTOS delay; on desktop, a sleep; under Emscripten it must be a
- * no-op because the browser owns the schedule.
+ * NOT a power-saving sleep: that is kf/hal/power.h's kf_power_deep_sleep_
+ * until(), which exists and has two backends (simulator/src/host/
+ * host_power.cpp, ports/esp32/hal/esp_power.cpp) -- kf_app_init() calls
+ * kf_power_init() to bring it up. This is the "I have finished this frame
+ * early" yield. On the device it will be a FreeRTOS delay; on desktop, a
+ * sleep; under Emscripten it must be a no-op because the browser owns the
+ * schedule.
  *
  * May return early. May overshoot. Never a timing guarantee. */
 void kf_time_delay_us(uint32_t microseconds);

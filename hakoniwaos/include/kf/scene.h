@@ -18,12 +18,18 @@
  * rectangle.
  *
  * HANDLES, NOT POINTERS. A kf_scene_id is a plain integer that keeps
- * increasing for the life of the program (never reused, not even across
- * kf_scene_reset()), so a stale handle from before a reset stays an
- * "obviously not found" value forever rather than quietly aliasing whatever
- * object now happens to occupy the same storage slot -- a dangling pointer
- * cannot make that promise, because the freed memory can be handed back out
- * and look valid again.
+ * increasing for the life of the program (not reused across kf_scene_
+ * reset()), so a stale handle from before a reset stays an "obviously not
+ * found" value rather than quietly aliasing whatever object now happens to
+ * occupy the same storage slot -- a dangling pointer cannot make that
+ * promise, because the freed memory can be handed back out and look valid
+ * again. NOT a promise for the life of the program, though: kf_scene_id is
+ * a uint16_t (hakoniwaos/src/scene.cpp's g_next_id wraps at 65,535, skipping
+ * 0), so after that many total creations ids DO start repeating, and this
+ * "stale handle stays not-found forever" argument stops holding from that
+ * point on. Distant in practice (KF_SCENE_MAX_OBJECTS live objects at a
+ * time means reaching it needs thousands of add/remove cycles), not
+ * impossible.
  *
  * TWO FILE-STATIC ARRAYS, NOTHING ELSE. `hakoniwaos/` stays heap-free
  * (enforced by tools/check_no_heap.py in CI) and float-free (a design rule,

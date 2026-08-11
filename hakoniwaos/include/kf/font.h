@@ -12,9 +12,20 @@
  *
  * Character set: space, 0-9, A-Z (uppercase only), and the punctuation the
  * constraint HUD needs: . , : - / % + ( ). Anything else in a string draws
- * as a blank cell. That is what today's one consumer, the HUD in kf/app.h,
- * requires. Extending the set is a mechanical edit to tools/make_font.py,
- * not a redesign -- see the ADR for why lowercase was left out of slice two.
+ * as a blank cell, LOWERCASE LETTERS INCLUDED -- this module itself does no
+ * case-folding. That matters well beyond the HUD this set was originally
+ * sized for: every kf.text() call a Lua cartridge makes (sdk/lua/
+ * kf_lua_scene.cpp's lua_kf_text(), kf_scene_add_text() underneath) goes
+ * through this same font. The Lua binding already covers for it, though --
+ * kf_lua_scene.cpp's uppercase_and_warn() uppercases ASCII letters on every
+ * text write before it ever reaches this module, precisely so a script
+ * typing `kf.text("Hello")` gets "HELLO" on screen, not four blank cells,
+ * and logs once (not once per frame) for any OTHER character the font
+ * genuinely cannot draw. A caller that talks to this module directly in
+ * C++, bypassing that binding, gets no such help -- blank cells for
+ * anything outside the set above, silently. Extending the set is a
+ * mechanical edit to tools/make_font.py, not a redesign -- see the ADR for
+ * why lowercase was left out of slice two.
  *
  * All coordinates are in framebuffer space, top-left of the string. All
  * functions clip. All functions mark the region they touched as dirty and
