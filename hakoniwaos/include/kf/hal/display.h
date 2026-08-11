@@ -75,10 +75,15 @@ const kf_display_caps *kf_display_get_caps(void);
  * always the full buffer, always native-endian.
  *
  * `dirty_rects` names up to `dirty_rect_count` sub-rectangles that changed
- * since the last present, in framebuffer space, never overlapping each
- * other (core merges anything that touches -- see kf/framebuffer.h). The
- * backend may honour them or ignore them; core must supply them honestly
- * either way. Desktop ignores them today. The device will not, and this
+ * since the last present, in framebuffer space. Core merges anything that
+ * TOUCHES into one rectangle (see kf/framebuffer.h), but that merge only
+ * checks the first existing rectangle each new mark touches or overlaps,
+ * not every one of them -- so two of the rectangles handed to a backend
+ * CAN overlap. A backend that writes each rectangle in order is still
+ * correct either way (the pixels in the overlap just get sent twice); one
+ * that assumes non-overlap to skip work must not. The backend may honour
+ * these rectangles or ignore them; core must supply them honestly either
+ * way. Desktop ignores them today. The device will not, and this
  * parameter exists on day one precisely so that adding partial updates
  * later is a backend change rather than an audit of every call site.
  *

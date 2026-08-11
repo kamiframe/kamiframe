@@ -3098,10 +3098,13 @@ static int run_creature_screen_input_check(void) {
  * creature.h) never advances here either: kf_creature_tick_anim() is a
  * no-op on dt_ms == 0 regardless of which of its two callers (the wander
  * branch, gated off by the same dt_ms == 0 in kf_creature_update(), or the
- * egg branch calling it directly) would otherwise have reached it. Moot for
- * this check anyway -- every sprite examples/creature_demo/assets.kfpack
- * ships is a single frame, so kf_creature_anim_wrap() would clamp the
- * cursor to 0 even if it had moved. */
+ * egg branch calling it directly) would otherwise have reached it. NOT
+ * because the sprites are single-frame -- examples/creature_demo/
+ * assets.kfpack has 18 nine-frame entries, including all three egg_idle_*
+ * sprites this check draws (see run_creature_screen_budget_combination_
+ * check() below for a check that DOES exercise a real multi-frame idle).
+ * This check's safety net is entirely dt_ms == 0: the cursor never moves,
+ * so it stays at frame 0 regardless of how many frames the sprite has. */
 static int run_creature_screen_sprite_check(void) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() /
@@ -4050,7 +4053,9 @@ static int run_creature_screen_stats_check(void) {
  *
  * This drives the actual combination: the real, animated creature_demo
  * pack (child's real "neutral" 9-frame idle, checked below against a
- * placeholder to prove it -- not the pack's own single-frame egg), a
+ * placeholder to prove it -- deliberately the child's idle, not the
+ * pack's own egg_idle_*, which is ALSO 9 frames but is what run_
+ * creature_screen_sprite_check() above already exercises at dt_ms == 0), a
  * poop_count that changes every frame, and all three needs pushed across a
  * quantisation boundary every frame, together, while the creature is
  * genuinely wandering (real dt_ms -- not the dt_ms==0 the sprite-only

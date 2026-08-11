@@ -70,7 +70,20 @@ void kf_fb_mark_dirty(kf_rect r);
 void kf_fb_mark_all_dirty(void);
 
 /* The tracked dirty rectangles for this frame. Empty (count == 0) if
- * nothing was drawn. Rectangles never overlap by construction. */
+ * nothing was drawn.
+ *
+ * NOT a claim that the rectangles never overlap -- they can, and do.
+ * kf_fb_mark_dirty() merges a new rectangle into the FIRST existing
+ * rectangle it touches or overlaps and returns immediately; it never
+ * re-scans to check whether that merged rectangle now touches or
+ * overlaps any of the OTHERS. Three marks in the right order (A, then C
+ * that doesn't touch A, then B that touches both) leave rect[0] =
+ * union(A, B) overlapping rect[1] = C. kf_fb_dirty_bytes() sums each
+ * rectangle's area independently, so an overlap like that is double-
+ * counted there too -- treat its result as an upper bound on bytes
+ * touched, not an exact count. This merging behaviour is deliberate
+ * (see kf_fb_mark_dirty()'s own comment) and is not being changed here;
+ * this comment only corrects what it guarantees. */
 kf_dirty_rects kf_fb_dirty_rects(void);
 
 /* Called by the frame loop after present. Not by game code. */
