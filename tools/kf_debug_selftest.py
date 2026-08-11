@@ -399,8 +399,39 @@ def test_state_budget_line_with_every_key_present():
           "stage: 2" in text)
     check("a budget line is printed",
           "budget:" in text)
-    for key, value in _BUDGET_KEYS.items():
-        check(f"budget line carries {key}", str(value) in text)
+
+    # Against _format_budget_line()'s OWN return value, not the whole
+    # printed dump above: _print_state_line() already prints "key: value"
+    # for every field in `obj` before the budget line ever runs, so
+    # `str(value) in text` against the full text would pass even if
+    # _format_budget_line() dropped every field it claims to summarise --
+    # it did, once, down to three, and this assertion did not notice (see
+    # the audit that found it). Each fragment matches the formatter's own
+    # "label=value" shape exactly, so a dropped or mislabelled field fails
+    # here specifically.
+    budget_line = kfd._format_budget_line(obj)
+    px = f"{_BUDGET_KEYS['opaque_px']}+{_BUDGET_KEYS['keyed_px']}"
+    expected_fragments = {
+        "draw_us": f"draw={_BUDGET_KEYS['draw_us']}us",
+        "transfer_us": f"xfer={_BUDGET_KEYS['transfer_us']}us",
+        "cpu_us": f"cpu={_BUDGET_KEYS['cpu_us']}us",
+        "post_us": f"post={_BUDGET_KEYS['post_us']}us",
+        "dirty_rects": f"rects={_BUDGET_KEYS['dirty_rects']}",
+        "dirty_pct": f"({_BUDGET_KEYS['dirty_pct']}%)",
+        "opaque_px": f"px={px}",
+        "keyed_px": f"px={px}",
+        "over_budget": f"over_budget={_BUDGET_KEYS['over_budget']}",
+        "worst_us": f"worst={_BUDGET_KEYS['worst_us']}us",
+        "p99_us": f"p99={_BUDGET_KEYS['p99_us']}us",
+        "frames": f"frames={_BUDGET_KEYS['frames']}",
+        "over_budget_frames": f"over={_BUDGET_KEYS['over_budget_frames']}",
+    }
+    assert expected_fragments.keys() == _BUDGET_KEYS.keys(), (
+        "expected_fragments must cover exactly _BUDGET_KEYS -- update both "
+        "together")
+    for key, fragment in expected_fragments.items():
+        check(f"budget line carries {key} as '{fragment}'",
+              fragment in budget_line)
 
 
 def test_state_budget_line_missing_keys_does_not_crash():

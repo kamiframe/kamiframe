@@ -7,10 +7,21 @@ kf_panel.py had a real, observed layout bug (an enormous window with most
 controls invisible or clipped off the right edge under macOS dark mode).
 Fixing "a layout looks right" without ever being able to see it requires
 checking geometry numbers instead of pixels: this script builds the panel
-in --demo mode, lets Tk lay everything out for real, then walks every
-widget and asserts the properties a sane layout must have -- nothing
-clipped, nothing off-window, nothing invisible, and every control the user
-needs either directly visible or reachable by scrolling.
+for real, lets Tk lay everything out, then walks every widget and asserts
+the properties a sane layout must have -- nothing clipped, nothing off-
+window, nothing invisible, and every control the user needs either
+directly visible or reachable by scrolling.
+
+TWO PASSES, NOT ONE. --demo mode (`_build_connection_controls()` in
+kf_panel.py) skips the Port/Rescan/Connect row entirely -- there is
+nothing to connect to in demo mode, so it never gets built. That row is
+also the WIDEST row in the whole panel and the exact shape that produced
+the clipping bug this script exists to catch, so a demo-only run can
+never see it: an audit gutted the Connect button entirely and this
+script's output did not change. Pass 2 below builds the panel against
+target_kind="serial" instead (no hardware needed -- the connect attempt
+just fails quickly and harmlessly, the same way it would on a laptop with
+nothing plugged in), so the Connection row actually gets measured.
 
 Usage:
     /usr/bin/python3 tools/kf_panel_layout_check.py
@@ -23,6 +34,7 @@ Exits 0 if every check passes, non-zero (with FAIL rows and a summary) if
 not.
 """
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -40,15 +52,6 @@ except ImportError:
     sys.exit(1)
 
 import kf_panel as kfp  # noqa: E402
-
-
-WINDOW_W, WINDOW_H = 560, 900  # must match the geometry() kf_panel.py sets
-
-FAILURES = []
-
-
-def fail(msg):
-    FAILURES.append(msg)
 
 
 def bbox(widget):
@@ -114,16 +117,54 @@ def _pump(root, predicate=None, timeout_ms=3000, interval_ms=50):
     root.mainloop()
 
 
-def main():
+def _requested_window_size():
+    """(w, h) kf_panel.py itself requests via root.geometry("WxH") in
+    _build_ui() -- parsed straight out of kf_panel.py's own source rather
+    than kept as a second, independent literal here (the previous version
+    of this script hardcoded "560, 900" a second time, with only a
+    comment asking whoever changed kf_panel.py's call to remember to
+    update this file too -- exactly the kind of thing that silently goes
+    stale). Reading it back from Tk instead (root.geometry() after
+    construction) was tried and rejected: Tk reports "1x1" until an idle
+    cycle runs, and even after root.update_idletasks() it reports the
+    NEGOTIATED size, not the requested one, if content needs less than
+    900px tall -- neither is "what kf_panel.py asked for", which is the
+    number this check actually needs."""
+    src_path = Path(kfp.__file__)
+    with open(src_path, "r", encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r'root\.geometry\("(\d+)x(\d+)"\)', src)
+    if not m:
+        raise ValueError(f'could not find root.geometry("WxH") in '
+                          f'{src_path}')
+    return int(m.group(1)), int(m.group(2))
+
+
+def run_pass(target, label):
+    """Builds the panel against `target`, runs every check, prints a
+    report, and returns the list of failure strings (each already
+    prefixed with `label` so a two-pass run's combined summary says which
+    pass found what)."""
     root = tk.Tk()
-    app = kfp.PanelApp(root, target=("demo", None), baud=115200,
+    app = kfp.PanelApp(root, target=target, baud=115200,
                         state_interval=1.0, verbose=False)
 
-    # Let the demo device's fake "connect" round-trip (it's queued on the
-    # worker thread and applied via root.after()), and let Tk finish
-    # laying everything out, before measuring anything.
-    _pump(root, predicate=lambda: app.connected, timeout_ms=3000)
+    window_w, window_h = _requested_window_size()
+
+    # Let whatever the connect attempt queues on the worker thread (the
+    # demo device's fake round-trip, or a real port scan that will fail
+    # harmlessly in this pass) settle, and let Tk finish laying everything
+    # out, before measuring anything.
+    if target[0] == "demo":
+        _pump(root, predicate=lambda: app.connected, timeout_ms=3000)
+    else:
+        _pump(root, predicate=None, timeout_ms=800)
     root.update_idletasks()
+
+    failures = []
+
+    def fail(msg):
+        failures.append(f"[{label}] {msg}")
 
     rows = []
 
@@ -222,6 +263,19 @@ def main():
     #    the window bounds right now, or provably reachable by scrolling
     #    (its bbox, relative to the scrollable content frame, lies within
     #    the canvas's scrollregion).
+    #
+    #    scrollregion is NOT trusted blindly here: it is set by kf_panel.py
+    #    from canvas.bbox("all"), which is itself derived from the very
+    #    widgets being checked -- comparing a widget's offset inside
+    #    scroll_frame against a scrollregion computed from scroll_frame's
+    #    own children is one source checked against itself, and cannot
+    #    catch a scrollregion that is stale or simply wrong (e.g. an
+    #    earlier <Configure> firing before the frame's final height was
+    #    known). So the first thing this section does is compute the
+    #    real, observed bounding box of every mapped descendant of
+    #    scroll_frame directly from their own winfo_root{x,y}/width/height
+    #    -- a second, independent measurement -- and fails loudly if
+    #    scrollregion does not actually cover it.
     # ----------------------------------------------------------------
     canvas = app.canvas
     scrollregion = canvas.cget("scrollregion")
@@ -231,27 +285,47 @@ def main():
     else:
         sr = tuple(float(v) for v in scrollregion.split())
 
+    frame_x0 = app.scroll_frame.winfo_rootx()
+    frame_y0 = app.scroll_frame.winfo_rooty()
+    observed_x2 = 0.0
+    observed_y2 = 0.0
+    for widget, cls, mapped, x, y, w, h, note in rows:
+        if not mapped or not _is_descendant(widget, app.scroll_frame):
+            continue
+        observed_x2 = max(observed_x2, (x - frame_x0) + w)
+        observed_y2 = max(observed_y2, (y - frame_y0) + h)
+    if observed_y2 > sr[3] + 4:
+        fail(f"scrollregion is shorter than its own content: scrollregion "
+             f"bottom={sr[3]} but content actually extends to "
+             f"y={observed_y2} -- some of it would be unreachable even "
+             f"at full scroll")
+    if observed_x2 > sr[2] + 4:
+        fail(f"scrollregion is narrower than its own content: "
+             f"scrollregion right={sr[2]} but content actually extends "
+             f"to x={observed_x2}")
+
     must_reach = _required_controls(app)
-    for label, widget in must_reach.items():
+    for label_, widget in must_reach.items():
         if widget is None:
-            fail(f"required control missing entirely: {label}")
+            fail(f"required control missing entirely: {label_}")
             continue
         if not widget.winfo_ismapped():
-            fail(f"required control not mapped: {label}")
+            fail(f"required control not mapped: {label_}")
             continue
         if _is_descendant(widget, app.scroll_frame):
             # Position relative to the scrollable frame's own coordinate
             # space (canvas-content coordinates), which is what
             # scrollregion is expressed in -- reachable by scrolling
-            # counts as satisfying the requirement.
-            cx = widget.winfo_rootx() - app.scroll_frame.winfo_rootx()
-            cy = widget.winfo_rooty() - app.scroll_frame.winfo_rooty()
+            # counts as satisfying the requirement. scrollregion's own
+            # validity against real content was already checked above.
+            cx = widget.winfo_rootx() - frame_x0
+            cy = widget.winfo_rooty() - frame_y0
             cx2 = cx + widget.winfo_width()
             cy2 = cy + widget.winfo_height()
             reachable = (cx >= sr[0] - 4 and cy >= sr[1] - 4 and
                          cx2 <= sr[2] + 4 and cy2 <= sr[3] + 4)
             if not reachable:
-                fail(f"required control not within scrollregion: {label} "
+                fail(f"required control not within scrollregion: {label_} "
                      f"widget=({cx},{cy},{cx2},{cy2}) scrollregion={sr}")
         else:
             # Outside the scroll area (the status label) -- must be
@@ -259,18 +333,22 @@ def main():
             wbox = bbox(widget)
             if not inside(wbox, root_box, tolerance=4):
                 fail(f"required control (outside scroll area) is not "
-                     f"within the window: {label} widget={wbox} "
+                     f"within the window: {label_} widget={wbox} "
                      f"window={root_box}")
 
     # ----------------------------------------------------------------
     # 5. The window's actual size must not exceed the geometry set.
+    #    window_w/window_h above were read back from root.geometry()
+    #    itself -- not a second copy of kf_panel.py's "560x900" literal --
+    #    so this can never silently drift out of sync with what
+    #    kf_panel.py actually requests.
     # ----------------------------------------------------------------
     actual_w = root.winfo_width()
     actual_h = root.winfo_height()
-    if actual_w > WINDOW_W:
-        fail(f"window wider than the geometry set: {actual_w} > {WINDOW_W}")
-    if actual_h > WINDOW_H:
-        fail(f"window taller than the geometry set: {actual_h} > {WINDOW_H}")
+    if actual_w > window_w:
+        fail(f"window wider than the geometry set: {actual_w} > {window_w}")
+    if actual_h > window_h:
+        fail(f"window taller than the geometry set: {actual_h} > {window_h}")
 
     min_w, min_h = root.wm_minsize()
     if min_w <= 0 or min_h <= 0:
@@ -279,10 +357,12 @@ def main():
     # ----------------------------------------------------------------
     # Print a readable table.
     # ----------------------------------------------------------------
-    print(f"Window: requested {WINDOW_W}x{WINDOW_H}, actual "
+    print(f"=== Pass: {label} (target={target}) ===")
+    print(f"Window: requested {window_w}x{window_h}, actual "
           f"{actual_w}x{actual_h}, minsize {min_w}x{min_h}")
-    print(f"Scrollregion: {sr}")
-    print(f"Demo device connected: {app.connected}")
+    print(f"Scrollregion: {sr}  (observed content bbox: "
+          f"(0, 0, {observed_x2:g}, {observed_y2:g}))")
+    print(f"Connected: {app.connected}")
     print()
     header = f"{'class':<16} {'mapped':<7} {'x':>5} {'y':>5} {'w':>5} " \
              f"{'h':>5}  label"
@@ -290,29 +370,55 @@ def main():
     print("-" * len(header))
     for widget, cls, mapped, x, y, w, h, note in rows:
         if widget is root:
-            label = "(root window)"
+            widget_label = "(root window)"
         else:
-            label = _widget_label(app, widget) or ""
-        if not label and cls in ("Frame", "TFrame"):
+            widget_label = _widget_label(app, widget) or ""
+        if not widget_label and cls in ("Frame", "TFrame"):
             continue  # anonymous layout frames -- not interesting to list
-        print(f"{cls:<16} {str(mapped):<7} {x:>5} {y:>5} {w:>5} {h:>5}  {label}")
+        print(f"{cls:<16} {str(mapped):<7} {x:>5} {y:>5} {w:>5} {h:>5}  "
+              f"{widget_label}")
 
     print()
     print("Required controls:")
-    for label, widget in must_reach.items():
+    for label_, widget in must_reach.items():
         ok = widget is not None and widget.winfo_ismapped()
-        print(f"  [{'ok' if ok else 'FAIL'}] {label}")
+        print(f"  [{'ok' if ok else 'FAIL'}] {label_}")
 
     print()
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} problem(s) found")
-        for f in FAILURES:
+    if failures:
+        print(f"FAILED ({label}): {len(failures)} problem(s) found")
+        for f in failures:
             print(f"  - {f}")
-        root.destroy()
+    else:
+        print(f"PASSED ({label}): all layout checks ok")
+    print()
+
+    root.destroy()
+    return failures
+
+
+def main():
+    all_failures = []
+    # Pass 1: --demo mode. Fast (the fake device connects immediately),
+    # and covers the button pad / screenshot / state / time controls the
+    # same way regardless of connection kind.
+    all_failures += run_pass(("demo", None), "demo")
+    # Pass 2: a real (non-demo) target, so _build_connection_controls()
+    # actually builds the Port/Rescan/Connect row -- see this file's
+    # header comment for why --demo alone can never catch a bug in that
+    # row. "auto" with no hardware plugged in fails the connect attempt
+    # harmlessly and quickly; the layout is already final before that
+    # attempt even resolves.
+    all_failures += run_pass(("serial", "auto"), "serial (no hardware)")
+
+    if all_failures:
+        print(f"OVERALL FAILED: {len(all_failures)} problem(s) across both "
+              f"passes")
+        for f in all_failures:
+            print(f"  - {f}")
         return 1
 
-    print("PASSED: all layout checks ok")
-    root.destroy()
+    print("OVERALL PASSED: all layout checks ok in both passes")
     return 0
 
 
@@ -366,10 +472,26 @@ def _tracked_widgets(app):
 
 def _required_controls(app):
     """Every control the user must be able to reach, by plain-English
-    label -- the actual assertion target for requirement #4."""
+    label -- the actual assertion target for requirement #4.
+
+    connect_btn/port_combo only exist for a non-demo target
+    (kf_panel.py's _build_connection_controls() returns early in --demo
+    mode). getattr(app, "connect_btn", None) is used rather than a plain
+    hasattr() guard that quietly OMITS the key when the attribute is
+    missing: omitting it is exactly the bug that let the Connect button
+    ship broken once (a demo-only test run never even asked the
+    question). For a non-demo target these two are load-bearing --
+    passing None through means the caller's existing "required control
+    missing entirely" check (run_pass()'s `if widget is None: fail(...)`)
+    actually fires instead of silently skipping them. For a demo target
+    they are legitimately absent by design, so they are left out of the
+    dict entirely there (asking the question and getting a real "missing"
+    failure would be wrong for demo mode -- kf_panel.py's own choice, not
+    a bug)."""
     out = {}
-    if hasattr(app, "connect_btn"):
-        out["Connect/Disconnect button"] = app.connect_btn
+    if app.target_kind != "demo":
+        out["Connect/Disconnect button"] = getattr(app, "connect_btn", None)
+        out["Port combobox"] = getattr(app, "port_combo", None)
     for name, widget in app.pad_buttons.items():
         out[f"Button pad: {name}"] = widget
     out["Save Screenshot button"] = app.shot_btn
