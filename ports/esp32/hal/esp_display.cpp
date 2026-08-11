@@ -40,11 +40,15 @@
  *    so dimming is not implemented. Adding it later is a self-contained
  *    change to one function. has_backlight (g_caps) reflects whether THIS
  *    build actually owns GPIO6 for it, which depends on the active panel
- *    profile -- see kf_display_init() and ADR 0039. kf_display_init() also
- *    calls kf_display_set_backlight() itself, once, right at the end: this
- *    is the one and only caller anywhere in the tree, and without it the
- *    GPIO is configured but left driven low forever, which is a black panel
- *    with a perfectly healthy log.
+ *    profile -- see kf_display_init() and ADR 0039. kf_display_init() calls
+ *    kf_display_set_backlight() itself, once, right at the end, but ONLY
+ *    when it owns GPIO6 (own_backlight_pin) -- false for the default build
+ *    (ILI9341 + KF_DBG_BRIDGE_ENABLE=1, where GPIO6 is reserved for the
+ *    scanline read line instead). See kf_display_init()'s own comment,
+ *    right above that call, for why skipping it there is safe: on the
+ *    ILI9341 the LED pin is soldered straight to 3V3 regardless. On a
+ *    profile that DOES own the pin (the ST7789) and skips this call
+ *    anyway, the result is a black panel with a perfectly healthy log.
  */
 
 #include "kf/hal/display.h"
@@ -541,10 +545,10 @@ namespace {
  * this session to gather more -- said plainly rather than papered over.
  * Given the evidence available, reading at 40MHz is a defensible bet, not a
  * proven fact, which is exactly why this whole feature sits behind a
- * runtime flag (default ON) rather than being unconditionally wired in:
- * KFDBG VSYNC 0 / `kf_debug.py vsync off`, and the rects_waited/avg_wait_us
- * fields in KFDBG STATE, are how a human with the real board turns this
- * from a bet into a measurement.
+ * runtime flag -- default OFF now, see g_vsync_enabled's own comment below
+ * for the on-hardware result that flipped it: KFDBG VSYNC 1 / `kf_debug.py
+ * vsync on`, and the rects_waited/avg_wait_us fields in KFDBG STATE, are how
+ * a human with the real board turns this from a bet into a measurement.
  *
  * WHY NO PANEL REBUILD IS NEEDED HERE, UNLIKE THE DIAGNOSTIC.
  *

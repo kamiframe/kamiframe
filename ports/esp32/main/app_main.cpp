@@ -69,19 +69,25 @@
  *  "correct per this firmware" used to be two different claims; they are
  *  the same claim now.
  *
- *  ESP_PARTITION_MMAP() HAS NEVER BEEN CONFIRMED ON REAL FLASH, AND THIS IS
- *  THE BIGGEST OPEN QUESTION ON THIS LIST. ADR 0033 gave this port a real
- *  partition table and an asset pack (`.kfpack`) mounted by mapping the
- *  `assets` partition directly rather than copying it into PSRAM, but that
- *  work is build-verified only -- nobody has read a mapped sprite byte off
- *  a real chip yet. If a sprite comes back wrong, or the mapping call itself
- *  faults, on the next flash, look here first.
+ *  ESP_PARTITION_MMAP() HAS BEEN CONFIRMED ON REAL SILICON, BUT ONLY AT A
+ *  SIZE THIS BUILD DOES NOT SHIP. ADR 0033 gave this port a real partition
+ *  table and an asset pack (`.kfpack`) mounted by mapping the `assets`
+ *  partition directly rather than copying it into PSRAM; a hardware session
+ *  read a mapped byte back correctly, but against the 1,156-byte
+ *  hello_sprite pack, not the 556,488-byte creature_demo pack this firmware
+ *  actually embeds (ports/esp32/main/CMakeLists.txt). A mapping call that
+ *  works for a few hundred bytes is not proof it works across 556 KB of
+ *  flash. If a sprite comes back wrong, or the mapping call itself faults,
+ *  on the next flash, that size gap is where to look first.
  *
- *  The pet screen needs no Lua: kf_pet_screen.cpp only reads
- *  kf_pet_session_state() and calls kf_pet_session_feed()/play()/rest(),
- *  the same C++ API this file already drove before either slice. So a Lua
- *  fault should degrade the creature's behaviour, not blank the screen --
- *  which is worth knowing when reading a first-flash failure.
+ *  THIS BUILD'S HOME SCREEN NEEDS LUA -- A LOAD FAILURE BLANKS IT, NOT
+ *  DEGRADES IT. KF_HOME_SCREEN defaults to lua, and under that build
+ *  creature.lua's kf.screen("home") group declares the entire Home scene;
+ *  kf_lua_home_screen_frame() (simulator/src/pet/kf_lua_home_screen.cpp)
+ *  only commits when kf_lua_scene_declared_anything() is true, so a script
+ *  that fails to load leaves Home with nothing committed -- an empty
+ *  screen, not a C++ fallback. If a first flash shows a blank Home, look
+ *  at the Lua load path first, not last.
  *
  *  kf_time_wall() IS backed by a real DS3231 (ADR 0026), hardware-verified
  *  since before the session above: the bring-up diagnostic confirmed the
@@ -342,8 +348,10 @@ extern "C" void app_main(void) {
          * g_force_full_redraw starts true and nothing here ever calls
          * kf_scene_reset() (that is Task 4's job). See kf_lua_scene.h's
          * own comment on this predicate for the full reasoning; the demo
-         * creature script still only logs, so this stays a no-op device-
-         * side for the whole of this task. */
+         * creature script (creature.lua) declares its entire Home screen
+         * through kf.screen("home") and IS the render path under
+         * KF_HOME_SCREEN=lua (the default), so this guard is live, not a
+         * no-op. */
         if (kf_lua_scene_declared_anything()) {
             kf_scene_commit();
         }

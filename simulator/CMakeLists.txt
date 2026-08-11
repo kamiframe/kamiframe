@@ -797,9 +797,14 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # sdl_main.cpp loads, not a proof script -- survives a full lifecycle
     # (fresh and full, decayed all the way down through every band to
     # empty, cared back up to full) without ever raising a Lua runtime
-    # error. Not a checksum: this script has no rendering surface of its
-    # own, it only logs, and kf.log has no capture hook (see
-    # headless_main.cpp's run_lua_creature_check()) -- an exact-arithmetic-
+    # error. Not a checksum: run_lua_creature_check() (headless_main.cpp)
+    # calls kf_lua_port_init()/kf_lua_port_frame() directly and never
+    # brings up kf_screen_nav_init(), so no screen is declared or
+    # committed here -- this deliberately isolates the script's on_frame()
+    # logic from its Home-screen rendering (which it DOES own under
+    # KF_HOME_SCREEN=lua in the real app; see run_screen_nav_check()
+    # above for the checksum that covers that). kf.log has no capture hook
+    # either, so what this check has to work with is an exact-arithmetic-
     # style check on frame counts and the live C++ pet state instead, the
     # same category of check as lua_pet_binding_check above and for the
     # same reason: this is a logic/robustness question, not a rendering

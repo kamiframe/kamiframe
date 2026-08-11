@@ -260,9 +260,11 @@ int main(int argc, char *argv[]) {
          * script has declared a single object, would paint one solid
          * KF_BLACK frame over whatever the creature screen or LVGL just
          * drew. The demo creature script (examples/creature_demo/
-         * creature.lua) still only logs, so this stays a no-op for the
-         * whole of this task -- see kf_lua_scene.h's own comment on this
-         * predicate for the full reasoning. */
+         * creature.lua) declares its entire Home screen through
+         * kf.screen("home") and IS the render path under KF_HOME_SCREEN=lua
+         * (the default), so this guard is live, not a no-op -- see
+         * kf_lua_scene.h's own comment on this predicate for the full
+         * reasoning. */
         if (kf_lua_scene_declared_anything()) {
             kf_scene_commit();
         }
