@@ -22,10 +22,13 @@ screen be diffed against each other pixel for pixel rather than asserted about.
 vendored — `cmake/fetch_lua.cmake`), CMake + ESP-IDF, CTest via
 `kamiframe-headless --verify-*` check modes, stdlib Python for the embed tool.
 
-## Status: NOT STARTED, written 2026-08-12
+## Status: Tasks 1-6 COMPLETE (wander migration deferred) — see the status
+table near the end of this document, added 2026-08-12
 
-No task below has been executed. Every figure in "What is true today" was
-measured in this worktree on this machine on 2026-08-12, not copied from an ADR.
+Written 2026-08-12 as NOT STARTED; that has since changed and is corrected
+here rather than left standing. Every figure in "What is true today" below
+was measured in this worktree on this machine on 2026-08-12, not copied from
+an ADR, and reflects the plan's starting point, not the current tree.
 
 ---
 
@@ -250,8 +253,11 @@ Every task's requirements implicitly include this section.
   it says so.
 - **Do NOT run `cmake -B build`.** It is already configured; reconfiguring costs
   ~2 minutes. Build with `cmake --build build -j8`, test with
-  `ctest --test-dir build`. **Desktop baseline is 40/40** and must stay 40/40
-  plus whatever a task adds.
+  `ctest --test-dir build`. **Desktop baseline was 40/40 when this plan was
+  written; run `ctest --test-dir build -N` to get today's number before
+  starting** (44/44 with the default `KF_ENABLE_LVGL=OFF` as of 2026-08-11,
+  46/46 with it ON — both will have moved further since). Whatever the
+  count is at dispatch, it must stay that count plus whatever a task adds.
 - **ESP-IDF needs its environment sourced and this sandbox blocks bare
   `source`.** Write the sequence to a script and run it with `bash`:
 
@@ -1022,7 +1028,9 @@ mistakes them for oversights.
 | 5 — the demo creature declares the whole home screen | see `.superpowers/sdd/lua-task-5-report.md` | `KF_HOME_SCREEN=cpp\|lua`; `run_lua_vs_cpp_screen_check()` proves 250 frames byte-identical; `kf_creature_presenter.h`/`kf_home_screen_input.h` split out so both screens share one wander and one set of buttons; ADR 0042 |
 | 6 — repaint capability + the default flips to `lua` | see `.superpowers/sdd/lua-task-6-report.md` | `kf_scene_force_repaint()` (ADR 0043) closes ADR 0042's known gap; `screen_nav_check` passes under `lua`; `KF_HOME_SCREEN` defaults to `lua` on both build systems; the wander migration named in this task's own "What moves and what stays" table was deliberately **not** done — see ADR 0043's "What did NOT move" |
 
-**44/44 on the default build (now `lua`), Core heap-free, ESP32 firmware
+**44/44 on the default build (now `lua`) as of Task 6's completion,
+2026-08-12 — re-run `ctest --test-dir build -N` for today's count, since
+later work adds to it. Core heap-free, ESP32 firmware
 ~672KB (57% of partition free) in BOTH `KF_HOME_SCREEN` values, verified as
 a genuinely fresh-configured default (`cmake -UKF_HOME_SCREEN`), not just an
 explicit override. Both golden rendering checksums unmoved. The dirty-rect

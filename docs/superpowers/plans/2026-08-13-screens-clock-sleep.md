@@ -327,7 +327,8 @@ evaluation, and deleting the dependency forecloses it.** So the plan does *not*
 delete. Task 2 adds a CMake option `KF_ENABLE_LVGL`, **defaults it OFF**, and
 puts the two LVGL-only tests and the 256 KB arena behind it. The default build
 reclaims the memory and stops linking LVGL; `-DKF_ENABLE_LVGL=ON` still builds
-and still passes 44/44, so the evaluation stays available and the deletion
+and still passes 46/46 (44 plus the two LVGL-only checks), so the evaluation
+stays available and the deletion
 stays a one-line change Chris can make whenever he wants. That is the whole
 prize (256 KB of PSRAM, plus LVGL's code out of a 672 KB firmware) without
 spending the decision.
@@ -762,8 +763,9 @@ defaults off.
       built, `lvgl_determinism_check` and `pet_screen_check` are not
       registered, `KF_ARENA_LVGL` is not carved, and `budget.h:257`'s
       total-arena assertion is recomputed without it. With it ON: everything
-      builds and **44/44 still passes**, unchanged. State both counts in the
-      task's report — the default build's number goes *down* by two and that is
+      builds and **46/46 passes** (the default build's 44 plus the two
+      LVGL-only checks). State both counts in the task's report — the
+      default build's number goes *down* by two relative to ON, and that is
       correct, not a regression.
 - [ ] `kf_pet_screen.cpp` is **not deleted.** It survives as
       `pet_screen_check`'s subject under `-DKF_ENABLE_LVGL=ON`. Deleting it and
