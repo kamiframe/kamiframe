@@ -99,16 +99,18 @@ void kf_creature_screen_enter(void);
  * the RNG (kf_creature_update(), hakoniwaos/src/creature.cpp), which a
  * test cannot steer without waiting on chance -- this lets a headless
  * check force a specific facing instead, so it can exercise resolve_
- * sprite()'s per-direction lookup (including the "_w_"-not-found ->
- * mirrored "_e_" fallback) deterministically. See headless_main.cpp's
+ * and_declare()'s (kf_creature_presenter.cpp) per-direction lookup
+ * (including the "_w_"-not-found -> mirrored "_e_" fallback)
+ * deterministically. See headless_main.cpp's
  * run_creature_screen_sprite_check() for the actual caller.
  * --------------------------------------------------------------------- */
 
 /* Same effect as a real care-button edge (Task 6's KF_BTN_A/UP/DOWN/LEFT/
- * RIGHT -- see kf_creature_screen.cpp's handle_care_buttons()), just
- * callable without one -- the same reasoning kf_screen_nav.h's own
- * kf_screen_nav_debug_advance()/_home() give for existing at all, rather
- * than routing a headless check through headless_input.cpp's single shared,
+ * RIGHT -- see kf_home_screen_input.cpp's kf_home_screen_handle_care_
+ * buttons()), just callable without one -- the same reasoning kf_screen_
+ * nav.h's own kf_screen_nav_debug_advance()/_home() give for existing at
+ * all, rather than routing a headless check through headless_input.cpp's
+ * single shared,
  * frame-indexed button script (KF_BTN_A/RIGHT/etc. already drive that
  * script's OWN cases for the sprite-bounce demo; adding care-button
  * windows to it would change what those unrelated, already-locked golden

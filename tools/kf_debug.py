@@ -110,8 +110,9 @@ CARE_VARIATION_COUNT = 3
 
 # The five care actions, in the same order the desktop simulator binds them
 # to number keys 1-5 (simulator/src/sdl/sdl_input.cpp,
-# simulator/src/pet/kf_creature_screen.cpp's handle_care_buttons()) --
-# feed/play/rest/bath/flush. `care <n>` below accepts either the digit or
+# simulator/src/pet/kf_home_screen_input.cpp's
+# kf_home_screen_handle_care_buttons()) -- feed/play/rest/bath/flush.
+# `care <n>` below accepts either the digit or
 # the name, so a script that has memorised "1=feed" from the desktop
 # keyboard binding works here unchanged. flush takes no variation, per
 # kf_pet_flush() (kf/pet.h).

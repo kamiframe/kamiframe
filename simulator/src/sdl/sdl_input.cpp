@@ -21,14 +21,15 @@
  *
  * The project owner could not tell which key did what -- there is no
  * on-screen legend for arrows/WASD/Z, and "up" doing something that is not
- * "walk up" (it plays with the creature; see kf_creature_screen.cpp's
- * handle_care_buttons()) does not read as discoverable. He asked for
- * number keys explicitly and said rewiring the keyboard was fine, so this
- * moves the five care actions off the D-pad/A entirely rather than adding
- * numbers alongside them -- one mapping to learn, matching the on-screen
- * guide (the five text objects kf_creature_screen.cpp's kf_creature_screen_
- * enter() declares to kf/scene.h, one per care action) key for key, not two
- * that happen to overlap.
+ * "walk up" (it plays with the creature; see kf_home_screen_input.cpp's
+ * kf_home_screen_handle_care_buttons()) does not read as discoverable. He
+ * asked for number keys explicitly and said rewiring the keyboard was
+ * fine, so this moves the five care actions off the D-pad/A entirely
+ * rather than adding numbers alongside them -- one mapping to learn,
+ * matching the on-screen guide (the five "N:ACTION" text objects
+ * examples/creature_demo/creature.lua's kf.screen("home") group declares,
+ * one per care action -- see that script's own `guide` table) key for
+ * key, not two that happen to overlap.
  *
  * This is a DESKTOP-ONLY remap. The real device still has exactly seven
  * physical buttons and no number keys (kf/types.h's kf_button) -- what
@@ -58,9 +59,9 @@ struct Binding {
 
 /* 1-5 replace arrows/WASD/Z/J entirely for the five care-action buttons --
  * see this file's header comment for why this is a move, not an addition.
- * Order matches handle_care_buttons()'s own mapping (kf_creature_screen.cpp)
- * and the brief's original A/UP/DOWN/LEFT/RIGHT order: feed, play, rest,
- * bath, flush. */
+ * Order matches kf_home_screen_handle_care_buttons()'s own mapping
+ * (kf_home_screen_input.cpp) and the brief's original A/UP/DOWN/LEFT/RIGHT
+ * order: feed, play, rest, bath, flush. */
 constexpr Binding kBindings[] = {
     {SDL_SCANCODE_1, KF_BTN_A},         {SDL_SCANCODE_2, KF_BTN_UP},
     {SDL_SCANCODE_3, KF_BTN_DOWN},      {SDL_SCANCODE_4, KF_BTN_LEFT},

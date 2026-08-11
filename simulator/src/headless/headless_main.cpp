@@ -2900,7 +2900,8 @@ static int run_creature_screen_check(void) {
  * (kf_lua_port.cpp) -- the LVGL Home that used to hold Feed/Play
  * (kf_pet_screen.cpp) has been unreachable from a running build since Task
  * 4 (kf_screen_nav.cpp). This proves the five care buttons
- * (kf_creature_screen.cpp's handle_care_buttons()) each reach their own
+ * (kf_home_screen_input.cpp's kf_home_screen_handle_care_buttons()) each
+ * reach their own
  * kf_pet_session_* wrapper, that per-action variation counters cycle
  * 0 -> 1 -> 2 -> 0 independently of one another (not one shared counter --
  * see that file's own comment on why a shared counter would be wrong), and
@@ -3051,8 +3052,8 @@ static int run_creature_screen_input_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Closes the coverage gap resolve_sprite() (kf_creature_screen.cpp) used to
- * record in its own comment: every check above (including run_creature_
+/* Closes the coverage gap resolve_and_declare() (kf_creature_presenter.cpp)
+ * used to record in its own comment: every check above (including run_creature_
  * screen_check() just above this one) mounts the checked-in DEFAULT asset
  * pack, which has no creature art at all, so every kf_assets_get() call
  * that function makes returns nullptr there and only the placeholder-
@@ -3213,19 +3214,22 @@ static int run_creature_screen_sprite_check(void) {
 
     /* S, E and N: a known sprite name (egg_idle_<dir>) resolves and
      * kf_blit_frame()'s real pixels, not the placeholder colour -- three of
-     * resolve_sprite()'s non-null branches (S and N repeat the "found on
-     * first try" branch E also takes; the point is proving the direction
-     * actually reaches the pack, not enumerating branches redundantly). */
+     * resolve_and_declare()'s (kf_creature_presenter.cpp) non-null branches
+     * (S and N repeat the "found on first try" branch E also takes; the
+     * point is proving the direction actually reaches the pack, not
+     * enumerating branches redundantly). */
     draw(KF_CREATURE_DIR_S);
     check(has_real_sprite_content(),
           "facing S drew only background and/or the placeholder colour -- "
           "egg_idle_s should have resolved from examples/creature_demo/"
           "assets.kfpack and kf_blit_frame()'d real sprite pixels");
 
-    /* Same direction again, immediately: exercises resolve_sprite()'s
-     * cache-hit branch (SpriteCache::valid, matching requested_name) --
-     * every OTHER check in this file only ever hits that branch with a
-     * cached nullptr, since their pack has no creature art to find. */
+    /* Same direction again, immediately: exercises resolve_and_declare()'s
+     * (kf_creature_presenter.cpp) cache-hit branch -- g_last_requested_name
+     * already matches, so it skips straight to the "did the name change"
+     * no-op path -- every OTHER check in this file only ever hits that
+     * branch with a cached nullptr, since their pack has no creature art
+     * to find. */
     draw(KF_CREATURE_DIR_S);
     check(has_real_sprite_content(),
           "facing S a second time in a row (the cache-hit path) drew only "
@@ -3244,8 +3248,9 @@ static int run_creature_screen_sprite_check(void) {
           "pixels");
     const std::vector<kf_color> east_pixels = snapshot();
 
-    /* W: the demo pack ships no egg_idle_w, so this is resolve_sprite()'s
-     * west-first-fallback branch -- kf_assets_get("egg_idle_w") misses,
+    /* W: the demo pack ships no egg_idle_w, so this is resolve_and_
+     * declare()'s (kf_creature_presenter.cpp) west-first-fallback branch --
+     * kf_assets_get("egg_idle_w") misses,
      * then kf_assets_get("egg_idle_e") hits and `mirrored` is set,
      * exercising kf_blit_frame_mirrored() for the first time anywhere in
      * this file's whole test suite. */

@@ -23,20 +23,21 @@ later" is a place where that would happen. See ADR 0004.
 
 | Header | Implemented | SDL | Headless | ESP32 |
 |---|---|---|---|---|
-| `kf/hal/display.h` | yes | yes | yes | not yet |
-| `kf/hal/input.h` | yes | yes | yes | not yet |
-| `kf/hal/time.h` | yes | yes | yes | not yet |
-| `kf/hal/log.h` | yes | shared host | shared host | not yet |
-| `kf/hal/entropy.h` | yes | shared host | shared host | not yet |
-| `kf/hal/memory.h` | yes | shared host | shared host | not yet |
-| `kf/hal/storage.h` | yes | shared host | shared host | not yet |
-| `kf/hal/power.h` | yes | shared host | shared host | not yet |
+| `kf/hal/display.h` | yes | yes | yes | yes (`ports/esp32/hal/esp_display.cpp`) |
+| `kf/hal/input.h` | yes | yes | yes | yes (`esp_input.cpp`) |
+| `kf/hal/time.h` | yes | yes | yes | yes (`esp_time.cpp`) |
+| `kf/hal/log.h` | yes | shared host | shared host | yes (`esp_log.cpp`) |
+| `kf/hal/entropy.h` | yes | shared host | shared host | yes (`esp_entropy.cpp`) |
+| `kf/hal/memory.h` | yes | shared host | shared host | yes (`esp_memory.cpp`) |
+| `kf/hal/storage.h` | yes | shared host | shared host | yes (`esp_storage.cpp`) |
+| `kf/hal/power.h` | yes | shared host | shared host | yes (`esp_power.cpp`) |
+| `kf/hal/assets.h` | yes | yes | yes | yes (`esp_assets.cpp`, `esp_partition_mmap()`) |
 | `kf/hal/audio.h` | **not written** | | | |
 
 `kf/hal/storage.h` and `kf/hal/power.h` are save-state and deep-sleep-until
-only -- see ADR 0012. Bulk read-only assets (`kf/hal/assets.h`, mentioned
-below) and the rest of power (light sleep, wake-on-button config, battery
-telemetry) are still not written.
+only -- see ADR 0012. The rest of power (light sleep, wake-on-button config,
+battery telemetry) is still not written. `kf/hal/audio.h` does not exist yet
+either; there is no buzzer or I2S speaker HAL in this repo.
 
 Headers that do not exist are not stubbed. A stub that returns success is a
 lie that will be discovered at the worst possible moment.
@@ -102,11 +103,13 @@ byte-identical frames.
 save state: small, frequent, atomic, power-loss safe -- is written; see ADR
 0012. `kf_assets_*` -- read-only bulk data: open, seek, read, plus a
 `try_map()` that returns a direct pointer where the platform can memory-map
-flash -- is not. That escape hatch matters: mapping flash into the address
-space means reading sprites with no RAM copy, and an API without it will
-leave the device RAM-starved. It waits for there to be actual bulk assets
-(a sprite pack, a save format bigger than a few key-value entries) to design
-against, rather than a guess.
+flash -- **is also written now**, on every backend including ESP32
+(`ports/esp32/hal/esp_assets.cpp`). That escape hatch matters: mapping flash
+into the address space means reading sprites with no RAM copy, and an API
+without it would leave the device RAM-starved. `esp_partition_mmap()` is
+confirmed on real silicon -- the board booted, mapped the partition, and
+rendered from it, first against a 1,156-byte pack and later against the full
+556 KB creature pack.
 
 **Power**: `deep_sleep_until()` is written, and its desktop implementation is
 the time machine described in ADR 0004 and proven in ADR 0012 -- three days

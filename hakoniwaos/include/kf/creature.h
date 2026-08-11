@@ -57,8 +57,9 @@ kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
  * mirror either. Mirroring is a capability, not a rule: some creatures ship
  * real hand-drawn "_w_" art and some do not, and whoever draws the sprite
  * for a given facing is the one making that call, not this file. The
- * caller resolving a name for KF_CREATURE_DIR_W (simulator/src/pet/
- * kf_creature_screen.cpp today) asks the pack for the "_w_" sprite first,
+ * caller resolving a name for KF_CREATURE_DIR_W (resolve_and_declare(),
+ * simulator/src/pet/kf_creature_presenter.cpp today) asks the pack for
+ * the "_w_" sprite first,
  * and only draws the "_e_" sprite mirrored when the pack has no west art of
  * its own -- see kf_creature_sprite_name()'s own comment for the naming
  * half of that and kf/blit.h's kf_blit_mirrored() for the drawing half.
@@ -142,9 +143,9 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
  * how many frames the resolved sprite has, and is not being taught: that
  * would mean handing Core's wander a sprite pointer for no reason. Bringing
  * it back into range for a particular sprite is kf_creature_anim_wrap()'s
- * job, called by whoever just resolved that sprite (simulator/src/pet/
- * kf_creature_screen.cpp's resolve_sprite()/draw path today), not this
- * struct's own concern. */
+ * job, called by whoever just resolved that sprite (resolve_and_declare(),
+ * simulator/src/pet/kf_creature_presenter.cpp today), not this struct's
+ * own concern. */
 typedef struct {
     uint32_t accum_ms;
     uint16_t frame;
@@ -188,12 +189,12 @@ void kf_creature_update(kf_creature *c, kf_rect field, uint32_t dt_ms);
  *
  * Called first thing by kf_creature_update(), AND directly by a caller that
  * deliberately skips the wander -- today that is the egg (simulator/src/pet/
- * kf_creature_screen.cpp), which sits still by design and would otherwise be
- * the one thing in the game that never animates, precisely backwards from
+ * kf_creature_presenter.cpp), which sits still by design and would otherwise
+ * be the one thing in the game that never animates, precisely backwards from
  * what was asked for. One implementation, two callers, rather than a second
- * copy of the same arithmetic -- the same shape handle_care_buttons() in
- * that file already uses for exactly this reason. A null c or a dt_ms of 0
- * is a no-op. */
+ * copy of the same arithmetic -- the same shape kf_home_screen_handle_
+ * care_buttons() (simulator/src/pet/kf_home_screen_input.cpp) already uses
+ * for exactly this reason. A null c or a dt_ms of 0 is a no-op. */
 void kf_creature_tick_anim(kf_creature *c, uint32_t dt_ms);
 
 /* Bring the cursor back in range for an animation of `frame_count` frames,

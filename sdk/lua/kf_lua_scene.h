@@ -41,8 +41,9 @@ void kf_lua_scene_register(lua_State *L);
 
 /* Reads kf_app_buttons_pressed() (hakoniwaos/src/app.cpp:496, the same
  * debounced press-edge mask kf_screen_nav_frame() and
- * handle_care_buttons() already read -- this is what keeps KFDBG BTN and
- * BTNHOLD exercising the Lua binding too, not a separate input path) and
+ * kf_home_screen_handle_care_buttons() already read -- this is what keeps
+ * KFDBG BTN and BTNHOLD exercising the Lua binding too, not a separate
+ * input path) and
  * calls whichever kf.on_button() handlers match, each in its own
  * lua_pcall so one bad handler cannot take down the frame or the ones
  * after it. Call from kf_lua_port_frame(), before on_frame -- a button

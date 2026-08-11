@@ -652,7 +652,8 @@ if tk is not None:
     # one screen, someone reading the panel and pressing what the device
     # tells them to press should get exactly what the device promised.
     # Mapped to the same physical buttons in the same order the guide (and
-    # sdl_input.cpp, and kf_home_screen_input.cpp's handle_care_buttons())
+    # sdl_input.cpp, and kf_home_screen_input.cpp's
+    # kf_home_screen_handle_care_buttons())
     # already use: A/UP/DOWN/LEFT/RIGHT = feed/play/rest/bath/flush.
     KEY_TO_BUTTON = {
         "Up": "UP", "Down": "DOWN", "Left": "LEFT", "Right": "RIGHT",

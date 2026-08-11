@@ -61,8 +61,9 @@
  * handlers below. All six call kf_pet_session_feed()/_play()/_rest()/
  * _bath()/_flush()/kf_pet_session_debug_jump_to_stage() DIRECTLY, not via
  * KFDBG BTN's button-injection path, even though a real button press
- * reaches the four care functions through kf_creature_screen.cpp's
- * handle_care_buttons(). See handle_feed()'s own comment for the two
+ * reaches the four care functions through kf_home_screen_input.cpp's
+ * kf_home_screen_handle_care_buttons(). See handle_feed()'s own comment
+ * for the two
  * reasons (explicit variation vs. hidden per-button
  * cycling state; sidestepping Core's debounce, which a one-shot BTN
  * injection cannot reliably clear -- see tools/kf_debug.py's `press`
@@ -1068,11 +1069,12 @@ void handle_mult(uint32_t n) {
  * live pet, called DIRECTLY through kf_pet_session_feed()/_play()/_rest()/
  * _bath() -- not via KFDBG BTN's button-injection path, even though a real
  * button press reaches the exact same four functions through
- * kf_creature_screen.cpp's handle_care_buttons(). Two reasons this is its
- * own command rather than reusing BTN:
+ * kf_home_screen_input.cpp's kf_home_screen_handle_care_buttons(). Two
+ * reasons this is its own command rather than reusing BTN:
  *
- *   1. handle_care_buttons()'s `variation` is an implicit, per-action
- *      cycling counter (0 -> 1 -> 2 -> 0 -> ...) private to that file,
+ *   1. kf_home_screen_handle_care_buttons()'s `variation` is an implicit,
+ *      per-action cycling counter (0 -> 1 -> 2 -> 0 -> ...) private to
+ *      that file,
  *      there purely as a keyboard-binding convenience (see that function's
  *      own header comment) -- it is not part of the session API. Driving
  *      care through BTN injection would force a scripted client to
@@ -1100,8 +1102,8 @@ void handle_mult(uint32_t n) {
  * is only ever called with an already-in-range value. The ack reports
  * pet->last_reaction (kf_pet_reaction: 0=liked, 1=neutral, 2=disliked) as
  * a raw number, same convention KFDBG STATE's `stage`/`base_trait` fields
- * already use, rather than adding a second copy of kf_creature_screen.cpp's
- * private reaction_name() text mapping. */
+ * already use, rather than adding a second copy of
+ * kf_home_screen_input.cpp's private reaction_name() text mapping. */
 void handle_feed(uint8_t variation) {
     kf_pet_session_feed(variation);
     const kf_pet_state *pet = kf_pet_session_state();
@@ -1156,8 +1158,8 @@ void handle_bath(uint8_t variation) {
  * previous real care action left them (see hakoniwaos/src/pet.cpp's own
  * comment), so echoing either here would misattribute someone else's
  * reaction to a chore that has none of its own -- the same reasoning
- * kf_creature_screen.cpp's handle_care_buttons() already applies to its
- * own FLUSH log line. */
+ * kf_home_screen_input.cpp's kf_home_screen_handle_care_buttons() already
+ * applies to its own FLUSH log line. */
 void handle_flush() {
     kf_pet_session_flush();
     static const char kMsg[] = "FLUSH";
