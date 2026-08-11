@@ -454,6 +454,199 @@ int run_pet_check() {
               "elapsed clamps to zero rather than underflowing");
     }
 
+    /* 6. Requirement 1 of docs/superpowers/plans/2026-08-13-screens-clock-
+     * sleep.md's Task 6, and its own dedicated check landed BEFORE any
+     * sleep logic was written, per that requirement's own instruction:
+     * kf_pet_advance() now carries `last_advanced` forward by exactly the
+     * elapsed seconds it was handed, so a live session (many small
+     * kf_pet_advance() calls, one per flushed frame-batch -- see
+     * simulator/src/pet/kf_pet_session.cpp's kf_pet_session_frame())
+     * keeps Core's notion of "now" tracking real time, not only a
+     * reload's. See kf_pet_state::last_advanced's own comment in
+     * kf/pet.h. */
+    {
+        kf_pet_state fresh{};
+        kf_pet_init(&fresh);
+        check(!fresh.last_advanced.valid,
+              "a freshly-initialised pet has no wall-clock baseline yet");
+        kf_pet_advance(&fresh, &config, 5000u);
+        check(!fresh.last_advanced.valid,
+              "kf_pet_advance() leaves last_advanced invalid when it "
+              "started invalid -- there is no baseline to carry forward "
+              "from, and every check in this file that pokes a fresh "
+              "kf_pet_state directly (never through kf_pet_load_and_"
+              "advance()) relies on that staying true");
+
+        kf_pet_state single{};
+        kf_pet_init(&single);
+        single.last_advanced.valid = true;
+        single.last_advanced.epoch_seconds = 1700000000;
+        kf_pet_advance(&single, &config, 5000u);
+        check(single.last_advanced.valid &&
+                  single.last_advanced.epoch_seconds == 1700005000,
+              "kf_pet_advance() carries last_advanced forward by exactly "
+              "the elapsed seconds it was handed");
+
+        /* A short egg duration so one call crosses the egg->baby boundary,
+         * proving the carry-forward covers the WHOLE elapsed time even
+         * when kf_pet_advance()'s own loop splits it into several
+         * apply_stage_segment() calls internally to do it. */
+        kf_pet_config short_egg = config;
+        short_egg.egg_duration_seconds = 100u;
+
+        kf_pet_state spanning{};
+        kf_pet_init(&spanning);
+        spanning.last_advanced.valid = true;
+        spanning.last_advanced.epoch_seconds = 5000000;
+        kf_pet_advance(&spanning, &short_egg, 250u);
+        check(spanning.stage == KF_PET_STAGE_BABY,
+              "sanity: this call really did cross the egg->baby boundary");
+        check(spanning.last_advanced.epoch_seconds == 5000000 + 250,
+              "last_advanced carries forward by the FULL elapsed time even "
+              "when the call crosses a stage boundary internally");
+
+        /* And many small calls -- the actual shape a live session takes --
+         * land on the identical total as the one big call above. */
+        kf_pet_state stepped{};
+        kf_pet_init(&stepped);
+        stepped.last_advanced.valid = true;
+        stepped.last_advanced.epoch_seconds = 5000000;
+        for (int i = 0; i < 25; ++i) {
+            kf_pet_advance(&stepped, &short_egg, 10u);
+        }
+        check(stepped.last_advanced.epoch_seconds ==
+                  spanning.last_advanced.epoch_seconds,
+              "25 small kf_pet_advance() calls carry last_advanced forward "
+              "to the identical total one big call reaches -- Core's "
+              "notion of now does not depend on how the elapsed time was "
+              "chopped up");
+    }
+
+    /* 7. Sleep's offline half (docs/superpowers/plans/2026-08-13-screens-
+     * clock-sleep.md's Task 6 requirement 8): the analytic offline path
+     * (save, sleep via kf_power_deep_sleep_until(), kf_pet_load_and_
+     * advance()) must still equal one direct kf_pet_advance() call across
+     * a night, exactly as case 4 above proved with no night in the
+     * picture at all -- and, separately, night hours must actually have
+     * been EXCLUDED from neglect_seconds, or the equivalence alone would
+     * pass even if sleep did nothing at all (both sides run the identical
+     * kf_pet_advance() code either way). Three spans, per the
+     * requirement: one starting mid-night, one ending mid-night, and one
+     * covering several whole nights. */
+    {
+        /* Only hunger decays, fast enough to cross into neglect well
+         * before any span below finishes; everything else (mess, the
+         * sickness multiplier/drain) is zeroed so nothing but the night
+         * window itself can explain a difference in neglect_seconds.
+         * baby_duration_seconds is pushed out past every span's length so
+         * a stage transition never enters into it either. */
+        kf_pet_config night_config = zero_all_stage_rates(config);
+        night_config.stage_rates[KF_PET_STAGE_BABY].hunger_mp_per_hour =
+            KF_PET_MILLIPERCENT_MAX; /* empties in exactly one hour */
+        night_config.poop_interval_seconds = 0u;
+        night_config.dirtiness_rise_mp_per_hour = 0u;
+        night_config.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        night_config.neglect_need_mp = 50000u; /* neglected once hunger < 50% */
+        night_config.sickness_death_seconds = 0u; /* not what this proves */
+        night_config.sick_decay_multiplier_percent = 100u; /* no sick side-effect */
+        night_config.sick_happiness_drain_mp_per_hour = 0u;
+        night_config.baby_duration_seconds = 10u * 86400u;
+
+        struct NightSpan {
+            const char *name;
+            kf_civil start;
+            int64_t elapsed_seconds;
+        };
+        const NightSpan spans[] = {
+            /* 23:00 -> 08:00: the span itself STARTS inside an
+             * already-ongoing night and ends the following morning. */
+            {"starts mid-night", {2026, 8, 12, 23, 0, 0}, 9 * 3600},
+            /* 20:00 -> 23:00: starts well before the night and ENDS
+             * partway through it. */
+            {"ends mid-night", {2026, 8, 12, 20, 0, 0}, 3 * 3600},
+            /* Three full days from a clean midday: spans three whole
+             * nights entirely, none of them partial at either end. */
+            {"spans multiple whole nights", {2026, 8, 20, 12, 0, 0},
+             3 * 86400},
+        };
+
+        for (const NightSpan &sp : spans) {
+            const int64_t start_epoch = kf_epoch_from_civil(&sp.start);
+            check(kf_time_set_wall(start_epoch) == KF_OK,
+                  "pin the wall clock to this span's known start");
+
+            kf_pet_state seed{};
+            kf_pet_init(&seed);
+            seed.stage = KF_PET_STAGE_BABY;
+            check(kf_pet_save(&seed) == KF_OK,
+                  "save a fresh baby pet as this span's starting point");
+
+            kf_pet_state pre_sleep{};
+            check(kf_pet_load_and_advance(&pre_sleep, &night_config) == KF_OK,
+                  "load the just-saved state back (zero elapsed -- the "
+                  "clock has not moved since the save)");
+            check(pre_sleep.last_advanced.valid &&
+                      pre_sleep.last_advanced.epoch_seconds == start_epoch,
+                  "the loaded baseline's clock is exactly this span's start");
+            /* Persist the now-valid last_advanced baseline back to disk --
+             * without this, the reload below finds the ORIGINAL seed's
+             * still-invalid last_advanced on disk, skips fast-forward
+             * entirely (kf_pet_load_and_advance()'s own "nothing to
+             * fast-forward FROM" branch), and this whole case is
+             * vacuously green. Same re-save case 4 above already does,
+             * for the identical reason. */
+            check(kf_pet_save(&pre_sleep) == KF_OK,
+                  "pin the loaded baseline back to disk before sleeping");
+
+            kf_wall_time wake_at{};
+            wake_at.valid = true;
+            wake_at.epoch_seconds = start_epoch + sp.elapsed_seconds;
+            check(kf_power_deep_sleep_until(wake_at) == KF_OK,
+                  "deep sleep across the span");
+
+            kf_pet_state loaded{};
+            check(kf_pet_load_and_advance(&loaded, &night_config) == KF_OK,
+                  "load_and_advance after sleeping across the span");
+
+            kf_pet_state expected = pre_sleep;
+            kf_pet_advance(&expected, &night_config,
+                            static_cast<uint32_t>(sp.elapsed_seconds));
+
+            if (loaded.neglect_seconds != expected.neglect_seconds ||
+                loaded.hunger_mp != expected.hunger_mp ||
+                loaded.sick != expected.sick) {
+                KF_LOGE(TAG,
+                        "FAILED: %s: offline path (neglect=%u hunger=%u "
+                        "sick=%d) does not match one direct kf_pet_advance()"
+                        " call (neglect=%u hunger=%u sick=%d)",
+                        sp.name, loaded.neglect_seconds, loaded.hunger_mp,
+                        loaded.sick, expected.neglect_seconds,
+                        expected.hunger_mp, expected.sick);
+                ok = false;
+            }
+
+            /* The exclusion actually happened: the identical starting
+             * state and elapsed time, but with no wall-clock baseline at
+             * all -- have_clock=false inside kf_pet_advance(), the exact
+             * pre-sleep behaviour where night hours are never excluded.
+             * If sleep is doing anything, the clock-aware run's
+             * neglect_seconds must be strictly less. */
+            kf_pet_state no_clock = pre_sleep;
+            no_clock.last_advanced.valid = false;
+            kf_pet_advance(&no_clock, &night_config,
+                            static_cast<uint32_t>(sp.elapsed_seconds));
+            if (!(loaded.neglect_seconds < no_clock.neglect_seconds)) {
+                KF_LOGE(TAG,
+                        "FAILED: %s: clock-aware neglect_seconds (%u) is "
+                        "not less than the no-clock comparison (%u) -- "
+                        "night hours were not actually excluded",
+                        sp.name, loaded.neglect_seconds,
+                        no_clock.neglect_seconds);
+                ok = false;
+            }
+        }
+    }
+
     kf_power_shutdown();
     kf_store_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
@@ -1744,6 +1937,231 @@ int run_pet_death_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Sleep (docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
+ * "Sleep, settled", docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
+ * Task 6, ADR 0048). run_pet_check() (--verify-pet) already proves
+ * requirement 1 (last_advanced tracks live play, its own dedicated case)
+ * and requirement 8 (offline analytic fast-forward across a night, cases
+ * spanning mid-night starts/ends and several whole nights);
+ * hokorimaru_check proves requirement 7 -- the dust branch -- passes
+ * completely unchanged. This check covers what those do not: state->asleep
+ * itself as the clock crosses the night window, the egg's "never sleeps"
+ * decision (requirement 9), the neglect-pause-but-needs-still-decay split
+ * (requirement 5) as a direct numeric check, the waking-fraction threshold
+ * compression (requirement 6) pinned to its exact 15/24 value, and the v9
+ * save format, including refusing a v8 save. */
+int run_pet_sleep_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. state->asleep tracks the 22:00-07:00 night window as the clock
+     * crosses it, live -- one kf_pet_advance() call per step, exactly the
+     * shape a session's frame-batch flushes take. Half-open window: the
+     * instant AT 22:00 is asleep, the instant AT 07:00 is not (kf/clock.h's
+     * own documented convention for kf_clock_seconds_in_daily_window()). */
+    {
+        kf_pet_state pet{};
+        kf_pet_init(&pet);
+        pet.stage = KF_PET_STAGE_BABY;
+        pet.last_advanced.valid = true;
+        const kf_civil evening = {2026, 8, 12, 21, 0, 0}; /* before night */
+        pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&evening);
+        check(!pet.asleep, "starts awake (kf_pet_init()'s default)");
+
+        kf_pet_advance(&pet, &config, 3600u); /* -> 22:00 */
+        check(pet.asleep, "asleep the instant the clock reaches 22:00");
+
+        kf_pet_advance(&pet, &config, 6u * 3600u); /* -> 04:00 */
+        check(pet.asleep, "still asleep in the middle of the night");
+
+        kf_pet_advance(&pet, &config, 3u * 3600u); /* -> 07:00 */
+        check(!pet.asleep, "awake again the instant the clock reaches 07:00");
+
+        kf_pet_advance(&pet, &config, 12u * 3600u); /* -> 19:00 */
+        check(!pet.asleep, "stays awake through the day");
+    }
+
+    /* 2. Eggs do not sleep (requirement 9, ADR 0048): the same clock
+     * crossing above, on a freshly-hatched-nothing egg, never sets
+     * `asleep` at all -- apply_stage_segment() returns before the sleep
+     * computation for KF_PET_STAGE_EGG. The advance LANDS INSIDE the
+     * night (02:00 -> 03:00, not out the other side of it) -- landing
+     * after the night ends would read `!egg.asleep` as true for the
+     * wrong reason (the window itself says awake by then) and this case
+     * would pass without ever actually exercising the egg exemption. */
+    {
+        kf_pet_state egg{};
+        kf_pet_init(&egg);
+        check(egg.stage == KF_PET_STAGE_EGG, "starts as an egg");
+        egg.last_advanced.valid = true;
+        const kf_civil deep_night = {2026, 8, 13, 2, 0, 0}; /* 02:00 */
+        egg.last_advanced.epoch_seconds = kf_epoch_from_civil(&deep_night);
+
+        kf_pet_config long_egg = config;
+        long_egg.egg_duration_seconds = 10u * 86400u; /* stays an egg */
+        kf_pet_advance(&egg, &long_egg, 3600u); /* -> 03:00, still night */
+        check(egg.stage == KF_PET_STAGE_EGG, "sanity: still an egg");
+        check(!egg.asleep,
+              "an egg never becomes asleep, even landing on an instant "
+              "well inside a night");
+    }
+
+    /* 3. The neglect-pause-but-needs-still-decay split (requirement 5), as
+     * a direct, minimal numeric check: hunger decays at a known flat rate
+     * with nothing else in the picture, and the creature is neglected from
+     * the very first instant (neglect_need_mp pinned to MAX). Advancing
+     * across exactly one full night must decay hunger by the FULL night's
+     * worth -- needs do not pause -- while contributing exactly ZERO of it
+     * to neglect_seconds -- the neglect clock does. */
+    {
+        kf_pet_config only_hunger = zero_all_stage_rates(config);
+        only_hunger.stage_rates[KF_PET_STAGE_BABY].hunger_mp_per_hour = 1000u;
+        only_hunger.neglect_need_mp = KF_PET_MILLIPERCENT_MAX;
+        only_hunger.poop_interval_seconds = 0u;
+        only_hunger.dirtiness_rise_mp_per_hour = 0u;
+        only_hunger.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        only_hunger.sickness_death_seconds = 0u;
+
+        kf_pet_state pet{};
+        kf_pet_init(&pet);
+        pet.stage = KF_PET_STAGE_BABY;
+        pet.last_advanced.valid = true;
+        const kf_civil at_night_start = {2026, 8, 12, 22, 0, 0};
+        pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&at_night_start);
+
+        constexpr uint32_t kNightSeconds = 9u * 3600u; /* 22:00 -> 07:00 */
+        kf_pet_advance(&pet, &only_hunger, kNightSeconds);
+
+        const kf_pet_millipercent expected_hunger_drop =
+            static_cast<kf_pet_millipercent>(
+                (static_cast<uint64_t>(only_hunger.stage_rates[KF_PET_STAGE_BABY]
+                                            .hunger_mp_per_hour) *
+                 kNightSeconds) /
+                3600ull);
+        check(pet.hunger_mp == KF_PET_MILLIPERCENT_MAX - expected_hunger_drop,
+              "hunger decays by the FULL night's worth -- needs do not "
+              "pause while asleep");
+        check(pet.neglect_seconds == 0u,
+              "neglect_seconds stays at ZERO across a whole night the "
+              "creature spent neglected -- the neglect clock pauses while "
+              "asleep");
+    }
+
+    /* 4. The waking-fraction threshold compression (requirement 6), pinned
+     * to its exact stated value, 15/24: a raw sickness_onset_seconds that
+     * is a clean multiple of 24 makes the compressed threshold an exact
+     * integer, so this checks the number itself, not just an inequality.
+     * The segment stays entirely in daytime (a noon start, a few hours
+     * long) so no night-exclusion is in play -- this isolates the
+     * threshold compression from the accrual pause proven in case 3. */
+    {
+        kf_pet_config compress_cfg = zero_all_stage_rates(config);
+        compress_cfg.stage_rates[KF_PET_STAGE_BABY].hunger_mp_per_hour = 1u;
+        compress_cfg.neglect_need_mp = KF_PET_MILLIPERCENT_MAX;
+        compress_cfg.poop_interval_seconds = 0u;
+        compress_cfg.dirtiness_rise_mp_per_hour = 0u;
+        compress_cfg.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        compress_cfg.sickness_death_seconds = 0u;
+        compress_cfg.sickness_onset_seconds = 24000u; /* * 15/24 = 15000 exactly */
+
+        const kf_civil noon = {2026, 8, 12, 12, 0, 0};
+        const int64_t noon_epoch = kf_epoch_from_civil(&noon);
+
+        auto make_pet = [&](bool have_clock) {
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_BABY;
+            pet.last_advanced.valid = have_clock;
+            pet.last_advanced.epoch_seconds = noon_epoch;
+            return pet;
+        };
+
+        /* Just short of the compressed threshold: not sick yet. */
+        kf_pet_state below = make_pet(true);
+        kf_pet_advance(&below, &compress_cfg, 14999u);
+        check(!below.sick,
+              "14999s of daytime neglect, one second under the compressed "
+              "15000s threshold, is not enough to fall ill yet");
+
+        /* Exactly at it: sick. */
+        kf_pet_state at_threshold = make_pet(true);
+        kf_pet_advance(&at_threshold, &compress_cfg, 15000u);
+        check(at_threshold.sick,
+              "15000s -- the RAW 24000s threshold compressed by exactly "
+              "15/24 -- is enough");
+
+        /* The identical 15000s with NO wall clock at all: the raw,
+         * uncompressed threshold applies, so this is not remotely enough
+         * -- proves the compression is genuinely tied to have_clock, not a
+         * constant change to the check above alone. */
+        kf_pet_state no_clock = make_pet(false);
+        kf_pet_advance(&no_clock, &compress_cfg, 15000u);
+        check(!no_clock.sick,
+              "the SAME 15000s with no wall clock at all uses the raw, "
+              "uncompressed 24000s threshold and is nowhere near it");
+    }
+
+    /* 5. The v9 save format round-trips `asleep`, and a v8 save is
+     * refused outright (kSaveVersion 8->9), matching the "an older save
+     * is refused, not guessed at" policy every earlier version bump in
+     * this file already established. */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-sleep-" + std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init");
+
+        kf_pet_state pet{};
+        kf_pet_init(&pet);
+        pet.stage = KF_PET_STAGE_CHILD;
+        pet.asleep = true;
+        check(kf_pet_save(&pet) == KF_OK, "save a state with asleep=true");
+
+        kf_pet_state loaded{};
+        check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
+              "load it back");
+        check(loaded.asleep,
+              "asleep round-trips through save/load byte for byte");
+
+        /* A genuine v8-shaped save: exactly the OLD KF_PET_SAVE_BYTES size
+         * (the new constant minus the one byte `asleep` added), version
+         * byte 8. Refused because it no longer matches the CURRENT
+         * KF_PET_SAVE_BYTES -- the honest reason a real v8 save on a real
+         * device would be refused after this exact bump, not a synthetic
+         * corruption. */
+        uint8_t v8_buf[KF_PET_SAVE_BYTES - 1] = {};
+        v8_buf[0] = 8u;
+        check(kf_store_write(KF_PET_SAVE_KEY, v8_buf, sizeof(v8_buf)) ==
+                  KF_OK,
+              "write a synthetic, correctly-sized v8 save directly");
+
+        kf_pet_state after_v8{};
+        check(kf_pet_load_and_advance(&after_v8, &config) == KF_OK,
+              "load_and_advance on a v8 save returns KF_OK, not an error");
+        check(after_v8.stage == KF_PET_STAGE_EGG &&
+                  after_v8.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                  !after_v8.asleep,
+              "a rejected v8 save falls back to a fresh pet, exactly like "
+              "every earlier version rejection in this file");
+
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Investigates a real bug report: "it evolved from baby to teen, then it
  * also didn't go past teen to adult yet and I couldn't drag the timeline
  * there." Drives the actual session/seek surface a real build and the SDL
@@ -2414,11 +2832,12 @@ int run_pet_care_variation_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Proves kf_creature_pose_for()'s precedence -- dead beats sick beats a held
- * reaction beats neutral -- and proves the reaction window actually gates
- * the sticky last_reaction field: the same LIKED reaction reads as happy
- * while the window is open and neutral once it has lapsed. See
- * kf/creature.h and kf/creature.cpp. */
+/* Proves kf_creature_pose_for()'s precedence -- dead beats sick beats
+ * ASLEEP beats a held reaction beats neutral (docs/superpowers/plans/
+ * 2026-08-13-screens-clock-sleep.md's Task 6 requirement 10, ADR 0048) --
+ * and proves the reaction window actually gates the sticky last_reaction
+ * field: the same LIKED reaction reads as happy while the window is open
+ * and neutral once it has lapsed. See kf/creature.h and kf/creature.cpp. */
 int run_creature_pose_check(void) {
     kf_pet_state pet{};
     kf_pet_init(&pet);
@@ -2427,30 +2846,40 @@ int run_creature_pose_check(void) {
         const char *name;
         bool sick;
         bool dead;
+        bool asleep;
         uint8_t reaction;
         uint32_t hold_ms;
         kf_creature_pose expect;
     };
 
     const Case cases[] = {
-        {"fresh pet is neutral", false, false, KF_PET_REACTION_NEUTRAL, 0,
-         KF_CREATURE_POSE_NEUTRAL},
-        {"liked care inside the window is happy", false, false,
+        {"fresh pet is neutral", false, false, false, KF_PET_REACTION_NEUTRAL,
+         0, KF_CREATURE_POSE_NEUTRAL},
+        {"liked care inside the window is happy", false, false, false,
          KF_PET_REACTION_LIKED, 500, KF_CREATURE_POSE_HAPPY},
         {"liked care after the window lapses is neutral", false, false,
-         KF_PET_REACTION_LIKED, 0, KF_CREATURE_POSE_NEUTRAL},
-        {"disliked care inside the window is objecting", false, false,
+         false, KF_PET_REACTION_LIKED, 0, KF_CREATURE_POSE_NEUTRAL},
+        {"disliked care inside the window is objecting", false, false, false,
          KF_PET_REACTION_DISLIKED, 500, KF_CREATURE_POSE_OBJECTING},
-        {"sickness outranks a happy reaction", true, false,
+        {"sickness outranks a happy reaction", true, false, false,
          KF_PET_REACTION_LIKED, 500, KF_CREATURE_POSE_SICK},
-        {"death outranks sickness", true, true, KF_PET_REACTION_LIKED, 500,
-         KF_CREATURE_POSE_DEAD},
+        {"death outranks sickness", true, true, false, KF_PET_REACTION_LIKED,
+         500, KF_CREATURE_POSE_DEAD},
+        {"asleep outranks a happy reaction", false, false, true,
+         KF_PET_REACTION_LIKED, 500, KF_CREATURE_POSE_SLEEPING},
+        {"asleep outranks a disliked reaction too", false, false, true,
+         KF_PET_REACTION_DISLIKED, 500, KF_CREATURE_POSE_SLEEPING},
+        {"sickness outranks asleep", true, false, true, KF_PET_REACTION_LIKED,
+         500, KF_CREATURE_POSE_SICK},
+        {"death outranks asleep", true, true, true, KF_PET_REACTION_LIKED,
+         500, KF_CREATURE_POSE_DEAD},
     };
 
     bool ok = true;
     for (const Case &c : cases) {
         pet.sick = c.sick;
         pet.dead = c.dead;
+        pet.asleep = c.asleep;
         pet.last_reaction = c.reaction;
         const kf_creature_pose got = kf_creature_pose_for(&pet, c.hold_ms);
         if (got != c.expect) {
@@ -7448,6 +7877,7 @@ int main(int argc, char *argv[]) {
     bool verify_clock = false;
     bool verify_settings_screen = false;
     bool verify_screen_isolation = false;
+    bool verify_sleep = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -7566,6 +7996,8 @@ int main(int argc, char *argv[]) {
             verify_settings_screen = true;
         } else if (std::strcmp(argv[i], "--verify-screen-isolation") == 0) {
             verify_screen_isolation = true;
+        } else if (std::strcmp(argv[i], "--verify-sleep") == 0) {
+            verify_sleep = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -7616,7 +8048,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-screen-groups\n"
                         "kamiframe-headless --verify-clock\n"
                         "kamiframe-headless --verify-settings-screen\n"
-                        "kamiframe-headless --verify-screen-isolation\n");
+                        "kamiframe-headless --verify-screen-isolation\n"
+                        "kamiframe-headless --verify-sleep\n");
             return 0;
         }
     }
@@ -7830,6 +8263,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_screen_isolation) {
         return run_screen_isolation_check();
+    }
+
+    if (verify_sleep) {
+        return run_pet_sleep_check();
     }
 
     kf_app_init(mode);

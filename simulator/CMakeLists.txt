@@ -515,6 +515,20 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_death_check
              COMMAND kamiframe-headless --verify-pet-death)
 
+    # Proves sleep (docs/superpowers/specs/2026-08-09-core-care-loop-
+    # design.md's "Sleep, settled", docs/superpowers/plans/2026-08-13-
+    # screens-clock-sleep.md's Task 6, ADR 0048): state->asleep tracks the
+    # 22:00-07:00 night window live as the clock crosses it, an egg never
+    # sleeps, the neglect clock pauses while asleep but the needs keep
+    # decaying, the waking-fraction (15/24) threshold compression pinned to
+    # its exact value, and the v9 save format including refusing a v8 save.
+    # pet_offline_ageing_check (--verify-pet) separately proves requirement
+    # 1 (last_advanced tracks live play) and requirement 8 (offline
+    # analytic fast-forward across a night); hokorimaru_check proves
+    # requirement 7 unchanged. See headless_main.cpp's run_pet_sleep_check().
+    add_test(NAME pet_sleep_check
+             COMMAND kamiframe-headless --verify-sleep)
+
     # Proves the care-variation preference table (docs/superpowers/plans/
     # 2026-08-09-care-variations.md) is exhaustively well-shaped: all six
     # traits x four actions x three variations, every trait has exactly one

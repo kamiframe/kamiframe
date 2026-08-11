@@ -43,10 +43,26 @@ typedef enum {
  * rest of its life after one liked feed. Zero means the reaction has finished
  * being expressed.
  *
- * Precedence, strongest first: dead, sick, then the held reaction, then
- * neutral. Sleeping is never returned yet: nothing in Core can say the
- * creature is asleep (see the care-loop spec's "Sleep, settled" addendum);
- * the pose exists so the sprite table and the art are ready when it lands. */
+ * Precedence, strongest first: dead, sick, ASLEEP, then the held reaction,
+ * then neutral. As of docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md's Task 6 (ADR 0048), Core CAN say the creature is asleep --
+ * kf_pet_state::asleep, computed by kf_pet_advance()/apply_stage_segment()
+ * (hakoniwaos/src/pet.cpp) from the wall clock and the night window -- so
+ * this function reads it directly rather than reasoning about time itself.
+ * (An earlier version of this comment said sleeping was never returned,
+ * because nothing in Core could say the creature was asleep yet; that
+ * stopped being true the moment the field above landed, which is why it
+ * is being corrected here rather than left to go stale a second time.)
+ *
+ * Sleeping sits ABOVE the held reaction, deliberately: a creature that is
+ * asleep should look asleep even if `last_reaction`/`reaction_hold_ms` are
+ * still coasting on the last thing that happened before it dropped off,
+ * and in practice waking it deliberately (the game layer's job, costing
+ * happiness) already clears `asleep` before any new reaction could fire
+ * anyway. It sits BELOW sick, on the other hand: an ill creature stays
+ * legibly ill even overnight, because sickness is the state that most
+ * needs the player's attention and hiding it behind a sleeping pose for a
+ * third of every day would work against that. */
 kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
                                       uint32_t reaction_hold_ms);
 

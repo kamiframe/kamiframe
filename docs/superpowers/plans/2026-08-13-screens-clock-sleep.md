@@ -22,7 +22,7 @@ named risk; the branch is green after every one.
 `kamiframe-headless --verify-*` check modes, `tools/kf_debug.py` over UART at
 115200 for the bench work.
 
-## Status: Tasks 1–4 landed; Task 5 partly done; Tasks 6–8 not started
+## Status: Tasks 1–4 and **6** landed; Task 5 partly done; Tasks 7–8 not started
 
 **Updated 2026-08-11.** Tasks 1, 2, 3 and **4** (Lua time API, Settings
 screen with an editable 12-hour clock) have landed and Task 4 is confirmed
@@ -31,14 +31,26 @@ DS3231 kept time across a real power cut on its coin cell, measured at the
 bench; see the STATUS block on Task 5 itself for the numbers and for the
 three sub-requirements that were *not* done (`KFDBG RTC`, the
 cell-removed negative case, and on-device confirmation that the pet actually
-ages across the gap). **Tasks 6, 7 and 8 have not started.**
+ages across the gap).
 
-Task 6 is next and it is the heavy one: it changes the save format and the
-offline fast-forward. Its first step is not sleep at all — it is that
-`last_advanced` only moves when a save is *loaded*, so during live play Core
-does not know what time it is (`hakoniwaos/src/pet.cpp:1229` is the only
-assignment; `kf_pet_advance()` never touches it). Verified again on
-2026-08-11. The night window rests entirely on fixing that first.
+**Task 6 (sleep in Core) has now landed too, entirely Core-side** — see
+ADR 0048. `kf_pet_advance()` now carries `state->last_advanced` forward
+during live play (its own dedicated check, landed and green before any
+sleep logic was written, per this task's own instruction); `bool asleep`
+joined `kf_pet_state` (save version 9, `KF_PET_SAVE_BYTES` 92); night is
+22:00–07:00 via `kf_clock_seconds_in_daily_window()`; falling asleep is
+automatic and the live/offline rules are the identical code path; the
+neglect clock pauses while asleep (needs keep decaying); the waking
+fraction (15/24) compresses `sickness_onset_seconds`/`sickness_death_
+seconds`, never the accrual rate; `hokorimaru_check` passes unmodified;
+offline stays analytic (no stepping, even across several nights); the egg
+does not sleep (a decision, not a gap); and `kf_creature_pose_for()` can
+now return `KF_CREATURE_POSE_SLEEPING`, sitting between `sick` and the held
+reaction in precedence. 47/47 tests green (46 plus `pet_sleep_check`; the
+pre-existing `pet_offline_ageing_check` also grew night-spanning cases).
+**Tasks 7 and 8 have not started** — both need Chris to judge feel on the
+board, per the "Who has to be at the bench" table below, and neither is
+blocked on anything but Task 6, which is now done.
 
 Written 2026-08-13 as NOT STARTED. Since then: Task 1 (`kf.screen()` groups,
 Info declared in Lua — `d3354cf`, `83c140e`), Task 2 (`KF_ENABLE_LVGL`
@@ -107,11 +119,11 @@ result. Record what was actually observed in its ADR.
 | LVGL's footprint in the tree | `ls simulator/src/lvgl/`, `simulator/CMakeLists.txt:135-144` | **Shrunk since Task 1/2 landed: 18 files** in that directory (not 27); `kamiframe_lvgl_port` compiles **8 `.cpp` files**, all genuinely LVGL code now — `kf_screen_nav`, `kf_lua_home_screen` and `kf_error_banner` are no longer in this list, having moved out with Task 1/2 |
 | Info is a pure widget tree | — | **No longer true: `kf_pet_info_screen.cpp`/`.h` are deleted (Task 2, ADR 0045).** Info is a `kf.screen("info")` group in `creature.lua` now, not an LVGL widget tree |
 | The old LVGL Home is unreachable | `kf_screen_nav.h:94-102` (moved from `:37-47`), `grep kf_pet_screen` | `kf_pet_screen.cpp` (**364 lines**, unchanged) is initialised by nothing in a running build. Its only remaining caller is `run_pet_screen_check()`, gated on `KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM` = `132458f0171a2c0b` (`simulator/CMakeLists.txt:618`, not `:566`) |
-| Core has no sleep field | `grep -i sleep hakoniwaos/include/kf/pet.h` | Nothing. The only hits are `kf_power_deep_sleep_until()` references |
-| `KF_CREATURE_POSE_SLEEPING` is unreachable | `hakoniwaos/include/kf/creature.h:32`, `:47-48` | The enum exists; the header says outright *"Sleeping is never returned yet: nothing in Core can say the creature is asleep"* |
+| Core has a sleep field now | `grep -i asleep hakoniwaos/include/kf/pet.h` | **Landed by Task 6, ADR 0048.** `bool asleep` joined `kf_pet_state`, computed by `apply_stage_segment()` against `kf_clock_seconds_in_daily_window()`. (Was: nothing but `kf_power_deep_sleep_until()` references, before Task 6.) |
+| `KF_CREATURE_POSE_SLEEPING` is reachable now | `hakoniwaos/include/kf/creature.h:32`, `hakoniwaos/src/creature.cpp`'s `kf_creature_pose_for()` | **Landed by Task 6, ADR 0048.** `kf_creature_pose_for()` returns it when `pet->asleep`, between `sick` and the held reaction. (Was: unreachable, with a header comment saying so, before Task 6 — that comment was corrected in the same commit that made it false.) |
 | Sleeping art in the shipped pack | `find examples/creature_demo/sprites -name '*sleeping*'` | **18 files**, one frame each: `{baby,child,teen0..3}_sleeping_{s,e,n}_01.png`. **No `egg_sleeping`, no adult family at all** |
 | The attention signal | grep for any want/demand/alert query | **Nothing.** `pet.*` exposes the raw needs and the player reads the bars |
-| Save format | `hakoniwaos/src/pet.cpp:79`, `kf/pet.h:610` | `kSaveVersion = 8`, `KF_PET_SAVE_BYTES = 91`, key `"pet"`, against `KF_STORE_MAX_VALUE_BYTES` = 4000 |
+| Save format | `hakoniwaos/src/pet.cpp:79`, `kf/pet.h:617` | `kSaveVersion = 9`, `KF_PET_SAVE_BYTES = 92`, key `"pet"`, against `KF_STORE_MAX_VALUE_BYTES` = 4000. **Bumped by Task 6** (was version 8 / 91 bytes) to add `asleep`; a version-8 save is refused, per ADR 0048 |
 | Hold-to-repeat is available | `hakoniwaos/include/kf/app.h:135-136` | Both `kf_app_buttons_held()` and `kf_app_buttons_pressed()` exist |
 | `KFDBG STATE` carries no clock | `handle_state()`'s format string, `kf_dbg_bridge.cpp:238-247` | 28 keys, none of them wall-clock or RTC. The reply buffer is sized by a documented byte computation at `:228` |
 
@@ -134,10 +146,12 @@ does not know what time it is.** `hakoniwaos/src/pet.cpp:1229` sets it inside
 `kf_pet_load_and_advance()`; `kf_pet_advance()` never touches it. The care-loop
 spec already identified this and prescribed the fix — *"for `kf_pet_advance()`
 to carry `last_advanced` forward by the same elapsed seconds that drive decay:
-wall time then enters Core exactly once, at load"* — and it has **not been
-implemented**. Sleep's night window depends on it entirely. **This is the
-single largest hidden dependency in the whole plan, and it is Task 6's first
-step, not an afterthought.**
+wall time then enters Core exactly once, at load"* — and this is the single
+largest hidden dependency in the whole plan. **Landed as Task 6's first step,
+exactly as prescribed** — see ADR 0048. `kf_pet_advance()` now carries
+`last_advanced` forward internally (a local cursor updated at each segment,
+written back to `state->last_advanced.epoch_seconds`), with its own dedicated
+check proving it before any sleep logic was written.
 
 **3. `kf_screen_nav.cpp` is 184 lines and lives inside the LVGL library.**
 `simulator/CMakeLists.txt:133` compiles it into `kamiframe_lvgl_port`, and it
@@ -1150,33 +1164,71 @@ silicon and that nobody knows whether the cell holds time.
 
 ### Task 6: Sleep in Core
 
+> ## STATUS 2026-08-11: LANDED. 47/47, `hokorimaru_check` unmodified, ESP-IDF
+> ## clean. See ADR 0048 for the full design record and the non-vacuity proof
+> ## for every new assertion.
+>
+> All ten requirements below landed as specified — no requirement in this
+> section turned out to be wrong against the code, unlike some earlier tasks
+> in this plan. Two things worth recording that the requirement list itself
+> did not spell out, both in ADR 0048 at length:
+>
+> - **"Whatever the drowsy state needs" turned out to be nothing beyond the
+>   one boolean.** There is no separate persisted drowsy sub-state in Core;
+>   settling into bed is entirely the game layer's decoration (Task 7),
+>   never read by anything this task built.
+> - **The neglect-pause mechanism is a small, local change, not a rewrite**
+>   of the existing three-way neglect-crossing logic: every one of its three
+>   cases already produces a neglected range that is a SUFFIX of the segment,
+>   so the range's own start offset was already sitting in the code as
+>   `cared_for`, reused directly rather than recomputed.
+>
+> Two real bugs were found and fixed while writing this task's own tests
+> (both in the tests, not in `pet.cpp`/`creature.cpp`) — see ADR 0048's "A
+> real bug found while writing this task's own tests" for both. Neither
+> reached the committed suite.
+
 The spec is settled and complete; this is implementation. **A fresh session,
 with nothing else in it** — it changes the save format and the offline
 fast-forward, which is the feature the whole product rests on.
 
 **Requirements, in dependency order:**
 
-- [ ] **First, before any sleep logic: `kf_pet_advance()` carries
+- [x] **First, before any sleep logic: `kf_pet_advance()` carries
       `last_advanced` forward** by the same elapsed seconds that drive decay.
       Today it moves only in `kf_pet_load_and_advance()` (`pet.cpp:1229`), so
       during live play Core does not know the time and the night window cannot
       be evaluated. The care-loop spec prescribes exactly this and calls it *"a
       good change regardless of what sleep ends up looking like"*. Land it with
       its own check — that the pet's notion of now tracks a session's elapsed
-      time — **before** anything reads it.
-- [ ] `bool asleep` and whatever the drowsy state needs join `kf_pet_state`.
+      time — **before** anything reads it. **Landed**: `kf_pet_advance()` now
+      threads a `have_clock`/`cursor` pair through its stage loop, updating
+      `state->last_advanced.epoch_seconds` at every segment. Its own dedicated
+      check is case 6 of `run_pet_check()` (`--verify-pet`), green before any
+      sleep logic existed.
+- [x] `bool asleep` and whatever the drowsy state needs join `kf_pet_state`.
       `kSaveVersion` 8→9, `KF_PET_SAVE_BYTES` grows, `pack()`/`unpack()` and
       the `KF_ASSERT(off == KF_PET_SAVE_BYTES)` at `pet.cpp:717` all move
       together. A version-8 save is **refused**, matching the existing policy at
-      `:739` — this project does not guess at a layout that changed.
-- [ ] Night is **22:00–07:00 local**, via `kf_clock_seconds_in_daily_window()`
-      from Task 3. Core does not re-derive it.
-- [ ] **Falling asleep is automatic** and the live and offline rules are the
+      `:739` — this project does not guess at a layout that changed. **Landed**:
+      `KF_PET_SAVE_BYTES` is now 92 (91→92, one byte); "whatever the drowsy
+      state needs" turned out to be nothing else, per the STATUS block above.
+- [x] Night is **22:00–07:00 local**, via `kf_clock_seconds_in_daily_window()`
+      from Task 3. Core does not re-derive it. **Landed** — two private
+      constants in `pet.cpp` (`kNightStartHour`/`kNightEndHour`), every
+      window question routed through that one function, including the
+      point-in-time "is it asleep now" query.
+- [x] **Falling asleep is automatic** and the live and offline rules are the
       same rule — which is what makes offline tractable. Waking is entirely the
-      creature's own, so "asleep forever" is unreachable.
-- [ ] **`neglect_seconds` does not advance while asleep; the needs keep
+      creature's own, so "asleep forever" is unreachable. **Landed** — one
+      code path (`apply_stage_segment()`), no online/offline branch anywhere
+      in it.
+- [x] **`neglect_seconds` does not advance while asleep; the needs keep
       decaying.** Two different things, and the distinction is the point.
-- [ ] **The compression goes in the thresholds, not the accrual.** Cut
+      **Landed** as an overlap subtraction against the existing neglected
+      range, not a rewrite — see the STATUS block above and ADR 0048 section
+      5.
+- [x] **The compression goes in the thresholds, not the accrual.** Cut
       `sickness_onset_seconds` and `sickness_death_seconds` by the waking
       fraction; do **not** scale the rate `neglect_seconds` climbs. The spec
       gives both reasons and the second is the load-bearing one: neglect
@@ -1184,22 +1236,43 @@ fast-forward, which is the feature the whole product rests on.
       off it), so scaling accrual alone would make the creature harsher in a
       direction nobody asked for. **One named constant** for the waking
       fraction, because the late-night deficit lands on the same day and their
-      combined pressure is a thing to feel rather than derive.
-- [ ] Hokorimaru needs **no compensation**: the dust branch averages need levels
+      combined pressure is a thing to feel rather than derive. **Landed**:
+      `kWakingFractionNumerator`/`kWakingFractionDenominator` = 15/24, read
+      through a local scaled copy so `config->sickness_onset_seconds`/
+      `sickness_death_seconds` themselves are never mutated. Whether the
+      combined pressure feels right is still undetermined — deferred to
+      Task 7/8, per the spec's own words.
+- [x] Hokorimaru needs **no compensation**: the dust branch averages need levels
       over the whole child stage (`pet.cpp:328`), the needs keep decaying while
       asleep, and the stage clock keeps running, so that average never notices
       the neglect clock stopping. Verified in the spec by reading the code.
       `hokorimaru_check` must pass unchanged — if it does not, the compression
-      leaked somewhere it should not have.
-- [ ] Offline is computed **analytically**, never stepped. A fortnight in a
+      leaked somewhere it should not have. **Confirmed**: not one line of
+      `hokorimaru_check` changed, and it passes.
+- [x] Offline is computed **analytically**, never stepped. A fortnight in a
       drawer is whole days plus two partials, from Task 3's function.
-      `pet_offline_ageing_check` gains cases that span nights.
-- [ ] **The egg has no sleeping art** (finding 1). Decide and comment: either
+      `pet_offline_ageing_check` gains cases that span nights. **Landed**:
+      three new cases in `run_pet_check()` — a span starting mid-night, one
+      ending mid-night, and one covering three whole nights — each proving
+      both the offline/direct-`kf_pet_advance()` equivalence AND, separately,
+      that night hours were actually excluded (a strict-inequality check
+      against a no-clock comparison pet), since equivalence alone would pass
+      even if sleep did nothing at all.
+- [x] **The egg has no sleeping art** (finding 1). Decide and comment: either
       eggs do not sleep, or they sleep and simply keep showing `egg_idle_*`.
-      Either is fine; an uncommented silent fallback is not.
-- [ ] `kf_creature_pose_for()` can finally return `KF_CREATURE_POSE_SLEEPING`,
+      Either is fine; an uncommented silent fallback is not. **Decided: eggs
+      do not sleep.** `apply_stage_segment()`'s existing EGG early return
+      (already there for "no care needed as an egg") now also means
+      `state->asleep` is never touched during EGG; commented at that site
+      and in ADR 0048 section 9.
+- [x] `kf_creature_pose_for()` can finally return `KF_CREATURE_POSE_SLEEPING`,
       and `creature.h:47-48`'s comment saying it never does becomes **false the
-      moment this lands** — fix it in the same commit.
+      moment this lands** — fix it in the same commit. **Landed**: precedence
+      is dead, sick, **asleep**, held reaction, neutral — asleep sits above
+      the held reaction (a sleeping creature should look asleep even if
+      `last_reaction` is still coasting) and below sick (an ill creature
+      stays legibly ill overnight). The stale comment was rewritten in the
+      same commit, per `CLAUDE.md`'s own rule on this.
 
 ---
 

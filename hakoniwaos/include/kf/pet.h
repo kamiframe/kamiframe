@@ -397,6 +397,27 @@ typedef struct {
      * but real and worth knowing about before assuming dead is one-way. */
     bool dead;
 
+    /* Whether the creature is currently asleep -- docs/superpowers/specs/
+     * 2026-08-09-core-care-loop-design.md's "Sleep, settled": night is
+     * 22:00-07:00 local (kf/clock.h's kf_clock_seconds_in_daily_window(),
+     * Core does not re-derive the window), and falling asleep is entirely
+     * automatic and entirely a function of the wall clock -- there is no
+     * separate "drowsy" sub-state in Core to save, because settling the
+     * creature into bed is optional decoration the game layer draws on
+     * top (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
+     * Task 7), not a mechanism this file depends on. Recomputed inside
+     * apply_stage_segment() (kf_pet.cpp) every time the wall clock is
+     * known, from the epoch that segment ends at; stays false for the
+     * whole of EGG (apply_stage_segment() returns before ever reaching
+     * the sleep computation for an egg -- eggs do not sleep, a deliberate
+     * choice recorded there and in ADR 0048, not an oversight) and stays
+     * false whenever last_advanced has never been valid (no clock, no
+     * sleep -- the same "inert without a clock" rule the night-window
+     * accounting itself follows). Saved, so a reload shows the pose the
+     * creature actually ended the session in rather than guessing from
+     * nothing. */
+    bool asleep;
+
     /* How the creature took the last care action, and which action it was.
      * Saved, so a creature reloaded mid-sulk is still sulking. This is the
      * feedback channel the spec's section 6 puts first: the reaction leads
@@ -409,7 +430,23 @@ typedef struct {
      * alongside the needs (see kf_pet_save()) so a reload can compute
      * exactly how long the device was off and fast-forward by that much
      * -- see kf_pet_load_and_advance(). Invalid (kf_wall_time.valid ==
-     * false) until the first successful advance. */
+     * false) until the first successful advance.
+     *
+     * kf_pet_advance() ALSO carries this forward now (docs/superpowers/
+     * specs/2026-08-09-core-care-loop-design.md's "Sleep, settled"), by
+     * exactly the elapsed_seconds it was just handed, whenever it is
+     * already valid -- so a long-running live session (many small
+     * kf_pet_advance() calls, one per frame-batch flush) keeps this
+     * tracking real time exactly as an offline jump does, without
+     * kf_pet_advance() ever calling into the HAL itself. That is what
+     * lets sleep's night-window test (kf/clock.h's
+     * kf_clock_seconds_in_daily_window()) run identically whether the
+     * elapsed time came from one offline gap or a thousand live frames.
+     * Still left untouched (stays invalid) when it starts invalid --
+     * every check in this codebase that pokes a fresh kf_pet_state
+     * directly and never goes through kf_pet_load_and_advance() relies on
+     * that, and it is also the honest answer: with no clock reading ever
+     * established, there is no baseline epoch to carry forward. */
     kf_wall_time last_advanced;
 
     kf_pet_stage stage;
@@ -519,12 +556,20 @@ void kf_pet_init(kf_pet_state *state);
  * from the care actually accumulated during exactly that stage's real
  * duration, not blurred across stages.
  *
- * Clamps every need to [0, KF_PET_MILLIPERCENT_MAX]. Deliberately does NOT
- * read a clock or touch `last_advanced`: the caller (kf_pet_load_and_
- * advance() below, or a future frame-loop caller passing a per-frame
- * delta) decides what "elapsed" means and updates the timestamp itself,
- * which is what keeps this function trivially unit-testable with an
- * arbitrary elapsed value and no HAL in the picture at all. */
+ * Clamps every need to [0, KF_PET_MILLIPERCENT_MAX]. Still never reads a
+ * clock -- no HAL call anywhere in this function, matching this file's own
+ * header comment -- but it DOES now carry `state->last_advanced` forward by
+ * exactly `elapsed_seconds`, whenever it was already valid coming in (see
+ * that field's own comment in kf_pet_state above for why). That is a plain
+ * arithmetic update on a value already sitting in `state`, not a clock
+ * read: the caller (kf_pet_load_and_advance() below, establishing the very
+ * first baseline from a real wall-clock reading, or a live frame-loop
+ * caller passing a per-frame-batch delta) is still the only place an
+ * actual HAL time reading ever enters this file. This is what lets
+ * sleep's night-window accounting (kf/clock.h) evaluate correctly during
+ * LIVE play, not only immediately after a reload -- see docs/superpowers/
+ * specs/2026-08-09-core-care-loop-design.md's "Sleep, settled" and this
+ * file's own apply_stage_segment(). */
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
                      uint32_t elapsed_seconds);
 
@@ -608,13 +653,19 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * Bumped to version 8 with care variations (docs/superpowers/plans/
  * 2026-08-09-care-variations.md): `last_reaction` and `last_care_action`
  * were added, so a creature reloaded mid-sulk is still sulking rather than
- * silently forgetting how the last care action went.
+ * silently forgetting how the last care action went. Bumped to version 9
+ * with sleep (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
+ * Task 6, ADR 0048): `asleep` was added -- a version-8 save has no notion
+ * of whether the creature was asleep, and defaulting it to false on load
+ * would be no more honest than guessing, so it is refused rather than
+ * silently trusted, the same accepted cost every version bump before this
+ * one already took.
  * A save from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
  * code, an explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 91u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 92u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

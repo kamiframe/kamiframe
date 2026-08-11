@@ -17,6 +17,9 @@ kf_creature_pose kf_creature_pose_for(const kf_pet_state *pet,
     if (pet->sick) {
         return KF_CREATURE_POSE_SICK;
     }
+    if (pet->asleep) {
+        return KF_CREATURE_POSE_SLEEPING;
+    }
     if (reaction_hold_ms > 0u) {
         if (pet->last_reaction == KF_PET_REACTION_LIKED) {
             return KF_CREATURE_POSE_HAPPY;
@@ -108,7 +111,16 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
         /* The manifest gives the egg exactly one state, "idle" -- see
          * character_manifest.toml's [stages.egg] -- so every pose collapses
          * here regardless of what was asked for. Direction still varies:
-         * the egg is a single design, not a single sprite. */
+         * the egg is a single design, not a single sprite.
+         *
+         * This includes KF_CREATURE_POSE_SLEEPING: eggs do not sleep
+         * (kf_pet_state::asleep never becomes true for an egg -- see
+         * apply_stage_segment()'s early return for KF_PET_STAGE_EGG in
+         * hakoniwaos/src/pet.cpp, and ADR 0048), so kf_creature_pose_for()
+         * should never actually hand this function SLEEPING for an egg-
+         * stage pet in practice. This collapse is what would happen even
+         * if it somehow did -- there is no egg_sleeping art in the shipped
+         * pack, and there deliberately never needs to be one. */
         snprintf(out, out_len, "egg_idle_%s", dir_tok);
         return;
     }
