@@ -1336,6 +1336,41 @@ void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config) {
     state->asleep = false;
 }
 
+/* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): see
+ * kf/pet.h's own long comment on kf_pet_wants() for why `previous` exists
+ * at all and what each threshold means -- not repeated here. */
+kf_pet_want kf_pet_wants(const kf_pet_state *state, kf_pet_want previous) {
+    if (state->dead || state->asleep) {
+        return KF_PET_WANT_NONE;
+    }
+
+    const bool food = (state->hunger_mp <= KF_PET_WANT_FOOD_ON_MP) ||
+                       (previous == KF_PET_WANT_FOOD &&
+                        state->hunger_mp < KF_PET_WANT_FOOD_OFF_MP);
+    const bool rest = (state->energy_mp <= KF_PET_WANT_REST_ON_MP) ||
+                       (previous == KF_PET_WANT_REST &&
+                        state->energy_mp < KF_PET_WANT_REST_OFF_MP);
+    const bool bath = (state->dirtiness_mp >= KF_PET_WANT_BATH_ON_MP) ||
+                       (previous == KF_PET_WANT_BATH &&
+                        state->dirtiness_mp > KF_PET_WANT_BATH_OFF_MP);
+    const bool flush =
+        (state->poop_count >= KF_PET_WANT_FLUSH_ON_POOPS) ||
+        (previous == KF_PET_WANT_FLUSH &&
+         state->poop_count > KF_PET_WANT_FLUSH_OFF_POOPS);
+    const bool play = (state->happiness_mp <= KF_PET_WANT_PLAY_ON_MP) ||
+                       (previous == KF_PET_WANT_PLAY &&
+                        state->happiness_mp < KF_PET_WANT_PLAY_OFF_MP);
+
+    /* Priority order -- see kf_pet_wants()'s own header comment in kf/
+     * pet.h for the reasoning. */
+    if (food) return KF_PET_WANT_FOOD;
+    if (rest) return KF_PET_WANT_REST;
+    if (bath) return KF_PET_WANT_BATH;
+    if (flush) return KF_PET_WANT_FLUSH;
+    if (play) return KF_PET_WANT_PLAY;
+    return KF_PET_WANT_NONE;
+}
+
 /* ADR 0023: a pure query over the three whole-life accumulators, computed
  * fresh every call rather than cached anywhere -- see kf/pet.h's header
  * comment on kf_pet_state for why. Comparing the three raw accumulator

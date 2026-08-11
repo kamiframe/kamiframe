@@ -649,6 +649,118 @@ void kf_pet_flush(kf_pet_state *state);
  * the wall clock, same as always; nothing here needs to suppress that. */
 void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config);
 
+/* The attention signal -- Task 8 of docs/superpowers/plans/2026-08-13-
+ * screens-clock-sleep.md. What the creature wants right now, if anything,
+ * from the FIVE things a player can actually do to it: feed, play, rest,
+ * bath, flush. There is deliberately no MEDICINE -- nothing in this file
+ * cures sickness directly, so there is no action for a creature to want
+ * that would do that. NONE is 0, the same "falsy default" convention every
+ * other enum in this file uses.
+ *
+ * Order matches kf_pet_wants()'s own priority order, purely for
+ * readability -- nothing reads these as a magnitude. */
+typedef enum {
+    KF_PET_WANT_NONE = 0,
+    KF_PET_WANT_FOOD = 1,
+    KF_PET_WANT_REST = 2,
+    KF_PET_WANT_BATH = 3,
+    KF_PET_WANT_FLUSH = 4,
+    KF_PET_WANT_PLAY = 5,
+} kf_pet_want;
+
+/* Hysteresis thresholds for kf_pet_wants() below -- one ON/OFF pair per
+ * want, named constants rather than kf_pet_config fields, because unlike
+ * the decay rates and durations in that struct, WHEN a creature starts
+ * asking for something is not something a cartridge author is expected to
+ * re-tune per pet; it is closer to KF_PET_DIRTY_FLIES_MP/STINK_MP just
+ * above, which get the identical compile-time-constant treatment for the
+ * identical reason.
+ *
+ * FOOD/REST/PLAY read the ON value as "at or below" (these three needs get
+ * WORSE going down) and the OFF value as "at or above" -- a strictly
+ * higher, more-recovered value the need must climb back past before the
+ * want clears. The 15000 mp gap (25% -> 40%) is chosen against
+ * kf_pet_default_config()'s own fastest rate (BABY hunger, 66000 mp/hour,
+ * roughly 18 mp/sec) so that ordinary decay -- which only ever moves a need
+ * in ONE direction between care actions, see kf_pet_state's own fields --
+ * cannot cross a 15000 mp gap inside a single second, let alone cross it
+ * twice. 25% itself matches creature.lua's own `classify()` "low" band
+ * (its "starting to get hungry"/"could use some playtime"/"getting a
+ * little tired" messages already fire in that neighbourhood), not the
+ * demand-curve doc's separate "needs attention at 70%" language -- that
+ * 70% figure describes how fast the decay RATES were tuned, not when a
+ * disruptive stop-and-pose signal should interrupt the wander, and firing
+ * this signal that early (every ~27 real minutes for a baby) would make it
+ * background noise instead of a genuine attention signal.
+ *
+ * BATH is inverted (dirtiness gets WORSE going UP), so it reuses
+ * KF_PET_DIRTY_STINK_MP/FLIES_MP directly rather than inventing a second
+ * pair of numbers for the same need.
+ *
+ * FLUSH is a plain count, not millipercent: poop_count only ever rises by
+ * one at a time (kf_pet_config::poop_interval_seconds) or resets straight
+ * to 0 (kf_pet_flush()), so a 1-poop gap already cannot flap -- there is no
+ * decay path that adds a fractional poop. Kept as a real ON/OFF pair
+ * anyway, for the same reason every other want has one: consistency the
+ * next want added to this list should not have to break.
+ *
+ * ALL SIX ARE A STARTING POINT, NOT A SETTLED DESIGN -- Task 8's own note
+ * in the plan. Feel, for Chris to judge on the board. */
+#define KF_PET_WANT_FOOD_ON_MP 25000u   /* 25% */
+#define KF_PET_WANT_FOOD_OFF_MP 40000u  /* 40% */
+#define KF_PET_WANT_REST_ON_MP 25000u
+#define KF_PET_WANT_REST_OFF_MP 40000u
+#define KF_PET_WANT_PLAY_ON_MP 25000u
+#define KF_PET_WANT_PLAY_OFF_MP 40000u
+#define KF_PET_WANT_BATH_ON_MP KF_PET_DIRTY_STINK_MP  /* 80% */
+#define KF_PET_WANT_BATH_OFF_MP KF_PET_DIRTY_FLIES_MP /* 50% */
+#define KF_PET_WANT_FLUSH_ON_POOPS 3u
+#define KF_PET_WANT_FLUSH_OFF_POOPS 1u
+
+/* A pure query: reads `state` and returns, touches nothing, decides
+ * nothing -- exactly kf_pet_dominant_care_trait()'s own shape just below,
+ * and for the same reason (see that function's header comment). NONE while
+ * dead or asleep, unconditionally -- a corpse or a sleeping creature has
+ * nothing to ask for, and Task 6 (ADR 0048) landed specifically so this
+ * second half is expressible without Core re-deriving anything about sleep
+ * here.
+ *
+ * `previous` is the ONLY thing that makes this genuinely pure AND
+ * genuinely hysteretic at the same time, and it deserves explaining: real
+ * hysteresis needs memory of what was true a moment ago -- an ON/OFF pair
+ * cannot be evaluated from the instantaneous need alone, because a need
+ * sitting between the two thresholds means something different depending
+ * on which direction it arrived from. Every other stateful signal in this
+ * file (kf_pet_state::sick is the clearest example -- see its own comment)
+ * keeps that memory as a STORED, SAVED bit. This one deliberately does not:
+ * the plan's own requirement is "no new save field, no new state to
+ * migrate", so instead of Core remembering what it last reported, the
+ * CALLER hands the last answer back in as an argument, the same "previous
+ * value in, fresh value out" shape a UI edge-detector uses (see
+ * sdl_debug_window.cpp's own `previous_pressed`) -- except here the caller
+ * is kf_pet_session_wants() (simulator/src/pet/kf_pet_session.h), which
+ * holds that one kf_pet_want in ordinary (non-Core, non-saved) session
+ * memory. This function itself never stores anything and never mutates
+ * `state`; call it twice with the same two arguments and it returns the
+ * same answer both times, which is what "pure" means here.
+ *
+ * Only `previous` gets the generous OFF threshold -- whichever want was
+ * reported last time is the one at risk of flapping, so it alone is
+ * checked against the OFF value; every other want is evaluated against its
+ * plain ON value, since a fresh crossing into "wanting" needs no history to
+ * be trusted.
+ *
+ * Priority order when more than one is unmet, highest first: FOOD, REST,
+ * BATH, FLUSH, PLAY. The plan's own reasoning: the first three are what
+ * neglect actually punishes, and PLAY is last because a creature that is
+ * hungry, exhausted and filthy asking to play reads as broken. Kept as
+ * this plan's starting point rather than switching to "whichever need is
+ * most severe" -- the fixed order is simpler to reason about from outside
+ * Core (a script or a player can learn it once) and the plan itself frames
+ * severity-based ordering as merely "a defensible alternative", not a
+ * requirement. */
+kf_pet_want kf_pet_wants(const kf_pet_state *state, kf_pet_want previous);
+
 /* Which of the three care-derived traits is currently dominant --
  * 0 = hunger, 1 = happiness, 2 = energy -- computed fresh from the three
  * running accumulators above every call, never stored (see kf_pet_state's

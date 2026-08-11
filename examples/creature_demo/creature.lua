@@ -131,6 +131,14 @@ if kf.home_screen_active() then
     zzz:color(kf.BLACK, bg)
     zzz:hide()
 
+    -- Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+    -- the attention signal's pulsing indicator. One text object, shown/
+    -- hidden at 1 Hz by on_home_frame() below while pet.wants() is
+    -- non-nil -- see that function for the blink timing.
+    local want_bang = home:text("!")
+    want_bang:color(kf.BLACK, bg)
+    want_bang:hide()
+
     local poop = {} -- 8 fixed slots, field 240px / 8
     for i = 1, 8 do
         poop[i] = home:box(12, 12, kf.color(92, 64, 51))
@@ -155,13 +163,74 @@ if kf.home_screen_active() then
         label:color(kf.BLACK, bg)
     end
 
+    -- Task 8: kept as named locals (`guide_labels`), not thrown away after
+    -- the loop like before -- paint_guide() below re-colours whichever one
+    -- names the wanted action every frame, the same kf_scene_set_colors()
+    -- inversion trick the Settings cursor uses.
     local guide = {"1:FEED", "2:PLAY", "3:REST", "4:BATH", "5:FLUSH"}
-    for i = 1, 5 do -- centred per 48px slot, never touched again
+    local guide_labels = {}
+    for i = 1, 5 do -- centred per 48px slot
         local slot_x = (i - 1) * 48
         local w = #guide[i] * 6 -- KF_FONT_CELL_W
         local label = home:text(guide[i])
         label:move(slot_x + (48 - w) // 2, 300)
         label:color(kf.BLACK, bg)
+        guide_labels[i] = label
+    end
+
+    -- Which guide slot names the button for each want. FLUSH is slot 5
+    -- even though kf/pet.h's KF_PET_CARE_ACTION_COUNT is 4 -- flush is
+    -- deliberately outside that enum (kf/pet.h's own comment on why), and
+    -- this map is keyed by the guide's own layout, not that enum.
+    local kWantGuideIndex = {FOOD = 1, PLAY = 2, REST = 3, BATH = 4, FLUSH = 5}
+
+    -- Inverts exactly the guide entry naming `want` (nil paints every entry
+    -- normal). Idempotent, like every scene setter here -- safe to call
+    -- every frame regardless of whether anything actually changed.
+    local function paint_guide(want)
+        local active = want and kWantGuideIndex[want]
+        for i = 1, 5 do
+            if i == active then
+                guide_labels[i]:color(bg, kf.BLACK)
+            else
+                guide_labels[i]:color(kf.BLACK, bg)
+            end
+        end
+    end
+
+    -- Task 8: front-centre of the wander field
+    -- (simulator/src/pet/kf_creature_presenter.h's KF_CREATURE_PRESENTER_
+    -- FIELD is {0,0,240,260}, sprites are 48x48) -- x matches the shrine's
+    -- own horizontal-centre convention above, y sits the creature at the
+    -- field's bottom edge, closest to the viewer, well clear of the needs
+    -- bars starting at y=262.
+    local kWantPoseX = 96
+    local kWantPoseY = 212
+    -- Centred above the held sprite: 96 + 24 (half the 48px sprite) - 3
+    -- (half of one 6px font cell, "!" being one character wide).
+    local kWantBangX = 117
+    local kWantBangY = 196
+
+    -- The <stage><branch> token kf_creature_sprite_name() (hakoniwaos/src/
+    -- creature.cpp) builds in C++, reimplemented here because that
+    -- function is private to Core and pet.wants() firing is a game-layer
+    -- decision, not a Core one -- see kf/pet.h's own line on why WHAT a
+    -- stage/branch number means is not Core's business. Never asked for
+    -- while stage is "egg": eggs never decay (kf_pet_default_config()'s
+    -- EGG row is all-zero rates), so pet.wants() can never return non-nil
+    -- for one in practice, and the pack has no egg_objecting_* art at all
+    -- (egg collapses to a single "idle" state, see kf_creature_sprite_
+    -- name()'s own EGG special case) -- egg falls through to the plain
+    -- stage name below only as a defensive default, never expected to draw.
+    local function want_stage_token()
+        local stage = pet.stage()
+        if stage == "teen" then
+            return "teen" .. pet.teen_form()
+        elseif stage == "adult" then
+            return "adult" .. pet.teen_form() .. pet.adult_branch()
+        else
+            return stage
+        end
     end
 
     -- Global, not local -- kf_lua_port_home_frame() (sdk/lua/kf_lua_
@@ -228,6 +297,17 @@ if kf.home_screen_active() then
     local was_asleep = false -- notices the wake edge, to put the bedding away
     local bed_x, bed_y = 0, 0
 
+    -- Task 8: 1 Hz blink timing for want_bang. Visible half the cycle,
+    -- hidden the other half -- a plain on/off blink, unlike ZZZ's slower
+    -- "mostly on, brief pause" cadence above, because this is meant to read
+    -- as urgent rather than restful. Reset to a fresh, visible-first cycle
+    -- the frame a want first appears (was_wanting flips false -> true), so
+    -- an attention signal never starts invisible.
+    local kWantBangCyclePeriodMs = 1000
+    local kWantBangVisibleMs = 500
+    local want_elapsed_ms = 0
+    local was_wanting = false
+
     function on_home_frame(dt_ms)
         fill[1]:size(pet.hunger() * 190 // 100000, 8)
         fill[2]:size(pet.happiness() * 190 // 100000, 8)
@@ -238,6 +318,9 @@ if kf.home_screen_active() then
             body:hide()
             futon:hide()
             zzz:hide()
+            want_bang:hide()
+            was_wanting = false
+            paint_guide(nil)
         else
             shrine:hide()
             local poops = pet.poops()
@@ -295,27 +378,72 @@ if kf.home_screen_active() then
                     zzz:hide()
                 end
                 zzz:move(bed_x + 30, math.max(0, bed_y - 10))
-            else
-                -- Not tucked in -- whether wide awake or asleep on its own
-                -- (kf_creature_presenter.cpp freezes the wander the
-                -- instant pet.asleep() is true, so it is drawn "settled
-                -- where it stands"), creature.sprite() already resolves
-                -- the right pose either way (kf_creature_pose_for()).
-                futon:hide()
-                body:show()
-                body:sprite(creature.sprite())
-                body:flip(creature.mirrored())
-                body:frame(creature.frame())
-                body:move(creature.x(), creature.y())
 
-                -- The drowsy cue: signals tucking in is available. A
-                -- nicety, not a duty -- static, not blinking (blinking is
-                -- reserved for "already tucked in", above).
-                if drowsy then
-                    zzz:show()
-                    zzz:move(creature.x() + 30, math.max(0, creature.y() - 10))
+                -- Nothing to want while settling in for the night --
+                -- pet.wants() would already read nil the instant Core's own
+                -- asleep actually flips true, but tucked_in is decorative
+                -- and can be true a little earlier than that (the drowsy
+                -- hour, still technically awake), so this is cleared
+                -- explicitly rather than left to coincide.
+                want_bang:hide()
+                was_wanting = false
+                paint_guide(nil)
+            else
+                local want = pet.wants()
+                if want then
+                    -- Task 8: the attention signal. The creature stops
+                    -- wandering, moves to the front-centre of the field and
+                    -- holds the "objecting" pose -- art that already exists
+                    -- for every stage but egg (which never reaches this
+                    -- branch in practice; see want_stage_token() above).
+                    futon:hide()
+                    body:show()
+                    body:sprite(want_stage_token() .. "_objecting_s")
+                    body:flip(false)
+                    body:frame(0) -- objecting is a single-frame pose
+                    body:move(kWantPoseX, kWantPoseY)
+
+                    if not was_wanting then
+                        want_elapsed_ms = 0
+                    end
+                    was_wanting = true
+                    want_elapsed_ms = want_elapsed_ms + dt_ms
+                    if (want_elapsed_ms % kWantBangCyclePeriodMs) <
+                        kWantBangVisibleMs then
+                        want_bang:show()
+                    else
+                        want_bang:hide()
+                    end
+                    want_bang:move(kWantBangX, kWantBangY)
+
+                    paint_guide(want)
                 else
-                    zzz:hide()
+                    was_wanting = false
+                    want_bang:hide()
+                    paint_guide(nil)
+
+                    -- Whether wide awake or asleep on its own
+                    -- (kf_creature_presenter.cpp freezes the wander the
+                    -- instant pet.asleep() is true, so it is drawn "settled
+                    -- where it stands"), creature.sprite() already resolves
+                    -- the right pose either way (kf_creature_pose_for()).
+                    futon:hide()
+                    body:show()
+                    body:sprite(creature.sprite())
+                    body:flip(creature.mirrored())
+                    body:frame(creature.frame())
+                    body:move(creature.x(), creature.y())
+
+                    -- The drowsy cue: signals tucking in is available. A
+                    -- nicety, not a duty -- static, not blinking (blinking
+                    -- is reserved for "already tucked in", above).
+                    if drowsy then
+                        zzz:show()
+                        zzz:move(creature.x() + 30,
+                                 math.max(0, creature.y() - 10))
+                    else
+                        zzz:hide()
+                    end
                 end
             end
         end

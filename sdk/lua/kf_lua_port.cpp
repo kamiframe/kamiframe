@@ -417,6 +417,42 @@ int lua_pet_asleep(lua_State *L) {
     return 1;
 }
 
+/* pet.wants() -- Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md): the attention signal. An UPPERCASE STRING NAME ("FOOD",
+ * "REST", "BATH", "FLUSH", "PLAY") or nil, deliberately never the raw
+ * kf_pet_want integer -- the audience constraint (CLAUDE.md) this whole SDK
+ * is written against: "a WordPress developer or a jQuery developer" reading
+ * `if pet.wants() == "FOOD" then` should never have to go learn what a
+ * numbered enum means first, the same reasoning pet.stage() already applies
+ * to kf_pet_stage. Wraps kf_pet_session_wants(), not kf_pet_wants()
+ * directly -- see that session function's own header comment for why the
+ * hysteresis memory has to live there and not be re-invented per call
+ * here. */
+int lua_pet_wants(lua_State *L) {
+    switch (kf_pet_session_wants()) {
+    case KF_PET_WANT_FOOD:
+        lua_pushstring(L, "FOOD");
+        break;
+    case KF_PET_WANT_REST:
+        lua_pushstring(L, "REST");
+        break;
+    case KF_PET_WANT_BATH:
+        lua_pushstring(L, "BATH");
+        break;
+    case KF_PET_WANT_FLUSH:
+        lua_pushstring(L, "FLUSH");
+        break;
+    case KF_PET_WANT_PLAY:
+        lua_pushstring(L, "PLAY");
+        break;
+    case KF_PET_WANT_NONE:
+    default:
+        lua_pushnil(L);
+        break;
+    }
+    return 1;
+}
+
 int lua_pet_neglect_seconds(lua_State *L) {
     lua_pushinteger(
         L, static_cast<lua_Integer>(kf_pet_session_state()->neglect_seconds));
@@ -576,6 +612,7 @@ const luaL_Reg kKfPetFuncs[] = {
     {"sick", lua_pet_sick},
     {"dead", lua_pet_dead},
     {"asleep", lua_pet_asleep},
+    {"wants", lua_pet_wants},
     {"neglect_seconds", lua_pet_neglect_seconds},
     {"save", lua_pet_save},
     {"stage", lua_pet_stage},

@@ -7173,24 +7173,66 @@ int run_lua_vs_cpp_screen_check(void) {
                 break;
             }
         }
-        if (first_divergence >= 0) {
+        /* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md,
+         * ADR 0050): apply_screen_parity_event()'s frame-150 event drives
+         * poop_count to KF_PET_MAX_POOPS, which is now ALSO enough to cross
+         * KF_PET_WANT_FLUSH_ON_POOPS -- creature.lua answers by overriding
+         * the creature's pose/position for the attention signal, which
+         * kf_creature_screen.cpp (frozen, C++-only, not touched by this
+         * task -- see this task's own requirements list, "no new Core
+         * drawing", and ADR 0043's framing of this file as the parity
+         * reference/fallback, not an actively maintained second
+         * implementation) has no notion of at all. This is the identical
+         * situation ADR 0049 already recorded for the tucked-in futon --
+         * a Lua-only presentation feature the cpp screen does not share --
+         * except that check's timeline never sets a wall clock, so it never
+         * exercises sleep/tuck-in and the two screens simply never diverge
+         * over it. This timeline CANNOT avoid exercising FLUSH the same
+         * way, because KF_PET_MAX_POOPS is also the value this event uses
+         * to prove all 8 poop slots render -- there is no poop count that
+         * is both "at the max" and "under the flush threshold". So instead
+         * of silently losing that coverage, the divergence is named and
+         * bounded here: strict byte parity is required up to (not
+         * including) the frame where wants first has anything to say, and
+         * expected -- not merely tolerated -- from there on. */
+        constexpr long kScreenParityWantsBeginFrame = 150;
+        if (first_divergence >= 0 &&
+            first_divergence != kScreenParityWantsBeginFrame) {
             KF_LOGE(TAG,
                     "FAILED: the C++ screen and the Lua screen diverge at "
-                    "frame %ld of %ld (cpp=%016llx lua=%016llx) -- the two "
-                    "implementations painted different pixels on this "
-                    "frame or an earlier one whose difference this frame's "
-                    "hash still carries",
+                    "frame %ld of %ld, not at frame %ld where the attention "
+                    "signal is expected to start differing (cpp=%016llx "
+                    "lua=%016llx) -- either they diverged EARLIER over "
+                    "behaviour they are still supposed to share, or the "
+                    "expected divergence point itself has moved and this "
+                    "constant is now stale",
                     first_divergence, kScreenParityFrameCount,
+                    kScreenParityWantsBeginFrame,
                     static_cast<unsigned long long>(cpp_hashes[static_cast<size_t>(first_divergence)]),
                     static_cast<unsigned long long>(lua_hashes[static_cast<size_t>(first_divergence)]));
+            ok = false;
+        } else if (first_divergence < 0) {
+            KF_LOGE(TAG,
+                    "FAILED: the C++ screen and the Lua screen painted "
+                    "byte-identical framebuffers on all %ld frames, "
+                    "including frame %ld onward -- the attention signal "
+                    "was expected to make them diverge there (poop_count "
+                    "hits KF_PET_MAX_POOPS at that frame); if this now "
+                    "passes, either the want stopped firing or something "
+                    "regressed in a way that makes this assertion no "
+                    "longer prove what it claims to",
+                    kScreenParityFrameCount, kScreenParityWantsBeginFrame);
             ok = false;
         } else {
             KF_LOGI(TAG,
                     "screen-parity: the C++ screen and the Lua screen "
-                    "painted byte-identical framebuffers on all %ld "
-                    "frames (final hash %016llx)",
-                    kScreenParityFrameCount,
-                    static_cast<unsigned long long>(cpp_hashes.back()));
+                    "painted byte-identical framebuffers on frames 0-%ld, "
+                    "then diverged at frame %ld as expected (Task 8's "
+                    "attention signal, cpp-only from there: cpp=%016llx "
+                    "lua=%016llx)",
+                    kScreenParityWantsBeginFrame - 1, first_divergence,
+                    static_cast<unsigned long long>(cpp_hashes[static_cast<size_t>(first_divergence)]),
+                    static_cast<unsigned long long>(lua_hashes[static_cast<size_t>(first_divergence)]));
         }
     }
 
@@ -7392,7 +7434,7 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 45;
+constexpr int kSettingsCheckExpectedObjectCount = 46; /* +1: Task 8's want_bang */
 
 /* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -8202,6 +8244,398 @@ end
     return ok ? 0 : 1;
 }
 
+/* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md, ADR
+ * 0050): the attention signal. Three parts, same shape as run_sleep_
+ * screen_check() just above: A exercises kf_pet_wants() directly (no HAL,
+ * no Lua, no screen -- the pure Core query and its hysteresis), B proves
+ * the pet.wants() Lua binding round-trips it as the documented uppercase
+ * string, C drives the real creature.lua through Home and checks what
+ * actually lands on the panel. */
+int run_attention_signal_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* Once for the whole check, like run_sleep_screen_check()'s own top --
+     * arenas are a process-wide resource, unlike storage/power below, which
+     * each part below brings up and tears down in its own isolated
+     * directory. Needed before Part B/C ever touch Lua (kf_lua_port_init()
+     * draws from KF_ARENA_LUA_BYTES); harmless for Part A, which never
+     * does. */
+    kf_arena_init_all();
+
+    /* ---- A. kf_pet_wants() directly: purity, hysteresis, priority order,
+     * dead/asleep gating. No HAL, no session, no config even -- every
+     * threshold this function reads is a named constant, not a config
+     * field (kf/pet.h's own header comment on why). ---- */
+    {
+        kf_pet_state pet{};
+        kf_pet_init(&pet);
+        pet.stage = KF_PET_STAGE_CHILD; /* eggs never decay -- see want_stage_token()'s
+                                          * own comment in creature.lua for why EGG is
+                                          * excluded from this check entirely */
+
+        /* A1. A full, untouched creature wants nothing. */
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_NONE,
+              "a freshly-initialised, fully-fed creature wants nothing");
+
+        /* A2. Purity: two identical calls give the identical answer, and
+         * the state itself is untouched -- kf_pet_wants() reads and
+         * returns, nothing else. */
+        pet.hunger_mp = 10000u;
+        const kf_pet_millipercent hunger_before = pet.hunger_mp;
+        const kf_pet_want first = kf_pet_wants(&pet, KF_PET_WANT_NONE);
+        const kf_pet_want second = kf_pet_wants(&pet, KF_PET_WANT_NONE);
+        check(first == second && first == KF_PET_WANT_FOOD,
+              "kf_pet_wants() called twice with the same input gives the "
+              "same answer (FOOD, hunger below KF_PET_WANT_FOOD_ON_MP)");
+        check(pet.hunger_mp == hunger_before,
+              "kf_pet_wants() does not mutate state -- hunger_mp unchanged "
+              "after two calls");
+        pet.hunger_mp = KF_PET_MILLIPERCENT_MAX;
+
+        /* A3. The hysteresis assertion the plan names explicitly: a need
+         * hovering strictly BETWEEN the ON and OFF thresholds must not
+         * produce a want that changes on consecutive frames. Two identical
+         * calls, previous == FOOD both times, hunger_mp fixed in the dead
+         * zone (25000 < 30000 < 40000) -- both must answer FOOD. A
+         * single-threshold implementation (ON == OFF) would answer NONE
+         * here instead, since 30000 is not <= a collapsed threshold at or
+         * below 40000 either -- see this check's own comment further down
+         * on how that was actually verified, not assumed. */
+        pet.hunger_mp = 30000u;
+        static_assert(30000u > KF_PET_WANT_FOOD_ON_MP &&
+                          30000u < KF_PET_WANT_FOOD_OFF_MP,
+                      "the dead-zone value below must sit strictly between "
+                      "the ON and OFF thresholds for A3 to test anything");
+        const kf_pet_want dead_zone_1 =
+            kf_pet_wants(&pet, KF_PET_WANT_FOOD);
+        const kf_pet_want dead_zone_2 =
+            kf_pet_wants(&pet, KF_PET_WANT_FOOD);
+        check(dead_zone_1 == KF_PET_WANT_FOOD && dead_zone_2 == KF_PET_WANT_FOOD,
+              "hunger hovering in the dead zone between ON and OFF, with "
+              "FOOD already active, stays FOOD on two consecutive calls -- "
+              "the hysteresis assertion");
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_NONE,
+              "the SAME dead-zone hunger value, with nothing previously "
+              "wanting, does NOT freshly trigger FOOD -- a fresh crossing "
+              "needs the full ON threshold, only recovery gets the more "
+              "generous OFF one");
+        pet.hunger_mp = KF_PET_MILLIPERCENT_MAX;
+
+        /* A4. Feeding clears it -- bounded loop rather than one call, since
+         * how much one kf_pet_feed() restores depends on a reaction this
+         * check does not control (kf_pet_reaction_to()); every reaction
+         * restores a positive amount and kf_pet_feed() clamps at MAX, so
+         * this is guaranteed to terminate well inside the bound. */
+        const kf_pet_config config = kf_pet_default_config();
+        pet.hunger_mp = 5000u;
+        kf_pet_want w = kf_pet_wants(&pet, KF_PET_WANT_NONE);
+        check(w == KF_PET_WANT_FOOD, "a hungry pet (5000 mp) reports FOOD");
+        int feeds = 0;
+        while (w == KF_PET_WANT_FOOD && feeds < 20) {
+            kf_pet_feed(&pet, &config, static_cast<uint8_t>(feeds % 3));
+            w = kf_pet_wants(&pet, w);
+            ++feeds;
+        }
+        check(w != KF_PET_WANT_FOOD && feeds < 20,
+              "feeding repeatedly eventually clears FOOD (within 20 feeds "
+              "-- kf_pet_feed() clamps at KF_PET_MILLIPERCENT_MAX so this "
+              "is a hard bound, not a hopeful one)");
+
+        /* A5. Priority order: FOOD, REST, BATH, FLUSH, PLAY. Every need
+         * unmet at once; only the highest-priority one should be reported. */
+        pet.hunger_mp = 0u;
+        pet.energy_mp = 0u;
+        pet.happiness_mp = 0u;
+        pet.dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
+        pet.poop_count = KF_PET_MAX_POOPS;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_FOOD,
+              "priority: FOOD wins when every want is active at once");
+        pet.hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_REST,
+              "priority: REST wins once FOOD is satisfied");
+        pet.energy_mp = KF_PET_MILLIPERCENT_MAX;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_BATH,
+              "priority: BATH wins once FOOD and REST are satisfied");
+        pet.dirtiness_mp = 0u;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_FLUSH,
+              "priority: FLUSH wins once FOOD, REST and BATH are satisfied");
+        pet.poop_count = 0u;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_PLAY,
+              "priority: PLAY is last -- only reported once every other "
+              "want is satisfied");
+        pet.happiness_mp = KF_PET_MILLIPERCENT_MAX;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_NONE,
+              "sanity: every need satisfied again reports NONE");
+
+        /* A6. BATH and FLUSH: inverted-direction and integer-count wants,
+         * checked on their own rather than only as part of A5's combined
+         * scenario. */
+        pet.dirtiness_mp = KF_PET_WANT_BATH_ON_MP;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_BATH,
+              "dirtiness at KF_PET_WANT_BATH_ON_MP reports BATH");
+        pet.dirtiness_mp = KF_PET_WANT_BATH_OFF_MP + 1u; /* dead zone: still dirty enough to hold */
+        check(kf_pet_wants(&pet, KF_PET_WANT_BATH) == KF_PET_WANT_BATH,
+              "dirtiness back in the dead zone, with BATH already active, "
+              "stays BATH (bath's own hysteresis)");
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_NONE,
+              "the same dead-zone dirtiness, nothing previously wanting, "
+              "does not freshly trigger BATH");
+        pet.dirtiness_mp = 0u;
+
+        pet.poop_count = KF_PET_WANT_FLUSH_ON_POOPS;
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_FLUSH,
+              "poop_count at KF_PET_WANT_FLUSH_ON_POOPS reports FLUSH");
+        pet.poop_count = KF_PET_WANT_FLUSH_OFF_POOPS + 1u;
+        check(kf_pet_wants(&pet, KF_PET_WANT_FLUSH) == KF_PET_WANT_FLUSH,
+              "poop_count back in FLUSH's own dead zone, with FLUSH "
+              "already active, stays FLUSH");
+        check(kf_pet_wants(&pet, KF_PET_WANT_NONE) == KF_PET_WANT_NONE,
+              "the same dead-zone poop_count, nothing previously wanting, "
+              "does not freshly trigger FLUSH");
+        pet.poop_count = 0u;
+
+        /* A7. Dead or asleep: NONE unconditionally, even at the hungriest. */
+        pet.hunger_mp = 0u;
+        pet.dead = true;
+        check(kf_pet_wants(&pet, KF_PET_WANT_FOOD) == KF_PET_WANT_NONE,
+              "a dead creature wants nothing, even mid-hysteresis");
+        pet.dead = false;
+        pet.asleep = true;
+        check(kf_pet_wants(&pet, KF_PET_WANT_FOOD) == KF_PET_WANT_NONE,
+              "an asleep creature wants nothing, even mid-hysteresis -- "
+              "Task 6 (ADR 0048) landed specifically so this is expressible");
+        pet.asleep = false;
+    }
+
+    /* ---- B. pet.wants() Lua binding -- an uppercase string name, or nil,
+     * never the raw integer. Two throwaway probe scripts (same technique
+     * run_sleep_screen_check() uses for pet.asleep()), reporting an integer
+     * CODE (0=nil, 1=FOOD..5=PLAY, matching kf_pet_want's own numbering)
+     * because kf.report() only carries an integer. ---- */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-attention-signal-" +
+             std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (part B)");
+        check(kf_power_init() == KF_OK, "kf_power_init (part B)");
+
+        constexpr const char *kWantsProbeScript = R"lua(
+local kCode = {FOOD = 1, REST = 2, BATH = 3, FLUSH = 4, PLAY = 5}
+function on_frame(dt_ms)
+    local w = pet.wants()
+    kf.report(w and kCode[w] or 0)
+end
+)lua";
+
+        kf_pet_session_init();
+        kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+
+        pet->stage = KF_PET_STAGE_CHILD;
+        check(kf_lua_port_init(kWantsProbeScript, "=wants_probe_none"),
+              "the wants-probe script loads");
+        kf_lua_port_frame(0);
+        check(kf_lua_port_last_report() == 0,
+              "pet.wants() reads nil (reported as 0) for a full creature");
+        kf_lua_port_shutdown();
+
+        pet->hunger_mp = 5000u;
+        check(kf_lua_port_init(kWantsProbeScript, "=wants_probe_food"),
+              "the wants-probe script reloads");
+        kf_lua_port_frame(0);
+        check(kf_lua_port_last_report() == 1,
+              "pet.wants() reads \"FOOD\" (reported as 1) for a hungry "
+              "creature");
+        kf_lua_port_shutdown();
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+
+        kf_pet_session_shutdown();
+        kf_power_shutdown();
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    /* ---- C. The real interactive app: Home, the real creature.lua --
+     * exactly screen_isolation_check's/run_sleep_screen_check()'s own
+     * drive_frame() pattern, so every assertion below exercises the actual
+     * demo script third-party developers will read. ---- */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-attention-signal-screen-" +
+             std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (part C)");
+        check(kf_power_init() == KF_OK, "kf_power_init (part C)");
+
+        constexpr uint32_t kFixedDtMs =
+            static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+        kf_fb_init();
+        kf_pet_session_init();
+        kf_screen_nav_init();
+        /* Noon, well outside the drowsy hour/night window -- this check has
+         * nothing to do with sleep, and an unrelated tuck-in cue would only
+         * make the pixel assertions below harder to reason about. */
+        kf_host_time_set_wall_fixed(1767268800); /* 2026-01-01T12:00:00Z */
+
+#ifdef KF_HOME_SCREEN_LUA
+        check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                                kKfLuaDemoCreatureScriptChunkName),
+              "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+        kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+        pet->stage = KF_PET_STAGE_CHILD; /* has real objecting art, unlike EGG */
+
+        auto drive_frame = [&](uint32_t dt_ms) {
+            kf_screen_nav_frame(dt_ms);
+            kf_lua_port_frame(0);
+            kf_scene_commit();
+        };
+        auto pixel_at = [&](int16_t x, int16_t y) -> kf_color {
+            return kf_fb_pixels()[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                                   static_cast<size_t>(x)];
+        };
+
+        for (int i = 0; i < 20; ++i) {
+            drive_frame(kFixedDtMs); /* wander a while, nothing wanted yet */
+        }
+        const kf_color home_bg = pixel_at(0, 0);
+
+        /* C1: the FEED guide entry ("1:FEED", slot 1) is NOT inverted while
+         * nothing is wanted. Sampled at (10,302) -- INSIDE the label's own
+         * drawn bounding box (creature.lua centres "1:FEED", 6 chars * 6px
+         * = 36px wide, inside its 48px slot: x = 0 + (48-36)//2 = 6, so the
+         * label spans x=[6,42), y=[300,308)) -- kf_text_draw's own bg fill
+         * covers the WHOLE CELL of every character, glyph pixel or not
+         * (kf/font.h's own header comment), so any pixel in that box shows
+         * the label's current colour scheme regardless of which character
+         * glyph sits under it. Outside that box (e.g. x=2) is untouched by
+         * this object and would read as background always, proving
+         * nothing. */
+        check(pixel_at(10, 302) == home_bg,
+              "sanity: the FEED guide slot shows the ordinary background "
+              "before anything is wanted (the label's own background fill "
+              "matches Home's bg)");
+
+        /* C2: make the creature hungry -- FOOD becomes the active want. */
+        pet->hunger_mp = 5000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs); /* let creature.lua register it */
+        }
+
+        /* C3: the creature holds position at the front-centre pose spot --
+         * kWantPoseX/Y in creature.lua (96, 212) -- rather than wherever
+         * the wander happened to be. Sampled well inside the 48x48 sprite
+         * (24,24 into it) so this is robust to the exact placeholder/art
+         * shape drawn there. */
+        check(pixel_at(96 + 24, 212 + 24) != home_bg,
+              "wanting: something is drawn at the front-centre held pose "
+              "position (96,212) -- the creature's own art once landed, a "
+              "placeholder box until then, same as every other missing-"
+              "sprite fallback in this pack");
+
+        /* C4: the FEED guide entry is now inverted -- its own background
+         * fill (see C1's comment) is BLACK instead of Home's pale bg. */
+        check(pixel_at(10, 302) != home_bg,
+              "wanting FOOD: the \"1:FEED\" guide entry is inverted -- its "
+              "own background fill no longer matches Home's background");
+
+        /* C5: only FEED is inverted, not the others -- PLAY's slot (2)
+         * still reads as ordinary background. "2:PLAY" is 6 chars, centred
+         * in slot 2 (x=[48,96)): x = 48 + (48-36)//2 = 54, label spans
+         * x=[54,90) -- sampled at (60,302), inside that box. */
+        check(pixel_at(60, 302) == home_bg,
+              "wanting FOOD: the OTHER guide entries (e.g. \"2:PLAY\") stay "
+              "un-inverted -- only the wanted action's own slot changes");
+
+        /* C6: the "!" blinks at 1 Hz -- visible for part of the 1000 ms
+         * cycle, hidden for the rest. want_bang sits at (kWantBangX,
+         * kWantBangY) = (117,196) in creature.lua; its glyph (this task's
+         * new GLYPHS["!"] in tools/make_font.py) lights column 2 of its
+         * 5-wide glyph on rows 1-4, so (119,197) is a genuinely LIT pixel
+         * -- sampling the cell's own margin (e.g. column 0) would read
+         * background-fill-coloured whether the bang is shown or hidden
+         * (kf_text_draw's bg fills the whole cell, not just the glyph),
+         * proving nothing either way. was_wanting just became true in
+         * C2/C3 above, so this cycle started fresh and visible at 0 ms. */
+        check(pixel_at(119, 197) != home_bg,
+              "wanting: the \"!\" is visible partway through its own "
+              "blink cycle (just became active, so this samples the "
+              "visible half)");
+        for (int i = 0; i < 16; ++i) {
+            drive_frame(kFixedDtMs); /* +16 frames * 33ms: ~627ms total elapsed
+                                       * since the want began -- past the 500ms
+                                       * visible window, still short of the next
+                                       * 1000ms wrap */
+        }
+        check(pixel_at(119, 197) == home_bg,
+              "wanting: the \"!\" is hidden later in the SAME 1000 ms "
+              "cycle -- it is actually blinking, not a static mark");
+
+        /* C7: feeding clears the want -- the guide entry un-inverts and
+         * the "!" stops showing even mid-cycle. */
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(pixel_at(10, 302) == home_bg,
+              "fed to full: the FEED guide entry un-inverts");
+        check(pixel_at(119, 197) == home_bg,
+              "fed to full: the \"!\" is gone, not merely mid-blink");
+
+        /* C8: dirty-rect budget with a want active -- the specific number
+         * this task's own brief asks to be measured and reported, not
+         * assumed. A 1 Hz "!" plus an inverted guide entry both dirty a
+         * rect every second the blink flips, on top of everything Home's
+         * ordinary wander/bars already cost. */
+        pet->hunger_mp = 5000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs); /* absorb the transition into "wanting" */
+        }
+        size_t worst_rects = 0;
+        for (int i = 0; i < 300; ++i) {
+            kf_fb_clear_dirty();
+            drive_frame(kFixedDtMs);
+            const size_t count =
+                static_cast<size_t>(kf_fb_dirty_rects().count);
+            if (count > worst_rects) {
+                worst_rects = count;
+            }
+        }
+        KF_LOGI(TAG,
+                "attention-signal: worst-case dirty rects with a want "
+                "active = %zu (KF_MAX_DIRTY_RECTS = %d)",
+                worst_rects, KF_MAX_DIRTY_RECTS);
+        check(worst_rects <= KF_MAX_DIRTY_RECTS,
+              "Home with an active want stays within the dirty-rect "
+              "budget");
+
+#ifdef KF_HOME_SCREEN_LUA
+        kf_lua_port_shutdown();
+#endif
+        kf_pet_session_shutdown();
+        kf_power_shutdown();
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -8256,6 +8690,7 @@ int main(int argc, char *argv[]) {
     bool verify_screen_isolation = false;
     bool verify_sleep = false;
     bool verify_sleep_screen = false;
+    bool verify_attention_signal = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -8378,6 +8813,8 @@ int main(int argc, char *argv[]) {
             verify_sleep = true;
         } else if (std::strcmp(argv[i], "--verify-sleep-screen") == 0) {
             verify_sleep_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-attention-signal") == 0) {
+            verify_attention_signal = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -8430,7 +8867,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-settings-screen\n"
                         "kamiframe-headless --verify-screen-isolation\n"
                         "kamiframe-headless --verify-sleep\n"
-                        "kamiframe-headless --verify-sleep-screen\n");
+                        "kamiframe-headless --verify-sleep-screen\n"
+                        "kamiframe-headless --verify-attention-signal\n");
             return 0;
         }
     }
@@ -8652,6 +9090,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_sleep_screen) {
         return run_sleep_screen_check();
+    }
+
+    if (verify_attention_signal) {
+        return run_attention_signal_check();
     }
 
     kf_app_init(mode);

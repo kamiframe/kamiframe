@@ -113,6 +113,18 @@ void kf_pet_session_flush(void);
  * superpowers/plans/2026-08-13-screens-clock-sleep.md. */
 void kf_pet_session_wake(void);
 
+/* The attention signal (Task 8, docs/superpowers/plans/2026-08-13-screens-
+ * clock-sleep.md): wraps kf/pet.h's pure kf_pet_wants() with the one piece
+ * of memory hysteresis needs -- what this session reported last time --
+ * held here rather than in kf_pet_state, so it never touches the save
+ * format (see kf_pet_wants()'s own header comment on why). Reset to
+ * KF_PET_WANT_NONE by kf_pet_session_init() and by the two DEBUG-gated
+ * functions below that fabricate a fresh state (_debug_reset(),
+ * _debug_jump_to_stage()) -- a fresh session or a fabricated jump has no
+ * real "was already asking" history to carry forward, the same reasoning
+ * those two already apply to the debug snapshot ring. */
+kf_pet_want kf_pet_session_wants(void);
+
 /* Persists the active pet's state now, via kf_pet_save(). Called
  * automatically by kf_pet_session_shutdown(), and exposed here too (and to
  * Lua, via the pet.save() binding) so a caller can save at a meaningful

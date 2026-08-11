@@ -10,8 +10,10 @@
  * divides the 240x320 panel evenly: 40 columns by 40 rows of text space,
  * with no partial cell at either edge.
  *
- * Character set: space, 0-9, A-Z (uppercase only), and the punctuation the
- * constraint HUD needs: . , : - / % + ( ). Anything else in a string draws
+ * Character set: space, 0-9, A-Z (uppercase only), the punctuation the
+ * constraint HUD needs: . , : - / % + ( ), and "!" (added for Task 8 of
+ * docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's attention
+ * signal). Anything else in a string draws
  * as a blank cell, LOWERCASE LETTERS INCLUDED -- this module itself does no
  * case-folding. That matters well beyond the HUD this set was originally
  * sized for: every kf.text() call a Lua cartridge makes (sdk/lua/

@@ -135,6 +135,10 @@ struct Session {
     uint64_t pending_ms = 0;
     bool ready = false;
 
+    /* Task 8's attention-signal memory -- see kf_pet_session_wants()'s own
+     * header comment in kf_pet_session.h. Session-only, never saved. */
+    kf_pet_want last_want = KF_PET_WANT_NONE;
+
 #if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
     /* Debug-only: the timeline snapshot ring, gated on TOOLS specifically
      * (not CONTROLS -- see kf_pet_session.h's "DEBUG ONLY" section).
@@ -210,6 +214,7 @@ void kf_pet_session_init(void) {
 
     g.last_call_us = 0;
     g.pending_ms = 0;
+    g.last_want = KF_PET_WANT_NONE;
     g.ready = true;
     debug_snapshot_reset();
 }
@@ -292,6 +297,13 @@ void kf_pet_session_wake(void) {
     debug_snapshot_push();
 }
 
+kf_pet_want kf_pet_session_wants(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_wants called before kf_pet_session_init");
+    g.last_want = kf_pet_wants(&g.state, g.last_want);
+    return g.last_want;
+}
+
 void kf_pet_session_save(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_save called before kf_pet_session_init");
@@ -331,6 +343,7 @@ void kf_pet_session_debug_reset(void) {
               "kf_pet_session_debug_reset called before kf_pet_session_init");
     kf_pet_init(&g.state);
     g.pending_ms = 0;
+    g.last_want = KF_PET_WANT_NONE;
     debug_snapshot_reset();
 }
 
@@ -384,6 +397,7 @@ void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
     }
 
     g.pending_ms = 0;
+    g.last_want = KF_PET_WANT_NONE;
     /* Same call kf_pet_session_debug_reset() makes above, for the identical
      * reason: a jump is a fabricated state with no continuity from whatever
      * the pet was doing a moment before, not a new point on the same

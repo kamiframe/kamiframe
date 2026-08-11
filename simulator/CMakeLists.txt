@@ -1017,6 +1017,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_sleep_screen_check().
     add_test(NAME sleep_screen_check
              COMMAND kamiframe-headless --verify-sleep-screen)
+
+    # Task 8 of the screens/clock/sleep plan: the attention signal --
+    # kf_pet_wants()'s purity/hysteresis/priority order/dead-and-asleep
+    # gating direct against Core, pet.wants() as a Lua-bound uppercase
+    # string (or nil), and creature.lua's three presentation layers (held
+    # pose/position, the 1 Hz "!", the inverted care-guide entry) driven
+    # through the real Home screen with pixel-level assertions, plus the
+    # worst-case dirty-rect count while a want is active. See
+    # headless_main.cpp's run_attention_signal_check().
+    add_test(NAME attention_signal_check
+             COMMAND kamiframe-headless --verify-attention-signal)
 endif()
 
 # ---------------------------------------------------------------------------

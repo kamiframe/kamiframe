@@ -22,7 +22,7 @@ named risk; the branch is green after every one.
 `kamiframe-headless --verify-*` check modes, `tools/kf_debug.py` over UART at
 115200 for the bench work.
 
-## Status: Tasks 1–4, **6 and 7** landed; Task 5 partly done; Task 8 not started
+## Status: Tasks 1–4, **6, 7 and 8** landed; Task 5 partly done
 
 **Updated 2026-08-11.** Tasks 1, 2, 3 and **4** (Lua time API, Settings
 screen with an editable 12-hour clock) have landed and Task 4 is confirmed
@@ -407,14 +407,32 @@ actually proves the code, because it is the only way to see `osf == 1`, the
 wall clock correctly staying unset, and offline fast-forward correctly
 *declining* to age the pet by a garbage interval.
 
-### 5. What does the attention signal actually do? — A Core query, a game-side behaviour, and nothing that waits on hardware.
+### 5. What does the attention signal actually do? — **Landed** (Task 8, ADR 0050). A Core query, a game-side behaviour, and nothing that waits on hardware.
 
-`kf_pet_wants(state, config)` returns one value from a small enum
-(`NONE / FOOD / PLAY / REST / BATH / FLUSH / MEDICINE`), computed from the
-thresholds the needs already cross, with a priority order and **hysteresis** so
-it does not flap on and off at the boundary. It is a pure query over
-`kf_pet_state` — no new save field, no new state to migrate — the same shape
-`kf_pet_dominant_care_trait()` already has.
+**This section's enum listing was stale and has been corrected below.**
+It originally read `NONE / FOOD / PLAY / REST / BATH / FLUSH / MEDICINE`,
+contradicting Task 8's own requirements list two sections later ("There is
+no `MEDICINE` — nothing in Core cures sickness directly, so do not invent
+an action to want"). The later, more specific instruction is what shipped;
+this line was the stale one and is fixed here rather than left to
+contradict itself for the next reader — see ADR 0050 for the full
+reasoning and CLAUDE.md's own warning about exactly this failure mode.
+
+`kf_pet_wants(state, previous)` returns one value from a small enum
+(`NONE / FOOD / REST / BATH / FLUSH / PLAY`), computed from the thresholds
+the needs already cross, with a priority order and **hysteresis** so it
+does not flap on and off at the boundary. It is a pure query over
+`kf_pet_state` — no new save field, no new state to migrate — the same
+*shape* `kf_pet_dominant_care_trait()` already has, though not literally
+the same signature: real hysteresis needs memory of what was true a moment
+ago, and rather than store that in Core (which the "no new save field"
+requirement rules out), the caller's own last answer is threaded back in
+as `previous` — see ADR 0050's "Real hysteresis without a new save field"
+for why this is the only way to satisfy "pure," "hysteretic," and "no new
+persisted state" all at once. `config` was never actually needed — every
+threshold turned out to be a named constant in `kf/pet.h`, not a
+`kf_pet_config` field (see ADR 0050 section 3 for why), so the shipped
+signature takes `state` and `previous`, not `state` and `config`.
 
 The behaviour is the demo script's, and it is three things stacked so it reads
 at a glance across a room:
@@ -1362,7 +1380,7 @@ reworded away.
 
 ---
 
-### Task 8: The attention signal
+### Task 8: The attention signal — LANDED (2026-08-11), ADR 0050
 
 **Requirements:**
 
@@ -1377,36 +1395,53 @@ reworded away.
 > order are a starting point, not a settled design** — they are feel, and
 > Chris judges feel on the board.
 
-- [ ] `kf_pet_wants()` in Core: a **pure query** — it reads `kf_pet_state` and
+- [x] `kf_pet_wants()` in Core: a **pure query** — it reads `kf_pet_state` and
       returns; it must not mutate, and it must not be the thing that decides
-      anything. A small enum, a priority order, and **hysteresis**.
-- [ ] **The wants map onto the five things a player can actually do**, because
+      anything. A small enum, a priority order, and **hysteresis**. Shipped
+      as `kf_pet_wants(const kf_pet_state *state, kf_pet_want previous)` —
+      not `(state, config)` as this section's earlier "five questions"
+      answer sketched; see that section's own correction above for why
+      `previous` exists and `config` turned out not to be needed. Verified
+      pure by breaking it (a stray mutation added, watched fail, removed) —
+      see ADR 0050's non-vacuity table.
+- [x] **The wants map onto the five things a player can actually do**, because
       a want the player cannot satisfy is a bug: `FOOD` (feed), `PLAY` (play),
       `REST` (rest), `BATH` (bath), `FLUSH` (clean up poops). Verified against
       the Lua surface — `pet.feed/play/rest/bath/flush` all exist. Note
       `flush` is deliberately **not** one of the four `kf_pet_care_action`
       values; do not force it into that enum to make the mapping tidier.
       **There is no `MEDICINE`** — nothing in Core cures sickness directly, so
-      do not invent an action to want.
-- [ ] **Priority order, when more than one is unmet.** Starting point, in
+      do not invent an action to want. (This bullet was already correct; the
+      contradiction was in this section's own earlier "five questions"
+      answer, fixed above.)
+- [x] **Priority order, when more than one is unmet.** Starting point, in
       order: `FOOD`, `REST`, `BATH`, `FLUSH`, `PLAY`. The reasoning is that
       the first three are what neglect actually punishes, and `PLAY` is last
       because a creature that is hungry, exhausted and filthy asking to play
       reads as broken. A defensible alternative is "whichever need is most
       severe right now, with this list only as a tiebreak" — if you build that
-      instead, say so and say why.
-- [ ] **Hysteresis, concretely.** A want switches ON when its need crosses a
+      instead, say so and say why. **Kept as the fixed order above** — a
+      severity-based tiebreak was considered and set aside: the plan itself
+      frames it as merely "a defensible alternative," and a fixed order is
+      simpler for a script author or player to learn once. Verified in
+      priority by breaking it (FOOD/REST swapped, watched fail, restored).
+- [x] **Hysteresis, concretely.** A want switches ON when its need crosses a
       threshold and OFF only when it recovers past a **second, more generous**
       threshold. One `_ON`/`_OFF` pair per want, named constants, with the gap
       wide enough that ordinary decay cannot flip it twice in a second. A want
       that toggles across a single boundary is worse than no want at all,
-      which is the whole reason this bullet exists.
-- [ ] Bound to Lua as `pet.wants()` returning an **uppercase string name**
+      which is the whole reason this bullet exists. Shipped thresholds and
+      the reasoning behind each (including where this task disagreed with
+      the "needs attention at 70%" framing floated elsewhere in this plan):
+      ADR 0050 section 3. All six are exactly what this bullet calls them —
+      a starting point, not a settled design.
+- [x] Bound to Lua as `pet.wants()` returning an **uppercase string name**
       (`"FOOD"`, `"PLAY"`, …) or `nil` when the creature wants nothing — so a
       script author never touches an integer enum. Match the existing
       `pet.*` binding style.
-- [ ] **No want fires while asleep.** Task 6 runs first for exactly this reason.
-- [ ] The three presentation layers in `creature.lua`: pose and position, the
+- [x] **No want fires while asleep.** Task 6 runs first for exactly this reason.
+      (Also gated on `dead`, matching every other care action's existing guard.)
+- [x] The three presentation layers in `creature.lua`: pose and position, the
       1 Hz pulsing `!`, and the inverted care-guide entry naming the button.
       All three are scene setters; no new Core drawing. **Before this can
       draw `!`, add the glyph.** `hakoniwaos/src/font_data.h`'s `0x21 '!'`
@@ -1415,15 +1450,41 @@ reworded away.
       (`python3 tools/make_font.py > hakoniwaos/src/font_data.h`) as the
       first step of this task. Do not substitute a different existing glyph
       without checking with Chris first; the font's character set is
-      otherwise unchanged.
-- [ ] A check that a hungry pet reports `FOOD`, that feeding clears it, and that
+      otherwise unchanged. **Found in passing, not named by this bullet:**
+      `sdk/lua/kf_lua_scene.cpp` keeps its own separate copy of the
+      supported-character set (`kSupportedPunctuation`) purely for its
+      "log once, unsupported character" warning — adding the glyph to the
+      font alone would have left that warning firing falsely for `!` forever.
+      Fixed in the same commit; see ADR 0050 section 5.
+- [x] A check that a hungry pet reports `FOOD`, that feeding clears it, and that
       a need hovering at the threshold does **not** produce a want that changes
       on consecutive frames. The last one is the hysteresis assertion and it is
-      the only one that can fail subtly.
-- [ ] **Nothing here waits on audio or haptics.** `kf/hal/audio.h` does not
+      the only one that can fail subtly. `attention_signal_check`
+      (`simulator/src/headless/headless_main.cpp`'s
+      `run_attention_signal_check()`) — Core-level purity/hysteresis/
+      priority/gating, the `pet.wants()` Lua binding, and the real
+      `creature.lua` screen (pose/position, guide inversion, the blink, the
+      worst-case dirty-rect count). Every new assertion broken and watched
+      fail — table in ADR 0050.
+- [x] **Nothing here waits on audio or haptics.** `kf/hal/audio.h` does not
       exist; the buzzer is on the target spec and is not built. Record in the
       ADR that the future sound hook is the `NONE → something` transition and
-      that it is one call site, then stop.
+      that it is one call site, then stop. Recorded: ADR 0050 section 8 —
+      the hook is `creature.lua`'s own `want`/`was_wanting` locals, already
+      isolated to one place.
+
+**One thing this task's requirements list did not anticipate, found while
+implementing:** `run_lua_vs_cpp_screen_check()` (`screen_parity_check`)
+already drives `poop_count` to `KF_PET_MAX_POOPS` at frame 150 to prove
+all 8 poop-slot boxes render — a value that is now also enough to cross
+`KF_PET_WANT_FLUSH_ON_POOPS`, which the frozen C++ Home screen
+(`kf_creature_screen.cpp`) has no notion of at all. Structurally
+unavoidable (there is no poop count that is both "at the max" and "under
+the flush threshold"), so the check was updated to name and bound the
+resulting divergence rather than silently lose coverage or start
+asserting less than it claims to — see ADR 0050 section 7. The measured
+Home+Info+Settings live-object count (`settings_screen_check`) also moved
+from 45 to 46, the one new `want_bang` scene object.
 
 ---
 

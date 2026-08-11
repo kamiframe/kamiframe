@@ -118,7 +118,8 @@ int8_t clamp_i8(lua_Integer v) {
 /* ---------------------------------------------------------------------
  * Text: uppercase, and warn once per distinct unsupported character.
  *
- * kf/font.h's glyph set is space, 0-9, A-Z, and ". , : - / % + ( )" --
+ * kf/font.h's glyph set is space, 0-9, A-Z, ". , : - / % + ( )", and "!"
+ * (Task 8, docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) --
  * uppercase only (see that header's own comment on why lowercase was left
  * out). A script that never learns this would see its own text render as a
  * row of blank cells, which is exactly the silent failure the audience
@@ -127,7 +128,7 @@ int8_t clamp_i8(lua_Integer v) {
  * draw, logs once (not once per frame) naming the character.
  * --------------------------------------------------------------------- */
 
-constexpr const char *kSupportedPunctuation = ".,:-/%+()";
+constexpr const char *kSupportedPunctuation = ".,:-/%+()!";
 
 bool char_supported(char c) {
     if (c == ' ') return true;
