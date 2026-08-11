@@ -14,6 +14,7 @@
 set(HAKONIWAOS_SRCS
     src/arena.cpp
     src/blit.cpp
+    src/clock.cpp
     src/framebuffer.cpp
     src/font.cpp
     src/rng.cpp
