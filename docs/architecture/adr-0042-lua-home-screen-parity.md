@@ -153,3 +153,13 @@ distinction ADR 0040 and ADR 0041 already draw. The Home re-entry gap
 above is confirmed only on desktop (`screen_nav_check`); its effect on a
 real device's KFDBG-driven MENU/B navigation has not been observed
 directly.
+
+## Superseded in part
+
+**"`KF_HOME_SCREEN=cpp|lua`, defaulting to `cpp`"** (Context, above) is
+superseded by ADR 0043: `KF_HOME_SCREEN` now defaults to `lua` on both
+build systems, closed by ADR 0043 exactly as this document's own "Closed by
+ADR 0043" note (under "Known gap") anticipated. References elsewhere in
+this ADR to "the default `KF_HOME_SCREEN=cpp` build" describe the state as
+it stood before that flip, which is when this ADR's own findings apply, and
+are left as written.
