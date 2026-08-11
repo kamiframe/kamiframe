@@ -149,6 +149,14 @@ not" is still accurate as far as it goes (it remains true that neither is
 gated by that specific flag); what changed is that both are now gated by
 `KF_DBG_MUTATE_ENABLE` instead.
 
+**"`tools/kf_panel.py` does not yet expose these three commands"** ("What
+this slice does NOT reach" and "Not verified", below) is also superseded:
+`kf_panel.py` now sends `ADVANCE`/`RESET`/`MULT` from real UI controls
+("Time controls" section) that work against real hardware, not just the
+simulator. This ADR's own boundary (that file was a concurrent task's) is
+what made the gap correct to name here rather than close it; it has since
+been closed by that other task.
+
 ## What this slice does NOT reach
 
 - **No GUI.** `tools/kf_panel.py` is owned by a separate, concurrent task;

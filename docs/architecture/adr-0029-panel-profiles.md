@@ -109,10 +109,14 @@ ST7789 profile is written, and is reasoned rather than proven.
 
 ## Not verified
 
-**This driver has never driven a panel.** The values are proven; the code
-that sends them is not. The diagnostic that proved them is a separate
-program, and "the same table, sent by different code" is exactly the kind of
-gap that hides a bug.
+**This driver had never driven a panel, as of this ADR.** The values were
+proven; the code that sends them was not, at the time. **Superseded:** ADR
+0032 (one day later, 2026-08-09) opens "Once the pet was rendering on real
+hardware" — this driver has since driven the ILI9341 panel for real. Only
+this blanket first sentence is superseded; the rest of this paragraph's
+point (the diagnostic that proved the values is a separate program from the
+driver that sends them, and matching tables sent by different code is a real
+gap class) is still a fair thing to have flagged at the time.
 
 The ST7789 profile is unverified in every respect — no hardware exists to
 test it against. Expect to correct something in it on the first real run.
