@@ -476,13 +476,35 @@ def validate_manifest(raw: dict) -> list[str]:
         seen_names.add(spec.sprite_name)
 
     # Every entry's name must fit the pack's 32-byte field, and its frame
-    # numbers must run 1..frame_count with no gap: a missing frame in the
-    # middle would otherwise silently shorten an animation (the pack format
-    # addresses frame k by arithmetic, not by name, so there is no "frame 3
-    # is absent" marker it could detect on its own -- see EntrySpec's own
-    # comment). Checked once per entry, not once per frame: every frame of
-    # an entry shares its entry_name, so a per-frame loop would report the
-    # same over-length name frame_count times over.
+    # numbers must run 1..frame_count with no gap.
+    #
+    # WHAT THE frame_count/expected CHECK BELOW DOES AND DOES NOT COVER.
+    # `expected` and `entry.frame_count` both trace back to the SAME
+    # `_state_frame_count()` call in _sprites_for_entity() -- one is that
+    # value stamped onto every SpriteSpec it yields, the other is
+    # len(frames) after iter_entries() groups those same specs back
+    # together by entry_name. Nothing in this generator's current code
+    # path can make them disagree UNLESS entry_name collides between two
+    # DIFFERENT generation contexts (two states, somehow, producing the
+    # same string) -- and this manifest's own naming scheme (code_token +
+    # state + direction (+variant)) has no input that can express that
+    # collision, so in practice this can never fail against any manifest
+    # this file's own schema accepts. It is not a no-op -- a bug
+    # introduced directly in _sprites_for_entity()/iter_entries() (not in
+    # any manifest) would still trip it -- but "a missing PNG file for
+    # frame 3" (the actual failure mode described in the comment below)
+    # is NOT something a pure manifest-vs-manifest check can see at all:
+    # nothing here touches the filesystem. That check lives in
+    # kf_ingest_sprites.py's build_entry() (`len(frames) != entry.
+    # frame_count` there, compared against files ACTUALLY FOUND on disk),
+    # which is the one that matters for "did every frame's art get
+    # generated." A missing frame in the middle would otherwise silently
+    # shorten an animation (the pack format addresses frame k by
+    # arithmetic, not by name, so there is no "frame 3 is absent" marker
+    # it could detect on its own -- see EntrySpec's own comment). Checked
+    # once per entry, not once per frame: every frame of an entry shares
+    # its entry_name, so a per-frame loop would report the same over-
+    # length name frame_count times over.
     for entry in iter_entries(raw):
         if len(entry.entry_name) > PACK_NAME_MAX_CHARS:
             problems.append(

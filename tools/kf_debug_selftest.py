@@ -237,8 +237,31 @@ def test_care_action_aliases():
     check("'3' -> rest", kfd.CARE_ACTION_ALIASES["3"] == "rest")
     check("'4' -> bath", kfd.CARE_ACTION_ALIASES["4"] == "bath")
     check("'5' -> flush", kfd.CARE_ACTION_ALIASES["5"] == "flush")
-    check("name aliases are identities",
-          all(kfd.CARE_ACTION_ALIASES[n] == n for n in kfd.CARE_ACTIONS))
+
+    # NOT `all(CARE_ACTION_ALIASES[n] == n for n in CARE_ACTIONS)` -- kf_
+    # debug.py builds CARE_ACTION_ALIASES with
+    # `.update({name: name for name in CARE_ACTIONS})`, the identical
+    # comprehension, so that assertion could never fail regardless of what
+    # CARE_ACTIONS even contains (verified: it stayed green when this was
+    # pointed out). Two real claims instead: every name is actually
+    # present as its own key (a membership check, not an echo of the
+    # dict's own construction), and -- the behavioural claim that
+    # actually matters -- dispatching by name and by its matching digit
+    # through cmd_care() produces the IDENTICAL wire command, so "care
+    # feed" and "care 1" are not just individually valid but proven
+    # equivalent. test_care_command_building() below already proves each
+    # form works in isolation; this proves the two forms agree.
+    check("every care action name is also a key in CARE_ACTION_ALIASES",
+          all(n in kfd.CARE_ACTION_ALIASES for n in kfd.CARE_ACTIONS))
+    for i, name in enumerate(kfd.CARE_ACTIONS):
+        digit = str(i + 1)
+        kwargs = {} if name == "flush" else {"variation": 0}
+        link_by_name = FakeLink()
+        link_by_digit = FakeLink()
+        kfd.cmd_care(link_by_name, _care_args(name, **kwargs))
+        kfd.cmd_care(link_by_digit, _care_args(digit, **kwargs))
+        check(f"'{digit}' and '{name}' send the identical KFDBG command",
+              link_by_name.sent == link_by_digit.sent)
 
 
 class FakeLink:

@@ -43,24 +43,47 @@ future us in month eight asking the same question with less patience.
 | [0033](adr-0033-asset-pipeline.md) | The asset pipeline: sprites packed into flash, memory-mapped, not copied | Accepted |
 | [0034](adr-0034-kfdbg-care-and-stage-jump.md) | KFDBG parity for care actions and life-stage jump | Accepted |
 | [0035](adr-0035-kfdbg-mutate-gate.md) | Splitting KFDBG by observe vs. mutate | Accepted |
+| [0036](adr-0036-frame-counter-window.md) | The frame budget counters count the frame the port actually drew | Accepted |
+| [0039](adr-0039-panel-read-line-and-backlight.md) | The panel profile owns the read line, and something turns the backlight on | Accepted |
+| [0040](adr-0040-retained-scene.md) | A retained scene and a coalescing differ, in Core | Accepted |
+| [0041](adr-0041-lua-drawing-binding.md) | The Lua binding over the retained scene | Accepted |
+| [0042](adr-0042-lua-home-screen-parity.md) | The Lua home screen, and the parity check that judges it | Accepted |
+| [0043](adr-0043-lua-home-default.md) | `kf_scene_force_repaint()`, and `KF_HOME_SCREEN` defaults to `lua` | Accepted |
+| [0044](adr-0044-lua-screen-groups.md) | `kf.screen()` — named object groups over one shared scene, and a registry that learns names | Accepted |
+| [0045](adr-0045-info-screen-in-lua.md) | Info leaves LVGL for a `kf.screen()` group, and LVGL leaves the default build | Accepted |
+| [0046](adr-0046-core-civil-clock.md) | `kf/clock.h` — civil time in Core, integers only, no offset | Accepted |
+
+(0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 
 Open evaluations, deliberately not decided:
 
 - **The creature class name.** Deferred by the naming decision record.
 
 LVGL and Lua were both open evaluations here once; ADR 0013 and ADR 0014
-each decided one, so neither is listed above anymore.
+each decided one, so neither is listed above anymore. LVGL's own decision
+has itself moved since — see ADR 0013's "Superseded in part" section and
+`CLAUDE.md`'s "Already decided" section.
 
 See also `../frame-budget.md`, which works through what the display bandwidth
 means for full-screen animation and what the options are for 60fps, and
 `../sdk-style-guide.md`, which names the design principle behind `pet.*`/
 `kf.*`'s function-per-action shape for whatever Lua bindings get added next.
 
-The full option space behind these, including what was rejected, is in
-`08-phase1-slice1-decisions.md` in the planning folder.
+The full option space behind these, including what was rejected, was
+described as living in `08-phase1-slice1-decisions.md` in the planning
+folder — **flagged, not resolved: that file does not exist anywhere in
+this repo, and is not among the planning docs `CLAUDE.md` names
+(`02-min-spec-sheet.md`, `04-roadmap-diy-release.md`,
+`07-naming-decision-and-setup.md`).** It may exist under a different name
+in the external planning folder (`D:\Game Development Repos\Virtual Pet
+Experiments`, per `CLAUDE.md`), may have been renamed, or may never have
+existed under this name — worth Chris confirming rather than guessing here.
 
-**This index had drifted out of date before this edit** -- it stopped at
-ADR 0009 while the directory already held files through ADR 0025. Rows
-0010-0025 above are being added back in the same pass that adds 0026, not
-because anything about ADR 0026 required it, just because a broken index is
-worse than a slightly oversized diff to fix it.
+**This index has drifted out of date before, more than once.** It previously
+stopped at ADR 0009 while the directory held files through ADR 0025, and
+was caught and fixed then. This pass catches the same drift again — it had
+stopped at ADR 0035 while the directory held files through ADR 0046, eight
+ADRs missing (0036, 0039-0046). Whoever next lands an ADR: add its row here
+in the same commit, not "later" — a broken index is worse than a slightly
+oversized diff to fix it, and this is now the second time that lesson
+needed relearning.
