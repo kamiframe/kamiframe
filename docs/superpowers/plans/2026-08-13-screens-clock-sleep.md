@@ -1168,3 +1168,35 @@ The game's half. Uses the 18 single-frame sleeping sprites that already ship.
 - **It does not generate any art.** Sleeping poses are single-frame, there is no
   bedding art, and there is no `adult_*` family in the pack at all. Named so
   none of the three is mistaken for something this plan broke.
+
+---
+
+## Timezone: settled by Chris, 2026-08-13
+
+**The user sets the clock by hand. The RTC holds LOCAL time directly.**
+
+No timezone database, no stored UTC offset, no conversion. Whatever the owner
+dials into the Settings screen is what the device believes the wall clock says,
+and sleep's 22:00-07:00 window compares against it directly. On a device with
+no network and no location, "local" can only mean "what the person holding it
+told us", and pretending otherwise adds a conversion layer with nothing behind
+it.
+
+**Internet time sync is a wanted feature, later** — Chris's words: *"Eventually
+I do want to hook it to the internet so it can tell what local time is. Feature
+for later though."* The board has WiFi, so this is real future work, not a
+hypothetical.
+
+**What that means for anyone building on `kf/clock.h` now:**
+
+- Do not add an offset field "for later". A field nothing sets is a field that
+  is wrong the first time something reads it, and the save format has to carry
+  it forever once it ships.
+- Do keep the epoch-to-civil conversion honest and total, so that when a sync
+  arrives it only has to set the clock — not reinterpret what every stored
+  timestamp meant.
+- The one thing worth designing against now: a sync will eventually move the
+  clock *while the pet is alive*. Anything that assumes time only moves forward
+  at one second per second, or that the wall clock never jumps, will break then.
+  That is not a reason to build for it today; it is a reason not to write a
+  comment claiming it cannot happen.
