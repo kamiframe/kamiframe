@@ -1104,3 +1104,27 @@ firmware delta.
 This does **not** relax the rule for C++ or Python in this repo. It is a real
 constraint that applies only to text the device parses at runtime, and it will
 apply to every game cartridge shipped on this platform.
+
+---
+
+## Task order changed: 7's repaint prerequisite comes before 6's flip
+
+Task 5 found that `kf/scene.h` has **no way to force a full repaint without
+destroying every object's identity**. That breaks Home->Info->Home navigation
+under `KF_HOME_SCREEN=lua` — confirmed by `screen_nav_check` failing in that
+build — because returning to Home needs the whole panel repainted, and the only
+way to get one today is to tear down the scene, which loses the per-object
+identity the differ needs to know what changed.
+
+It documented this rather than patching it, correctly, and assigned it to
+Task 7.
+
+**Consequence: flipping the default (Task 6) on top of that ships broken
+navigation.** So the repaint capability moves ahead of the flip. The two are
+being done as one unit, because the flip cannot be verified without the
+repaint and the repaint has no visible effect until the flip.
+
+Success is not "the flag defaults to lua" — it is: the flag defaults to lua,
+`screen_nav_check` passes, the parity check still holds, the ESP32 target
+builds, and the owner can flash it and see the pet animating with Lua driving
+the screen.
