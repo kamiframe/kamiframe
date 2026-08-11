@@ -2170,9 +2170,14 @@ nobody mistakes them for oversights.
   `[stages.egg]`. Whether the positional bob then coexists with the drawn squish
   or is retired in favour of it is an art call, not a code one.
 
-- **It does not verify anything on silicon.** ADR 0033's "Not verified" list is
-  unchanged and one item on it now matters more: `esp_partition_mmap()` has
-  never returned a real byte on a real ESP32-S3, and this plan grows the pack
-  the mapping has to cover from 228 KB toward 7.5 MB. See "The risk this plan
-  sits on top of" above for what is being assumed. Nothing here can close that
-  gap without a board.
+- **It did not verify anything on silicon, at the time this plan was
+  written.** ADR 0033's "Not verified" list was unchanged then, and one item
+  on it mattered more: `esp_partition_mmap()` had never returned a real byte
+  on a real ESP32-S3, and this plan grows the pack the mapping has to cover
+  from 228 KB toward 7.5 MB. **Since resolved:**
+  `docs/superpowers/plans/2026-08-11-hardware-bringup.md` confirmed
+  `esp_partition_mmap()` on the bench — first against the small
+  `hello_sprite` pack (1,156 bytes), and only later against the full
+  556,488-byte `creature_demo` pack (see ADR 0033's own "Superseded in
+  part"). See "The risk this plan sits on top of" above for what was being
+  assumed at the time.

@@ -210,6 +210,16 @@ not move). The directory entry shape (52 bytes) and `FORMAT_VERSION` (still
 change" section predicted: one new `kf_asset_type` value, one `type_meta`
 layout, one decode branch, no format-version bump.
 
+**"Not verified"'s claim that `esp_partition_mmap()` has never returned
+readable pixel data on real silicon** is also superseded:
+`docs/superpowers/plans/2026-08-11-hardware-bringup.md` confirmed it on the
+bench, first against the small `hello_sprite` pack (1,156 bytes, the
+indexed format above) and only later against the full 556,488-byte
+`creature_demo` pack — the board booted, mapped the partition, and rendered
+from it in both cases. The other two "Not verified" items (the S3's mmap
+address-space ceiling for a much larger mapping, and OTA client code) remain
+genuinely unverified.
+
 ## Alternatives considered
 
 **A pre-hashed lookup table**, computed by the packer and re-derived by the
