@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status: COMPLETE
+
+`pet_sickness_check`, `pet_death_check` and the creature-screen death check
+(`run_creature_screen_death_check()`) are all registered in
+`simulator/CMakeLists.txt` and passing. Screen work this plan's own "what
+this deliberately does not do" section named as future is also done now —
+see that section's notes. The "Current signatures" block above is corrected
+for the care-variations API change (`kf_pet_clean()` no longer exists); check
+`hakoniwaos/include/kf/pet.h` directly rather than trusting either version
+of that list.
+
 **Goal:** Sustained neglect makes the creature sick, sickness compounds, and if it is never addressed the creature dies — with a long, readable warning first.
 
 **Architecture:** One accumulator, `neglect_seconds`, drives all three states. It rises while the creature is in a neglected condition and falls at the same rate while it is not. Crossing `sickness_onset_seconds` sets `sick`; returning to zero clears it (hysteresis, so a single button press cures nothing); reaching `sickness_death_seconds` kills. The screen and scripts read the same accumulator to escalate distress between those two thresholds. It all happens inside `apply_stage_segment()` alongside the needs and mess, so offline fast-forward is covered by the code path that already exists rather than a second one.
@@ -20,13 +31,23 @@
 
 ### Current signatures — check these before writing any test
 
-They changed this week. Getting them wrong is the fastest way to waste a build:
+**This list is stale — it predates the care-variations work.** All of
+`feed`/`play`/`rest`/`bath` now take a `variation` argument, and
+`kf_pet_clean()` no longer exists at all — it split into `kf_pet_bath()` and
+`kf_pet_flush()` (`hakoniwaos/include/kf/pet.h`). Always check the header
+directly before writing a test against these; do not trust either version
+of this list:
 
 ```cpp
-void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config);  /* takes config */
-void kf_pet_play(kf_pet_state *state);                               /* does not */
-void kf_pet_rest(kf_pet_state *state);                               /* does not */
-void kf_pet_clean(kf_pet_state *state);                              /* does not */
+void kf_pet_feed(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_play(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_rest(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_bath(kf_pet_state *state, const kf_pet_config *config,
+                  uint8_t variation);
+void kf_pet_flush(kf_pet_state *state);
 void apply_stage_segment_for_test(kf_pet_state *state,
                                    const kf_pet_config *config,
                                    uint32_t segment_seconds);
@@ -937,9 +958,16 @@ git add -A && git commit -m "Death: sustained critical neglect ends the creature
 
 ## What this deliberately does not do
 
-- **No screen work.** Nothing draws illness, distress or death. The pet screen's layout pass is already pending on the 48×48 creature sprite, and guessing where a distress indicator goes now would only be undone. The state and bindings are here so that pass has something to draw.
+- **No screen work — at the time this plan was written.** That has since
+  changed: `hakoniwaos/src/creature.cpp` selects `KF_CREATURE_POSE_SICK` from
+  `pet->sick`, and the creature screen (`simulator/src/pet/
+  kf_creature_screen.cpp`) draws it, along with the shrine for `pet->dead`.
+  This bullet is left for its original reasoning rather than deleted.
 - **No medicine action.** The spec rejected it: a fifth button that is only ever "press when red". Curing through care is the design; medicine is the recorded fallback if it proves too forgiving in play.
-- **No death screen and no new-creature flow.** `kf_pet_init()` is the whole story for now. What the player actually sees when a creature dies is a design conversation, not an implementation detail.
+- **No death screen — at the time this plan was written.** That has since
+  changed too: a shrine scene draws for `pet->dead` (see above). The new-egg
+  flow is unchanged; `kf_pet_init()` is still the whole story for starting
+  over, and there is no "start a new egg" action wired to the shrine yet.
 - **No babysitter.** Still deferred, and death-with-warning is what gives it a job later: the sanctioned way to hand over responsibility rather than a convenience.
 
 ## Report back
