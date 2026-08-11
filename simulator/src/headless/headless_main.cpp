@@ -42,6 +42,7 @@
  *     kamiframe-headless --verify-creature-screen-budget-combo
  *     kamiframe-headless --verify-scene
  *     kamiframe-headless --verify-lua-draw
+ *     kamiframe-headless --verify-screen-groups
  *     kamiframe-headless --verify-clock
  *
  * Exit codes:
@@ -4766,6 +4767,191 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     return ok ? 0 : 1;
 }
 
+/* Live scene-object count once both of run_screen_group_check()'s screens
+ * have declared everything they ever will -- one text object per screen.
+ * Named per this file's own "fails with a number, not a scene-full log
+ * nobody reads" convention (see ADR 0044's risk 5). */
+constexpr int kScreenGroupCheckExpectedObjectCount = 2;
+
+/* ADR 0044, Task 1 of docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md: kf.screen() groups over the ONE shared retained scene, and the
+ * anti-two-owners property that is the whole point of routing screen:
+ * show() and MENU/B through the exact same kf_screen_nav_show(). A small,
+ * self-contained script declares two screens -- "a" and "b", each one
+ * background colour and one text object -- and this check switches
+ * between them twice through screen:show() and hashes the framebuffer
+ * after each switch, then reproduces the identical two transitions
+ * through kf_screen_nav_debug_advance()/_debug_home() (the same edges a
+ * real MENU/B press produces) and asserts the SAME hashes -- if screen:
+ * show() and the MENU/B path ever disagreed about which screen is
+ * showing, this is where it would show up.
+ *
+ * Deliberately does NOT call kf_screen_nav_init(): that also brings up
+ * the pet session, LVGL, and Home/Info, none of which this mechanism
+ * needs to prove itself. kf_screen_nav_install_lua_hooks() -- the one
+ * piece of kf_screen_nav_init() this check does need, to wire kf.screen()
+ * up to the registry at all -- already ran once in main(), before every
+ * check; see that call site's own comment. */
+int run_screen_group_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_scene_reset();
+
+    /* Screen "a" is shown on frame 1, screen "b" on frame 2, back to "a"
+     * on frame 3 -- kf_lua_port_frame() drives one on_frame() call at a
+     * time, so the C++ side below can hash the framebuffer BETWEEN each
+     * transition rather than only seeing the last one. "b"'s text is
+     * placed well clear of "a"'s (20, 20) on purpose, not at the same
+     * spot: the proof below samples (20, 20) after switching to "b" and
+     * expects to see "b"'s plain SCREEN background there, which only
+     * holds if nothing of "b"'s own belongs at that pixel -- if the two
+     * texts overlapped, that sample would read "b"'s TEXT's own black
+     * cell background instead, proving nothing about screen switching at
+     * all. */
+    constexpr const char *kTwoScreenScript = R"lua(
+local a = kf.screen("a")
+a:background(kf.color(200, 40, 40))
+local ta = a:text("SCREEN A")
+ta:move(20, 20)
+
+local b = kf.screen("b")
+b:background(kf.color(40, 40, 200))
+local tb = b:text("SCREEN B")
+tb:move(20, 200)
+
+local frame = 0
+function on_frame(dt_ms)
+    frame = frame + 1
+    if frame == 1 then
+        a:show()
+    elseif frame == 2 then
+        b:show()
+    elseif frame == 3 then
+        a:show()
+    end
+end
+)lua";
+
+    check(kf_lua_port_init(kTwoScreenScript, "=screen_group_check"),
+          "the two-screen script loads and its top-level code runs");
+
+    /* kf_screen_nav_name()/_count() -- what sdl_debug_window.cpp's readout
+     * now calls directly instead of its old hardcoded switch -- proved
+     * here by name, not just by the hashes below: "a" registered first
+     * (index 0), "b" second (index 1), and an index nobody registered
+     * reads "?" rather than crashing or reading garbage. */
+    check(kf_screen_nav_count() == 2, "exactly 2 screens are registered");
+    check(std::strcmp(kf_screen_nav_name(0), "a") == 0,
+          "screen 0 is named 'a' -- it registered first");
+    check(std::strcmp(kf_screen_nav_name(1), "b") == 0,
+          "screen 1 is named 'b' -- it registered second");
+    check(std::strcmp(kf_screen_nav_name(2), "?") == 0,
+          "an index nobody registered reads '?'");
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+    /* Matches every other rendering check in this file: FNV-1a over the
+     * whole framebuffer, not a library call -- run_screen_nav_check()
+     * above computes its own checksum the same inline way, for the same
+     * reason (see that function's own comment). */
+    auto hash_framebuffer = [](void) -> uint64_t {
+        uint64_t checksum = 1469598103934665603ull;
+        const uint8_t *bytes =
+            reinterpret_cast<const uint8_t *>(kf_fb_pixels());
+        for (size_t i = 0; i < KF_FRAMEBUFFER_BYTES; ++i) {
+            checksum ^= bytes[i];
+            checksum *= 1099511628211ull;
+        }
+        return checksum;
+    };
+
+    /* ---- 1/2. Frame 1: screen:show() switches to "a". Commit (already
+     * done once, inside screen:show() itself -- kf_lua_scene_activate_
+     * screen()'s own immediate commit -- this second call is redundant on
+     * purpose, proving a caller that commits again after switching sees
+     * no surprises) and hash. ---- */
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    const uint64_t hash_a_first = hash_framebuffer();
+
+    /* ---- 3. Frame 2: screen:show() switches to "b". The framebuffer must
+     * differ, and -- the stronger assertion -- the exact pixel "a"'s text
+     * occupied must now read as "b"'s background colour, not some
+     * leftover "a" pixel that merely happened not to change the hash. ---- */
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    const uint64_t hash_b = hash_framebuffer();
+    check(hash_b != hash_a_first,
+          "the framebuffer changed when switching from screen 'a' to 'b'");
+    {
+        const kf_color *px = kf_fb_pixels();
+        const kf_color kScreenBBackground = KF_RGB(40, 40, 200);
+        const kf_color sampled = px[20 * KF_DISPLAY_WIDTH + 20];
+        check(sampled == kScreenBBackground,
+              "none of screen 'a's pixels survive at (20,20) after "
+              "switching to 'b' -- the pixel there must be 'b's "
+              "background colour");
+    }
+
+    /* ---- 4. Frame 3: screen:show() switches back to "a". ADR 0043's
+     * re-entry property, now under a second screen's worth of load: the
+     * hash must equal the FIRST time "a" was shown, byte for byte. ---- */
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    const uint64_t hash_a_second = hash_framebuffer();
+    check(hash_a_second == hash_a_first,
+          "switching back to screen 'a' reproduces the exact framebuffer "
+          "from the first time it was shown");
+
+    /* ---- 5. The anti-two-owners assertion: the SAME two transitions
+     * (a->b, b->a), driven through kf_screen_nav_debug_advance()/_debug_
+     * home() -- the same edges a real MENU/B press produces -- instead of
+     * screen:show(), on the exact same registry state (kf.screen("a") was
+     * registered first above, so it is index 0; "b" is index 1;
+     * kf_screen_nav_debug_advance() wraps 0->1, kf_screen_nav_debug_home()
+     * jumps straight to 0). If screen:show() and the MENU/B path ever
+     * disagreed about which screen is showing -- ADR 0042's bug, ADR
+     * 0043's fix, the whole reason this task's design note exists -- this
+     * is where it would show up: identical hashes prove they agree. ---- */
+    kf_screen_nav_debug_advance();
+    kf_scene_commit();
+    const uint64_t hash_b_via_debug = hash_framebuffer();
+    check(hash_b_via_debug == hash_b,
+          "kf_screen_nav_debug_advance() (the MENU edge) reproduces the "
+          "exact framebuffer screen:show() produced when switching to 'b'");
+
+    kf_screen_nav_debug_home();
+    kf_scene_commit();
+    const uint64_t hash_a_via_debug = hash_framebuffer();
+    check(hash_a_via_debug == hash_a_first,
+          "kf_screen_nav_debug_home() (the B edge) reproduces the exact "
+          "framebuffer screen:show() produced when switching back to 'a'");
+
+    /* ---- 6. The 64-object scene ceiling (risk 5): two screens, one text
+     * object each, is exactly 2 live objects -- asserted against a named
+     * constant so a regression here fails with a number, not a "scene is
+     * full" log nobody reads until a THIRD screen quietly runs out of
+     * room. ---- */
+    check(kf_scene_live_object_count() == kScreenGroupCheckExpectedObjectCount,
+          "exactly 2 scene objects are live once both screens have "
+          "declared everything they ever will");
+
+    kf_lua_port_shutdown();
+    kf_scene_reset();
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Proves the Lua port glue -- the sandboxed VM, kf_lua_alloc's free/realloc
  * path under real churn, and both directions of the kf.* binding -- behave
  * identically frame to frame. See ADR 0014. Bypasses kf_app_init()/
@@ -6784,6 +6970,7 @@ int main(int argc, char *argv[]) {
     bool verify_scene = false;
     bool verify_lua_draw = false;
     bool verify_screen_parity = false;
+    bool verify_screen_groups = false;
     bool verify_clock = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
@@ -6892,6 +7079,8 @@ int main(int argc, char *argv[]) {
             verify_lua_draw = true;
         } else if (std::strcmp(argv[i], "--verify-screen-parity") == 0) {
             verify_screen_parity = true;
+        } else if (std::strcmp(argv[i], "--verify-screen-groups") == 0) {
+            verify_screen_groups = true;
         } else if (std::strcmp(argv[i], "--verify-clock") == 0) {
             verify_clock = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
@@ -6941,6 +7130,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-scene\n"
                         "kamiframe-headless --verify-lua-draw\n"
                         "kamiframe-headless --verify-screen-parity\n"
+                        "kamiframe-headless --verify-screen-groups\n"
                         "kamiframe-headless --verify-clock\n");
             return 0;
         }
@@ -6954,6 +7144,20 @@ int main(int argc, char *argv[]) {
     /* Do not sleep out the frame budget: a 300-frame run should take
      * milliseconds, not ten seconds. */
     kf_host_time_set_realtime(false);
+
+    /* ADR 0044: wires kf.screen()/screen:show() up to the navigation
+     * registry BEFORE any check below loads a script. Every check that
+     * loads examples/creature_demo/creature.lua does so with kf.home_
+     * screen_active() true under this build's KF_HOME_SCREEN_LUA default
+     * (kf_lua_port_init() seeds that flag from the compile define) --
+     * which means creature.lua's own kf.screen("home") call runs
+     * regardless of whether the check in question ever calls kf_screen_
+     * nav_init() itself (run_lua_creature_check() and run_screen_parity_
+     * timeline()'s lua half do not). Installing the hooks once, here, for
+     * every check keeps that true uniformly rather than requiring each
+     * check to remember it -- idempotent, so run_screen_nav_check()'s own
+     * kf_screen_nav_init() (which also installs them) does not conflict. */
+    kf_screen_nav_install_lua_hooks();
 
     if (verify_storage_power) {
         return run_storage_power_check();
@@ -7113,6 +7317,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_screen_parity) {
         return run_lua_vs_cpp_screen_check();
+    }
+
+    if (verify_screen_groups) {
+        return run_screen_group_check();
     }
 
     if (verify_clock) {

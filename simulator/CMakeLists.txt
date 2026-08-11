@@ -873,6 +873,19 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME screen_parity_check
              COMMAND kamiframe-headless --verify-screen-parity)
 
+    # Task 1 of the screens/clock/sleep plan (docs/superpowers/plans/
+    # 2026-08-13-screens-clock-sleep.md), ADR 0044: kf.screen() -- named
+    # groups of scene objects over the one shared retained scene, and the
+    # register-by-name navigation table that replaced the old fixed
+    # two-entry array. Declares two screens from an inline script, switches
+    # between them through screen:show(), then reproduces the identical
+    # transitions through kf_screen_nav_debug_advance()/_debug_home() (the
+    # same edges a real MENU/B press produces) and asserts identical
+    # framebuffers -- the anti-two-owners property the whole task exists
+    # to guarantee. See headless_main.cpp's run_screen_group_check().
+    add_test(NAME screen_group_check
+             COMMAND kamiframe-headless --verify-screen-groups)
+
     # Task 3 of the screens/clock/sleep plan (docs/superpowers/plans/
     # 2026-08-13-screens-clock-sleep.md): kf/clock.h, integer-only civil
     # time in Core, proved on its own with nothing else in the picture --
