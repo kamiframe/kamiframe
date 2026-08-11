@@ -101,6 +101,8 @@ target_compile_definitions(kamiframe_host_common PUBLIC
 add_library(kamiframe_pet_port STATIC
     src/pet/kf_pet_session.cpp
     src/pet/kf_creature_screen.cpp
+    src/pet/kf_creature_presenter.cpp
+    src/pet/kf_home_screen_input.cpp
 )
 target_include_directories(kamiframe_pet_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)

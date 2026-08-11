@@ -52,6 +52,14 @@
 ## reaches it (via kamiframe_lvgl_port's kf_screen_nav.cpp), not this file
 ## directly, the same indirection sdl_main.cpp uses on desktop.
 ##
+## kf_creature_presenter.cpp/kf_home_screen_input.cpp (Task 5 of the Lua
+## game-layer plan): the wander/pose/animation orchestration and the five
+## hardware care buttons, extracted OUT of kf_creature_screen.cpp so that
+## KF_HOME_SCREEN=lua (kf_screen_nav.cpp, kamiframe_lvgl_port component)
+## gets the identical wander result and the identical buttons the cpp
+## screen always had -- same one-file-no-third-party-dependency reasoning
+## as kf_pet_session.cpp above.
+##
 ## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0028): same relative-path pattern as
 ## kf_pet_session.cpp above -- these two files have no third-party library of
 ## their own, only Lua itself does, which is why Lua earns the "lua" REQUIRES
@@ -93,6 +101,8 @@ idf_component_register(
         ../hal/esp_assets.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
         ../../../simulator/src/pet/kf_creature_screen.cpp
+        ../../../simulator/src/pet/kf_creature_presenter.cpp
+        ../../../simulator/src/pet/kf_home_screen_input.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp
         ../../../sdk/lua/kf_lua_scene.cpp
