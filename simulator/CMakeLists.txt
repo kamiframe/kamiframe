@@ -974,6 +974,23 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # See headless_main.cpp's run_settings_screen_check().
     add_test(NAME settings_screen_check
              COMMAND kamiframe-headless --verify-settings-screen)
+
+    # Regression for a real hardware bug (owner's own report running the
+    # ESP32 build): Home's creature/poop/shrine objects kept showing on top
+    # of Info and Settings, frozen but never actually hidden, because
+    # creature.lua's Home-drawing block lived inside the SHARED on_frame(),
+    # guarded by kf.home_screen_active() -- a BUILD-TIME flag, not a "is
+    # Home showing right now" query -- and the main loop calls on_frame()
+    # unconditionally every real frame regardless of the active screen.
+    # Fixed by giving Home its own on_home_frame() entry point, the same
+    # shape Info and Settings already had. Drives the SAME two per-frame
+    # calls the real main loop makes (kf_screen_nav_frame() then the
+    # unconditional kf_lua_port_frame(0)) -- exactly what neither
+    # screen_parity_check nor screen_nav_check ever replicates, and exactly
+    # what this bug needed to actually surface. See headless_main.cpp's
+    # run_screen_isolation_check().
+    add_test(NAME screen_isolation_check
+             COMMAND kamiframe-headless --verify-screen-isolation)
 endif()
 
 # ---------------------------------------------------------------------------
