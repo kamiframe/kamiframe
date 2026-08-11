@@ -151,16 +151,17 @@ void kf_screen_nav_frame(uint32_t dt_ms);
 void kf_screen_nav_show(int index);
 
 /* ---------------------------------------------------------------------
- * DEBUG/TEST ONLY below this line, the same status kf_pet_session.h's own
- * "DEBUG ONLY" section has: not part of the gameplay surface, not called
- * by the interactive build. Their purpose is letting a headless check (or,
- * later, a debug-window button) drive screen switching directly rather
- * than fighting headless_input.cpp's single shared, frame-indexed button
- * script -- see headless_main.cpp's run_screen_nav_check() for the actual
- * caller. Same effect as a real MENU/B press, just callable without one.
- * Both route through kf_screen_nav_show() too -- see that function's own
- * comment; there is no second switching path here, only two names for the
- * same edges a real button press produces.
+ * DEBUG/TEST ONLY in the sense of "not part of the gameplay surface, not
+ * reachable from a real MENU/B button press" -- NOT in the sense of
+ * "unused by the interactive build". sdl_debug_window.cpp (compiled
+ * unconditionally into kamiframe-sim, no #ifdef) calls
+ * kf_screen_nav_debug_advance() and kf_screen_nav_debug_index() from its
+ * own debug window, alongside headless_main.cpp's run_screen_nav_check()
+ * and friends. Same effect as a real MENU/B press, just callable without
+ * one. Both route through kf_screen_nav_show() too -- see that function's
+ * own comment; there is no second switching path here, only two names for
+ * the same edges a real button press produces. Deleting these breaks the
+ * simulator's debug window, not just a headless check.
  * --------------------------------------------------------------------- */
 
 /* Same effect as a MENU edge: advances to the next screen, wrapping back
@@ -172,9 +173,10 @@ void kf_screen_nav_debug_advance(void);
  * no screen has been registered yet. */
 void kf_screen_nav_debug_home(void);
 
-/* Which screen index is active right now. For test assertions only --
- * nothing in the interactive build reads this; see kf_screen_nav_name()
- * above for the one debug/interactive callers should use instead. */
+/* Which screen index is active right now. Written for test assertions,
+ * but sdl_debug_window.cpp also reads it directly (to label the active
+ * screen in its own window) -- see kf_screen_nav_name() above for the
+ * human-readable name callers usually want alongside it. */
 int kf_screen_nav_debug_index(void);
 
 #endif /* KF_SCREEN_NAV_H */
