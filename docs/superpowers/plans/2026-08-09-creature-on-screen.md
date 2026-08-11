@@ -889,18 +889,31 @@ git commit -m "Mess on the floor, drawn once and left alone"
 
 Each of these is its own plan, and each is genuinely separable:
 
-- **Sleep in Core.** Now fully specified (care-loop spec, "Sleep, settled") but unimplemented: no field, no enum, no night window, no UTC offset. Needs the drowsy state, the automatic plop-down, the optional tuck-in, the deficit, and the neglect-clock pause. Until it exists, `KF_CREATURE_POSE_SLEEPING` is unreachable.
-- **Animation.** Every sprite here is a single still (`default_frames = 1`). Chris's bedtime answer requires a drowsy animation, a walk cycle, and the creature putting bedding away — all multi-frame, plus a bedding prop that is not in the manifest at all.
-- **The stats band.** Task 4 reserves the bottom 60px and draws nothing in it. Bars and text via `kf/font.h` bitmap text replace the LVGL widgets.
-- **Death and evolution scenes.** Both spec'd as scenes, neither built; `KF_CREATURE_POSE_DEAD` currently borrows the sick sprite.
+- **Sleep in Core.** Still unimplemented as of this fix: no field, no enum,
+  no night window. (Not "no UTC offset" — that was this document's original
+  wording, and it is now settled that there never will be one; the RTC holds
+  local time directly, see `hakoniwaos/include/kf/clock.h`.) Needs the drowsy
+  state, the automatic plop-down, the optional tuck-in, the deficit, and the
+  neglect-clock pause. Until it exists, `KF_CREATURE_POSE_SLEEPING` is
+  unreachable.
+- **Animation, at the time this bullet was written.** Every sprite was then a
+  single still (`default_frames = 1`). Superseded by the "Multi-frame
+  animation" bullet below, which itself is now partly out of date too — see
+  there for the current count.
+- **The stats band — at the time this plan was written.** Task 4 reserved the
+  bottom 60px and drew nothing in it. **Built since**, in `2026-08-11-hardware-bringup.md`'s Task 9: `simulator/src/pet/kf_creature_screen.cpp` draws hunger/happiness/energy bars in that band, quantised so a steady frame costs no extra rectangles.
+- **Death scene — at the time this plan was written.** `KF_CREATURE_POSE_DEAD` borrowed the sick sprite and nothing drew a scene. **Built since:** a shrine scene draws for `pet->dead` (`kf_creature_screen.cpp`). **Evolution scenes remain unbuilt** — no evolution-transition scene exists in the tree as of this fix.
 - **Facing** was in this list as unbuilt. It has since moved into scope: a
   mirrored blit landed in `kf/blit.h` as its own task, and Task 4 now selects a
   direction sprite and falls back to a mirrored `e` when no `w` art exists.
-- **Multi-frame animation.** Every sprite here is still a single still
-  (`default_frames = 1`). Chris has since asked for nine-frame animations on
-  essentially every pose, in three directions — the drowsy settle, the walk
-  cycle, and the rest. That is a pipeline change (the manifest, the ingest tool,
-  and a frame-sequencing player) and a large art-generation spend, and it is its
-  own plan. What is built here shows one frame per pose; nothing about it
-  prevents a sequence being swapped in later, because the screen resolves a
-  sprite by name every time the name changes.
+- **Multi-frame animation.** Every sprite here was a single still
+  (`default_frames = 1`) when this plan was written. Chris then asked for
+  nine-frame animations on essentially every pose, in three directions — the
+  drowsy settle, the walk cycle, and the rest. That was a pipeline change (the
+  manifest, the ingest tool, and a frame-sequencing player,
+  `2026-08-10-animated-indexed-sprites.md`) and a large art-generation spend.
+  **Partially done now:** 18 of `examples/creature_demo/assets.kfpack`'s 94
+  entries carry nine frames each; the rest are still single-frame. Nothing
+  about the original design prevented a sequence being swapped in later,
+  because the screen resolves a sprite by name every time the name changes —
+  which is exactly what let this land incrementally.
