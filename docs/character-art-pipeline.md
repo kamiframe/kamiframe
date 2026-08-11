@@ -76,11 +76,14 @@ Useful filters: `--stage adult` (only the ten grown creatures), `--state
 happy` (only one pose across everyone), or `--sprite chokimaru_happy_01`
 (exactly one file's prompt).
 
-**If a prompt says "NO DESIGN BRIEF YET"** -- that's not a bug. Two of the
-five life stages (the very first "egg" and "baby" stages, before a
-creature has picked what it will grow into) aren't described anywhere yet.
-The tool refuses to make something up for them rather than guess. Someone
-needs to decide what those look like before art can be generated for them.
+**"NO DESIGN BRIEF YET" is a warning the tool can still print, but does not
+today.** It used to fire for the "egg" and "baby" stages, before either was
+described anywhere -- the care-loop spec's addendum since gave both a design
+(see "Egg and baby have designs now" there), and every entry in
+`tools/character_manifest.toml` now has `has_design_brief = true`. The check
+and the message stay in `tools/kf_prompt_builder.py` for the next stage or
+entity that gets added without a design decided first -- it's a real
+safeguard, just not currently tripped by anything in this roster.
 
 ## Step 3: generate the actual pictures
 
@@ -137,8 +140,12 @@ build/kamiframe-sim --pack examples/creature_demo/assets.kfpack
 
 `examples/creature_demo/` is the first roster slice actually produced this
 way (egg + baby, every state, all three directions). Its `sprites/`
-directory holds 49 source PNGs (48x48, RGBA) as of the third pass (see
-below); `assets.kfpack` is the packed result.
+directory held 49 source PNGs (48x48, RGBA) as of the third pass documented
+below (2026-08-09); more passes have landed since without a matching write-up
+here. **Currently 238 source PNGs** — all four teen forms (`teen0`-`teen3`)
+are shipped now, and the ten adult forms are the only stage still missing
+(`find examples/creature_demo/sprites -name '*.png' | wc -l` to recheck).
+`assets.kfpack` is the packed result.
 
 **Second pass (2026-08-09):** the first pass's art read as thin and
 Western-illustration rather than the intended Japanese kawaii look, and the
@@ -209,8 +216,11 @@ Nothing about `--pack` is specific to that one pack; point it at any
 (the `child` life stage), and the first teen form (`hamaru`/`teen0`) --
 31 sprites, bringing `examples/creature_demo/` to 49. Scoped deliberately:
 the owner was hitting placeholder rectangles as soon as the demo pet grew
-up, so this batch unblocks that rather than finishing the full 378-sprite
-roster (the remaining three teens and all ten adults are still unmade).
+up, so this batch unblocked that rather than finishing the full roster at
+the time (the remaining three teens and all ten adults were still unmade).
+**Superseded since:** further passes (not individually written up here)
+brought the roster to 238 source PNGs and shipped all four teen forms;
+only the ten adult forms remain unmade as of this writing.
 
 - **The shrine is a new *kind* of manifest entry, not a new creature life
   stage.** `simulator/src/pet/kf_creature_screen.cpp` looks it up by the
@@ -246,8 +256,9 @@ roster (the remaining three teens and all ten adults are still unmade).
   camera/scale family without a second style negotiation.
 - Ingest was run with `--id shrine`, `--id marumaru`, and `--id hamaru`
   first (all three: 100% ok, 0 missing, 0 invalid) before the unfiltered
-  pack build, which -- with the roster still 330 sprites short of the full
-  378 -- always reports "missing" for the ungenerated teens/adults and
+  pack build, which -- with the roster still far short of the full set
+  **at that point in the third pass** -- always reports "missing" for the
+  ungenerated teens/adults and
   exits non-zero; that exit code does not mean the pack write failed. It
   still writes and independently re-verifies whatever *did* validate
   (`--strict` is the flag that would refuse to write on any gap, and
