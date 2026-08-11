@@ -135,8 +135,11 @@ screens therefore share 64 slots. Counted from the source:
 poops, 3 tracks, 3 fills, 3 labels, 5 guide entries) and
 `kf_error_banner_create()` adds **1**, so Home is **25**. Info as text objects
 is **8**. Settings is budgeted at **14** below. That is **47 of 64**, which
-fits with headroom — but it is not obviously true and it is why Task 1's check
-asserts a live-object count rather than assuming one. Do **not** raise
+fits with headroom on paper — but it is not obviously true, and nothing
+verifies it yet: `run_screen_group_check()`'s live-object assertion (risk 5)
+checks a synthetic two-screen, two-object fixture, not this arithmetic
+against the real three screens. Treat 47-of-64 as unverified until a check
+actually runs Home, Info and Settings together and counts. Do **not** raise
 `KF_SCENE_MAX_OBJECTS` to make room: the Task 3 report measured **224 bytes per
 object, landing in `.data` rather than `.bss`**, so 64→96 would cost roughly
 7 KB of flash *and* 7 KB of RAM. Fix the `.data` defect first if space is ever
@@ -480,7 +483,7 @@ if it is on the desk.**
 | 2 | **The night window is computed against a clock Core does not advance.** `last_advanced` moves only at load (finding 2). | Task 6, step 1, before any sleep logic exists. | Sleep works after a reload and never during a session, or vice versa — and the symptom looks like a sleep bug, not a clock bug. |
 | 3 | **Offline sleep needs analytic arithmetic, not a loop.** The spec says so: a fortnight offline cannot be stepped second by second, so the seconds falling inside a daily 22:00–07:00 window have to be solved as whole days plus two partials. | Task 3 builds and tests the window arithmetic **with no pet in the picture**, against hand-computed cases including DST-free month and year boundaries. Task 6 then only has to call it. | Silently corrupted offline ageing — the feature the entire product rests on, per the spec's own words. |
 | 4 | **A power-cut test that passes for the wrong reason.** The RAM clock and the RTC agree in the good case, so a green result proves nothing unless the bad case was also run. | Task 5's negative run with the coin cell removed. | Shipping a device that forgets the time the first night a customer's cell is flat, having "verified" that it does not. |
-| 5 | **The 64-object scene ceiling.** Three screens share one table; counted at 47, but nobody has run all three at once. | Task 1's check asserts the live-object count after every screen has been declared, and fails with the number rather than with a scene-full log nobody reads. | The 65th `kf.text()` returns 0 and the Lua binding raises — at script load, so it fails loudly. Legible, but it stops the device. |
+| 5 | **The 64-object scene ceiling. Still open.** Three screens share one table; counted at 47 (Home 25, Info 8, Settings budgeted 14), but nobody has run all three at once, and Task 4 adds roughly 14 more objects with nothing watching the ceiling as it does. | **Not yet retired.** `run_screen_group_check()` (`simulator/src/headless/headless_main.cpp`) asserts `kf_scene_live_object_count() == 2` (`kScreenGroupCheckExpectedObjectCount`), against a synthetic two-screen fixture with one text object each — not against Home, Info and Settings together. A real three-screen ceiling check does not exist yet. | The 65th `kf.text()` returns 0 and the Lua binding raises — at script load, so it fails loudly, but only once someone actually runs all three screens together, which no automated check currently does. |
 | 6 | **A Lua script can still hang the frame loop.** No `lua_sethook`, no deadline. Named in ADR 0014 and ADR 0028; Task 9 of the Lua plan. | **Nothing in this plan.** | A frozen device needing a power cycle. Acceptable while Chris is the only author; not acceptable before third parties ship. It gets worse with every screen Lua owns, and this plan hands it two more. |
 
 ---
