@@ -181,7 +181,10 @@ window works.
   difference the same way a real finger would). The same seven buttons
   work from the keyboard too: arrow keys for the D-pad, Z and X for A and
   B, and Enter or Escape for MENU -- clicking with a mouse seven times in
-  a row gets old fast.
+  a row gets old fast. **Keys `1`-`5` are also bound**, alongside the
+  above rather than replacing it, mapped to A/UP/DOWN/LEFT/RIGHT to match
+  the creature screen's own on-screen care guide ("1:FEED 2:PLAY 3:REST
+  4:BATH 5:FLUSH") one-to-one.
 - **Pet state.** Stage, hunger, happiness, energy, personality trait, how
   long it's been in this stage, plus some low-level health numbers (free
   memory, frames per second) -- refreshed automatically, about once a
@@ -205,12 +208,15 @@ window works.
   "Capturing..." and grey itself out while that's happening. That's
   normal, not a freeze; the rest of the window (buttons, state readout)
   keeps working while it waits.
-- **Simulator debug controls.** A greyed-out section for things like
-  fast-forwarding the pet's clock and resetting it -- controls the
-  desktop simulator's own debug window already has. The real board
-  doesn't support any of this yet, so every control in this section is
-  disabled; hover over one to see why. It's there so the window doesn't
-  need to be redesigned later, once those commands exist.
+- **Simulator debug controls.** Time controls for fast-forwarding the pet's
+  clock, resetting it, and setting a time multiplier (`KFDBG ADVANCE` /
+  `RESET` / `MULT`) — these work against real hardware now, not just the
+  simulator. Only the **seekable pet-age timeline** stays greyed out and
+  disabled (hover over it to see why): it needs the simulator's 2048-entry
+  debug snapshot ring, which is compiled out of the ESP32 build
+  (`KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0`) since the device has 512KB of RAM
+  total and the framebuffer alone is 150KB of it. It is labelled
+  simulator-only rather than left looking like a bug.
 
 There is deliberately **no live view of the screen itself** in this
 window. The assumption is you're looking at the actual device screen (or
