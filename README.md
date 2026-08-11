@@ -6,9 +6,9 @@ Hardware, operating system, and SDK. All open, so you can build the device, writ
 
 ---
 
-> ### Status: Phase 0. Nothing is built yet.
+> ### Status: Phase 1b. Firmware, board, and SDK all exist and run.
 >
-> This repository is currently a plan and a promise. There is no firmware, no board, no SDK. What there is: a spec, a roadmap, and a person working evenings and weekends to make it real.
+> HakoniwaOS boots on an ESP32-S3 devkit, drives a real display, and runs the pet care loop over a debug bridge from a Mac. The Lua SDK exists, and the demo creature runs both in the desktop simulator and on the board. Some pieces (sleep, art for the later life stages) are still in progress.
 >
 > If you want to watch someone with a web development background learn embedded hardware in public, mistakes included, you're in the right place. Star the repo or follow the devlog and you'll see it happen.
 
@@ -37,7 +37,7 @@ The pet simulation framework is the part I care most about. Every virtual pet pr
 
 The simulator is not a separate program that pretends to be the device. It's the real firmware, compiled against a desktop backend of the same hardware abstraction layer the ESP32 build uses. Same sprite engine, same Lua runtime, same simulation code, different bottom layer.
 
-It also enforces the device's limits rather than letting your desktop paper over them: a 240×320 16-bit framebuffer, a Lua heap capped to what the PSRAM will actually give you, an asset budget sized to 16MB of flash, and warnings when a frame takes too long. Desktop speed lies, and a creature that only runs at 60fps on a laptop isn't finished.
+It also enforces the device's limits rather than letting your desktop paper over them: a 240×320 16-bit framebuffer, a Lua heap capped to what the PSRAM will actually give you, an asset budget sized to 12MB of the part's 16MB of flash (the rest is firmware, doubled for OTA), and warnings when a frame takes too long. Desktop speed lies, and a creature that only runs at 60fps on a laptop isn't finished.
 
 ## Design commitments
 
@@ -53,9 +53,9 @@ These are the things I'm trying not to compromise on.
 
 Rough, elastic, and paced for one person with a day job.
 
-- **Phase 0 (now)** — Name, repo, first devlog post. Deliberately no hardware purchase yet.
-- **Phase 1 (months 1–6)** — Everything on desktop first. HAL boundary, framebuffer and sprite engine against the desktop backend, Lua embedded, the pet simulation framework, and a demo creature running in the simulator under enforced device constraints. Plus an ESP-IDF hello-world in [Wokwi](https://wokwi.com), a browser ESP32-S3 simulator that costs nothing. *Exit, and the trigger to finally order parts: the creature runs in the simulator with saving and offline fast-forward working, and firmware boots in Wokwi.*
-- **Phase 1b** — Parts arrive, real bring-up begins. Display at 30fps on actual hardware, deep sleep and RTC wake proven on the bench, breadboard pet surviving a week on battery.
+- **Phase 0** — Name, repo, first devlog post. Done.
+- **Phase 1** — Everything on desktop first. HAL boundary, framebuffer and sprite engine against the desktop backend, Lua embedded, the pet simulation framework, and a demo creature running in the simulator under enforced device constraints. Plus an ESP-IDF hello-world in [Wokwi](https://wokwi.com), a browser ESP32-S3 simulator that costs nothing. Done — the creature runs in the simulator with saving and offline fast-forward working, and firmware booted in Wokwi, which triggered ordering parts.
+- **Phase 1b (now)** — Parts arrived, real bring-up under way. The board boots, the display renders, and the care loop runs live over the debug bridge. Still ahead: deep sleep and RTC wake proven on the bench, and a breadboard pet surviving a week on battery.
 - **Phase 2 (months 6–12)** — Custom PCB in KiCad, two or three revisions because that's normal, printable enclosure, SDK polish. *Exit: I carry a self-built unit daily for a month and it doesn't embarrass me.*
 - **Phase 3 (months 12–15)** — v1.0. Firmware, SDK, simulator, KiCad and Gerbers, interactive BOM, enclosure files, demo creature, and the build guide. *Exit: a stranger builds one from the guide alone.*
 - **Phase 4 (only if people ask)** — Small kit batches. Not planned. Let demand decide.
@@ -92,9 +92,9 @@ One thing worth saying plainly: I'm an American who likes Japanese design and Ja
 
 - **Devlog** — the honest version, including the parts that don't work.
 - **Discussions** — questions, ideas, and "have you considered."
-- **Issues** — once there's code to file issues against.
+- **Issues** — there's a real codebase to file them against now.
 
-Contributions aren't open yet, because there's nothing to contribute to. When Phase 1 produces something runnable, that changes. In the meantime, if you know embedded work and you can see me about to make a mistake, please say so. I'd rather hear it now than after the boards arrive.
+Whether contributions are formally open yet is still an open question, not a settled one — there's plenty running now, but no contribution process has been decided. In the meantime, if you know embedded work and you can see me about to make a mistake, please say so. I'd rather hear it now than after the boards arrive.
 
 ## Prior art and thanks
 

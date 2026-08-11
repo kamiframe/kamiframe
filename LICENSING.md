@@ -79,7 +79,7 @@ No trademark is registered yet. That's a Phase 4 problem, if it's ever a problem
 
 ## Contributing
 
-There's no contribution process yet because there's nothing to contribute to. When there is, contributions to the software will be under Apache 2.0 and contributions to hardware under CERN-OHL-W, by the ordinary inbound-equals-outbound rule. No CLA. I'm not going to ask anyone to sign a document so I can relicense their work later.
+There's a real codebase now (firmware, HakoniwaOS, the SDK all exist and run on hardware), but no formal contribution process has been decided yet. When there is, contributions to the software will be under Apache 2.0 and contributions to hardware under CERN-OHL-W, by the ordinary inbound-equals-outbound rule. No CLA. I'm not going to ask anyone to sign a document so I can relicense their work later.
 
 ## Questions
 
