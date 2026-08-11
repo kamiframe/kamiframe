@@ -1,7 +1,9 @@
 # Core care loop — first iteration
 
 **Date:** 2026-08-09
-**Status:** Agreed, not yet implemented
+**Status:** Agreed. Implemented and shipped with tests, except **section 3
+(Sleep)**, which remains unimplemented — no `asleep` state, no night-window
+accounting exists in `hakoniwaos/src/pet.cpp` yet.
 
 The first real gameplay slice: Tamagotchi-style pet care, made more demanding
 than the current placeholder, with one system of its own that distinguishes
@@ -296,8 +298,8 @@ Two smaller decisions ride along with it: whether being asleep should suspend
 the neglect clock (it must, or the player is punished for the creature
 sleeping — but then an unwoken creature is immune, which the automatic morning
 wake has to be trusted to prevent), and what the creature's night is in local
-terms, since the wall clock is UTC and a creature that sleeps at 22:00 GMT is
-wrong for most of the people who will own one.
+terms, since a fixed 22:00 read the same everywhere is wrong for most of the
+people who will own one and the device has no way to know their timezone.
 
 **One thing was settled and is worth keeping.** Core has no clock by design,
 and `last_advanced` currently only moves when a save is loaded, so during live
@@ -349,8 +351,8 @@ a real job: the sanctioned way to avoid this, rather than a convenience.
 remembrance and continuity, where a headstone reads as a plot in a Western
 graveyard; the shrine also carries the visual language the rest of the project
 already uses, and it gives the eventual "start a new egg" action somewhere
-natural to live — you leave an offering rather than dig. Not yet built:
-nothing draws any scene at all yet.
+natural to live — you leave an offering rather than dig. Built: the shrine
+scene is drawn (`simulator/src/pet/kf_creature_screen.cpp`).
 
 ### Cleaning is two actions, not one
 
@@ -376,8 +378,11 @@ wrong: it made meeting a need conditional on style.
 ### The clock is a device setting, not a per-creature one
 
 Local time is set once in the device's global settings and every creature on
-it shares that. This settles the timezone half of sleep — Core carries a UTC
-offset from config, and nothing per-egg.
+it shares that. This settles the timezone half of sleep — **there is no UTC
+offset.** The RTC (`hakoniwaos/include/kf/clock.h`, `kf/hal/time.h`) holds
+LOCAL time directly: no timezone, no offset, nothing per-egg. The device has
+no timezone database, no network, and no location, so "local time" can only
+honestly mean whatever the owner dials into the Settings screen by hand.
 
 The other half of sleep is settled too, as of later the same day — see "Sleep,
 settled" at the end of this addendum.
@@ -403,8 +408,11 @@ Settling it is optional decoration on top, not the mechanism sleep depends on.
 That makes the live and offline rules the same rule, which is what unblocked
 this.
 
-**Night is 22:00 to 07:00 local**, using the device-wide UTC offset decided
-above. Generic on purpose for now. The eventual intent is that the device
+**Night is 22:00 to 07:00 local**, computed directly against the wall clock's
+own local time — no UTC offset exists to apply. Use
+`kf_clock_seconds_in_daily_window(from, to, 22, 7)`
+(`hakoniwaos/include/kf/clock.h`) for the seconds-in-window accounting.
+Generic on purpose for now. The eventual intent is that the device
 learns the real zone by itself — over BLE from a phone, or WiFi — so nobody
 ever sets a clock; that is future work, not this build.
 
