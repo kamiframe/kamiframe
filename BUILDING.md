@@ -1,6 +1,8 @@
 # Building Kamiframe
 
-You need a C++17 compiler, CMake 3.20 or newer, and Git. Nothing else. SDL3 is
+You need a C++17 compiler, CMake 3.20 or newer, Git, and a Python 3
+interpreter (`find_package(Python3 REQUIRED)` in `simulator/CMakeLists.txt` —
+used by the asset pipeline and code-generation steps the build runs). SDL3 is
 fetched and built automatically the first time, which takes a few minutes; every
 build after that is seconds.
 
@@ -39,7 +41,7 @@ cmake --build build
 Then run one of:
 
 ```
-build/kamiframe-sim              # window, one sprite, dirty-rectangle repaint
+build/kamiframe-sim              # window, the demo creature's Home screen (care loop, animation, dirty-rectangle repaint)
 build/kamiframe-sim --stress     # scrolling tilemap + 12 sprites, 100% redraw
 build/kamiframe-headless         # no window at all, checks frames, used by CI
 ```
@@ -155,7 +157,10 @@ commands it wraps, if you want to run them separately:
 ctest --test-dir build --output-on-failure
 ```
 
-Five tests, all running the real firmware against the headless backend:
+The suite has grown well past its original handful and keeps growing — run
+`ctest --test-dir build -N` for today's exact count and list rather than
+trusting a number here (44 with the default `KF_ENABLE_LVGL=OFF` as of
+2026-08-11, 46 with it `ON`). A few of the oldest and most load-bearing:
 
 - **headless_determinism** hashes every rendered frame and compares against a
   known value. If rendering changed, this fails. When the change was
@@ -171,7 +176,9 @@ Five tests, all running the real firmware against the headless backend:
   `docs/architecture/adr-0012-storage-and-power.md`.
 - **lvgl_determinism_check** proves the LVGL port glue renders
   deterministically, the same property headless_determinism proves for the
-  custom engine. See `docs/architecture/adr-0013-lvgl-for-menus.md`.
+  custom engine. See `docs/architecture/adr-0013-lvgl-for-menus.md`. **Only
+  registered when built with `-DKF_ENABLE_LVGL=ON`** — LVGL defaults OFF
+  (ADR 0045), so this test does not run in a plain `bash dev.sh test`.
 
 Plus one check that is not a ctest:
 
@@ -189,4 +196,9 @@ something to commit.
 
 ## The ESP32 build
 
-Not buildable yet. See `ports/esp32/README.md`.
+Buildable, and it boots on real hardware. `idf.py build` produces a real
+`kamiframe-firmware.elf`/`.bin` for the esp32s3 target from `ports/esp32/` —
+same `hakoniwaos/` sources, real ESP-IDF v6.0.2 toolchain, real display and
+input HAL backends. See `ports/esp32/README.md` for setup, panel selection
+(`-DKF_PANEL=st7789` or `ili9341`, defaulting to `ili9341`), and what has
+been confirmed on the bench versus in Wokwi only.
