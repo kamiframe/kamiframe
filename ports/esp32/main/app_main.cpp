@@ -69,16 +69,16 @@
  *  "correct per this firmware" used to be two different claims; they are
  *  the same claim now.
  *
- *  ESP_PARTITION_MMAP() HAS BEEN CONFIRMED ON REAL SILICON, BUT ONLY AT A
- *  SIZE THIS BUILD DOES NOT SHIP. ADR 0033 gave this port a real partition
+ *  ESP_PARTITION_MMAP() HAS BEEN CONFIRMED ON REAL SILICON, AT THE SIZE
+ *  THIS BUILD ACTUALLY SHIPS. ADR 0033 gave this port a real partition
  *  table and an asset pack (`.kfpack`) mounted by mapping the `assets`
- *  partition directly rather than copying it into PSRAM; a hardware session
- *  read a mapped byte back correctly, but against the 1,156-byte
- *  hello_sprite pack, not the 556,488-byte creature_demo pack this firmware
- *  actually embeds (ports/esp32/main/CMakeLists.txt). A mapping call that
- *  works for a few hundred bytes is not proof it works across 556 KB of
- *  flash. If a sprite comes back wrong, or the mapping call itself faults,
- *  on the next flash, that size gap is where to look first.
+ *  partition directly rather than copying it into PSRAM; the same hardware
+ *  session read mapped bytes back correctly first against the 1,156-byte
+ *  hello_sprite pack, then against the full 556,488-byte creature_demo
+ *  pack this firmware actually embeds (ports/esp32/main/CMakeLists.txt) --
+ *  see docs/hal.md for both. If a sprite comes back wrong, or the mapping
+ *  call itself faults, on the next flash, this is no longer the first
+ *  place to look; check what changed since that session instead.
  *
  *  THIS BUILD'S HOME SCREEN NEEDS LUA -- A LOAD FAILURE BLANKS IT, NOT
  *  DEGRADES IT. KF_HOME_SCREEN defaults to lua, and under that build
