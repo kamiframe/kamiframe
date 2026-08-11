@@ -306,33 +306,84 @@ int64_t merge_cost(kf_rect a, kf_rect b) {
            static_cast<int64_t>(kf_rect_area(b));
 }
 
-/* Removes one rectangle from `rects[0..*count)` by merging the cheapest
- * pair (merge_cost(), above) into the lower of the two indices and moving
- * the last element into the gap left by the higher one. Used both to make
- * room in the capped candidate buffer (KF_SCENE_MAX_DIRTY_CANDIDATES) and,
- * repeatedly, to bring the final candidate count down to
- * KF_MAX_DIRTY_RECTS -- see kf_scene_commit()'s own comment for why both
- * call sites use the same reduction rather than two different ones. */
+/* A merge is worth taking on its own merits -- not just because
+ * KF_MAX_DIRTY_RECTS forces one -- when it costs under this many pixels
+ * (2,048 bytes at RGB565's 2 bytes/pixel) beyond what the two rectangles
+ * already cover separately. This is what lets a cluster of small, same-band
+ * objects collapse to one dirty rectangle even when nothing about
+ * KF_SCENE_MAX_OBJECTS or KF_MAX_DIRTY_RECTS ever forces a merge: the
+ * canonical case is kf_creature_screen.cpp's mess, up to eight individually
+ * declared poop objects (kept as separate objects, deliberately, so the
+ * game keeps them visually discrete) roughly 18px apart in a 12px-tall
+ * strip. Two neighbouring 12x12 poops cost 216 extra pixels to merge, and
+ * -- because the strip is evenly spaced -- every further neighbour in the
+ * same run costs the same ~216px again, not a growing amount, so a whole
+ * contiguous run of changed poops collapses to one rectangle a cheap step
+ * at a time, regardless of how many candidates the rest of the scene
+ * happens to have that frame. 1,024px sits comfortably above that (roughly
+ * 4x headroom for slop in exact spacing) and comfortably below what merging
+ * two genuinely unrelated regions of the same screen costs: the same mess
+ * strip merged with the stats band nine rows below it -- the nearest other
+ * thing on the creature screen -- costs over 4,000px, four times this
+ * budget, so the two never merge by accident. See
+ * docs/architecture/adr-0040-retained-scene.md for the fuller reasoning. */
+constexpr int64_t kCheapMergeAreaPx = 1024;
+
+/* Scans every pair in `rects[0..count)` for the cheapest one to merge
+ * (merge_cost(), above) WITHOUT merging it -- a caller that wants to decide
+ * whether a merge is actually worth taking (kf_scene_commit()'s coalescing
+ * loop) can inspect the cost first; a caller that always wants the merge
+ * regardless of cost calls merge_cheapest_pair() below instead. Returns
+ * INT64_MAX for `count` under 2 (nothing to merge), so a caller comparing
+ * this against a threshold does not need its own separate guard for that
+ * case. */
+int64_t find_cheapest_pair(const kf_rect *rects, int count, int *out_i,
+                            int *out_j) {
+    *out_i = 0;
+    *out_j = 1;
+    if (count < 2) {
+        return INT64_MAX;
+    }
+    int64_t best_cost = merge_cost(rects[0], rects[1]);
+    for (int i = 0; i < count; ++i) {
+        for (int j = i + 1; j < count; ++j) {
+            const int64_t cost = merge_cost(rects[i], rects[j]);
+            if (cost < best_cost) {
+                best_cost = cost;
+                *out_i = i;
+                *out_j = j;
+            }
+        }
+    }
+    return best_cost;
+}
+
+/* Merges rects[j] into rects[i] and drops the count by one, moving the
+ * last element into the gap left at j -- the actual mutation
+ * find_cheapest_pair() above deliberately stops short of, so a caller can
+ * inspect the cost before paying for it. */
+void merge_pair(kf_rect *rects, int *count, int i, int j) {
+    rects[i] = kf_rect_union(rects[i], rects[j]);
+    rects[j] = rects[*count - 1];
+    (*count)--;
+}
+
+/* Removes one rectangle from `rects[0..*count)` by merging the globally
+ * cheapest pair (find_cheapest_pair(), above) regardless of what that
+ * costs. Used to make room in the capped candidate buffer
+ * (KF_SCENE_MAX_DIRTY_CANDIDATES), where the alternative is dropping a
+ * candidate outright -- a hard buffer limit, not a frame-budget judgement
+ * call, so "merge unconditionally" is the right rule here even though
+ * kf_scene_commit()'s own coalescing loop, below, does NOT reuse this: that
+ * loop wants to see the cost before deciding a merge is worth it (see
+ * kCheapMergeAreaPx above). */
 void merge_cheapest_pair(kf_rect *rects, int *count) {
     if (*count < 2) {
         return;
     }
-    int best_i = 0;
-    int best_j = 1;
-    int64_t best_cost = merge_cost(rects[0], rects[1]);
-    for (int i = 0; i < *count; ++i) {
-        for (int j = i + 1; j < *count; ++j) {
-            const int64_t cost = merge_cost(rects[i], rects[j]);
-            if (cost < best_cost) {
-                best_cost = cost;
-                best_i = i;
-                best_j = j;
-            }
-        }
-    }
-    rects[best_i] = kf_rect_union(rects[best_i], rects[best_j]);
-    rects[best_j] = rects[*count - 1];
-    (*count)--;
+    int i, j;
+    find_cheapest_pair(rects, *count, &i, &j);
+    merge_pair(rects, count, i, j);
 }
 
 void add_candidate(kf_rect r) {
@@ -695,16 +746,46 @@ void kf_scene_commit(void) {
         }
     }
 
-    /* ---- Coalesce down to the framebuffer's own per-frame limit. Past
-     * that, kf/framebuffer.h's kf_fb_mark_dirty() would collapse to one
-     * screen-sized box itself (framebuffer.cpp) -- correct, but exactly the
-     * ~31ms-of-transfer cost this whole module exists to avoid (kf/scene.h's
-     * "WHY RETAINED, NOT IMMEDIATE" comment). Doing the reduction here
-     * first, with full knowledge of every candidate at once, is what lets
-     * the coalescer do better than that fallback: see merge_cheapest_pair()
-     * for how "better" is defined. ---- */
-    while (g_candidate_count > KF_MAX_DIRTY_RECTS) {
-        merge_cheapest_pair(g_candidates, &g_candidate_count);
+    /* ---- Coalesce. Two different reasons to merge two candidates into
+     * one, and this loop keeps taking the globally cheapest available merge
+     * (find_cheapest_pair()) as long as EITHER reason applies:
+     *
+     *   1. MANDATORY. Past KF_MAX_DIRTY_RECTS, kf/framebuffer.h's
+     *      kf_fb_mark_dirty() would collapse to one screen-sized box itself
+     *      (framebuffer.cpp) -- correct, but exactly the ~31ms-of-transfer
+     *      cost this whole module exists to avoid (kf/scene.h's "WHY
+     *      RETAINED, NOT IMMEDIATE" comment). Doing the reduction here
+     *      first, with full knowledge of every candidate at once, is what
+     *      lets the coalescer do better than that fallback.
+     *
+     *   2. OPPORTUNISTIC. Even comfortably under the cap, if the cheapest
+     *      available merge costs under kCheapMergeAreaPx, take it anyway.
+     *      Without this, a merge only ever happened once the hard cap
+     *      forced it -- fine for a handful of objects scattered across the
+     *      whole panel, but wrong for a cluster of small same-band objects
+     *      (kCheapMergeAreaPx's own comment walks through the case this
+     *      exists for) that stays comfortably under KF_MAX_DIRTY_RECTS on
+     *      candidate COUNT alone while still handing the framebuffer a
+     *      needlessly long list of tiny, separately-transferred rectangles
+     *      a human would call "one obvious patch". This closes exactly the
+     *      gap that led Task 4 of the Lua game-layer plan to give up eight
+     *      discrete mess poops for one growing box instead of fixing the
+     *      coalescer: the box is gone (kf_creature_screen.cpp), and this is
+     *      why it no longer needs to exist. ---- */
+    for (;;) {
+        if (g_candidate_count < 2) {
+            break;
+        }
+        int i = 0;
+        int j = 1;
+        const int64_t cost =
+            find_cheapest_pair(g_candidates, g_candidate_count, &i, &j);
+        const bool over_cap = g_candidate_count > KF_MAX_DIRTY_RECTS;
+        const bool cheap_enough = cost <= kCheapMergeAreaPx;
+        if (!over_cap && !cheap_enough) {
+            break;
+        }
+        merge_pair(g_candidates, &g_candidate_count, i, j);
     }
 
     /* A sprite background cannot be clipped to a sub-rectangle (see
