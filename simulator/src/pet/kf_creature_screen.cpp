@@ -58,24 +58,31 @@ constexpr kf_color kBackground = KF_RGB(232, 240, 216);
  * with no positions -- Core says so deliberately, because where each one
  * sits on screen is presentation's call, not the simulation's.
  *
- * Before this task, mess was KF_PET_MAX_POOPS individual squares in a row,
- * hand-erased and redrawn together through one shared kMessBand rectangle so
- * that changing the count only ever cost ONE dirty rectangle regardless of
- * how many slots moved. A retained scene object can only be one rectangle
- * of one solid colour -- see kf/scene.h's "What an object is" -- so
- * KF_PET_MAX_POOPS independent objects, each toggled visible/invisible on
- * its own, would cost up to KF_PET_MAX_POOPS separate dirty rectangles on a
- * frame where the count swings a lot (measured: it blows run_creature_
- * screen_budget_combination_check()'s worst_rects<=5u bound). So mess is
- * ONE box object here, growing and shrinking from the left edge of the
- * field with the count -- a solid patch rather than KF_PET_MAX_POOPS
- * discrete squares. Visually different from before (no gaps between
- * individual poops), but nothing in this codebase's test suite polices the
- * exact shape, only that mess is visible, sized roughly to the count, and
- * costs exactly one dirty rectangle when the count changes -- see
- * declare_mess() below for the one place this trade-off lives. */
+ * KF_PET_MAX_POOPS individual box objects, one per poop, each at its own
+ * fixed slot -- see poop_rect() below -- and toggled visible/invisible by
+ * declare_mess() as poop_count moves. This IS what a first attempt at this
+ * (Task 4 of the Lua game-layer plan) tried and reverted from: up to
+ * KF_PET_MAX_POOPS objects changing visibility in the same frame raised up
+ * to KF_PET_MAX_POOPS separate dirty candidates, which blew run_creature_
+ * screen_budget_combination_check()'s bound, so that task collapsed mess
+ * into one growing/shrinking box instead -- a solid patch, not
+ * KF_PET_MAX_POOPS discrete squares. The project owner rejected that: mess
+ * should look like individual items. The fix was not "give up on discrete
+ * poops", it was "the coalescer wasn't merging them" -- kf/scene.h's
+ * kf_scene_commit() now opportunistically merges any cluster of candidates
+ * that costs little to combine (hakoniwaos/src/scene.cpp's
+ * kCheapMergeAreaPx), not only once KF_MAX_DIRTY_RECTS forces it. Because
+ * poop_count only ever grows or shrinks the visible PREFIX of poops (0..
+ * count-1), whatever subset changes in one frame is always a CONTIGUOUS run
+ * of adjacent slots in this one 12px-tall strip -- exactly the shape that
+ * coalescer collapses to a single dirty rectangle, a cheap adjacent-pair
+ * merge at a time, regardless of how many poops are in that run. Eight
+ * genuinely separate poops on screen, at most one merged dirty rectangle
+ * for the strip when the count changes, and zero when it does not -- see
+ * declare_mess() below. */
 constexpr int16_t kPoopSize = 12;
 constexpr int16_t kPoopY0 = 232;
+constexpr int16_t kPoopY1 = static_cast<int16_t>(kPoopY0 + kPoopSize);
 constexpr int16_t kPoopSlotWidth =
     static_cast<int16_t>(kField.x1 / static_cast<int16_t>(KF_PET_MAX_POOPS));
 static_assert(kPoopSlotWidth * static_cast<int16_t>(KF_PET_MAX_POOPS) ==
@@ -84,6 +91,18 @@ static_assert(kPoopSlotWidth * static_cast<int16_t>(KF_PET_MAX_POOPS) ==
               "full house of mess should span exactly the field's width, no "
               "more and no less");
 constexpr kf_color kPoopColor = KF_RGB(92, 64, 51);
+
+/* Where poop number `index` (0-based, < pet->poop_count) sits: centred in
+ * its own kPoopSlotWidth-wide slot, floor-dividing any odd remainder --
+ * pure function of the index alone, so kf_creature_screen_enter() (which
+ * lays out every poop's fixed position once) and declare_mess() (which only
+ * ever toggles visibility) agree on where each one is without either having
+ * to duplicate the arithmetic. */
+kf_rect poop_rect(int index) {
+    const int16_t x0 = static_cast<int16_t>(
+        index * kPoopSlotWidth + (kPoopSlotWidth - kPoopSize) / 2);
+    return kf_rect{x0, kPoopY0, static_cast<int16_t>(x0 + kPoopSize), kPoopY1};
+}
 
 /* The egg bob: "bob in one place like it's wobbling/squishing every so
  * often" (the project owner's own words). Pure positioning, an offset
@@ -365,7 +384,7 @@ static_assert(kGuideTextY + KF_FONT_CELL_H <= KF_DISPLAY_HEIGHT,
  * comment). None of these are meaningful before the first enter() call. */
 kf_scene_id g_creature_id = 0;
 kf_scene_id g_shrine_id = 0;
-kf_scene_id g_mess_id = 0;
+kf_scene_id g_poop_id[KF_PET_MAX_POOPS] = {};
 kf_scene_id g_stat_track_id[kStatCount] = {0, 0, 0};
 kf_scene_id g_stat_fill_id[kStatCount] = {0, 0, 0};
 
@@ -472,14 +491,18 @@ void declare_creature(const kf_pet_state *pet) {
     kf_scene_set_frame(g_creature_id, g_creature.anim.frame);
 }
 
-/* Declares the mess object's width for the pet's current poop_count -- see
- * this file's own kPoopSize/kPoopSlotWidth block comment above for why one
- * growing box, not KF_PET_MAX_POOPS discrete ones. Position never changes
- * after creation, so only the size setter is needed here. */
+/* Declares which poops are visible for the pet's current poop_count -- see
+ * this file's own kPoopSize/poop_rect() block comment above for why
+ * KF_PET_MAX_POOPS discrete objects, not one growing box. Position and size
+ * never change after kf_creature_screen_enter() creates each poop, so only
+ * the visibility setter is needed here: poop `i` is visible exactly when
+ * `i < pet->poop_count`, which is always a contiguous prefix of the slots
+ * -- the shape kf_scene_commit()'s coalescer needs to fold a change into
+ * one dirty rectangle (see this file's mess block comment for why). */
 void declare_mess(const kf_pet_state *pet) {
-    const int16_t width =
-        static_cast<int16_t>(pet->poop_count * kPoopSlotWidth);
-    kf_scene_set_size(g_mess_id, width, kPoopSize);
+    for (uint8_t i = 0; i < KF_PET_MAX_POOPS; ++i) {
+        kf_scene_set_visible(g_poop_id[i], i < pet->poop_count);
+    }
 }
 
 /* Refreshes all three fill boxes for the pet's CURRENT needs, unconditionally
@@ -597,8 +620,19 @@ void kf_creature_screen_enter(void) {
     kf_scene_reset();
     kf_scene_set_background_color(kBackground);
 
-    g_mess_id = kf_scene_add_box(0, kPoopSize, kPoopColor);
-    kf_scene_set_pos(g_mess_id, 0, kPoopY0);
+    /* Each poop's fixed position is laid out once, here, from poop_rect();
+     * every visibility toggle after this is declare_mess()'s job. A new box
+     * object starts visible (kf/scene.h's own comment on
+     * kf_scene_add_box()), which is the wrong default for a pet that starts
+     * with poop_count == 0 -- but declare_mess() further down this function
+     * runs before the first kf_scene_commit() and sets every poop's real
+     * visibility for the pet's actual poop_count, so this starting
+     * visible-true is never itself painted. */
+    for (int i = 0; i < static_cast<int>(KF_PET_MAX_POOPS); ++i) {
+        const kf_rect r = poop_rect(i);
+        g_poop_id[i] = kf_scene_add_box(kPoopSize, kPoopSize, kPoopColor);
+        kf_scene_set_pos(g_poop_id[i], r.x0, r.y0);
+    }
 
     const kf_rect shrine_rect = centered_in_field(kShrineSize, kShrineSize);
     g_shrine_id = kf_scene_add_sprite(kShrineSpriteName);
