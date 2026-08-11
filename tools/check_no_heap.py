@@ -49,10 +49,13 @@ ALLOW_MARKER = "kf-allow-heap"
 def main() -> int:
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     problems = []
+    missing_dirs = []
+    scanned = 0
 
     for rel in SCAN_DIRS:
         base = root / rel
         if not base.is_dir():
+            missing_dirs.append(rel)
             continue
         for path in sorted(base.rglob("*")):
             if path.suffix not in (".c", ".cpp", ".h", ".hpp"):
@@ -60,6 +63,7 @@ def main() -> int:
             # poison.h names the tokens it poisons, by necessity.
             if path.name == "poison.h":
                 continue
+            scanned += 1
             text = path.read_text(encoding="utf-8", errors="replace")
             for lineno, line in enumerate(text.splitlines(), start=1):
                 stripped = line.strip()
@@ -83,7 +87,19 @@ def main() -> int:
               f"{ALLOW_MARKER} to it. Think hard before you do.")
         return 1
 
-    print("check_no_heap: core is heap-free")
+    if missing_dirs:
+        print("check_no_heap: expected scan directories are missing, "
+              "the gate has nothing to check:")
+        for rel in missing_dirs:
+            print(f"  {rel}")
+        return 1
+
+    if scanned == 0:
+        print("check_no_heap: scanned 0 files, refusing to pass a no-op gate "
+              f"(checked {', '.join(SCAN_DIRS)})")
+        return 1
+
+    print(f"check_no_heap: core is heap-free ({scanned} files scanned)")
     return 0
 
 
