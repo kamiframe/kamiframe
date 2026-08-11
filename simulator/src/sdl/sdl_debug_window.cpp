@@ -208,22 +208,6 @@ const char *stage_name(kf_pet_stage stage) {
     }
 }
 
-/* kf_screen_nav.h's own header comment documents index 0 = Home, 1 = Info
- * -- a small, deliberate duplication of that contract rather than a new
- * export, the same call this file already made for stage_name() above.
- * "?" covers a future screen this file has not been updated to name yet,
- * rather than showing a raw, meaningless number. */
-const char *screen_name(int index) {
-    switch (index) {
-    case 0:
-        return "Home";
-    case 1:
-        return "Info";
-    default:
-        return "?";
-    }
-}
-
 /* Stage duration, read from kf_pet_default_config() -- not from
  * kf_pet_session's own live config, which is not exposed outside
  * kf_pet_session.cpp (see kf_pet_session.h: only the live STATE is
@@ -868,7 +852,7 @@ void kf_sdl_debug_window_frame(void) {
     y += kLineHeight;
 
     std::snprintf(line, sizeof(line), "screen: %s (Next Screen above, or MENU)",
-                  screen_name(kf_screen_nav_debug_index()));
+                  kf_screen_nav_name(kf_screen_nav_debug_index()));
     SDL_RenderDebugText(g.renderer, 16, y, line);
 
     draw_engine_diagnostics();
