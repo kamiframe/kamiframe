@@ -1631,7 +1631,9 @@ The task that makes "the game works" true.
   hardware" header at `:39-41`)
 - Modify: `docs/hardware-bringup.md` (the power-cut procedure for the firmware,
   distinct from the diagnostic's)
-- Create: `docs/architecture/adr-0043-care-loop-on-hardware.md`
+- Create: `docs/architecture/adr-00NN-care-loop-on-hardware.md`, where `NN` is
+  the next free ADR number — 0043 through 0046 are already taken; confirm
+  with `ls docs/architecture/` at dispatch.
 
 **Interfaces:**
 - Consumes: `kf_time_set_wall()` (`hakoniwaos/include/kf/hal/time.h`), the
@@ -1700,7 +1702,12 @@ python3 tools/kf_debug.py wall --now
 python3 tools/kf_debug.py wall 1786060800
 ```
 
-`--now` sends `int(time.time())`. Extend `tools/kf_debug_selftest.py` with a
+`--now` sends the host's **local** wall time, not UTC — the RTC
+(`hakoniwaos/include/kf/clock.h`, `kf/hal/time.h`) holds local time directly
+with no timezone or UTC offset, so `int(time.time())` (UTC) would give the
+pet the wrong bedtime for anyone outside GMT. Send
+`int(time.mktime(time.localtime()))` instead. Extend
+`tools/kf_debug_selftest.py` with a
 `FakeLink` covering the success reply, the too-early rejection, and the
 mutate-gated rejection (the pattern
 `test_mutate_gate_rejection_is_actionable()` already established).
@@ -1812,17 +1819,19 @@ different program.
 
 - [ ] **Step 9: ADR and commit**
 
-`docs/architecture/adr-0043-care-loop-on-hardware.md`: `KFDBG WALL` and why it
-is mutate-tier; every care command's observed behaviour on device; the button
-results; the power-cut numbers before and after; and the `1:FEED` question
-restated as an open decision with what the device actually showed. Then sweep
-ADRs 0026, 0028, 0030, 0031, 0034 and 0035 — each carries a "Not verified:
-nothing in this ADR has run against real hardware" line, and after this task
-several of them are simply false.
+`docs/architecture/adr-00NN-care-loop-on-hardware.md` (next free number —
+0043 through 0046 are taken; confirm with `ls docs/architecture/` at
+dispatch): `KFDBG WALL` and why it is mutate-tier; every care command's
+observed behaviour on device; the button results; the power-cut numbers
+before and after; and the `1:FEED` question restated as an open decision
+with what the device actually showed. Then sweep ADRs 0026, 0028, 0030,
+0031, 0034 and 0035 — each carries a "Not verified: nothing in this ADR has
+run against real hardware" line, and after this task several of them are
+simply false.
 
 ```bash
 git add -u
-git add docs/architecture/adr-0043-care-loop-on-hardware.md
+git add docs/architecture/adr-00NN-care-loop-on-hardware.md
 git commit -m "The pet takes care over the wire, and ages while the power is off"
 ```
 
