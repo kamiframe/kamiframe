@@ -5,7 +5,10 @@
  * color/on_button/width/height/sprites, and the object metatable those
  * calls return userdata against. See docs/architecture/adr-0041-lua-
  * drawing-binding.md for the accessor convention, the userdata choice, and
- * every failure behaviour named below.
+ * every failure behaviour named below. kf.screen(name) (ADR 0044, Task 1
+ * of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) adds named
+ * GROUPS of these same objects, over the same one scene -- see this
+ * header's own section below.
  *
  * A thin wrapper, deliberately: every call in kf_lua_scene.cpp does
  * argument checking and jQuery-style read/write dispatch, then hands off to
@@ -19,6 +22,8 @@
 
 #ifndef KF_LUA_SCENE_H
 #define KF_LUA_SCENE_H
+
+#include <cstdint>
 
 struct lua_State;
 
@@ -65,5 +70,47 @@ void kf_lua_scene_dispatch_buttons(lua_State *L);
  * actually declared something keeps this task's promise that nothing
  * interactive changes a single rendered pixel. */
 bool kf_lua_scene_declared_anything();
+
+/* ---------------------------------------------------------------------
+ * ADR 0044: kf.screen(name) -- named groups of scene objects over the ONE
+ * shared retained scene, and the function-pointer boundary that lets
+ * simulator/src/lvgl/kf_screen_nav.cpp's registry call back into this
+ * file without kamiframe_lua_port linking against kamiframe_lvgl_port
+ * (simulator/CMakeLists.txt forbids that direction; kf_screen_nav.h's own
+ * header comment has the full reasoning).
+ * --------------------------------------------------------------------- */
+
+/* Matches kf_screen_nav_register()'s and kf_screen_nav_show()'s exact
+ * signatures (kf_screen_nav.h) -- declared independently here, not by
+ * including that header, which is the whole point: this file only needs
+ * to know the SHAPE of the two functions it will be handed, never their
+ * name or which library defines them. */
+typedef int (*kf_screen_nav_register_fn)(const char *name,
+                                          void (*update)(uint32_t dt_ms));
+typedef void (*kf_screen_nav_show_fn)(int index);
+
+/* Called once by kf_screen_nav_install_lua_hooks() (kf_screen_nav.cpp,
+ * which CAN include this file's header -- kamiframe_lvgl_port already
+ * depends on kamiframe_lua_port the other way) to hand this file the two
+ * registry entry points kf.screen() and screen:show() need. Before this is
+ * called, kf.screen() raises a Lua error naming the gap rather than
+ * calling through a null pointer -- see lua_kf_screen()'s own comment. */
+void kf_lua_scene_set_screen_nav(kf_screen_nav_register_fn register_fn,
+                                  kf_screen_nav_show_fn show_fn);
+
+/* Called by kf_screen_nav_show() (the allowed direction) as ITS first
+ * step, for every switch, whether triggered by MENU/B or by a script's own
+ * screen:show(). If a kf.screen() group is registered under `index`: hides
+ * every OTHER group's objects, shows this group's, re-applies its stored
+ * background colour if it ever called screen:background() (a no-op
+ * otherwise -- see kf_lua_scene.h's "the trap is two owners" discussion in
+ * ADR 0044 for why a screen that never set one inherits whatever is
+ * already there rather than a new default), then kf_scene_force_repaint()
+ * and, if anything has ever been declared, an immediate kf_scene_commit()
+ * so a caller that inspects the panel right after the switch -- screen_
+ * nav_check does exactly this -- sees the result without waiting for a
+ * frame. A no-op, changing nothing, if no group is registered under
+ * `index` (Info, still LVGL as of this task). */
+void kf_lua_scene_activate_screen(int index);
 
 #endif /* KF_LUA_SCENE_H */
