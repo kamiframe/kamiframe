@@ -51,9 +51,11 @@ Task 1 matters to later work beyond this plan: the `KFDBG STATE` budget fields
 it added are what `2026-08-12-lua-game-layer.md` relies on to measure the Lua
 layer's cost on hardware.
 
-No task below has been executed. Everything in "What is true today" was
-measured in the session that wrote this plan, on this machine, in this
-worktree — not copied from an ADR.
+Tasks 1, 4 and 9 have been executed, as the table above says; 2, 3 and 5-8
+have not, though events overtook several of them anyway (see above).
+Everything in "What is true today" was measured in the session that wrote
+this plan, on this machine, in this worktree — not copied from an ADR — and
+reflects that starting point, not the current tree.
 
 ---
 
@@ -271,8 +273,13 @@ Every task's requirements implicitly include this section.
 - **Do NOT run `cmake -B build`** for the desktop target. It is already
   configured and reconfiguring costs ~2 minutes. Build with
   `cmake --build build -j8`. Run tests with `ctest --test-dir build`.
-  **Desktop baseline is 37/37** and must stay 37/37 (plus any test a task
-  adds).
+  **Desktop baseline was 37/37 when this plan was written; it has moved
+  since — run `ctest --test-dir build -N` for today's count before starting**
+  (44/44 with the default `KF_ENABLE_LVGL=OFF` as of 2026-08-11, 46/46 with it
+  ON, and both will have moved further by the time this is read). Whatever
+  that count is, it must hold plus whatever a task adds — the step-by-step
+  "38/38" figures below were computed against the stale 37 baseline and need
+  the same adjustment: read them as "today's baseline + 1", not literally.
 - **ESP-IDF needs its environment sourced, and this sandbox blocks bare
   `source`.** Previous agents worked around it by writing the sequence to a
   script and running `bash script.sh`. That works; it is how every `idf.py`
@@ -467,7 +474,8 @@ cmake --build build -j8
 ctest --test-dir build
 ```
 
-Expected: the new check PASSes; **38/38** (37 + the new one). If
+Expected: the new check PASSes; today's baseline + 1 (see the Global
+Constraints note on why "38/38" no longer means anything literal). If
 `headless_determinism` or `headless_fullscreen` moved, stop — the window shift
 was supposed to be invisible to `KF_DEMO_FULLSCREEN` and something else is
 going on.
@@ -733,8 +741,9 @@ Expected: `all checks passed`.
 ```
 cmake --build build -j8 && ctest --test-dir build
 ```
-Expected **38/38** (Task 1's addition included). Nothing in this task touches
-desktop code, so anything else moving is a signal.
+Expected: today's baseline + 1 (Task 1's addition included — see the Global
+Constraints note). Nothing in this task touches desktop code, so anything
+else moving is a signal.
 
 ```
 bash /tmp/idf.sh
@@ -1076,8 +1085,9 @@ configured for **`st7789`** — that is the panel Tasks 5-8 use.
 ```
 ctest --test-dir build
 ```
-Expected **38/38**. Nothing here touches desktop code; if a test moves,
-something was edited that should not have been.
+Expected: unmoved from whatever count this task started with (see the Global
+Constraints note — "38/38" is stale). Nothing here touches desktop code; if a
+test moves, something was edited that should not have been.
 
 - [ ] **Step 8: ADR and commit**
 
@@ -1599,9 +1609,11 @@ corrected and the arithmetic that corrected it, and the 556 KB mapping result.
 ```
 ctest --test-dir build
 ```
-Expected **38/38**. A `budget.h` change can move a test that asserts against a
-budget constant — if one moves, that is a real conversation about whether the
-test encoded the assumption, not a licence to edit the test.
+Expected: unmoved from whatever count this task started with (see the Global
+Constraints note — "38/38" is stale). A `budget.h` change can move a test
+that asserts against a budget constant — if one moves, that is a real
+conversation about whether the test encoded the assumption, not a licence to
+edit the test.
 
 ```bash
 git add -u
@@ -1903,12 +1915,12 @@ mistakes them for oversights.
   option stays open (ADR 0033). No client code, and none needed for a board on
   a cable.
 
-- **It does not generate animation art.** The playback clock works and the
-  format carries frames, but per the animated-sprites plan every shipped sprite
-  is still single-frame — so "animated sprites on hardware" means the animation
-  *path* runs on hardware, not that anything visibly animates yet. That is a
-  generation spend, not a code gap, and it changes nothing in this plan when it
-  lands.
+- **It does not generate animation art.** No longer true as a blanket claim —
+  18 of `examples/creature_demo/assets.kfpack`'s 94 entries now carry nine
+  frames each (verified against the pack directory), so some idles genuinely
+  animate on hardware. The remaining 76 entries are still single-frame, so
+  this line's spirit — most of the roster still needs generation spend, not a
+  code gap — still holds; it is a shrinking gap, not a closed one.
 
 ---
 
@@ -1949,9 +1961,13 @@ Needs decay over minutes, so the *displayed* value changes far more slowly than
 the frame rate. **Redraw a bar only when its rendered appearance would
 actually differ** — quantise the need to the bar's pixel width first and
 compare that, not the underlying value. A bar 60px wide changes at most 60
-times over a full decay. This is the same "draw once, leave it alone" discipline
-the mess already uses (`g_drawn_poops`), and the same reasoning belongs in the
-comment.
+times over a full decay. `g_drawn_poops` no longer exists: the mess now uses
+individual retained-scene box objects (`g_poop_id[]` in
+`kf_creature_screen.cpp`), one per poop, with `kf_scene_commit()`'s differ
+(ADR 0040) doing the "draw only if changed" work automatically once a bar is
+declared as a scene object. Prefer that same approach here — declare each bar
+as a scene object and let the differ skip unchanged frames — rather than
+hand-rolling a dirty flag.
 
 **The band already has an occupant.** The care guide sits at y=286
 (`kGuideTextY`). Stats and guide must coexist in 240x60, or the guide moves.
@@ -1965,18 +1981,18 @@ panel, which wipes the band. Whatever tracks "what is currently drawn" must
 reset there, exactly as the mess tracking had to. That bug has been made twice
 on this branch already.
 
-- [ ] **Step 1: Write the failing test** — assert the band is drawn, that a
+- [x] **Step 1: Write the failing test** — assert the band is drawn, that a
       steady frame with unchanged needs costs no extra rectangles, and that a
       changed need does redraw. A test that only checks "something was drawn"
       will pass against code that redraws every frame, which is the failure
       this task must prevent.
-- [ ] **Step 2: Confirm it fails for the reason you expect.**
-- [ ] **Step 3: Implement**, quantising before comparing.
-- [ ] **Step 4:** `cmake --build build -j8 && ctest --test-dir build` — must not
+- [x] **Step 2: Confirm it fails for the reason you expect.**
+- [x] **Step 3: Implement**, quantising before comparing.
+- [x] **Step 4:** `cmake --build build -j8 && ctest --test-dir build` — must not
       regress, and `run_creature_screen_check()`'s existing `worst_rects <= 2`
       assertion must still pass **unchanged**.
-- [ ] **Step 5:** Verify the ESP32 target still builds (`-DKF_PANEL=ili9341`).
-- [ ] **Step 6:** Commit.
+- [x] **Step 5:** Verify the ESP32 target still builds (`-DKF_PANEL=ili9341`).
+- [x] **Step 6:** Commit. Done: `fe06c8b`, `4fbc9fa`.
 
 **How you would know it worked on hardware:** `python3 tools/kf_panel.py`
 shows live hunger/happiness/energy in its readout; the band on the panel should

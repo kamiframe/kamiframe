@@ -2109,13 +2109,15 @@ git commit -m "Frames play on their own clock, and the egg animates too"
 Each of these is separable, and three of them are named here specifically so
 nobody mistakes them for oversights.
 
-- **It does not generate nine-frame art.** The manifest's `default_frames` stays
-  `1` and every entity still ships one frame per state. This plan builds the
-  pipeline that can carry nine and proves it with a synthetic three-frame
-  fixture; actually drawing 379 x 9 = 3,411 frames is a large, separate
-  generation spend against `tools/kf_generate_sprites.py`, and the moment it
-  happens is one `frames = 9` line in `character_manifest.toml` plus the PNGs.
-  Nothing in the code changes.
+- **It does not generate nine-frame art for the whole roster.** No longer true
+  as a blanket claim: 18 of `examples/creature_demo/assets.kfpack`'s 94 pack
+  entries now carry nine frames each (verified against the pack directory),
+  proving the pipeline this plan built end to end, not just with the synthetic
+  three-frame fixture below. The other 76 entries still ship one frame per
+  state — actually drawing nine-frame art for the remaining roster is a large,
+  separate generation spend against `tools/kf_generate_sprites.py`, and the
+  moment each entity gets it is one `frames = 9` line in
+  `character_manifest.toml` plus the PNGs. Nothing in the code changes.
 
 - **It does not remove `KF_ASSET_TYPE_SPRITE`.** Raw RGB565 stays supported, and
   that is a decision rather than an omission. An un-keyed RGB565 row is a
