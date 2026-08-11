@@ -510,6 +510,11 @@ void kf_app_shutdown(void) {
 uint32_t kf_app_buttons_held(void) { return g.buttons_stable; }
 uint32_t kf_app_buttons_pressed(void) { return g.buttons_pressed_edge; }
 
+void kf_app_debug_set_buttons(uint32_t held, uint32_t pressed_edge) {
+    g.buttons_stable = held;
+    g.buttons_pressed_edge = pressed_edge;
+}
+
 const kf_frame_stats *kf_app_last_frame(void) { return &g.last; }
 
 void kf_app_set_hud_visible(bool visible) {

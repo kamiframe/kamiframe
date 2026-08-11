@@ -101,3 +101,5 @@ void kf_host_time_set_wall_fixed(int64_t epoch_seconds) {
     g_wall_at_boot = epoch_seconds;
     g_wall_offset = 0;
 }
+
+void kf_host_time_set_wall_unset(void) { g_wall_valid = false; }
