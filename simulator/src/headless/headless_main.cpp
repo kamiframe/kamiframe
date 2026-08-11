@@ -42,6 +42,7 @@
  *     kamiframe-headless --verify-creature-screen-budget-combo
  *     kamiframe-headless --verify-scene
  *     kamiframe-headless --verify-lua-draw
+ *     kamiframe-headless --verify-clock
  *
  * Exit codes:
  *     0  everything asserted held
@@ -53,6 +54,7 @@
 #include "kf/assets.h"
 #include "kf/blit.h"
 #include "kf/budget.h"
+#include "kf/clock.h"
 #include "kf/creature.h"
 #include "kf/font.h"
 #include "kf/framebuffer.h"
@@ -6551,6 +6553,189 @@ int run_lua_vs_cpp_screen_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Task 3 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md:
+ * kf/clock.h, civil time in Core, proved on its own -- no pet, no Lua, no
+ * Settings screen. Nothing outside this check calls kf/clock.h yet; that is
+ * intended, see the plan's own "How you would know it worked" for this task.
+ *
+ * Four groups, in the order the plan's Task 3 Step 1 lists them: a round
+ * trip through a spread of known epochs, hand-computed civil values checked
+ * against an independent oracle, the 22->07 night window against
+ * hand-computed answers including the wrap, and a note on how the
+ * anti-vacuity property was verified. Every epoch below is a wall-clock
+ * epoch second, not UTC -- kf/clock.h's header comment explains why there is
+ * no offset anywhere in this file: the RTC holds local time directly, so
+ * there is nothing to convert. */
+int run_clock_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* ---- 1. Round trip: kf_epoch_from_civil(kf_civil_from_epoch(e)) == e.
+     * A spread chosen to hit the hazards the design note calls out: a leap
+     * day, both sides of a year boundary, both sides of midnight, epoch 0,
+     * and a negative epoch (before 1970) -- the one case that actually
+     * exercises floor division rather than truncation, since there is no
+     * offset left to push a post-1970 instant negative the way the earlier
+     * offset-based design would have. */
+    const int64_t kRoundTripEpochs[] = {
+        1709208000, /* 2024-02-29T12:00:00 -- leap day */
+        1767225599, /* 2025-12-31T23:59:59 -- one second before a year rolls over */
+        1767225600, /* 2026-01-01T00:00:00 -- the instant it rolls over */
+        1786489200, /* 2026-08-11T23:00:00 -- an hour before midnight */
+        1786496400, /* 2026-08-12T01:00:00 -- an hour after midnight */
+        0,          /* 1970-01-01T00:00:00 -- epoch 0 */
+        -3600,      /* 1969-12-31T23:00:00 -- negative, before the epoch */
+    };
+    for (int64_t e : kRoundTripEpochs) {
+        kf_civil c{};
+        kf_civil_from_epoch(e, &c);
+        const int64_t back = kf_epoch_from_civil(&c);
+        if (back != e) {
+            KF_LOGE(TAG,
+                    "FAILED: round trip for epoch %lld -- civil "
+                    "%d-%02u-%02u %02u:%02u:%02u -> epoch %lld",
+                    static_cast<long long>(e), static_cast<int>(c.year),
+                    static_cast<unsigned>(c.month),
+                    static_cast<unsigned>(c.day),
+                    static_cast<unsigned>(c.hour),
+                    static_cast<unsigned>(c.minute),
+                    static_cast<unsigned>(c.second),
+                    static_cast<long long>(back));
+            ok = false;
+        }
+    }
+
+    /* ---- 2. Hand-computed civil values. Independently calculated while
+     * this check was written, with:
+     *     python3 -c "import datetime as dt; \
+     *         print(dt.datetime.utcfromtimestamp(EPOCH))"
+     * -- see adr-0046-core-civil-clock.md for the record of that oracle run.
+     * Four values, one more than the plan's minimum of three: the fourth
+     * (-3600) is the negative-epoch case, the one the "floor division on a
+     * negative numerator truncates toward zero in C" trap actually bites. */
+    {
+        kf_civil c{};
+        kf_civil_from_epoch(1709208000, &c);
+        check(c.year == 2024 && c.month == 2 && c.day == 29 &&
+                  c.hour == 12 && c.minute == 0 && c.second == 0,
+              "1709208000 is 2024-02-29 12:00:00 (leap day)");
+    }
+    {
+        kf_civil c{};
+        kf_civil_from_epoch(1767225599, &c);
+        check(c.year == 2025 && c.month == 12 && c.day == 31 &&
+                  c.hour == 23 && c.minute == 59 && c.second == 59,
+              "1767225599 is 2025-12-31 23:59:59 (year boundary, last "
+              "second)");
+    }
+    {
+        kf_civil c{};
+        kf_civil_from_epoch(0, &c);
+        check(c.year == 1970 && c.month == 1 && c.day == 1 && c.hour == 0 &&
+                  c.minute == 0 && c.second == 0,
+              "epoch 0 is 1970-01-01 00:00:00");
+    }
+    {
+        kf_civil c{};
+        kf_civil_from_epoch(-3600, &c);
+        check(c.year == 1969 && c.month == 12 && c.day == 31 &&
+                  c.hour == 23 && c.minute == 0 && c.second == 0,
+              "-3600 is 1969-12-31 23:00:00 (negative epoch)");
+    }
+
+    /* ---- 3. Window arithmetic, 22:00-07:00 (wraps midnight). Every
+     * boundary epoch below was computed the same way as group 2's, with:
+     *     python3 -c "import datetime as dt; print(int(dt.datetime( \
+     *         Y, M, D, h, m, s, tzinfo=dt.timezone.utc).timestamp()))"
+     * then hand-checked against the window by counting, on paper, how many
+     * hours each span spends inside [22:00, 07:00). */
+    constexpr uint8_t kNightStart = 22;
+    constexpr uint8_t kNightEnd = 7;
+
+    /* Entirely inside the night: 22:00 -> 23:00 same day, all of it inside. */
+    check(kf_clock_seconds_in_daily_window(1786485600, 1786489200,
+                                            kNightStart, kNightEnd) == 3600,
+          "22:00-23:00 is entirely inside the night: 3600s");
+
+    /* Entirely outside: noon -> 13:00 same day, none of it inside. */
+    check(kf_clock_seconds_in_daily_window(1786449600, 1786453200,
+                                            kNightStart, kNightEnd) == 0,
+          "noon-13:00 is entirely outside the night: 0s");
+
+    /* Starting mid-night: 23:00 -> 08:00 the next morning. In-window from
+     * 23:00 to 07:00 (8h); 07:00-08:00 is outside. */
+    check(kf_clock_seconds_in_daily_window(1786489200, 1786521600,
+                                            kNightStart, kNightEnd) ==
+              8 * 3600,
+          "23:00 -> next 08:00 spends 8h of it inside the night");
+
+    /* Ending mid-night: 21:00 -> 23:30 same day. Outside until 22:00, then
+     * 1.5h inside. */
+    check(kf_clock_seconds_in_daily_window(1786482000, 1786491000,
+                                            kNightStart, kNightEnd) == 5400,
+          "21:00 -> 23:30 spends 1.5h of it inside the night");
+
+    /* Exactly 24 hours, from several different starting instants -- must
+     * always be exactly 9 * 3600, the night's own length, whatever the start
+     * time. The plan's own Step 1 calls this single assertion out as
+     * catching most partial-day bugs on its own, so it is checked from more
+     * than one starting point rather than just one. */
+    const int64_t kDayLongStarts[] = {
+        1786449600, /* noon */
+        1786485600, /* 22:00, inside the night */
+        1786491000, /* 23:30, inside the night */
+        1786514400, /* 06:00, inside the night on the other side of midnight */
+    };
+    for (int64_t start : kDayLongStarts) {
+        const int64_t seconds = kf_clock_seconds_in_daily_window(
+            start, start + 86400, kNightStart, kNightEnd);
+        if (seconds != 9 * 3600) {
+            KF_LOGE(TAG,
+                    "FAILED: exactly 24h from epoch %lld must be exactly "
+                    "9*3600 = 32400, got %lld",
+                    static_cast<long long>(start),
+                    static_cast<long long>(seconds));
+            ok = false;
+        }
+    }
+
+    /* 14 days, from one midnight to the midnight 14 days later: 14 whole
+     * nights, 14 * 9h. */
+    check(kf_clock_seconds_in_daily_window(1786406400, 1787616000,
+                                            kNightStart, kNightEnd) ==
+              14 * 9 * 3600,
+          "14 days is 14 whole nights: 453600s");
+
+    /* 14 days crossing a month boundary (2026-08-25 -> 2026-09-08). The
+     * window function only ever sees epoch seconds, never a calendar field,
+     * so it must produce the identical answer to the plain 14-day case
+     * above -- this exists to demonstrate that rather than to find a new
+     * number. Replaces the plan's original "14 days at a -5h offset" case,
+     * which no longer applies now that there is no offset (see kf/clock.h's
+     * header comment and the plan's "Timezone: settled by Chris"). */
+    check(kf_clock_seconds_in_daily_window(1787616000, 1788825600,
+                                            kNightStart, kNightEnd) ==
+              14 * 9 * 3600,
+          "14 days across a month boundary is still 14 whole nights: "
+          "453600s");
+
+    /* ---- 4. Anti-vacuity, verified by hand rather than left as runtime
+     * code: with kf_clock_seconds_in_daily_window()'s body temporarily
+     * replaced with `return 0;`, every non-zero assertion above (all but
+     * the "entirely outside" case) went red, confirming this check is not
+     * passing by coincidence. adr-0046-core-civil-clock.md's proof section
+     * records that run. Left out of the built binary so this check has
+     * exactly one behaviour in the shipped test suite. */
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -6599,6 +6784,7 @@ int main(int argc, char *argv[]) {
     bool verify_scene = false;
     bool verify_lua_draw = false;
     bool verify_screen_parity = false;
+    bool verify_clock = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -6706,6 +6892,8 @@ int main(int argc, char *argv[]) {
             verify_lua_draw = true;
         } else if (std::strcmp(argv[i], "--verify-screen-parity") == 0) {
             verify_screen_parity = true;
+        } else if (std::strcmp(argv[i], "--verify-clock") == 0) {
+            verify_clock = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -6752,7 +6940,8 @@ int main(int argc, char *argv[]) {
                         "--verify-creature-screen-budget-combo\n"
                         "kamiframe-headless --verify-scene\n"
                         "kamiframe-headless --verify-lua-draw\n"
-                        "kamiframe-headless --verify-screen-parity\n");
+                        "kamiframe-headless --verify-screen-parity\n"
+                        "kamiframe-headless --verify-clock\n");
             return 0;
         }
     }
@@ -6924,6 +7113,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_screen_parity) {
         return run_lua_vs_cpp_screen_check();
+    }
+
+    if (verify_clock) {
+        return run_clock_check();
     }
 
     kf_app_init(mode);

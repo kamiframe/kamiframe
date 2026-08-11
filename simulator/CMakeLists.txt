@@ -872,6 +872,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # drives each directly at runtime.
     add_test(NAME screen_parity_check
              COMMAND kamiframe-headless --verify-screen-parity)
+
+    # Task 3 of the screens/clock/sleep plan (docs/superpowers/plans/
+    # 2026-08-13-screens-clock-sleep.md): kf/clock.h, integer-only civil
+    # time in Core, proved on its own with nothing else in the picture --
+    # no pet, no Lua, no Settings screen. See headless_main.cpp's
+    # run_clock_check() for the round trip, the hand-computed civil values,
+    # and the 22:00-07:00 night-window arithmetic it checks, in that order.
+    add_test(NAME clock_check
+             COMMAND kamiframe-headless --verify-clock)
 endif()
 
 # ---------------------------------------------------------------------------
