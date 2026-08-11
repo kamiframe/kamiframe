@@ -55,8 +55,10 @@
  *     there is no timezone to convert, but the TZ-dependence and the locale
  *     machinery below are reasons enough on their own.)
  *   - It drags in locale machinery on a build that is budgeted in kilobytes
- *     (kf/budget.h) and must stay heap-free and float-free
- *     (tools/check_no_heap.py).
+ *     (kf/budget.h) and must stay heap-free (enforced by
+ *     tools/check_no_heap.py) and float-free (a design rule that script
+ *     does not check -- see kf/scene.h's own comment on this for the one
+ *     place it slipped).
  *
  * The integer form used here -- days-since-epoch to a civil (year, month,
  * day) triple and back -- is about twenty lines, is well-documented (cited

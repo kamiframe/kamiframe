@@ -158,6 +158,21 @@ uint32_t percentile(int pct) {
     return sorted[index];
 }
 
+/* fps, in tenths, from a frame period in microseconds -- integer only.
+ * hakoniwaos/ stays float-free (kf/budget.h's own reasoning: the FPU is
+ * for Lua, Core stays exact and cheap); this used to be `1000000.0 /
+ * period_us`, a genuine floating-point division that slipped into this
+ * diagnostic log line, the one place in hakoniwaos/src/ that ever had
+ * one. 10,000,000 / period_us is fps * 10 without ever leaving integers;
+ * the caller splits it back into whole and tenths for "%2u.%1u". Fits
+ * uint32_t comfortably for any period_us this file logs (sub-millisecond
+ * periods would need ~4.3s to overflow it, far outside any real frame
+ * time). Zero in, zero out -- same "no frame yet" convention the float
+ * version's `? : 0.0` had. */
+uint32_t fps_x10_from_us(uint32_t period_us) {
+    return period_us ? (10000000u / period_us) : 0u;
+}
+
 /* --------------------------------------------------------------------------
  * Constraint HUD -- ADR 0006's "Later" section, now.
  *
@@ -537,16 +552,20 @@ void kf_app_log_budget_report(void) {
             static_cast<uint32_t>(KF_FRAME_BUDGET_US));
     KF_LOGI(TAG, "  device estimate: draw %5" PRIu32 " us + transfer %5" PRIu32 " us",
             g.last.draw_us, g.last.transfer_us);
+    const uint32_t serial_fps_x10 = fps_x10_from_us(g.last.serial_us);
+    const uint32_t overlapped_fps_x10 = fps_x10_from_us(g.last.overlapped_us);
     KF_LOGI(TAG,
-            "     serial (today)      %5" PRIu32 " us  ->  %5.1f fps%s",
-            g.last.serial_us,
-            g.last.serial_us ? 1000000.0 / g.last.serial_us : 0.0,
+            "     serial (today)      %5" PRIu32 " us  ->  %3" PRIu32
+            ".%" PRIu32 " fps%s",
+            g.last.serial_us, serial_fps_x10 / 10u, serial_fps_x10 % 10u,
             (!KF_DISPLAY_DOUBLE_BUFFERED && g.last.over_budget)
                 ? "   OVER BUDGET"
                 : "");
-    KF_LOGI(TAG, "     overlapped (DMA+2buf) %5" PRIu32 " us  ->  %5.1f fps",
-            g.last.overlapped_us,
-            g.last.overlapped_us ? 1000000.0 / g.last.overlapped_us : 0.0);
+    KF_LOGI(TAG,
+            "     overlapped (DMA+2buf) %5" PRIu32 " us  ->  %3" PRIu32
+            ".%" PRIu32 " fps",
+            g.last.overlapped_us, overlapped_fps_x10 / 10u,
+            overlapped_fps_x10 % 10u);
     KF_LOGI(TAG, "  pixels drawn: %6" PRIu32 " opaque + %6" PRIu32 " keyed   dirty %3u%%  (%u rect%s)",
             g.last.opaque_pixels, g.last.keyed_pixels, g.last.dirty_percent,
             g.last.dirty_rect_count, g.last.dirty_rect_count == 1 ? "" : "s");

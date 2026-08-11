@@ -26,8 +26,12 @@
  * and look valid again.
  *
  * TWO FILE-STATIC ARRAYS, NOTHING ELSE. `hakoniwaos/` stays heap-free
- * (tools/check_no_heap.py) and float-free, on the desktop build exactly as
- * on the device -- there is no emulator, this file runs unmodified on both.
+ * (enforced by tools/check_no_heap.py in CI) and float-free (a design rule,
+ * NOT enforced by that same script -- it has no floating-point pattern; a
+ * real violation, `1000000.0 / us` in hakoniwaos/src/app.cpp's frame-budget
+ * log line, shipped and went unnoticed until an audit caught it and it was
+ * rewritten as integer tenths-of-fps), on the desktop build exactly as on
+ * the device -- there is no emulator, this file runs unmodified on both.
  * The object table and the per-frame dirty-candidate scratch space are both
  * fixed-capacity file-static arrays in hakoniwaos/src/scene.cpp; nothing
  * here allocates.
@@ -190,10 +194,15 @@ void kf_scene_set_size(kf_scene_id id, int16_t w, int16_t h);
 /* The object's current (declared, not yet necessarily painted) on-screen
  * rectangle, or an empty rect {0,0,0,0} for an id that is 0, not found,
  * removed, or currently invisible. Every sprite's bounds is exactly 48x48
- * at its declared position -- the Global Constraint that sprites are 48x48
- * (CLAUDE.md) means this never needs to consult the resolved sprite's own
- * dimensions, which in turn is what keeps this call cheap enough to use
- * from a debug accessor (Task 4) without its own caching. */
+ * at its declared position -- a limitation of this module's bounds_of()
+ * (hakoniwaos/src/scene.cpp), not a CLAUDE.md rule (no such line exists
+ * there); the real default is tools/character_manifest.toml's
+ * default_size = 48, explicitly overridable per entity. This module
+ * hardcodes 48 regardless, so it never needs to consult the resolved
+ * sprite's own dimensions, which in turn is what keeps this call cheap
+ * enough to use from a debug accessor (Task 4) without its own caching --
+ * but an entity that overrides `size` in the manifest would get wrong
+ * bounds from this call until scene.cpp is taught to read the real size. */
 kf_rect kf_scene_bounds(kf_scene_id id);
 
 /* How many objects are currently live -- in use and not yet removed, out

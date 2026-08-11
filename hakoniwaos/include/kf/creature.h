@@ -123,9 +123,11 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
  * keeps the two independent. */
 #define KF_ANIM_FRAME_MS 100u
 
-/* An animation cursor. Integer milliseconds only -- hakoniwaos/ has no
- * floating point (kf/budget.h's own reasoning: the device's FPU is for Lua,
- * and Core stays exact and cheap).
+/* An animation cursor. Integer milliseconds only -- hakoniwaos/ is meant to
+ * have no floating point (kf/budget.h's own reasoning: the device's FPU is
+ * for Lua, and Core stays exact and cheap). That rule is design intent, not
+ * something an automated gate checks -- see kf/scene.h's own comment on
+ * this for the one place it slipped and how it was found.
  *
  * accum_ms CARRIES ITS REMAINDER across advances rather than resetting to
  * zero. At a 33ms display tick, three ticks is 99ms and four is 132ms; a

@@ -30,11 +30,17 @@ constexpr const char *TAG = "scene";
  * panel, not a blank space nobody investigates. */
 constexpr kf_color kPlaceholderColor = KF_RGB(255, 0, 128);
 
-/* Global Constraint (CLAUDE.md): every sprite is 48x48. bounds_of() below
- * relies on this being true for every sprite object regardless of whether
- * its name has resolved yet -- see kf/scene.h's own comment on
- * kf_scene_bounds() for why that keeps this module from ever needing to
- * consult a resolved kf_sprite's own width/height. */
+/* NOT a CLAUDE.md rule -- no such line exists there. This is
+ * tools/character_manifest.toml's default_size (48, explicitly
+ * overridable per entity with an entity-level `size = N`), hardcoded
+ * here as a limitation of this module, not a project-wide constraint.
+ * bounds_of() below always returns a kSpriteSize x kSpriteSize rect for
+ * a sprite object, REGARDLESS of the resolved sprite's own real
+ * width/height -- see kf/scene.h's own comment on kf_scene_bounds() for
+ * why that keeps this module from ever needing to consult a resolved
+ * kf_sprite's dimensions. A future entity that overrides `size` in the
+ * manifest would get wrong bounds (and therefore wrong dirty rects) from
+ * this module until it is taught to read the real size. */
 constexpr int16_t kSpriteSize = 48;
 
 /* What a text object paints in until something calls kf_scene_set_colors().
