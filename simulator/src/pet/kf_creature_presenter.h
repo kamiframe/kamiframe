@@ -7,12 +7,26 @@
  * screen.cpp so BOTH the C++ screen and the Lua screen can read the exact
  * same wander/pose/animation result on any given frame.
  *
- * WHY THIS EXISTS, AND WHY IT IS NOT IN LUA YET. The plan is explicit
- * (docs/superpowers/plans/2026-08-12-lua-game-layer.md, "What moves and
- * what stays"): the wander (kf_creature_update, choose_target) and pose/
- * sprite-name selection move to Lua in TASK 6, not this one -- moving them
- * while the renderer is also new would make an A/B diff impossible to
- * attribute. So for Task 5, the wander keeps running exactly once per
+ * WHY THIS EXISTS, AND WHY IT IS STILL HERE AFTER KF_HOME_SCREEN DEFAULTS
+ * TO LUA. The plan (docs/superpowers/plans/2026-08-12-lua-game-layer.md,
+ * "What moves and what stays") always meant the wander (kf_creature_
+ * update, choose_target) and pose/sprite-name selection to end up owned by
+ * the script, not by Core -- moving them while the renderer was also new
+ * (Task 5) would have made an A/B diff impossible to attribute, so Task 5
+ * deliberately kept the wander running exactly once per frame, in C++,
+ * with BOTH screen implementations calling kf_creature_presenter_advance()
+ * and reading the result. That sharing is what made Task 5's parity check
+ * trivially exact -- and, per docs/architecture/adr-0043-lua-home-
+ * default.md, is why the default-flip task chose NOT to unwind it: an
+ * independent Lua reimplementation would have to reproduce this file's
+ * fixed-point arithmetic and kf/rng.h's draw sequence bit-for-bit to keep
+ * that same parity check meaningful, which is real, separate work with
+ * its own real risk of a subtly-wrong wander shipping undetected -- not a
+ * natural rider on a task whose actual job was the default and the
+ * repaint capability. Genuinely moving the wander into the script is
+ * still correctly future work; ADR 0043 records the reasoning and leaves
+ * it there rather than pretending it happened. So today, and for the
+ * foreseeable next slice, the wander keeps running exactly once per
  * frame, in C++, and BOTH screen implementations call kf_creature_
  * presenter_advance() and then just read the result -- position, resolved
  * sprite name (including the west-mirror fallback), whether to draw

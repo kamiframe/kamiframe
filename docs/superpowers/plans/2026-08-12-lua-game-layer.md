@@ -866,15 +866,25 @@ Both screens exist. A build flag chooses; the default stays C++.
 
 ### Task 6: The default flips, and the wander moves to Lua
 
-- [ ] `KF_HOME_SCREEN` defaults to `lua`. `cpp` stays buildable for one release
+- [x] `KF_HOME_SCREEN` defaults to `lua`. `cpp` stays buildable for one release
       as the fallback, and `--verify-screen-parity` stays in CI as the thing that
-      keeps them honest.
+      keeps them honest. **Done** — also required a new `kf/scene.h` primitive
+      (`kf_scene_force_repaint()`, ADR 0043) the plan's own end note already
+      flagged as a prerequisite; see that ADR for the repaint fix and why
+      `screen_nav_check` needed more than the primitive alone.
 - [ ] `hakoniwaos/src/creature.cpp`'s wander (`kf_creature_update`,
       `choose_target`, `kSpeedPxPerSec`, the dwell) moves into the Lua script.
       `kf_creature_pose_for()` and `kf_creature_sprite_name()` move too — they are
       the game's vocabulary, not the OS's. `kf_anim` and `kf_creature_tick_anim()`
       **stay in Core**: the animation clock is engine, per the table.
-- [ ] Parity holds across the move, or the move is wrong.
+      **Deliberately NOT done** — ADR 0043's "What did NOT move" records why:
+      keeping `run_lua_vs_cpp_screen_check()` meaningful across this move needs a
+      Lua reimplementation that draws from `kf/rng.h` in bit-exact lockstep with
+      the C++ path, real separate work with its own real risk, not a natural
+      rider on the default flip. Still open, most naturally alongside Task 7.
+- [ ] Parity holds across the move, or the move is wrong. **N/A this task** — no
+      move happened; `run_lua_vs_cpp_screen_check()` continues to pass because
+      both screens still share the one C++ wander exactly as Task 5 left it.
 
 ### Task 7: Input and navigation are the game's
 
@@ -1001,7 +1011,7 @@ mistakes them for oversights.
 
 ---
 
-## Status: Tasks 1-5 COMPLETE, 2026-08-12
+## Status: Tasks 1-6 COMPLETE (wander migration deferred), 2026-08-12
 
 | Task | Commits | Result |
 |---|---|---|
@@ -1010,18 +1020,28 @@ mistakes them for oversights.
 | 3 — the Lua drawing binding | `76e087b`, `b427335`, `58deb89`, `1905f11` | `sdk/lua/kf_lua_scene.*`; `examples/hello_pet/pet.lua`; ADR 0041 |
 | 4 — the C++ screen rebuilt on the scene | `df5e9fc`, `0b6f8f4`, `8b1ee58`, `d533bd9`, `58492b1`, `3f9ab61` | Ten creature-screen tests pass unchanged; eight discrete poop objects; ADR 0040 opportunistic-merge addendum |
 | 5 — the demo creature declares the whole home screen | see `.superpowers/sdd/lua-task-5-report.md` | `KF_HOME_SCREEN=cpp\|lua`; `run_lua_vs_cpp_screen_check()` proves 250 frames byte-identical; `kf_creature_presenter.h`/`kf_home_screen_input.h` split out so both screens share one wander and one set of buttons; ADR 0042 |
+| 6 — repaint capability + the default flips to `lua` | see `.superpowers/sdd/lua-task-6-report.md` | `kf_scene_force_repaint()` (ADR 0043) closes ADR 0042's known gap; `screen_nav_check` passes under `lua`; `KF_HOME_SCREEN` defaults to `lua` on both build systems; the wander migration named in this task's own "What moves and what stays" table was deliberately **not** done — see ADR 0043's "What did NOT move" |
 
-**44/44 on the default `cpp` build (43 baseline + `screen_parity_check`), Core
-heap-free, ESP32 firmware ~672KB (57% of partition free) in BOTH
-`KF_HOME_SCREEN` values. Both golden rendering checksums unmoved.** The demo
-creature genuinely draws the home screen now, byte-for-byte identical to the
-C++ one on every frame the parity check drives — see the Task 5 report for
-what that check found (and fixed) before it passed, and the one known gap it
-surfaced (Home re-entry under `KF_HOME_SCREEN=lua`, left for Task 7).
+**44/44 on the default build (now `lua`), Core heap-free, ESP32 firmware
+~672KB (57% of partition free) in BOTH `KF_HOME_SCREEN` values, verified as
+a genuinely fresh-configured default (`cmake -UKF_HOME_SCREEN`), not just an
+explicit override. Both golden rendering checksums unmoved. The dirty-rect
+worst case is unchanged at 3 of 8.** The demo creature draws Home by
+default now, Lua declaring every object every frame, with `cpp` kept
+building and passing under `KF_HOME_SCREEN=cpp` as the parity reference and
+fallback. See the Task 6 report for what `screen_nav_check` needed beyond
+the repaint primitive itself (it had never booted the Lua VM at all) and
+the reasoning for deferring the wander move.
 
-**Resume at Task 6.** It flips `KF_HOME_SCREEN`'s default to `lua` and moves
-the wander itself into the script — `--verify-screen-parity` stays in CI as
-the thing that keeps the move honest.
+**Resume at Task 7 (or a Task 6b scoped to just the wander).** Genuinely
+moving `kf_creature_update`/`choose_target`/pose selection into
+`creature.lua`, matching `hakoniwaos/src/creature.cpp`'s fixed-point
+arithmetic and `kf/rng.h` draw order bit-for-bit so
+`run_lua_vs_cpp_screen_check()` stays meaningful, is still open — ADR 0043
+records why it was not attempted alongside the default flip. Task 7's
+`kf.screen()`/`screen:show()` (named-scene navigation) is unrelated to this
+and still ready to start independently — `--verify-screen-parity` stays in
+CI as the thing that keeps whichever comes first honest.
 
 ### The API that came out of it
 

@@ -374,19 +374,29 @@ void register_pet_bindings(lua_State *L) {
 }
 
 /* creature.* -- Task 5 of the Lua game-layer plan. Read-only, plain getters
- * (no jQuery no-arg-read/arg-write pair: there is nothing to WRITE here
- * yet, the wander stays in C++ until Task 6 -- see kf_creature_presenter.h
- * 's own header comment for exactly why). Every one of these reads whatever
- * kf_creature_presenter_advance() most recently resolved for the CURRENT
- * frame -- kf_lua_port_frame() below calls that once, before on_frame, the
- * same "advance once, then declare" shape kf_creature_screen_frame() (the
- * C++ screen) already has, so both screens see identical numbers on a
- * frame they are both asked to render (the parity check's whole premise).
- * Meaningless before the first frame has ever advanced; a script calling
- * these from its own top-level code (before on_frame ever runs) sees
- * whatever kf_creature_presenter_reset() leaves behind (x=y=0, an empty
- * sprite name) -- exactly why the minimal-pet style is "read these inside
- * on_frame", not at load time. */
+ * (no jQuery no-arg-read/arg-write pair: there is nothing to WRITE here --
+ * the wander still lives in C++, shared through kf_creature_presenter.h;
+ * moving it into the script itself, along with pose/sprite-name selection,
+ * is real remaining work this task's own review deliberately did NOT take
+ * on alongside the KF_HOME_SCREEN default flip and the repaint capability
+ * -- see docs/architecture/adr-0043-lua-home-default.md for why bit-exact
+ * fixed-point/RNG parity made that too large and too risky to fold into
+ * the same change). Every one of these reads whatever kf_creature_
+ * presenter_advance() most recently resolved for the CURRENT frame --
+ * NOT called from kf_lua_port_frame() below (this file is generic Lua
+ * glue shared by every script this codebase loads, including proof
+ * scripts with no pet session at all), but from kf_lua_home_screen.cpp's
+ * kf_lua_home_screen_frame(), the ONE caller that actually knows a pet
+ * session exists, before it runs this script's on_frame -- the same
+ * "advance once, then declare" shape kf_creature_screen_frame() (the C++
+ * screen) already has, so both screens see identical numbers on a frame
+ * they are both asked to render (the parity check's whole premise). See
+ * ADR 0042's "Found by the check" section for why the call lives there
+ * and not here. Meaningless before the first frame has ever advanced; a
+ * script calling these from its own top-level code (before on_frame ever
+ * runs) sees whatever kf_creature_presenter_reset() leaves behind (x=y=0,
+ * an empty sprite name) -- exactly why the minimal-pet style is "read
+ * these inside on_frame", not at load time. */
 int lua_creature_x(lua_State *L) {
     lua_pushinteger(L, kf_creature_presenter_x());
     return 1;

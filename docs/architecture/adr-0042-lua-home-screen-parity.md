@@ -125,10 +125,17 @@ fails with row 280 still holding Info's leftover pixels after a Home ->
 Info -> Home cycle. Does not affect the parity check (which never touches
 Info) or a fresh boot (Home is active before anything else has painted a
 pixel), and does not affect the default `KF_HOME_SCREEN=cpp` build at all —
-`screen_nav_check` passes there. The real fix is Task 7's own remit
-(`kf.screen()`/`screen:show()`, a scene-per-screen model where re-entry
-means "show a scene that already exists," not "discard and redeclare");
-left there rather than patched here.
+`screen_nav_check` passes there.
+
+**Closed by ADR 0043**, ahead of Task 7 rather than inside it: the plan's
+own end note reordered this fix to run before the `KF_HOME_SCREEN` default
+flip, since flipping the default on top of this gap would have shipped
+broken Home navigation as the out-of-the-box build. `kf/scene.h` gained
+`kf_scene_force_repaint()` — a full repaint that keeps every object's id,
+unlike `kf_scene_reset()` — and `kf_screen_nav.cpp`'s `load()` now calls it
+on every re-entry to Lua-drawn Home. Task 7's `kf.screen()`/`screen:show()`
+is still the right home for *navigation itself* moving into the script; it
+no longer also has to be the place this particular repaint gap gets fixed.
 
 ## Firmware size
 
