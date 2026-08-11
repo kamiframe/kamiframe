@@ -1366,12 +1366,45 @@ reworded away.
 
 **Requirements:**
 
-- [ ] `kf_pet_wants()` in Core, as specified in the answer to question 5: a pure
-      query, a small enum, a priority order, and **hysteresis** — a want that
-      switches on and off across a threshold boundary is worse than no want at
-      all. Bound to Lua as `pet.wants()` returning a lowercase-free string name
-      (`"FOOD"`, `"PLAY"`, …) or `nil`, so the script never handles an integer
-      enum.
+> **A dangling reference was removed here on 2026-08-11.** This bullet used
+> to say "as specified in the answer to question 5". **There is no question 5
+> anywhere in this repository** — not in this plan, not in the care-loop spec,
+> not in any ADR. It was almost certainly a pointer into the conversation that
+> commissioned this plan, which no implementer can read. Left as-is it would
+> have sent someone hunting and then inventing, which is exactly how this
+> project's plans have manufactured defects before. The substance below is
+> written out in full instead. **The specific thresholds and the priority
+> order are a starting point, not a settled design** — they are feel, and
+> Chris judges feel on the board.
+
+- [ ] `kf_pet_wants()` in Core: a **pure query** — it reads `kf_pet_state` and
+      returns; it must not mutate, and it must not be the thing that decides
+      anything. A small enum, a priority order, and **hysteresis**.
+- [ ] **The wants map onto the five things a player can actually do**, because
+      a want the player cannot satisfy is a bug: `FOOD` (feed), `PLAY` (play),
+      `REST` (rest), `BATH` (bath), `FLUSH` (clean up poops). Verified against
+      the Lua surface — `pet.feed/play/rest/bath/flush` all exist. Note
+      `flush` is deliberately **not** one of the four `kf_pet_care_action`
+      values; do not force it into that enum to make the mapping tidier.
+      **There is no `MEDICINE`** — nothing in Core cures sickness directly, so
+      do not invent an action to want.
+- [ ] **Priority order, when more than one is unmet.** Starting point, in
+      order: `FOOD`, `REST`, `BATH`, `FLUSH`, `PLAY`. The reasoning is that
+      the first three are what neglect actually punishes, and `PLAY` is last
+      because a creature that is hungry, exhausted and filthy asking to play
+      reads as broken. A defensible alternative is "whichever need is most
+      severe right now, with this list only as a tiebreak" — if you build that
+      instead, say so and say why.
+- [ ] **Hysteresis, concretely.** A want switches ON when its need crosses a
+      threshold and OFF only when it recovers past a **second, more generous**
+      threshold. One `_ON`/`_OFF` pair per want, named constants, with the gap
+      wide enough that ordinary decay cannot flip it twice in a second. A want
+      that toggles across a single boundary is worse than no want at all,
+      which is the whole reason this bullet exists.
+- [ ] Bound to Lua as `pet.wants()` returning an **uppercase string name**
+      (`"FOOD"`, `"PLAY"`, …) or `nil` when the creature wants nothing — so a
+      script author never touches an integer enum. Match the existing
+      `pet.*` binding style.
 - [ ] **No want fires while asleep.** Task 6 runs first for exactly this reason.
 - [ ] The three presentation layers in `creature.lua`: pose and position, the
       1 Hz pulsing `!`, and the inverted care-guide entry naming the button.
