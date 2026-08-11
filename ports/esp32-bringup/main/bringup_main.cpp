@@ -330,12 +330,38 @@ void stage_board_info() {
  * deliberately first: it needs two wires (power and one GPIO) and it tells
  * you whether the panel has power at all before any SPI is involved.
  *
- * Some ST7789 modules tie the backlight permanently on and expose no BL
- * pin. On those this stage cannot fail visibly, which is why it asks rather
- * than asserts.
+ * The caveat is about the ILI9341, not the ST7789: the 2.8in ILI9341
+ * module's LED pin is soldered straight to 3V3 (kf_esp_pins.h) and exposes
+ * no BL pin at all, so it lights whenever the board has power, regardless
+ * of GPIO6. On THAT panel this stage cannot fail visibly no matter what
+ * firmware does. The ST7789 has a real, controllable BL pin -- for it, this
+ * stage is a genuine test.
+ *
+ * GPIO6 IS THE ILI9341'S SDO LINE, NOT JUST ITS (NONEXISTENT) BL PIN. Same
+ * physical pin, two different jobs depending on which panel is wired --
+ * see kf_esp_pins.h's own comment on KF_ESP_PIN_LCD_MISO/KF_ESP_PIN_LCD_BL
+ * and ADR 0039. Driving it push-pull as an output while the ILI9341's own
+ * SDO driver is active on the same wire is a dead short between two active
+ * drivers (esp_display.cpp's kf_display_init() comment on exactly this
+ * combination) -- not a diagnostic worth running on that panel, since it
+ * cannot tell you anything (the LED will light regardless) and risks
+ * hardware to find out. Skipped entirely when kPanelIsIli9341 is true; see
+ * below.
  * ---------------------------------------------------------------------- */
 void stage_backlight() {
     banner("STAGE 1: display backlight");
+
+    if (kPanelIsIli9341) {
+        info("Skipped: kPanelIsIli9341 is true, and on this module GPIO6 is");
+        info("the panel's own SDO line, not a controllable backlight pin --");
+        info("driving it as a push-pull output risks a dead short against");
+        info("the panel's own driver (see this stage's header comment).");
+        info("The ILI9341's LED is wired straight to 3V3, so it is already");
+        info("lit whenever the board has power; nothing to check here.");
+        pass(0, "skipped on the ILI9341 -- see the note above.");
+        return;
+    }
+
     info("Watch the panel. It should flash ON and OFF five times.");
     info("If it never lights: check the module's VCC and GND first,");
     info("not the BL pin -- an unpowered panel cannot glow.");
@@ -1510,7 +1536,7 @@ constexpr ButtonBinding kButtons[] = {
     {KF_ESP_PIN_BTN_UP, "UP", kRed},       {KF_ESP_PIN_BTN_DOWN, "DOWN", wire(0xFD20)},
     {KF_ESP_PIN_BTN_LEFT, "LEFT", kYellow}, {KF_ESP_PIN_BTN_RIGHT, "RIGHT", kGreen},
     {KF_ESP_PIN_BTN_A, "A", kCyan},        {KF_ESP_PIN_BTN_B, "B", kBlue},
-    {KF_ESP_PIN_BTN_MENU, "MENU", 0xF81F},
+    {KF_ESP_PIN_BTN_MENU, "MENU", kMagenta},
 };
 constexpr int kButtonCount = sizeof(kButtons) / sizeof(kButtons[0]);
 

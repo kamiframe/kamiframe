@@ -384,10 +384,17 @@ typedef struct {
      * cannot be recomputed from the accumulator alone. */
     bool sick;
 
-    /* Whether this creature has died. Terminal: nothing in this file ever
-     * clears it, and there is no revival action anywhere, by design. A new
-     * creature is a new kf_pet_init(), which is the honest way to say what
-     * has happened. */
+    /* Whether this creature has died. Terminal within THIS file: nothing
+     * in kf/pet.h or hakoniwaos/src/pet.cpp ever clears it, and the normal
+     * care actions (feed/play/rest/bath/flush) do not touch it either. It
+     * is not unreachable across the codebase, though --
+     * kf_pet_session_debug_reset() and kf_pet_session_debug_jump_to_stage()
+     * (simulator/src/pet/kf_pet_session.cpp) both call kf_pet_init() on the
+     * live pet, which clears `dead` along with everything else. Those are
+     * debug-only levers (KF_PET_SESSION_ENABLE_DEBUG_CONTROLS, on by
+     * default including in the ESP32 build), reachable as `KFDBG RESET` /
+     * `KFDBG JUMP` and from the SDL debug window -- not a hidden backdoor,
+     * but real and worth knowing about before assuming dead is one-way. */
     bool dead;
 
     /* How the creature took the last care action, and which action it was.
