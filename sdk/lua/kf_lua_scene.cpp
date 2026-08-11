@@ -21,6 +21,7 @@ extern "C" {
 }
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <new>
 
@@ -175,11 +176,9 @@ void uppercase_and_warn(char *s) {
  * KF_SCENE_TEXT_MAX -- what Core will actually keep. */
 void prepare_text(const char *src, char *work, size_t work_cap, char *shadow,
                    size_t shadow_cap) {
-    std::strncpy(work, src, work_cap - 1u);
-    work[work_cap - 1u] = '\0';
+    std::snprintf(work, work_cap, "%s", src);
     uppercase_and_warn(work);
-    std::strncpy(shadow, work, shadow_cap - 1u);
-    shadow[shadow_cap - 1u] = '\0';
+    std::snprintf(shadow, shadow_cap, "%s", work);
 }
 
 constexpr size_t kTextWorkBufSize = 256;
@@ -364,8 +363,7 @@ int obj_sprite(lua_State *L) {
         return 1;
     }
     const char *name = luaL_checkstring(L, 2);
-    std::strncpy(obj->sprite_name, name, sizeof(obj->sprite_name) - 1u);
-    obj->sprite_name[sizeof(obj->sprite_name) - 1u] = '\0';
+    std::snprintf(obj->sprite_name, sizeof(obj->sprite_name), "%s", name);
     kf_scene_set_sprite(obj->id, name);
     return 0;
 }
@@ -507,8 +505,7 @@ int lua_kf_sprite(lua_State *L) {
     }
     mark_declared();
     LuaSceneObject *obj = push_new_object(L, LuaObjKind::kSprite, id);
-    std::strncpy(obj->sprite_name, name, sizeof(obj->sprite_name) - 1u);
-    obj->sprite_name[sizeof(obj->sprite_name) - 1u] = '\0';
+    std::snprintf(obj->sprite_name, sizeof(obj->sprite_name), "%s", name);
     return 1;
 }
 

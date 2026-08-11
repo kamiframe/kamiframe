@@ -15,6 +15,7 @@
 #include "kf/hal/log.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "kf/poison.h"
@@ -198,8 +199,7 @@ void copy_truncated(char *dst, size_t dst_cap, const char *src,
         src = "";
     }
     const size_t src_len = std::strlen(src);
-    std::strncpy(dst, src, dst_cap - 1u);
-    dst[dst_cap - 1u] = '\0';
+    std::snprintf(dst, dst_cap, "%s", src);
     if (src_len > dst_cap - 1u) {
         if (id == 0) {
             KF_LOGW(TAG, "background %s '%s' is %zu characters, truncated to %zu",
@@ -411,8 +411,7 @@ void resolve_sprite(char *resolved_name, size_t resolved_name_cap,
     if (std::strcmp(resolved_name, declared_name) == 0) {
         return;
     }
-    std::strncpy(resolved_name, declared_name, resolved_name_cap - 1u);
-    resolved_name[resolved_name_cap - 1u] = '\0';
+    std::snprintf(resolved_name, resolved_name_cap, "%s", declared_name);
     *resolved_sprite = kf_assets_get(resolved_name);
     if (*resolved_sprite == nullptr) {
         if (id_for_log == 0) {

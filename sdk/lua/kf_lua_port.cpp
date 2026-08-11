@@ -20,6 +20,7 @@ extern "C" {
 #include <lualib.h>
 }
 
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -566,9 +567,8 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms) {
          * copied here, not re-derived from the (already popped) Lua stack
          * later, since a screen implementation may not read this until
          * several frames after the error. */
-        std::strncpy(g.last_error, msg != nullptr ? msg : "(no message)",
-                     sizeof(g.last_error) - 1u);
-        g.last_error[sizeof(g.last_error) - 1u] = '\0';
+        std::snprintf(g.last_error, sizeof(g.last_error), "%s",
+                      msg != nullptr ? msg : "(no message)");
         lua_pop(g.L, 1);
         g.disabled_after_error = true;
         return;

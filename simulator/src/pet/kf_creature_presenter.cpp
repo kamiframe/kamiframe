@@ -11,6 +11,7 @@
 
 #include "kf/assets.h"
 
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -73,9 +74,8 @@ void resolve_and_declare(const kf_pet_state *pet, kf_creature_pose pose,
     if (std::strcmp(requested, g_last_requested_name) != 0) {
         g_creature.anim.frame = 0u;
         g_creature.anim.accum_ms = 0u;
-        std::strncpy(g_last_requested_name, requested,
-                     sizeof(g_last_requested_name) - 1u);
-        g_last_requested_name[sizeof(g_last_requested_name) - 1u] = '\0';
+        std::snprintf(g_last_requested_name, sizeof(g_last_requested_name),
+                      "%s", requested);
     }
 
     const kf_sprite *sprite = kf_assets_get(requested);
@@ -92,8 +92,7 @@ void resolve_and_declare(const kf_pet_state *pet, kf_creature_pose pose,
         }
     }
 
-    std::strncpy(g_sprite_name, final_name, sizeof(g_sprite_name) - 1u);
-    g_sprite_name[sizeof(g_sprite_name) - 1u] = '\0';
+    std::snprintf(g_sprite_name, sizeof(g_sprite_name), "%s", final_name);
     g_mirrored = mirrored;
 
     kf_creature_anim_wrap(&g_creature,
