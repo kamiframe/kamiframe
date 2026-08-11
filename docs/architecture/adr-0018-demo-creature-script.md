@@ -166,3 +166,16 @@ a slash.
 - Evolution/life stages (the option not picked this round) would give this
   script actual state to read beyond the three needs -- worth revisiting
   once that exists.
+
+## Superseded in part
+
+**"Text, not art"** (Decision heading) and **"There is no sprite, no audio,
+and no second screen yet"** described this slice's own scope honestly at the
+time, but the gap they named as real and current is closed now. The demo
+creature (`examples/creature_demo/creature.lua`, successor to
+`kf_lua_demo_creature_script.h`) draws a real sprite via `kf.sprite()`,
+animates it, and the platform has multiple screens (`kf.screen("home")`,
+`kf.screen("info")`, ADR 0044). Sound and haptics remain genuinely absent —
+that part of the gap is still accurate. The reasoning for why this
+particular script stayed reactive/text-only at the time is unaffected;
+only "no sprite... yet" has since been answered elsewhere.

@@ -302,3 +302,13 @@ paragraph is about.
 - Deciding whether the `LUA_32BITS` divergence ever needs a real bounds
   check at the `pet.*`/`kf.*` boundary, if a script ever needs a value
   outside 32-bit range.
+
+## Superseded in part
+
+**"No screen. The demo creature's only output channel remains `kf.log()` ->
+`KF_LOGI`"** was accurate for this slice's own scope and is answered by the
+"Later" item right above it, which has since landed: the pet screen (real
+sprite, care buttons, and now multiple `kf.screen()` groups) runs on the
+ESP32 build, same as ADR 0018's identical claim (see that ADR's own
+"Superseded in part"). This slice's actual subject, getting the Lua VM
+itself running on-device, is unaffected.
