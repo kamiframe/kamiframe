@@ -24,13 +24,17 @@ struct ArenaDesc {
     bool resettable;
 };
 
-/* Order must match kf_arena_id exactly. */
+/* Order must match kf_arena_id exactly. The "lvgl" entry -- and the 256 KB
+ * it would carve out of PSRAM -- only exists when built with
+ * -DKF_ENABLE_LVGL=ON; see kf/arena.h's own comment on KF_ARENA_LVGL. */
 constexpr ArenaDesc kDescs[KF_ARENA_COUNT] = {
     {"framebuffer", KF_POOL_INTERNAL_DMA, KF_ARENA_FRAMEBUFFER_BYTES, false},
     {"scratch", KF_POOL_INTERNAL_DMA, KF_ARENA_SCRATCH_BYTES, true},
     {"lua", KF_POOL_EXTERNAL, KF_ARENA_LUA_BYTES, false},
     {"assets", KF_POOL_EXTERNAL, KF_ARENA_ASSETS_BYTES, false},
+#ifdef KF_ENABLE_LVGL
     {"lvgl", KF_POOL_EXTERNAL, KF_ARENA_LVGL_BYTES, false},
+#endif
 };
 
 struct ArenaState {

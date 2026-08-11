@@ -4,25 +4,21 @@
 
 #include "kf_screen_nav.h"
 
-#include "kf_pet_info_screen.h"
-
 #ifdef KF_HOME_SCREEN_LUA
 #include "kf_lua_home_screen.h"
 #else
-#include "../pet/kf_creature_screen.h"
+#include "kf_creature_screen.h"
 #endif
 
-/* Allowed direction only: kamiframe_lvgl_port already depends on
- * kamiframe_lua_port (simulator/CMakeLists.txt), so this file can include
- * this header freely. The reverse include (kf_lua_scene.cpp including
- * THIS header) is what is forbidden -- see kf_lua_scene.h's own comment
- * on the function-pointer boundary that exists because of it. */
-#include "../../../sdk/lua/kf_lua_scene.h"
+/* Allowed direction only: whichever library holds this file already
+ * depends on kamiframe_lua_port (simulator/CMakeLists.txt), so this file
+ * can include this header freely. The reverse include (kf_lua_scene.cpp
+ * including THIS header) is what is forbidden -- see kf_lua_scene.h's own
+ * comment on the function-pointer boundary that exists because of it. */
+#include "kf_lua_scene.h"
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
-
-#include <lvgl.h>
 
 #include <cstdio>
 #include <cstring>
@@ -45,19 +41,15 @@ constexpr size_t kScreenNameMax = 23;
  * on the other side of kf_lua_scene_activate_screen(), called from
  * kf_screen_nav_show() below.
  *
- * `root`: what gets passed to lv_screen_load() -- nullptr for a screen
- * that draws straight into the framebuffer or the retained scene instead
- * of through an LVGL widget tree (Home, and any kf.screen() group).
  * `update`: called only while that screen is the active one, every frame;
  * may be nullptr -- most kf.screen()-declared screens have no C-side
  * per-frame behaviour of their own (see kf_screen_nav_register()'s own
  * comment). Home is index 0 on purpose -- B always jumps there, and
- * kf_screen_nav_init() registers it first -- matching kf_pet_screen.h's
- * original "the screen a running build shows by default" role, unchanged
- * from every prior slice even though a different screen now fills it. */
+ * kf_screen_nav_init() registers it first. ADR 0045 dropped this struct's
+ * `lv_obj_t *root` field: every screen this file knows about is now
+ * declared through the retained scene (kf/scene.h), none through LVGL. */
 struct ScreenEntry {
     char name[kScreenNameMax + 1] = {};
-    lv_obj_t *root = nullptr;
     void (*update)(uint32_t dt_ms) = nullptr;
 };
 
@@ -65,70 +57,27 @@ ScreenEntry g_screens[KF_SCREEN_NAV_MAX_SCREENS];
 size_t g_screen_count = 0;
 size_t g_active = 0;
 
-/* kf_pet_info_screen_update() takes no arguments (nothing about Info is
- * time-based); this just drops dt_ms on the floor so it fits ScreenEntry's
- * one shared update() shape. */
-void update_info_screen(uint32_t /*dt_ms*/) { kf_pet_info_screen_update(); }
-
 void show(size_t index) {
     g_active = index;
 
-    /* Step 1, unconditionally, for every switch: Lua screen-group
-     * bookkeeping. Hides every OTHER kf.screen() group's objects, shows
-     * this index's group (if one is registered under it) and re-applies
-     * its stored background colour, then force-repaints the retained
-     * scene and commits if anything has ever been declared. A no-op,
-     * changing nothing, if no group is registered under `index` -- Info,
-     * still LVGL as of this task, is exactly that case. See kf_lua_
+    /* Hides every OTHER kf.screen() group's objects, shows this index's
+     * group (if one is registered under it) and re-applies its stored
+     * background colour, then force-repaints the retained scene and
+     * commits if anything has ever been declared. A no-op, changing
+     * nothing, if no group is registered under `index` -- nothing today
+     * registers a screen index without also registering a matching
+     * kf.screen() group, but a future C-only screen could. See kf_lua_
      * scene.h's own comment on kf_lua_scene_activate_screen(). */
     kf_lua_scene_activate_screen(static_cast<int>(index));
 
-    if (g_screens[index].root != nullptr) {
-        /* Switching TO an LVGL screen (Info, today): LVGL's own dirty
-         * tracking still believes this screen's pixels are exactly what
-         * it last flushed, even though the creature screen or the
-         * retained scene has spent however long drawing over them since
-         * -- LVGL has no way to know that happened, since it never went
-         * through LVGL's draw path at all. Left alone, the coming
-         * kf_lvgl_port_pump() would only redraw whatever LVGL's OWN
-         * widget tree thinks changed, which can easily be nothing, and
-         * leave debris on screen permanently.
-         *
-         * Both calls below are load-bearing, for two DIFFERENT reasons,
-         * not one -- this is not belt-and-suspenders:
-         *
-         * - lv_obj_invalidate() here is a no-op the very FIRST time this
-         *   runs: it returns early for an object that is not the active
-         *   screen (lv_obj_pos.c), and Info is not active yet at this
-         *   point in the call. That first full repaint instead comes from
-         *   lv_screen_load() -> scr_load_internal()'s OWN trailing
-         *   lv_obj_invalidate() call (lv_display.c), made once Info
-         *   actually is the active screen.
-         * - On every LATER switch back to Info, lv_screen_load()
-         *   early-returns immediately when asked to load the screen that
-         *   is already active (lv_display.c) -- scr_load_internal() never
-         *   runs again, so its trailing invalidate never fires either.
-         *   The explicit call here is what forces the repaint on THAT
-         *   path.
-         *
-         * So the explicit call earns its keep on the second and later
-         * visits to a given screen; the first visit is carried by
-         * lv_screen_load()'s own internals. Order between the two calls
-         * does not matter -- both just flag the object dirty for the next
-         * kf_lvgl_port_pump(), which has not run yet either way. */
-        lv_obj_invalidate(g_screens[index].root);
-        lv_screen_load(g_screens[index].root);
-        return;
-    }
-
     if (index == 0u) {
-        /* Home is still special beyond the scene-group bookkeeping step 1
-         * already did: the error banner and the creature presenter's
-         * animation cursor (KF_HOME_SCREEN=lua), or a full framebuffer
-         * repaint from scratch (KF_HOME_SCREEN=cpp) -- see kf_lua_home_
-         * screen.h's/kf_creature_screen.h's own comments on their entry
-         * points for why. Any OTHER non-LVGL screen (a kf.screen() group
-         * besides Home) needs nothing further here: step 1 above already
+        /* Home is still special beyond the scene-group bookkeeping above:
+         * the error banner and the creature presenter's animation cursor
+         * (KF_HOME_SCREEN=lua), or a full framebuffer repaint from scratch
+         * (KF_HOME_SCREEN=cpp) -- see kf_lua_home_screen.h's/kf_creature_
+         * screen.h's own comments on their entry points for why. Any
+         * OTHER screen (Info, or a future kf.screen() group besides Home)
+         * needs nothing further here: the activate call above already
          * repainted it, and it has no C++-side entry hook of its own. */
 #ifdef KF_HOME_SCREEN_LUA
         kf_lua_home_screen_enter();
@@ -162,9 +111,9 @@ int kf_screen_nav_register(const char *name, void (*update)(uint32_t dt_ms)) {
             /* Fetch, not create: the first registration of this name wins
              * the update callback, so a later call (typically kf.screen()
              * fetching what kf_screen_nav_init() already registered for
-             * Home) must not silently blank it out with whatever it
-             * happened to pass -- see this function's own header comment
-             * in kf_screen_nav.h. */
+             * Home or Info) must not silently blank it out with whatever
+             * it happened to pass -- see this function's own header
+             * comment in kf_screen_nav.h. */
             return static_cast<int>(i);
         }
     }
@@ -178,7 +127,6 @@ int kf_screen_nav_register(const char *name, void (*update)(uint32_t dt_ms)) {
     const size_t index = g_screen_count++;
     std::snprintf(g_screens[index].name, sizeof(g_screens[index].name), "%s",
                   name);
-    g_screens[index].root = nullptr;
     g_screens[index].update = update;
     return static_cast<int>(index);
 }
@@ -197,11 +145,12 @@ void kf_screen_nav_install_lua_hooks(void) {
 }
 
 void kf_screen_nav_init(void) {
-    /* Wired up FIRST: creature.lua's own kf.screen("home") call (inside
-     * kf_lua_port_init(), which runs after this whole function returns)
-     * must find the hook already installed. Idempotent, so calling it
-     * again from a test that also wants Home/Info brought up is harmless
-     * -- see this function's own header comment in kf_screen_nav.h. */
+    /* Wired up FIRST: creature.lua's own kf.screen("home")/kf.screen("info")
+     * calls (inside kf_lua_port_init(), which runs after this whole
+     * function returns) must find the hook already installed. Idempotent,
+     * so calling it again from a test that also wants Home/Info brought up
+     * is harmless -- see this function's own header comment in
+     * kf_screen_nav.h. */
     kf_screen_nav_install_lua_hooks();
 
     /* Home is the creature screen: it owns the framebuffer directly
@@ -211,17 +160,13 @@ void kf_screen_nav_init(void) {
      * kf_screen_nav_debug_home() keep meaning what they mean regardless
      * of which build this is. kf_creature_screen_init()/kf_lua_home_
      * screen_init() already paint the field's background themselves (see
-     * each one's own header comment), the same "screen looks right from
-     * its very first frame" convention kf_pet_screen_init()/kf_pet_info_
-     * screen_init() already used, so nothing extra is needed here.
+     * each one's own header comment), so nothing extra is needed here.
      *
-     * kf_pet_screen.cpp (bars + care-action buttons on an LVGL screen) is
-     * NOT initialised here any more and is therefore unreachable from a
-     * running build -- deliberately, not an oversight: the stats band that
-     * replaces it on the real screen is an explicit later plan (see
-     * kf_screen_nav.h's own header comment). It still exists, still
-     * compiles, and is still exercised directly by headless_main.cpp's
-     * run_pet_screen_check(), unaffected by any of this. */
+     * kf_pet_screen.cpp (bars + care-action buttons on an LVGL screen,
+     * only built under -DKF_ENABLE_LVGL=ON) is NOT initialised here any
+     * more and is therefore unreachable from a running build -- still
+     * exercised directly by headless_main.cpp's own run_pet_screen_check(),
+     * unaffected by any of this. */
 #ifdef KF_HOME_SCREEN_LUA
     /* Task 5 of the Lua game-layer plan: creature.lua itself declares
      * every scene object it will ever create (through its own
@@ -237,15 +182,21 @@ void kf_screen_nav_init(void) {
     kf_screen_nav_register("home", kf_creature_screen_frame);
 #endif
 
-    kf_pet_info_screen_init();
-    {
-        const int info_index =
-            kf_screen_nav_register("info", update_info_screen);
-        if (info_index >= 0) {
-            g_screens[static_cast<size_t>(info_index)].root =
-                kf_pet_info_screen_root();
-        }
-    }
+    /* Info (ADR 0045) is declared entirely in Lua now -- creature.lua's
+     * own kf.screen("info") call, unconditional (unlike Home, it does not
+     * check kf.home_screen_active()), will fetch this same index moments
+     * from now. Registered here, ahead of that call, purely so it has a
+     * per-frame update: kf_lua_info_screen_frame() just re-runs the
+     * shared Lua VM's on_frame(), the same thing Home's own update does,
+     * so Info's text objects keep refreshing (the ticking "time in stage"
+     * duration, in particular) while Info is the active screen -- without
+     * this, on_frame() would only run while Home is active, since that is
+     * the only OTHER path that reaches kf_lua_port_frame() from inside
+     * kf_screen_nav_frame() below. Registering it here rather than letting
+     * kf.screen("info") register it bare (update = nullptr) is the same
+     * "pre-register with the real per-frame function" move
+     * kf_screen_nav.h's own header comment already describes for Home. */
+    kf_screen_nav_register("info", kf_lua_info_screen_frame);
 
     g_active = 0;
     KF_LOGI(TAG, "%d screens ready, starting on Home", kf_screen_nav_count());
@@ -261,10 +212,6 @@ void kf_screen_nav_frame(uint32_t dt_ms) {
     if (g_active < g_screen_count && g_screens[g_active].update != nullptr) {
         g_screens[g_active].update(dt_ms);
     }
-}
-
-bool kf_screen_nav_wants_lvgl(void) {
-    return g_active < g_screen_count && g_screens[g_active].root != nullptr;
 }
 
 void kf_screen_nav_show(int index) {

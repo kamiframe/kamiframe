@@ -101,7 +101,9 @@
 #include "kf_lua_demo_creature_script.h"
 #include "kf_lua_port.h"
 #include "kf_lua_scene.h"
+#ifdef KF_ENABLE_LVGL
 #include "kf_lvgl_port.h"
+#endif
 #include "kf_pet_session.h"
 #include "kf_screen_nav.h"
 
@@ -192,16 +194,18 @@ extern "C" void app_main(void) {
     kf_pet_session_init();
     log_pet_state();
 
-    /* LVGL next, then every screen this build has -- same ordering and same
-     * reason as sdl_main.cpp: LVGL's memory pool comes from KF_ARENA_LVGL
-     * (carved out by kf_app_init()'s kf_arena_init_all() above), its display
-     * bridge writes into the framebuffer kf_app_init()'s kf_fb_init() already
-     * created, and both screens' init functions read kf_pet_session_state()
-     * the moment they run (kf_screen_nav_init() calls each screen's own init,
-     * which calls its own *_update() once for real values from the first
-     * frame) -- so kf_pet_session_init() above has to have already run. */
-    KF_LOGI(TAG, "starting kf_lvgl_port_init (pet screen on the real panel)");
+    /* LVGL, only under -DKF_ENABLE_LVGL=ON (ADR 0045 -- Info moved to a
+     * kf.screen() group over the retained scene, so a default build does
+     * not link LVGL at all; the option keeps the code and its 256 KB
+     * PSRAM arena available for the LVGL-vs-custom-engine evaluation
+     * CLAUDE.md names as deliberately deferred). Then every screen this
+     * build has -- Home's init function reads kf_pet_session_state() the
+     * moment it runs, so kf_pet_session_init() above has to have already
+     * run. */
+#ifdef KF_ENABLE_LVGL
+    KF_LOGI(TAG, "starting kf_lvgl_port_init (KF_ENABLE_LVGL=ON)");
     kf_lvgl_port_init();
+#endif
     kf_screen_nav_init();
 
     /* Lua comes up last -- same ordering and same reason sdl_main.cpp uses
@@ -283,19 +287,17 @@ extern "C" void app_main(void) {
          *
          * Ordering matches sdl_main.cpp's frame-ordering comment exactly,
          * for the same two reasons. kf_pet_session_frame() and
-         * kf_screen_nav_frame() both run BEFORE kf_lvgl_port_pump(), so the
-         * active screen has this frame's numbers pushed into its widgets
-         * (or, for the creature screen, drawn) before pump's lv_timer_
-         * handler() redraws and flushes -- otherwise an LVGL screen would be
-         * permanently one frame behind. kf_lvgl_port_pump() itself is
-         * guarded by kf_screen_nav_wants_lvgl(): calling it while the
-         * creature screen (which draws straight into the framebuffer, not
-         * through LVGL) is active would run LVGL's timer handler over a
-         * widget tree nothing is looking at -- see kf_screen_nav.h's own
-         * comment on that predicate for the actual hazard this avoids, not
-         * just the wasted work. And the pet session runs before kf_lua_
-         * port_frame(), so the script's pet.hunger() and friends see this
-         * frame's elapsed time already applied. */
+         * kf_screen_nav_frame() both run before kf_lvgl_port_pump() (under
+         * -DKF_ENABLE_LVGL=ON): the active screen has this frame's numbers
+         * pushed into it before pump's lv_timer_handler() would redraw and
+         * flush. ADR 0045 removed the kf_screen_nav_wants_lvgl() guard that
+         * call used to need: every screen this build can show (Home, Info)
+         * is a kf.screen() group over the retained scene now, so LVGL, when
+         * built in at all, has nothing left to pump for -- the call below is
+         * unconditional on which screen is active, only on KF_ENABLE_LVGL
+         * itself. And the pet session runs before kf_lua_port_frame(), so
+         * the script's pet.hunger() and friends see this frame's elapsed
+         * time already applied. */
         const uint64_t now_us = kf_time_mono_us();
         const uint32_t real_dt_ms =
             last_frame_us == 0u
@@ -319,9 +321,9 @@ extern "C" void app_main(void) {
 
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_screen_nav_frame(real_dt_ms);
-        if (kf_screen_nav_wants_lvgl()) {
-            kf_lvgl_port_pump(0);
-        }
+#ifdef KF_ENABLE_LVGL
+        kf_lvgl_port_pump(0);
+#endif
 
         /* kf_lua_port_frame(0): same "0 means real elapsed time" convention
          * as kf_pet_session_frame() would use without a multiplier, tracked
@@ -371,7 +373,9 @@ extern "C" void app_main(void) {
      * kf_app_shutdown() is about to tear down. */
     kf_dbg_bridge_shutdown();
     kf_lua_port_shutdown();
+#ifdef KF_ENABLE_LVGL
     kf_lvgl_port_shutdown();
+#endif
     kf_pet_session_shutdown();
     kf_app_shutdown();
 }

@@ -6,7 +6,7 @@
 
 #include "kf_error_banner.h"
 
-#include "../../sdk/lua/kf_lua_port.h"
+#include "kf_lua_port.h"
 
 #include "kf/types.h"
 

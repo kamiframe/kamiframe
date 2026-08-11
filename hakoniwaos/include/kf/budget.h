@@ -189,10 +189,18 @@
 /* LVGL's own object/style heap -- see ADR 0013. Real-world LVGL deployments
  * report needing 80-140KB; this is sized generously against that figure,
  * same "measure honestly, don't cut it close" reasoning every other arena
- * here follows, not the bare 64KB minimum LVGL itself defaults to. Not used
- * until the menu slice; declared now for the same reason KF_ARENA_LUA is:
- * so the budget arithmetic below stays honest about what has to fit. */
+ * here follows, not the bare 64KB minimum LVGL itself defaults to.
+ *
+ * Only carved -- and only counted in the PSRAM assertion below -- when
+ * built with -DKF_ENABLE_LVGL=ON. ADR 0045: the default build no longer
+ * needs LVGL at all (Info, the screen that used to be the reason this
+ * arena existed, moved to a kf.screen() group over the retained scene), so
+ * the default build reclaims this 256 KB of PSRAM. The option keeps the
+ * code and the arena available for the LVGL-vs-custom-engine evaluation
+ * CLAUDE.md names as deliberately deferred, not decided. */
+#ifdef KF_ENABLE_LVGL
 #define KF_ARENA_LVGL_BYTES         (256u * 1024u)
+#endif
 
 /* -------------------------------------------------------------------------
  * Flash
@@ -253,10 +261,16 @@ KF_STATIC_ASSERT(KF_ARENA_FRAMEBUFFER_BYTES + KF_ARENA_SCRATCH_BYTES
                  "Internal SRAM arenas exceed the internal pool budget. "
                  "You cannot fit this on the device. See kf/budget.h.");
 
+#ifdef KF_ENABLE_LVGL
 KF_STATIC_ASSERT(KF_ARENA_LUA_BYTES + KF_ARENA_ASSETS_BYTES +
                           KF_ARENA_LVGL_BYTES <=
                       KF_POOL_PSRAM_BYTES,
                  "PSRAM arenas exceed 8MB. See kf/budget.h.");
+#else
+KF_STATIC_ASSERT(KF_ARENA_LUA_BYTES + KF_ARENA_ASSETS_BYTES <=
+                      KF_POOL_PSRAM_BYTES,
+                 "PSRAM arenas exceed 8MB. See kf/budget.h.");
+#endif
 
 KF_STATIC_ASSERT(KF_FLASH_ASSET_BUDGET_BYTES < KF_FLASH_TOTAL_BYTES,
                  "Asset budget leaves no room for firmware. See kf/budget.h.");

@@ -50,12 +50,21 @@ typedef enum {
     /* Decoded sprites and game data. PSRAM. Permanent. */
     KF_ARENA_ASSETS = 3,
 
+#ifdef KF_ENABLE_LVGL
     /* LVGL's object/style pool, handed to it via LV_MEM_POOL_ALLOC. PSRAM.
-     * Permanent. Unused until the menu slice; see ADR 0013 and
-     * KF_ARENA_LVGL_BYTES in budget.h. */
+     * Permanent. See ADR 0013 and KF_ARENA_LVGL_BYTES in budget.h. Only
+     * exists in this enum -- and only carved by kf_arena_init_all() -- when
+     * built with -DKF_ENABLE_LVGL=ON. ADR 0045: the default build no longer
+     * needs LVGL at all (Info moved to a kf.screen() group over the
+     * retained scene), so the default build no longer pays for this arena
+     * either. The option keeps the code and its 256 KB available for the
+     * LVGL-vs-custom-engine evaluation CLAUDE.md names as deliberately
+     * deferred, not decided. */
     KF_ARENA_LVGL = 4,
-
     KF_ARENA_COUNT = 5
+#else
+    KF_ARENA_COUNT = 4
+#endif
 } kf_arena_id;
 
 typedef struct {

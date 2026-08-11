@@ -49,16 +49,17 @@
 ## on kf_pet_session.h (already this component's own neighbour) plus
 ## hakoniwaos's kf/creature.h and kf/blit.h, no LVGL and no third-party
 ## library of its own -- it is app_main.cpp's kf_screen_nav_init() that
-## reaches it (via kamiframe_lvgl_port's kf_screen_nav.cpp), not this file
-## directly, the same indirection sdl_main.cpp uses on desktop.
+## reaches it, via kf_screen_nav.cpp (below, in this same component since
+## ADR 0045), not this file directly, the same indirection sdl_main.cpp
+## uses on desktop.
 ##
 ## kf_creature_presenter.cpp/kf_home_screen_input.cpp (Task 5 of the Lua
 ## game-layer plan): the wander/pose/animation orchestration and the five
 ## hardware care buttons, extracted OUT of kf_creature_screen.cpp so that
-## KF_HOME_SCREEN=lua (kf_screen_nav.cpp, kamiframe_lvgl_port component)
-## gets the identical wander result and the identical buttons the cpp
-## screen always had -- same one-file-no-third-party-dependency reasoning
-## as kf_pet_session.cpp above.
+## KF_HOME_SCREEN=lua (kf_screen_nav.cpp, this same component since
+## ADR 0045) gets the identical wander result and the identical buttons the
+## cpp screen always had -- same one-file-no-third-party-dependency
+## reasoning as kf_pet_session.cpp above.
 ##
 ## kf_lua_alloc.cpp/kf_lua_port.cpp (ADR 0028): same relative-path pattern as
 ## kf_pet_session.cpp above -- these two files have no third-party library of
@@ -66,27 +67,81 @@
 ## below (../components/lua, registered via this port's CMakeLists.txt
 ## EXTRA_COMPONENT_DIRS) instead of being folded in here.
 ##
-## kamiframe_lvgl_port REQUIRES: app_main.cpp now calls kf_lvgl_port_init()/
-## kf_lvgl_port_pump() and kf_screen_nav_init()/kf_screen_nav_frame()
-## (ADR 0027), both defined in that component, not this one -- REQUIRES
-## brings in both its public headers (so app_main.cpp's bare #include
-## "kf_lvgl_port.h" / "kf_screen_nav.h" resolve, the same
-## INCLUDE_DIRS-propagation ../../hakoniwaos already relies on for kf/*.h)
-## and, per the WHOLE_ARCHIVE comment above, positions kamiframe_lvgl_port.a
-## after this component in the final link -- the same position hakoniwaos.a
-## already occupies, for the same single-pass-resolution reason: this
-## component's own object files reference symbols that component defines,
-## not the other way around, so this component staying WHOLE_ARCHIVE and
-## that one staying an ordinary REQUIRES entry is enough; no WHOLE_ARCHIVE
-## needed on kamiframe_lvgl_port itself. See docs/architecture/
-## adr-0027-lvgl-on-esp32.md's "Verified" section for how that was actually
-## confirmed, not just reasoned about.
+## kamiframe_lvgl_port REQUIRES, only under -DKF_ENABLE_LVGL=ON (ADR 0045,
+## Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): the
+## component does not even exist otherwise -- ../CMakeLists.txt only adds
+## its directory to EXTRA_COMPONENT_DIRS when this is set, see that file's
+## own comment. Historically (ADR 0027) app_main.cpp called kf_lvgl_port_
+## init()/kf_lvgl_port_pump(), both defined in that component -- REQUIRES
+## brought in its public headers (so app_main.cpp's bare #include
+## "kf_lvgl_port.h" resolves, the same INCLUDE_DIRS-propagation
+## ../../hakoniwaos already relies on for kf/*.h) and, per the WHOLE_ARCHIVE
+## comment above, positioned kamiframe_lvgl_port.a after this component in
+## the final link -- the same position hakoniwaos.a already occupies, for
+## the same single-pass-resolution reason. kf_screen_nav_init()/_frame()
+## moved OUT of that component with ADR 0045 (into kf_screen_nav.cpp below,
+## compiled straight into this component like kf_pet_session.cpp already
+## is) precisely so screen navigation stops needing this REQUIRES at all.
 ##
 ## kf_dbg_bridge.cpp/kf_dbg_codec.cpp (ADR 0030, the KFDBG serial debug
 ## bridge): plain files in this directory, not a new component -- same
 ## reasoning as kf_pet_session.cpp above, one canonical copy with no
 ## third-party dependency of its own. esp_driver_uart REQUIRES is new here:
 ## nothing else in this component called driver/uart.h before this.
+##
+## kf_screen_nav.cpp/kf_lua_home_screen.cpp/kf_error_banner.cpp (ADR 0045):
+## moved here from the kamiframe_lvgl_port component's own SRCS -- none of
+## the three has ever had an LVGL dependency of its own; they only lived
+## there because kf_screen_nav.cpp used to #include <lvgl.h> for Info's
+## LVGL screen-load calls. Same one-canonical-copy-by-relative-path pattern
+## as kf_pet_session.cpp above, and needed UNCONDITIONALLY (not gated on
+## KF_ENABLE_LVGL): every build needs screen navigation, whether or not
+## LVGL is linked in at all.
+##
+## KF_MAIN_REQUIRES built as a list, not inline in REQUIRES below, purely so
+## kamiframe_lvgl_port can be conditional (ADR 0045) -- REQUIRES itself
+## takes a plain list, and appending to one before the call is simpler and
+## less error-prone than any post-registration mechanism.
+set(KF_MAIN_REQUIRES
+    hakoniwaos
+    lua
+    spi_flash
+    esp_partition
+    esp_driver_gpio
+    esp_driver_spi
+    esp_driver_i2c
+    esp_driver_uart
+    esp_lcd
+    esp_timer
+    nvs_flash
+    esp_hw_support
+    heap
+    esp_system
+)
+##
+## $ENV{KF_ENABLE_LVGL}, not the plain ${KF_ENABLE_LVGL} CACHE variable --
+## found the hard way (a real `idf.py build` REQUIRES-graph mismatch, not
+## guessed): ESP-IDF's own component_get_requirements.cmake (~/esp/esp-idf/
+## tools/cmake/scripts/) runs a SEPARATE `cmake -P` process to scan every
+## candidate component's CMakeLists.txt for its REQUIRES, ahead of the real
+## configure -- confirmed by instrumenting this exact line with message()
+## and watching it run TWICE with two different states: once with
+## KF_ENABLE_LVGL genuinely empty (the scan process, which has no
+## CMakeCache.txt or -D of its own -- it inherits none of the parent
+## cmake process's variables, only whatever ESP-IDF explicitly threads
+## through via generated property files), and once with it correctly ON
+## (the real, later configure). The scan process's answer is what actually
+## gets baked into the cross-component "who may include whose headers"
+## graph ESP-IDF enforces -- the later, correct answer is too late to
+## matter. ../CMakeLists.txt exports this same value into the process
+## ENVIRONMENT (set(ENV{KF_ENABLE_LVGL} ...)) specifically because
+## environment variables, unlike CMake cache/normal variables, DO cross
+## process boundaries the way this scan's separate `cmake -P` invocation
+## needs -- see that file's own comment on the export.
+if("$ENV{KF_ENABLE_LVGL}")
+    list(APPEND KF_MAIN_REQUIRES kamiframe_lvgl_port)
+endif()
+
 idf_component_register(
     SRCS
         app_main.cpp
@@ -103,28 +158,16 @@ idf_component_register(
         ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../simulator/src/pet/kf_creature_presenter.cpp
         ../../../simulator/src/pet/kf_home_screen_input.cpp
+        ../../../simulator/src/pet/kf_screen_nav.cpp
+        ../../../simulator/src/pet/kf_lua_home_screen.cpp
+        ../../../simulator/src/pet/kf_error_banner.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp
         ../../../sdk/lua/kf_lua_scene.cpp
         kf_dbg_bridge.cpp
         kf_dbg_codec.cpp
     INCLUDE_DIRS "." "../hal" "../../../simulator/src/pet" "../../../sdk/lua" "../../../sdk/lua/generated"
-    REQUIRES
-        hakoniwaos
-        lua
-        kamiframe_lvgl_port
-        spi_flash
-        esp_partition
-        esp_driver_gpio
-        esp_driver_spi
-        esp_driver_i2c
-        esp_driver_uart
-        esp_lcd
-        esp_timer
-        nvs_flash
-        esp_hw_support
-        heap
-        esp_system
+    REQUIRES ${KF_MAIN_REQUIRES}
     WHOLE_ARCHIVE
 )
 
@@ -259,12 +302,12 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 
 ## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan): set at the top of
 ## ../CMakeLists.txt, not here -- see that file's own comment for why. This
-## is only the half of it main needs: kf_lua_port.cpp (compiled straight
-## into this component, see the SRCS list above) reads KF_HOME_SCREEN_LUA
-## for kf.home_screen_active()'s compile-time default. kamiframe_lvgl_
-## port/CMakeLists.txt applies the identical define to ITS OWN component
-## for kf_screen_nav.cpp's build-time choice of which Home implementation
-## to wire up.
+## one define covers both of this component's own readers: kf_lua_port.cpp
+## reads KF_HOME_SCREEN_LUA for kf.home_screen_active()'s compile-time
+## default, and kf_screen_nav.cpp (moved into this component's SRCS with
+## ADR 0045) reads it for its own build-time choice of which Home
+## implementation to wire up -- one define, ${COMPONENT_LIB}-wide, now that
+## both files live in the same component.
 if(KF_HOME_SCREEN STREQUAL "lua")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_HOME_SCREEN_LUA=1)
 endif()

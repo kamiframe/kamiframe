@@ -69,11 +69,11 @@
 #include "../host/host_assets.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
-#include "../lvgl/kf_lua_home_screen.h"
+#ifdef KF_ENABLE_LVGL
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
 #include "../lvgl/kf_pet_screen.h"
-#include "../lvgl/kf_screen_nav.h"
+#endif
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
 #include "../../../sdk/lua/kf_lua_alloc.h"
 #include "../../../sdk/lua/kf_lua_port.h"
@@ -82,7 +82,9 @@
 #include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_creature_screen.h"
 #include "../pet/kf_home_screen_input.h"
+#include "../pet/kf_lua_home_screen.h"
 #include "../pet/kf_pet_session.h"
+#include "../pet/kf_screen_nav.h"
 #include "headless_probe.h"
 
 #include <algorithm>
@@ -1040,11 +1042,15 @@ int run_pet_personality_check() {
     return ok ? 0 : 1;
 }
 
+#ifdef KF_ENABLE_LVGL
 /* Proves the LVGL port glue -- not the custom engine -- renders
  * deterministically. See ADR 0013. Bypasses kf_app_init()/kf_app_frame()
  * entirely: this exercises LVGL directly, the same way
  * run_storage_power_check() exercises storage/power directly, and never
- * touches the golden checksums the frame-loop tests guard. */
+ * touches the golden checksums the frame-loop tests guard.
+ *
+ * ADR 0045: this whole function only compiles under -DKF_ENABLE_LVGL=ON --
+ * kamiframe_lvgl_port, which it links against, does not exist otherwise. */
 int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
     /* Arenas and the framebuffer are core's, not LVGL's -- LVGL only ever
      * gets memory through kf_lvgl_mem_pool_alloc(), which calls
@@ -1096,6 +1102,7 @@ int run_lvgl_check(unsigned long long expect_checksum, bool have_expect) {
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
+#endif /* KF_ENABLE_LVGL */
 
 /* Proves decay is per-stage, not uniform. The specific assertion is that a
  * baby empties far faster than an adult over the SAME elapsed time -- the
@@ -1315,6 +1322,13 @@ int run_hokorimaru_check(void) {
  * did not notice when exactly that reached real hardware. This writes the
  * frame somewhere a human (or a vision model) can look at it. */
 const char *g_dump_path = nullptr;
+
+/* --dump-fb-info PATH: the same idea as --dump-fb above, aimed at Info
+ * instead of Home -- run_screen_nav_check() writes this one after Info has
+ * rendered, so the before/after PNGs ADR 0045's task required (Info's move
+ * off LVGL, which re-baselined KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM) could
+ * be captured without a second, separate check. */
+const char *g_dump_path_info = nullptr;
 
 /* Binary PPM (P6). Chosen over PNG because it needs no library at all -- a
  * 15-line writer against a format every image viewer and converter already
@@ -4371,9 +4385,10 @@ static int run_creature_anim_check(void) {
  * creature screen directly through kf_creature_screen_frame() -- the same
  * entry point run_creature_screen_check() above already uses to advance it
  * -- rather than through kf_screen_nav_frame(), which would also require
- * standing up LVGL (kf_lvgl_port_init()/kf_screen_nav_init()) for nothing
- * this check needs: the point is the ORDER (kf_app_frame() returns, THEN
- * something draws), not the routing that gets there on a real device.
+ * standing up the pet session and registry (kf_screen_nav_init()) for
+ * nothing this check needs: the point is the ORDER (kf_app_frame()
+ * returns, THEN something draws), not the routing that gets there on a
+ * real device.
  *
  * Needs the real creature_demo pack (KF_CREATURE_DEMO_PACK_PATH), not the
  * default pack run_creature_screen_check() mounts: only a real, colour-
@@ -4492,6 +4507,12 @@ static int run_frame_counters_check(void) {
     return ok ? 0 : 1;
 }
 
+#ifdef KF_ENABLE_LVGL
+/* ADR 0045: only compiled under -DKF_ENABLE_LVGL=ON -- kf_pet_screen.cpp
+ * (kamiframe_lvgl_port), this check's subject, does not exist otherwise.
+ * kf_pet_screen.cpp is deliberately not deleted -- see simulator/
+ * CMakeLists.txt's own comment on this test for why that stays Chris's
+ * call, not this task's. */
 int run_pet_screen_check(unsigned long long expect_checksum,
                           bool have_expect) {
     const std::filesystem::path dir =
@@ -4572,6 +4593,7 @@ int run_pet_screen_check(unsigned long long expect_checksum,
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
+#endif /* KF_ENABLE_LVGL */
 
 /* Proves the menu/screen navigation mechanism (ADR 0022): Home is active
  * immediately after kf_screen_nav_init(), kf_screen_nav_debug_advance()
@@ -4615,7 +4637,6 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     kf_fb_init();
 
     kf_pet_session_init();
-    kf_lvgl_port_init();
     kf_screen_nav_init();
 
 #ifdef KF_HOME_SCREEN_LUA
@@ -4645,22 +4666,15 @@ int run_screen_nav_check(unsigned long long expect_checksum,
      * iteration the same way the interactive build's loop does, even
      * though nothing here presses a real button -- proving the per-frame
      * "call the active screen's update()" path, not just the switch
-     * itself. kf_lvgl_port_pump() is guarded by kf_screen_nav_wants_lvgl(),
-     * the same as sdl_main.cpp/app_main.cpp: Home is the creature screen
-     * now (Task 4) and draws straight into the framebuffer, so pumping
-     * LVGL while it is active would run lv_timer_handler() over whatever
-     * LVGL's own default screen happens to be -- still invalidated from
-     * lv_init(), since nothing has ever loaded a real LVGL screen yet at
-     * this point -- and its flush would overwrite every pixel the creature
-     * screen just drew, defeating this whole loop. */
+     * itself. ADR 0045: no LVGL pump call here any more -- every screen
+     * this build can show (Home, Info) is a kf.screen() group over the
+     * retained scene now, so kf_screen_nav_frame() alone is enough to
+     * drive either one's per-frame update. */
     constexpr uint32_t kFixedDtMs =
         static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
     for (int i = 0; i < 30; ++i) {
         kf_pet_session_frame(kFixedDtMs);
         kf_screen_nav_frame(kFixedDtMs);
-        if (kf_screen_nav_wants_lvgl()) {
-            kf_lvgl_port_pump(kFixedDtMs);
-        }
     }
     check(kf_screen_nav_debug_index() == 0,
           "still on Home after 30 quiet frames (nothing should have "
@@ -4677,10 +4691,9 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     for (int i = 0; i < 30; ++i) {
         kf_pet_session_frame(kFixedDtMs);
         kf_screen_nav_frame(kFixedDtMs);
-        if (kf_screen_nav_wants_lvgl()) {
-            kf_lvgl_port_pump(kFixedDtMs);
-        }
     }
+
+    dump_framebuffer_ppm(g_dump_path_info);
 
     /* Checksummed with Info on screen -- the same FNV-1a-over-the-
      * framebuffer approach every other rendering check in this codebase
@@ -4700,31 +4713,33 @@ int run_screen_nav_check(unsigned long long expect_checksum,
           "kf_screen_nav_debug_home() returned from Info to Home");
 
     /* Controller amendment A7.1 (a Task 4 review fix that nothing else
-     * catches if reverted): kf_creature_screen_enter() -- which the
-     * kf_screen_nav_debug_home() call just above ran, via load()'s switch-
-     * to-Home path -- must repaint the WHOLE 240x320 panel, not just
-     * kField (y=[0,260)). Info is an LVGL screen and never touches rows
-     * 260-319 itself, so if Home's entry repaint only covered its own
-     * field, whatever Info last flushed into that band -- from before this
-     * very round trip -- would sit there forever, since Home never pumps
-     * LVGL to repaint it and no per-frame path here would ever touch it
-     * either. The golden checksum above does not cover this: it is taken
-     * while INFO is active, before this Home switch even happens.
+     * catches if reverted): Home's own entry repaint -- kf_creature_screen_
+     * enter() (KF_HOME_SCREEN=cpp) or kf_lua_scene_activate_screen()'s
+     * force-repaint plus kf_lua_home_screen_enter() (KF_HOME_SCREEN=lua),
+     * whichever this build wired up, both reached via the kf_screen_nav_
+     * debug_home() call just above -- must repaint the WHOLE 240x320
+     * panel, not just kField (y=[0,260)). Since ADR 0045, Info is a
+     * kf.screen() group with its own background colour covering the WHOLE
+     * panel, including rows 260-319 -- a darker colour than Home's,
+     * chosen precisely so this assertion can tell the two apart. If
+     * Home's entry repaint only covered its own field, Info's background
+     * would still be sitting in that band. The golden checksum above does
+     * not cover this: it is taken while INFO is active, before this Home
+     * switch even happens.
      *
      * No new sprite/creature drawing has run yet at this exact point --
      * kf_creature_screen_frame() has not been called since re-entering --
-     * so EVERY pixel on the panel is still exactly whatever
-     * kf_creature_screen_enter()'s fill just painted -- kBackground
-     * (kf_creature_screen.cpp), reproduced here by value rather than
+     * so EVERY pixel on the panel is still exactly whatever Home's own
+     * entry repaint just painted, reproduced here by value rather than
      * sampled from a second live pixel: sampling (0,0) instead would catch
      * a REGRESSED entry repaint (kField-only, band pixel still Info's)
-     * exactly as well, but would pass vacuously if kf_creature_screen_
-     * enter()'s fill were removed altogether -- both samples would then
-     * still hold whatever Info left, agree with each other, and this check
-     * would report success while nothing had actually repainted anything.
-     * Comparing against the known constant instead catches that case too:
-     * with no fill at all, the band pixel is Info's leftover colour, which
-     * this fixed value was never going to equal by chance. */
+     * exactly as well, but would pass vacuously if that repaint were
+     * removed altogether -- both samples would then still hold whatever
+     * Info left, agree with each other, and this check would report
+     * success while nothing had actually repainted anything. Comparing
+     * against the known constant instead catches that case too: with no
+     * repaint at all, the band pixel is Info's leftover colour, which this
+     * fixed value was never going to equal by chance. */
     {
         const kf_color *px = kf_fb_pixels();
         const kf_color kKnownCreatureBackground = KF_RGB(232, 240, 216);
@@ -4744,7 +4759,6 @@ int run_screen_nav_check(unsigned long long expect_checksum,
 #ifdef KF_HOME_SCREEN_LUA
     kf_lua_port_shutdown();
 #endif
-    kf_lvgl_port_shutdown();
     kf_pet_session_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();
@@ -4787,8 +4801,8 @@ constexpr int kScreenGroupCheckExpectedObjectCount = 2;
  * showing, this is where it would show up.
  *
  * Deliberately does NOT call kf_screen_nav_init(): that also brings up
- * the pet session, LVGL, and Home/Info, none of which this mechanism
- * needs to prove itself. kf_screen_nav_install_lua_hooks() -- the one
+ * Home and Info (and, under -DKF_ENABLE_LVGL=ON, LVGL), none of which this
+ * mechanism needs to prove itself. kf_screen_nav_install_lua_hooks() -- the one
  * piece of kf_screen_nav_init() this check does need, to wire kf.screen()
  * up to the registry at all -- already ran once in main(), before every
  * check; see that call site's own comment. */
@@ -7049,6 +7063,9 @@ int main(int argc, char *argv[]) {
             verify_lua_pet = true;
         } else if (std::strcmp(argv[i], "--dump-fb") == 0 && i + 1 < argc) {
             g_dump_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--dump-fb-info") == 0 &&
+                   i + 1 < argc) {
+            g_dump_path_info = argv[++i];
         } else if (std::strcmp(argv[i], "--verify-pet-screen") == 0) {
             verify_pet_screen = true;
         } else if (std::strcmp(argv[i], "--verify-demand-curve") == 0) {
@@ -7164,7 +7181,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (verify_lvgl) {
+#ifdef KF_ENABLE_LVGL
         return run_lvgl_check(expect_checksum, have_expect);
+#else
+        KF_LOGE(TAG, "--verify-lvgl requires a build with "
+                     "-DKF_ENABLE_LVGL=ON (see ADR 0045)");
+        return 1;
+#endif
     }
 
     if (verify_lua) {
@@ -7264,7 +7287,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (verify_pet_screen) {
+#ifdef KF_ENABLE_LVGL
         return run_pet_screen_check(expect_checksum, have_expect);
+#else
+        KF_LOGE(TAG, "--verify-pet-screen requires a build with "
+                     "-DKF_ENABLE_LVGL=ON (see ADR 0045)");
+        return 1;
+#endif
     }
 
     if (verify_demand_curve) {

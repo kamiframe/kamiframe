@@ -110,41 +110,50 @@ target_link_libraries(kamiframe_pet_port
     PUBLIC hakoniwaos kamiframe_host_common kamiframe_options)
 
 # ---------------------------------------------------------------------------
-# LVGL port glue -- menus and stat displays, see ADR 0013. Its pet screen
-# (ADR 0017) is what ties it to kamiframe_pet_port above.
+# LVGL port glue -- menus and stat displays, see ADR 0013.
 #
-# Built unconditionally, same as kamiframe_host_common above: both desktop
-# backends link it. Deliberately lives here, not in hakoniwaos/, because this
-# slice does not claim LVGL works on the ESP32 build -- see the ADR's "what
-# this slice actually builds".
+# ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
+# sleep.md): built only when KF_ENABLE_LVGL is ON (default OFF). Info -- the
+# screen that used to be this library's own kf_pet_info_screen.cpp -- moved
+# to a kf.screen() group over the retained scene (kf/scene.h), the same
+# mechanism Home already used, so a default build no longer links LVGL or
+# carves its 256 KB PSRAM arena. kf_screen_nav.cpp, kf_lua_home_screen.cpp
+# and kf_error_banner.cpp moved OUT of this library that same task, into
+# kamiframe_screen_port below: none of the three ever had an LVGL
+# dependency of its own -- they only lived here because kf_screen_nav.cpp
+# used to #include <lvgl.h> for Info's lv_screen_load()/lv_obj_invalidate()
+# calls. What remains here (kf_pet_screen.cpp, kf_lvgl_proof_screen.cpp and
+# the kf_lvgl_*.cpp port glue itself) is real LVGL code, kept building and
+# passing its own two golden-checksum tests under -DKF_ENABLE_LVGL=ON so
+# CLAUDE.md's "LVGL vs a custom sprite engine" evaluation stays available
+# whenever Chris wants it -- see docs/architecture/adr-0045-info-screen-in-
+# lua.md.
 # ---------------------------------------------------------------------------
-include(fetch_lvgl)
+if(KF_ENABLE_LVGL)
+    include(fetch_lvgl)
 
-add_library(kamiframe_lvgl_port STATIC
-    src/lvgl/kf_lvgl_pool.cpp
-    src/lvgl/kf_lvgl_tick.cpp
-    src/lvgl/kf_lvgl_display.cpp
-    src/lvgl/kf_lvgl_input.cpp
-    src/lvgl/kf_lvgl_pointer.cpp
-    src/lvgl/kf_lvgl_port.cpp
-    src/lvgl/kf_lvgl_proof_screen.cpp
-    src/lvgl/kf_pet_screen.cpp
-    src/lvgl/kf_pet_info_screen.cpp
-    src/lvgl/kf_screen_nav.cpp
-    src/lvgl/kf_lua_home_screen.cpp
-    src/lvgl/kf_error_banner.cpp
-)
-target_include_directories(kamiframe_lvgl_port
-    PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
-target_link_libraries(kamiframe_lvgl_port
-    PUBLIC hakoniwaos lvgl kamiframe_pet_port kamiframe_options)
+    add_library(kamiframe_lvgl_port STATIC
+        src/lvgl/kf_lvgl_pool.cpp
+        src/lvgl/kf_lvgl_tick.cpp
+        src/lvgl/kf_lvgl_display.cpp
+        src/lvgl/kf_lvgl_input.cpp
+        src/lvgl/kf_lvgl_pointer.cpp
+        src/lvgl/kf_lvgl_port.cpp
+        src/lvgl/kf_lvgl_proof_screen.cpp
+        src/lvgl/kf_pet_screen.cpp
+    )
+    target_include_directories(kamiframe_lvgl_port
+        PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
+    target_link_libraries(kamiframe_lvgl_port
+        PUBLIC hakoniwaos lvgl kamiframe_pet_port kamiframe_options)
 
-# Genuinely circular at the symbol level, not a layering mistake: LVGL calls
-# kf_lvgl_mem_pool_alloc() (defined in kamiframe_lvgl_port, wired in via
-# LV_MEM_POOL_ALLOC in lv_conf.h) once, at lv_init() time, and everything
-# else in kamiframe_lvgl_port calls into LVGL. CMake resolves the cycle by
-# repeating both archives on the final link line.
-target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
+    # Genuinely circular at the symbol level, not a layering mistake: LVGL
+    # calls kf_lvgl_mem_pool_alloc() (defined in kamiframe_lvgl_port, wired
+    # in via LV_MEM_POOL_ALLOC in lv_conf.h) once, at lv_init() time, and
+    # everything else in kamiframe_lvgl_port calls into LVGL. CMake resolves
+    # the cycle by repeating both archives on the final link line.
+    target_link_libraries(lvgl PRIVATE kamiframe_lvgl_port)
+endif()
 
 # ---------------------------------------------------------------------------
 # Lua port glue -- the SDK language, see ADR 0014. Its pet.* binding (ADR
@@ -173,6 +182,32 @@ target_link_libraries(kamiframe_lua_port
     PUBLIC hakoniwaos lua_core kamiframe_pet_port kamiframe_options)
 
 # ---------------------------------------------------------------------------
+# Screen navigation -- kf_screen_nav.cpp (ADR 0022/0044), plus the two small
+# files that only ever exist to give it something to switch TO under
+# KF_HOME_SCREEN=lua (kf_lua_home_screen.cpp, kf_error_banner.cpp). Built
+# unconditionally, same as kamiframe_lua_port above: every desktop backend
+# needs screen navigation regardless of KF_ENABLE_LVGL, now that Info no
+# longer needs LVGL to exist (ADR 0045).
+#
+# A library of its own, not folded into kamiframe_pet_port: this file needs
+# BOTH kamiframe_pet_port (Home's cpp implementation, kf_creature_screen.h)
+# AND kamiframe_lua_port (Home's lua implementation, and Info's -- kf_lua_
+# port.h/kf_lua_scene.h), and kamiframe_lua_port already depends ON
+# kamiframe_pet_port (its pet.* binding needs kf_pet_session.h) -- putting
+# these three files inside kamiframe_pet_port would make kamiframe_pet_port
+# depend on kamiframe_lua_port too, a straight cycle. This library sits
+# above both instead, the same position kamiframe_lvgl_port occupied before
+# ADR 0045 moved these files out of it for the identical reason.
+# ---------------------------------------------------------------------------
+add_library(kamiframe_screen_port STATIC
+    src/pet/kf_screen_nav.cpp
+    src/pet/kf_lua_home_screen.cpp
+    src/pet/kf_error_banner.cpp
+)
+target_link_libraries(kamiframe_screen_port
+    PUBLIC hakoniwaos kamiframe_pet_port kamiframe_lua_port kamiframe_options)
+
+# ---------------------------------------------------------------------------
 # KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/plans/
 # 2026-08-12-lua-game-layer.md): which Home implementation a build's
 # interactive app wires up -- examples/creature_demo/creature.lua declaring
@@ -188,24 +223,18 @@ target_link_libraries(kamiframe_lua_port
 # command-line mistake, not a mysterious preprocessor failure three files
 # away.
 #
-# kamiframe_lvgl_port needs KF_HOME_SCREEN_LUA (not kamiframe_pet_port):
-# kf_screen_nav.cpp, which owns the choice of which Home implementation is
-# wired up, lives there. It also needs kamiframe_lua_port added as a link
-# dependency here, for the first time -- kf_lua_home_screen.cpp (new this
-# task) is the first file in this library to call into the Lua port glue
-# directly, rather than the other way around (kamiframe_lua_port already
-# depends on kamiframe_pet_port). No cycle: kamiframe_lua_port does not, and
-# must not, depend back on kamiframe_lvgl_port.
+# kamiframe_screen_port needs KF_HOME_SCREEN_LUA, not kamiframe_lvgl_port
+# (which ADR 0045 moved this choice out of entirely): kf_screen_nav.cpp,
+# which owns the choice of which Home implementation is wired up, lives
+# there now.
 set(KF_HOME_SCREEN "lua" CACHE STRING "Home screen implementation: cpp or lua")
 if(NOT KF_HOME_SCREEN STREQUAL "cpp" AND NOT KF_HOME_SCREEN STREQUAL "lua")
     message(FATAL_ERROR
         "KF_HOME_SCREEN must be 'cpp' or 'lua', got '${KF_HOME_SCREEN}'")
 endif()
 
-target_link_libraries(kamiframe_lvgl_port PUBLIC kamiframe_lua_port)
-
 if(KF_HOME_SCREEN STREQUAL "lua")
-    target_compile_definitions(kamiframe_lvgl_port PUBLIC KF_HOME_SCREEN_LUA=1)
+    target_compile_definitions(kamiframe_screen_port PUBLIC KF_HOME_SCREEN_LUA=1)
     # kf_lua_port.cpp's own compile-time default for kf.home_screen_active()
     # -- see that file's own comment on kf_lua_port_set_home_screen_active().
     target_compile_definitions(kamiframe_lua_port PUBLIC KF_HOME_SCREEN_LUA=1)
@@ -224,9 +253,12 @@ if(KAMIFRAME_BUILD_SIMULATOR)
         src/sdl/sdl_main.cpp
     )
     target_link_libraries(kamiframe-sim
-        PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
+        PRIVATE hakoniwaos kamiframe_host_common kamiframe_screen_port
                 kamiframe_lua_port kamiframe_pet_port kamiframe_options
                 SDL3::SDL3)
+    if(KF_ENABLE_LVGL)
+        target_link_libraries(kamiframe-sim PRIVATE kamiframe_lvgl_port)
+    endif()
     set_target_properties(kamiframe-sim PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
@@ -243,8 +275,11 @@ if(KAMIFRAME_BUILD_HEADLESS)
     target_include_directories(kamiframe-headless
         PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/headless)
     target_link_libraries(kamiframe-headless
-        PRIVATE hakoniwaos kamiframe_host_common kamiframe_lvgl_port
+        PRIVATE hakoniwaos kamiframe_host_common kamiframe_screen_port
                 kamiframe_lua_port kamiframe_pet_port kamiframe_options)
+    if(KF_ENABLE_LVGL)
+        target_link_libraries(kamiframe-headless PRIVATE kamiframe_lvgl_port)
+    endif()
     set_target_properties(kamiframe-headless PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -356,17 +391,24 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # directly, not the placeholder demo, and does not touch the golden
     # checksums above.
     #
+    # ADR 0045: only registered under -DKF_ENABLE_LVGL=ON (default OFF) --
+    # run_lvgl_check() and kamiframe_lvgl_port itself do not exist in the
+    # default build's binary at all, so registering this test unconditionally
+    # would be a link failure, not a skip.
+    #
     # KAMIFRAME_LVGL_GOLDEN_CHECKSUM: an FNV-1a hash of the framebuffer after
     # the proof screen has rendered, using headless's synthetic per-frame
     # clock so it is host-speed-independent (the same reasoning as ADR 0011).
     # If this fails because the proof screen deliberately changed, run
     # `kamiframe-headless --verify-lvgl`, take the checksum it prints, and
     # update the value here in the same commit.
-    set(KAMIFRAME_LVGL_GOLDEN_CHECKSUM "70c00d13cdfb6d97")
+    if(KF_ENABLE_LVGL)
+        set(KAMIFRAME_LVGL_GOLDEN_CHECKSUM "70c00d13cdfb6d97")
 
-    add_test(NAME lvgl_determinism_check
-             COMMAND kamiframe-headless --verify-lvgl
-                     --expect-checksum ${KAMIFRAME_LVGL_GOLDEN_CHECKSUM})
+        add_test(NAME lvgl_determinism_check
+                 COMMAND kamiframe-headless --verify-lvgl
+                         --expect-checksum ${KAMIFRAME_LVGL_GOLDEN_CHECKSUM})
+    endif()
 
     # Proves the Lua port glue -- the sandboxed VM, the arena-backed
     # allocator's free/realloc path under real churn (see
@@ -540,6 +582,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # in place) proof screen. See headless_main.cpp's run_pet_screen_check()
     # and kf_pet_screen.cpp.
     #
+    # ADR 0045: only registered under -DKF_ENABLE_LVGL=ON, same reasoning as
+    # lvgl_determinism_check above -- kf_pet_screen.cpp (kamiframe_lvgl_port)
+    # does not exist in the default build's binary. kf_pet_screen.cpp is NOT
+    # deleted by that task: it survives as this test's subject specifically
+    # so the file and this golden checksum stay available together. Deleting
+    # it and retiring this test is a real, defensible follow-up and it is
+    # Chris's call, not ADR 0045's -- CLAUDE.md names LVGL a deliberate
+    # later evaluation.
+    #
     # KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM: an FNV-1a hash of the framebuffer
     # after the pet screen has rendered a fresh pet's starting values, using
     # headless's synthetic per-frame clock so it is host-speed-independent
@@ -563,11 +614,13 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # screenshot, not assumed; see kf_pet_screen.cpp's own comment on the
     # fixed-offset replacement. Deterministic across repeated runs before
     # being locked in, same discipline as every earlier value here.
-    set(KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM "132458f0171a2c0b")
+    if(KF_ENABLE_LVGL)
+        set(KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM "132458f0171a2c0b")
 
-    add_test(NAME pet_screen_check
-             COMMAND kamiframe-headless --verify-pet-screen
-                     --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
+        add_test(NAME pet_screen_check
+                 COMMAND kamiframe-headless --verify-pet-screen
+                         --expect-checksum ${KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM})
+    endif()
 
     # Proves kf_creature_pose_for()'s precedence (dead beats sick beats a
     # held reaction beats neutral) and proves the reaction-hold window
@@ -725,7 +778,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # reseeded from the entropy HAL and a fresh pet's base_trait comes out
     # identical run to run, the same fixed-default-seed determinism every
     # other kf_rng consumer in a headless-bypass path already relies on.
-    set(KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM "ac44bb9819809bea")
+    #
+    # Updated again with ADR 0045 (Task 2 of docs/superpowers/plans/
+    # 2026-08-13-screens-clock-sleep.md): Info is now the same blitter that
+    # draws the creature, not LVGL -- different font, different pixel
+    # layout, uppercase text throughout (the bitmap font has no lowercase;
+    # LVGL's did). Both a before-and-after PNG and the reasoning for every
+    # re-baselined golden constant this project has ever moved live in
+    # docs/architecture/adr-0045-info-screen-in-lua.md -- this is the ONLY
+    # circumstance in which this project re-baselines one.
+    set(KAMIFRAME_SCREEN_NAV_GOLDEN_CHECKSUM "ca97615c1cd56b73")
 
     add_test(NAME screen_nav_check
              COMMAND kamiframe-headless --verify-screen-nav

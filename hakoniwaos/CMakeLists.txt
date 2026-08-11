@@ -27,6 +27,21 @@ if(ESP_PLATFORM)
         $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++17>
     )
 
+    # KF_ENABLE_LVGL (ADR 0045, Task 2 of docs/superpowers/plans/2026-08-13-
+    # screens-clock-sleep.md): set as a plain CACHE variable at the top of
+    # ../ports/esp32/CMakeLists.txt, same pattern as KF_HOME_SCREEN there.
+    # PUBLIC, not PRIVATE: kf/arena.h's KF_ARENA_LVGL enum entry and kf/
+    # budget.h's KF_ARENA_LVGL_BYTES are both #ifdef'd on this macro, and
+    # every component that REQUIRES hakoniwaos (main, kamiframe_lvgl_port
+    # when it exists) needs to see the SAME value hakoniwaos itself was
+    # compiled with, or the enum's layout -- and therefore KF_ARENA_COUNT --
+    # would disagree between translation units compiled against the same
+    # header. This is the one place that value has to be set for the whole
+    # ESP32 build; nothing downstream re-declares it.
+    if(KF_ENABLE_LVGL)
+        target_compile_definitions(${COMPONENT_LIB} PUBLIC KF_ENABLE_LVGL=1)
+    endif()
+
 else()
 
     add_library(hakoniwaos STATIC ${HAKONIWAOS_SRCS})

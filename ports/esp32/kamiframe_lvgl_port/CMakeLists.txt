@@ -44,6 +44,18 @@
 set(KAMIFRAME_LVGL_PORT_SRC_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../../../simulator/src/lvgl")
 
+## ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
+## sleep.md): kf_pet_info_screen.cpp is deleted (Info moved to a
+## kf.screen() group over the retained scene) and kf_screen_nav.cpp/
+## kf_lua_home_screen.cpp/kf_error_banner.cpp moved OUT of this component
+## entirely, into ../main/CMakeLists.txt's own SRCS (compiled straight from
+## simulator/src/pet/, the same one-canonical-copy-by-relative-path pattern
+## kf_pet_session.cpp already used there) -- none of the three ever had an
+## LVGL dependency of its own; they only lived here because kf_screen_
+## nav.cpp used to #include <lvgl.h>. This component -- and therefore this
+## whole directory's CMakeLists.txt -- now only exists at all when built
+## with -DKF_ENABLE_LVGL=ON (../CMakeLists.txt only adds this directory to
+## EXTRA_COMPONENT_DIRS in that case; see that file's own comment).
 idf_component_register(
     SRCS
         "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_lvgl_pool.cpp"
@@ -52,42 +64,21 @@ idf_component_register(
         "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_lvgl_input.cpp"
         "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_lvgl_port.cpp"
         "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_pet_screen.cpp"
-        "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_pet_info_screen.cpp"
-        "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_screen_nav.cpp"
-        "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_lua_home_screen.cpp"
-        "${KAMIFRAME_LVGL_PORT_SRC_DIR}/kf_error_banner.cpp"
     INCLUDE_DIRS "${KAMIFRAME_LVGL_PORT_SRC_DIR}"
     REQUIRES hakoniwaos
 )
 
-## KF_HOME_SCREEN_LUA (Task 5 of the Lua game-layer plan): kf_screen_nav.cpp
-## 's own #ifdef choice of which Home implementation to wire up. Set from
-## the KF_HOME_SCREEN cache variable ../../CMakeLists.txt defines at the
-## top of the whole project, ahead of EXTRA_COMPONENT_DIRS, so it is
-## already set by the time this file runs regardless of component
-## processing order. kf_lua_home_screen.cpp/kf_error_banner.cpp above are
-## always compiled into this component either way -- same reasoning as the
-## desktop build's kamiframe_lvgl_port library in simulator/CMakeLists.txt:
-## nothing here calls kf_lua_port_frame()/kf_scene_commit()/etc unless
-## kf_screen_nav.cpp's own #ifdef branch wires kf_lua_home_screen_frame()
-## in as Home's update function, which only happens when this define is
-## set -- but the SYMBOLS being present regardless costs nothing and keeps
-## this component's shape identical between the two KF_HOME_SCREEN values.
-if(KF_HOME_SCREEN STREQUAL "lua")
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_HOME_SCREEN_LUA=1)
-endif()
-
 ## No REQUIRES/PRIV_REQUIRES on `main` above, and that absence is considered,
-## not missed: kf_pet_screen.cpp / kf_pet_info_screen.cpp / kf_screen_nav.cpp
-## #include "../pet/kf_pet_session.h" by relative path, which the compiler
-## resolves against each file's own real location (simulator/src/lvgl/) with
-## no include-dir help needed -- but that header's DEFINITIONS live in
-## kf_pet_session.cpp, compiled straight into ../main (see that file's own
-## comment on why). Requiring main back from here would be circular (main
-## already REQUIRES this component, to reach kf_lvgl_port_init()/kf_screen_
-## nav_init()); nothing in this component needs to compile against main's
-## headers, only to have main's symbols present at final link time, which
-## ESP-IDF's ordinary component link order already guarantees.
+## not missed: kf_pet_screen.cpp #include "../pet/kf_pet_session.h" by
+## relative path, which the compiler resolves against its own real location
+## (simulator/src/lvgl/) with no include-dir help needed -- but that
+## header's DEFINITIONS live in kf_pet_session.cpp, compiled straight into
+## ../main (see that file's own comment on why). Requiring main back from
+## here would be circular (main already REQUIRES this component, under
+## -DKF_ENABLE_LVGL=ON, to reach kf_lvgl_port_init()); nothing in this
+## component needs to compile against main's headers, only to have main's
+## symbols present at final link time, which ESP-IDF's ordinary component
+## link order already guarantees.
 
 # Now safe to include fetch_lvgl.cmake at all: idf_component_register()
 # above already return()'d out of the requirements-scan pass before reaching

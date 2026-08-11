@@ -21,12 +21,14 @@
 #include "sdl_debug_window.h"
 #include "sdl_shared.h"
 
+#ifdef KF_ENABLE_LVGL
 #include "../lvgl/kf_lvgl_port.h"
-#include "../lvgl/kf_screen_nav.h"
+#endif
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
 #include "../../../sdk/lua/kf_lua_port.h"
 #include "../../../sdk/lua/kf_lua_scene.h"
 #include "../pet/kf_pet_session.h"
+#include "../pet/kf_screen_nav.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -149,16 +151,16 @@ int main(int argc, char *argv[]) {
      * this is now doing for real. */
     kf_pet_session_init();
 
-    /* LVGL comes up next (its memory pool comes from KF_ARENA_LVGL, carved
-     * out by kf_app_init()'s kf_arena_init_all(); its display bridge
-     * writes into the framebuffer kf_app_init()'s kf_fb_init() creates),
-     * then every screen this build has (kf_screen_nav.cpp, ADR 0022) --
-     * Home is the first real menu screen kf_lvgl_proof_screen.h's own
-     * header comment named as the reason to delete it (still not deleted;
-     * see ADR 0017's "Decision" for why the proof screen itself stays,
-     * even though nothing here calls kf_lvgl_proof_screen_init() any
-     * more). */
+    /* LVGL, only under -DKF_ENABLE_LVGL=ON (ADR 0045 -- Info moved to a
+     * kf.screen() group over the retained scene, so nothing in a running
+     * build needs LVGL any more; the option exists to keep the code and
+     * its 256 KB arena available for the LVGL-vs-custom-engine evaluation
+     * CLAUDE.md names as deliberately deferred, not decided). Then every
+     * screen this build has (kf_screen_nav.cpp, ADR 0022/0044) -- Home's
+     * init function needs the pet session ready, same as always. */
+#ifdef KF_ENABLE_LVGL
     kf_lvgl_port_init();
+#endif
     kf_screen_nav_init();
 
     /* Lua comes up last of the four, same "after everything it depends
@@ -213,38 +215,35 @@ int main(int argc, char *argv[]) {
         last_frame_us = now_us;
         const uint32_t multiplier = kf_sdl_debug_window_time_multiplier();
 
-        /* kf_pet_session_frame() and kf_screen_nav_frame() both run
-         * BEFORE kf_lvgl_port_pump(): the session needs to have applied
-         * this frame's elapsed time before the active screen reads it,
-         * and the screen needs to have pushed that into its widgets (or,
-         * for the creature screen, drawn it) before pump's lv_timer_
-         * handler() call redraws and flushes -- otherwise an LVGL screen
-         * would always be showing last frame's numbers, one frame behind.
-         * A button press this frame is handled INSIDE pump (LVGL processes
-         * input during lv_timer_handler()), so its effect shows up
-         * starting next frame's update -- one frame of input lag,
-         * imperceptible at this frame rate. kf_screen_nav_frame() itself
-         * reads MENU/B straight from kf_app_buttons_pressed() (ADR 0022),
-         * which kf_app_frame() -- the while-condition above -- has already
-         * refreshed for this frame by the time we get here, so a screen
-         * switch this frame is NOT subject to that same one-frame lag.
+        /* kf_pet_session_frame() and kf_screen_nav_frame() both run before
+         * kf_lvgl_port_pump(): the session needs to have applied this
+         * frame's elapsed time before the active screen reads it. Under
+         * -DKF_ENABLE_LVGL=ON this also keeps a still-LVGL screen from
+         * showing last frame's numbers one frame behind, the reason the
+         * pump call used to be conditional on which screen was active
+         * (kf_screen_nav_wants_lvgl(), removed with ADR 0045 -- every
+         * screen this build can show is a kf.screen() group now, so LVGL,
+         * when built in at all, has nothing left to pump for). A button
+         * press this frame is handled INSIDE pump (LVGL processes input
+         * during lv_timer_handler()), so its effect shows up starting next
+         * frame's update -- one frame of input lag, imperceptible at this
+         * frame rate. kf_screen_nav_frame() itself reads MENU/B straight
+         * from kf_app_buttons_pressed() (ADR 0022), which kf_app_frame()
+         * -- the while-condition above -- has already refreshed for this
+         * frame by the time we get here, so a screen switch this frame is
+         * NOT subject to that same one-frame lag.
          *
          * kf_screen_nav_frame() gets the real, un-multiplied elapsed time
          * -- the creature's wander is presentation, not pet decay, so it
          * stays real-time exactly the way LVGL's own tick and Lua's frame
          * delta already do (see this function's header comment on why the
-         * multiplier applies only to the pet session). kf_lvgl_port_pump()
-         * is guarded by kf_screen_nav_wants_lvgl(): calling it while the
-         * creature screen is active would run lv_timer_handler() over an
-         * LVGL widget tree nothing is looking at, for no benefit -- see
-         * kf_screen_nav.h's own comment on that predicate for the actual
-         * hazard, not just the waste. */
+         * multiplier applies only to the pet session). */
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_sdl_debug_window_frame();
         kf_screen_nav_frame(real_dt_ms);
-        if (kf_screen_nav_wants_lvgl()) {
-            kf_lvgl_port_pump(0);
-        }
+#ifdef KF_ENABLE_LVGL
+        kf_lvgl_port_pump(0);
+#endif
         kf_lua_port_frame(0);
         /* kf_scene_commit() belongs to the frame loop, not the Lua binding
          * (Task 3 of docs/superpowers/plans/2026-08-12-lua-game-layer.md)
@@ -276,7 +275,9 @@ int main(int argc, char *argv[]) {
 
     kf_sdl_debug_window_shutdown();
     kf_lua_port_shutdown();
+#ifdef KF_ENABLE_LVGL
     kf_lvgl_port_shutdown();
+#endif
     kf_pet_session_shutdown();
     kf_app_shutdown();
     return 0;

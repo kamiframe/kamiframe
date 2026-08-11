@@ -6,8 +6,8 @@
 
 #include "sdl_shared.h"
 
-#include "../lvgl/kf_screen_nav.h"
 #include "../pet/kf_pet_session.h"
+#include "../pet/kf_screen_nav.h"
 
 #include "kf/app.h"
 #include "kf/arena.h"
@@ -647,16 +647,23 @@ void draw_engine_diagnostics(void) {
     SDL_RenderDebugText(g.renderer, kRightColumnX, y, line);
     y += kLineHeight * 1.5f;
 
-    /* All five arenas, unlike the on-device HUD's four (kf/app.cpp's
-     * draw_hud() predates KF_ARENA_LVGL -- see kf/arena.h) -- nothing
-     * about this column is squeezed for space the way the real HUD is, so
-     * there is no reason to leave one out. */
+    /* Every arena this build actually carves -- four by default, matching
+     * the on-device HUD's own four (kf/app.cpp's draw_hud()); a fifth
+     * (lvgl) appears only when built with -DKF_ENABLE_LVGL=ON (ADR 0045 --
+     * KF_ARENA_LVGL itself does not exist in kf/arena.h's enum otherwise).
+     * Nothing about this column is squeezed for space the way the real HUD
+     * is, so there is no reason to leave one out when it exists. */
     SDL_RenderDebugText(g.renderer, kRightColumnX, y, "-- arenas (hi/cap KB) --");
     y += kLineHeight;
 
+#ifdef KF_ENABLE_LVGL
     constexpr kf_arena_id kArenas[] = {KF_ARENA_FRAMEBUFFER, KF_ARENA_SCRATCH,
                                        KF_ARENA_LUA, KF_ARENA_ASSETS,
                                        KF_ARENA_LVGL};
+#else
+    constexpr kf_arena_id kArenas[] = {KF_ARENA_FRAMEBUFFER, KF_ARENA_SCRATCH,
+                                       KF_ARENA_LUA, KF_ARENA_ASSETS};
+#endif
     for (kf_arena_id arena : kArenas) {
         const kf_arena_stats *s = kf_arena_get_stats(arena);
         std::snprintf(line, sizeof(line), "%-11s %u/%uK", s->name,

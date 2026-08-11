@@ -6,14 +6,13 @@
 
 #include "kf_lua_home_screen.h"
 
+#include "kf_creature_presenter.h"
 #include "kf_error_banner.h"
+#include "kf_home_screen_input.h"
+#include "kf_pet_session.h"
 
-#include "../pet/kf_creature_presenter.h"
-#include "../pet/kf_home_screen_input.h"
-#include "../pet/kf_pet_session.h"
-
-#include "../../sdk/lua/kf_lua_port.h"
-#include "../../sdk/lua/kf_lua_scene.h"
+#include "kf_lua_port.h"
+#include "kf_lua_scene.h"
 
 #include "kf/app.h"
 #include "kf/scene.h"
@@ -62,7 +61,7 @@ void kf_lua_home_screen_enter(void) {
      *
      * Commits IMMEDIATELY, not on the next per-frame kf_lua_home_screen_
      * frame() call: kf_creature_screen_enter() (the cpp path this mirrors)
-     * repaints synchronously too, inside kf_screen_nav.cpp's load(), so a
+     * repaints synchronously too, inside kf_screen_nav.cpp's show(), so a
      * caller that inspects the panel right after switching screens --
      * screen_nav_check does exactly this -- sees the repaint on either
      * build. Guarded the same way kf_lua_home_screen_frame() guards its
@@ -108,6 +107,24 @@ void kf_lua_home_screen_frame(uint32_t dt_ms) {
      * SCREEN=lua always declares a background at its own top level -- but
      * the guard stays because this file must not assume that of every
      * future script. */
+    if (kf_lua_scene_declared_anything()) {
+        kf_scene_commit();
+    }
+}
+
+void kf_lua_info_screen_frame(uint32_t dt_ms) {
+    /* No buttons, no presenter to advance -- Info has neither.
+     * kf_lua_port_info_frame(), NOT kf_lua_port_frame(): see that
+     * function's own header comment in kf_lua_port.h for why calling the
+     * shared on_frame() from here is the one thing this must NOT do (it
+     * mutates Home's own scene objects unconditionally, which un-hides
+     * them on top of Info). on_info_frame() is what pushes fresh pet.*
+     * values into Info's own kf.screen("info") text objects, declared in
+     * creature.lua. Same error banner every screen shares, and the same
+     * commit -- see this file's own header comment on why Info needs a
+     * registered update at all. */
+    kf_lua_port_info_frame(dt_ms);
+    kf_error_banner_update(g_error_banner_id);
     if (kf_lua_scene_declared_anything()) {
         kf_scene_commit();
     }

@@ -17,7 +17,17 @@
  * live entirely in creature.lua, which is the point of this whole task --
  * this file's job is only to call the Lua VM at the right moment with the
  * right buttons already applied, the same role kf_creature_screen.cpp's
- * kf_creature_screen_frame() plays for the C++ path. */
+ * kf_creature_screen_frame() plays for the C++ path.
+ *
+ * ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md) added kf_lua_info_screen_frame() below, the same idea applied
+ * to Info: no buttons, no presenter, just the shared VM's on_frame() and
+ * the error banner, registered as Info's own per-frame update
+ * (kf_screen_nav.cpp) so its text objects keep refreshing while it is the
+ * active screen. This file also moved out of simulator/src/lvgl/ that
+ * same task, alongside kf_screen_nav.cpp and kf_error_banner.cpp: none of
+ * the three has ever had an LVGL dependency of its own -- see ADR 0045
+ * for the full reasoning. */
 
 #ifndef KF_LUA_HOME_SCREEN_H
 #define KF_LUA_HOME_SCREEN_H
@@ -36,7 +46,7 @@
 void kf_lua_home_screen_init(void);
 
 /* Call every time navigation switches BACK to Home under KF_HOME_SCREEN=lua
- * (kf_screen_nav.cpp's load(), the "index == 0" branch) -- the counterpart
+ * (kf_screen_nav.cpp's show(), the "index == 0" branch) -- the counterpart
  * to kf_creature_screen_enter() for a screen that does not re-declare its
  * objects on every visit. creature.lua's kf.sprite()/kf.text()/kf.box()
  * calls ran once, at script load, and the ids they returned are still held
@@ -44,10 +54,12 @@ void kf_lua_home_screen_init(void);
  * invalidate every one of them. kf_scene_force_repaint() (kf/scene.h,
  * Task 6 of the Lua game-layer plan) is the primitive that exists
  * specifically so this call can force the whole panel to repaint -- which
- * is what stops Info's LVGL pixels from showing through rows this scene's
- * own diff would otherwise consider unchanged -- without touching a
- * single object's identity. See docs/architecture/adr-0043-lua-home-
- * default.md and ADR 0042's "Known gap" section, which this closes. */
+ * is what stops whatever screen was showing before Home (Info's own
+ * kf.screen() group, since ADR 0045, or an LVGL screen under
+ * -DKF_ENABLE_LVGL=ON) from leaving pixels behind in rows this scene's own
+ * diff would otherwise consider unchanged -- without touching a single
+ * object's identity. See docs/architecture/adr-0043-lua-home-default.md
+ * and ADR 0042's "Known gap" section, which this closes. */
 void kf_lua_home_screen_enter(void);
 
 /* One frame: reads the hardware care buttons (kf_home_screen_input.h),
@@ -58,5 +70,12 @@ void kf_lua_home_screen_enter(void);
  * this is the active screen -- the exact role kf_creature_screen_frame()
  * plays for the C++ path, same signature, same per-frame contract. */
 void kf_lua_home_screen_frame(uint32_t dt_ms);
+
+/* Info's own per-frame contract -- same shape, no buttons or presenter to
+ * advance. Registered by kf_screen_nav_init() as "info"'s update callback,
+ * unconditionally (unlike kf_lua_home_screen_frame() above, this is not
+ * behind KF_HOME_SCREEN_LUA: Info does not care which build owns Home).
+ * See this header's own top comment. */
+void kf_lua_info_screen_frame(uint32_t dt_ms);
 
 #endif /* KF_LUA_HOME_SCREEN_H */
