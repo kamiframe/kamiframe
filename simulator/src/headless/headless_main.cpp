@@ -4615,6 +4615,24 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     kf_lvgl_port_init();
     kf_screen_nav_init();
 
+#ifdef KF_HOME_SCREEN_LUA
+    /* Same order sdl_main.cpp/app_main.cpp use for the real interactive
+     * app: kf_screen_nav_init() (which creates the error banner and flips
+     * kf.home_screen_active() -- kf_lua_home_screen_init()) runs BEFORE
+     * kf_lua_port_init() loads and runs creature.lua's own top-level code,
+     * which is what actually declares the background and every other Home
+     * object this check's own row-280 assertion, below, depends on. Without
+     * this call the Lua VM never starts under this build and the scene
+     * stays whatever kf_screen_nav_init() alone leaves it at (background
+     * still KF_BLACK, per kf_scene_reset()'s own default) -- exactly the
+     * gap that made this check fail for the wrong reason (no script loaded,
+     * not the repaint bug this check exists to catch) before this line was
+     * added. */
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
     check(kf_screen_nav_debug_index() == 0,
           "Home is active immediately after kf_screen_nav_init()");
 
@@ -4720,6 +4738,9 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     check(kf_screen_nav_debug_index() == 0,
           "kf_screen_nav_debug_home() is a no-op when already on Home");
 
+#ifdef KF_HOME_SCREEN_LUA
+    kf_lua_port_shutdown();
+#endif
     kf_lvgl_port_shutdown();
     kf_pet_session_shutdown();
     kf_power_shutdown();
@@ -5997,13 +6018,69 @@ static int run_scene_check(void) {
           "a text object that never calls kf_scene_set_colors() paints white "
           "on black, the same as kf_text_draw(..., KF_WHITE, KF_BLACK)");
 
+    /* ---- 6. kf_scene_force_repaint(): a full repaint that keeps every
+     * object's identity -- the capability Task 5 found missing and Task 6
+     * of the Lua game-layer plan adds (kf/scene.h, ADR 0043). Models
+     * exactly the scenario that motivates it: a screen's objects are
+     * still declared and unchanged, but something ELSE (an LVGL screen,
+     * in the real bug) has since drawn over the panel, so the object's
+     * last-known-presented state is now a lie the ordinary diff cannot
+     * see. ---- */
+    kf_scene_reset();
+    const kf_scene_id repaint_box = kf_scene_add_box(20, 20, KF_RGB(0, 200, 0));
+    kf_scene_set_pos(repaint_box, 50, 50);
+    kf_scene_commit(); /* establishes presented state: a green box at (50,50) */
+    kf_fb_clear_dirty();
+
+    /* Simulate "another screen painted over this" -- bypass the scene
+     * entirely, exactly as LVGL's own flush would. */
+    kf_fill_rect(kf_rect{0, 0, static_cast<int16_t>(KF_DISPLAY_WIDTH),
+                          static_cast<int16_t>(KF_DISPLAY_HEIGHT)},
+                 KF_RGB(80, 80, 80));
+    const kf_color *px = kf_fb_pixels();
+    check(px[static_cast<size_t>(60) * KF_DISPLAY_WIDTH + 60u] ==
+              KF_RGB(80, 80, 80),
+          "setup: the simulated other-screen fill actually overwrote the "
+          "box's area");
+
+    /* Anti-vacuity, checked FIRST: an ordinary commit with nothing
+     * declared as changed must NOT repaint on its own -- otherwise the
+     * force_repaint() call below could not be shown to be doing anything
+     * that would not have happened anyway. */
+    kf_scene_commit();
+    check(kf_fb_pixels()[static_cast<size_t>(60) * KF_DISPLAY_WIDTH + 60u] ==
+              KF_RGB(80, 80, 80),
+          "an ordinary commit with no declared change leaves the other "
+          "screen's pixels alone -- proves the repaint below is doing "
+          "real work, not riding a diff that would have fired anyway");
+
+    kf_scene_force_repaint();
+    kf_scene_commit();
+    check(kf_fb_pixels()[static_cast<size_t>(60) * KF_DISPLAY_WIDTH + 60u] ==
+              KF_RGB(0, 200, 0),
+          "kf_scene_force_repaint() repaints the box's area even though "
+          "nothing about the box itself changed");
+
+    /* Object identity survives: the SAME id, never re-added, still moves
+     * the SAME object -- the property kf_scene_reset() cannot offer,
+     * because a reset invalidates every id kf_scene_reset()'s own header
+     * comment. */
+    kf_scene_set_pos(repaint_box, 100, 100);
+    kf_scene_commit();
+    const kf_rect moved_bounds = kf_scene_bounds(repaint_box);
+    check(moved_bounds.x0 == 100 && moved_bounds.y0 == 100,
+          "the object force_repaint() was called on keeps its id and "
+          "keeps responding to ordinary setters afterward");
+
     kf_scene_reset();
     kf_assets_shutdown();
     kf_host_assets_set_pack_path(nullptr);
 
     if (ok) {
         KF_LOGI(TAG, "scene: differ proved against a hand-drawn reference, "
-                      "coalescer beats the framebuffer's own fallback");
+                      "coalescer beats the framebuffer's own fallback, "
+                      "force_repaint() proved against a simulated other-"
+                      "screen overwrite");
     }
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

@@ -35,6 +35,21 @@
  * creature_screen_init()'s own role for the C++ path. */
 void kf_lua_home_screen_init(void);
 
+/* Call every time navigation switches BACK to Home under KF_HOME_SCREEN=lua
+ * (kf_screen_nav.cpp's load(), the "index == 0" branch) -- the counterpart
+ * to kf_creature_screen_enter() for a screen that does not re-declare its
+ * objects on every visit. creature.lua's kf.sprite()/kf.text()/kf.box()
+ * calls ran once, at script load, and the ids they returned are still held
+ * by the script for the life of the process; kf_scene_reset() would
+ * invalidate every one of them. kf_scene_force_repaint() (kf/scene.h,
+ * Task 6 of the Lua game-layer plan) is the primitive that exists
+ * specifically so this call can force the whole panel to repaint -- which
+ * is what stops Info's LVGL pixels from showing through rows this scene's
+ * own diff would otherwise consider unchanged -- without touching a
+ * single object's identity. See docs/architecture/adr-0043-lua-home-
+ * default.md and ADR 0042's "Known gap" section, which this closes. */
+void kf_lua_home_screen_enter(void);
+
 /* One frame: reads the hardware care buttons (kf_home_screen_input.h),
  * advances the shared creature presenter (inside kf_lua_port_frame() --
  * see that function's own Task 5 comment), runs on_frame, updates the

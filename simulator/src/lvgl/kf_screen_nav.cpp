@@ -52,22 +52,19 @@ void load(size_t index) {
     g_active = index;
     if (g_screens[index].root == nullptr) {
 #ifdef KF_HOME_SCREEN_LUA
-        /* KNOWN GAP (Task 5 of the Lua game-layer plan, not fixed here):
-         * under KF_HOME_SCREEN=lua there is no equivalent of kf_creature_
-         * screen_enter()'s forced full-panel repaint on re-entry, because
-         * kf/scene.h has no way to force one WITHOUT kf_scene_reset() also
-         * destroying every scene id creature.lua's top-level code created
-         * and is still holding onto -- there is no "repaint everything,
-         * but keep my objects" primitive. A Home -> Info -> Home cycle
-         * under this build can therefore leave Info's last LVGL pixels
-         * showing in any row the Lua scene's own diff considers
-         * unchanged, the exact black-trail shape ADR 0017 already fixed
-         * once for a different cause. Left for Task 7 ("Input and
-         * navigation are the game's"), which is where kf.screen()/
-         * screen:show() -- the real fix -- belongs. Does not affect the
-         * parity check (headless_main.cpp's run_lua_vs_cpp_screen_check()
-         * never touches Info) or a fresh boot (Home is active from process
-         * start, before anything else has painted a pixel). */
+        /* Switching TO Home under KF_HOME_SCREEN=lua: the same black-trail
+         * problem the #else branch below solves for the cpp screen (Info's
+         * last LVGL pixels would otherwise sit in every row this scene's
+         * own diff considers unchanged), fixed WITHOUT tearing the scene
+         * down -- creature.lua declared its objects once, at script load,
+         * and holds their ids for the life of the process; kf_scene_
+         * reset() would invalidate all of them. kf_scene_force_repaint()
+         * (kf/scene.h, Task 6 of the Lua game-layer plan) is exactly this:
+         * the next kf_scene_commit() repaints the whole panel, every
+         * object keeps its id. Closes the gap Task 5 found and documented
+         * here rather than patched -- confirmed by screen_nav_check
+         * failing at exactly this line's absence -- see ADR 0043. */
+        kf_lua_home_screen_enter();
 #else
         /* Switching TO a screen that owns the framebuffer directly (Home):
          * it must repaint the whole panel in full right now, or it

@@ -523,6 +523,18 @@ void kf_scene_reset(void) {
     /* g_next_id is deliberately untouched -- see its own comment. */
 }
 
+void kf_scene_force_repaint(void) {
+    /* Literally the same flag kf_scene_reset() sets -- the only difference
+     * from a reset is everything this function deliberately does NOT do:
+     * no g_objects wipe, no g_bg_declared/g_bg_presented reset, no
+     * g_candidate_count reset (there is nothing pending to discard; the
+     * next commit rebuilds its candidate list from scratch regardless, per
+     * the g_force_full_redraw branch already in kf_scene_commit()). One
+     * object, one flag -- see kf/scene.h's own comment for the case this
+     * exists for. */
+    g_force_full_redraw = true;
+}
+
 void kf_scene_set_background_color(kf_color c) {
     g_bg_declared.kind = BgKind::kColor;
     g_bg_declared.color = c;

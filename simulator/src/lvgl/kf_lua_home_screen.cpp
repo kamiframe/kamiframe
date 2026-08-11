@@ -48,6 +48,32 @@ void kf_lua_home_screen_init(void) {
     kf_creature_presenter_advance(kf_pet_session_state(), 0);
 }
 
+void kf_lua_home_screen_enter(void) {
+    /* No re-declaration, unlike kf_creature_screen_enter(): creature.lua's
+     * objects were declared once, at script load, and this call's whole
+     * job is to make sure they get repainted without disturbing any of
+     * them -- see this function's own header comment and kf/scene.h's
+     * kf_scene_force_repaint(). Nothing about the creature's own scene
+     * object changes here, so -- unlike the cpp path's matching call to
+     * kf_creature_presenter_force_anim_restart() on re-entry -- there is
+     * no animation cursor to reset: it is the SAME object, mid-cycle
+     * exactly where it was, not a freshly recreated one that needs to be
+     * told its own history does not apply.
+     *
+     * Commits IMMEDIATELY, not on the next per-frame kf_lua_home_screen_
+     * frame() call: kf_creature_screen_enter() (the cpp path this mirrors)
+     * repaints synchronously too, inside kf_screen_nav.cpp's load(), so a
+     * caller that inspects the panel right after switching screens --
+     * screen_nav_check does exactly this -- sees the repaint on either
+     * build. Guarded the same way kf_lua_home_screen_frame() guards its
+     * own commit: a script that never declared anything must not force a
+     * commit against a scene with nothing in it. */
+    kf_scene_force_repaint();
+    if (kf_lua_scene_declared_anything()) {
+        kf_scene_commit();
+    }
+}
+
 void kf_lua_home_screen_frame(uint32_t dt_ms) {
     const kf_pet_state *pet = kf_pet_session_state();
     kf_home_screen_handle_care_buttons(pet, kf_app_buttons_pressed());

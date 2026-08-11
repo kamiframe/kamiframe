@@ -101,6 +101,24 @@ typedef uint16_t kf_scene_id;
  * object now happens to reuse its old storage slot. */
 void kf_scene_reset(void);
 
+/* Forces the NEXT kf_scene_commit() to repaint the whole screen
+ * unconditionally, WITHOUT discarding a single object or its id -- the
+ * gap kf_scene_reset() above cannot fill for a screen that declares its
+ * objects once and holds their handles for the life of the process rather
+ * than redeclaring them on every entry (a Lua script's top-level code,
+ * unlike kf_creature_screen_enter()'s own re-declare-from-scratch style).
+ * A screen with more than one panel hits this the moment something ELSE
+ * has drawn to the framebuffer since this screen was last active -- an
+ * LVGL screen, another retained scene -- because this screen's own diff
+ * still believes its unchanged objects are exactly what is on the panel,
+ * when in fact whatever the other screen last painted is. Call this once,
+ * on becoming active again, before the next kf_scene_commit(); everything
+ * declared before this call keeps its id, position and every other field
+ * exactly as it was. See docs/architecture/adr-0043-lua-home-default.md
+ * for the gap this closed (ADR 0042's "Known gap: Home re-entry under
+ * KF_HOME_SCREEN=lua") and why a full teardown was the wrong fix for it. */
+void kf_scene_force_repaint(void);
+
 /* The scene's base layer -- what shows through where nothing else is drawn.
  * Exactly one of colour or sprite is active; the one set most recently
  * wins. Defaults to KF_BLACK on kf_scene_reset() so a scene with nothing
