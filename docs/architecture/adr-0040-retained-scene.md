@@ -234,6 +234,50 @@ reason a developer using this API could see or reproduce from their own
 script. Sorting by `(layer, id)` guarantees the same two objects always paint
 in the same relative order for as long as both exist.
 
+### Superseded in part
+
+The coalescing rule above ("While the candidate count exceeds
+`KF_MAX_DIRTY_RECTS`, it repeatedly merges the pair whose union costs the
+least") describes only the MANDATORY half of the rule as it exists today.
+Task 4 of the Lua game-layer plan rebuilt `kf_creature_screen.cpp` on this
+module and, to stay under this task's own measured 5-rectangle bound
+(this ADR's "Context" section), collapsed the mess from eight individually
+declared poop objects to one growing/shrinking box — visually one solid
+patch instead of eight discrete items. The project owner rejected that: mess
+should look like individual items, with the frame budget kept healthy some
+other way.
+
+The real problem was not that eight objects cost too much — it was that the
+coalescer above only ever merged once `KF_MAX_DIRTY_RECTS` forced it to,
+never merely because a merge was cheap. A frame where the mess band changes
+alongside the creature and the stat bars never got anywhere near the
+8-candidate cap on its own, so the up to eight raw candidates a set of
+individually-toggled poops produce in the same 12px-tall strip sat there
+unmerged. `hakoniwaos/src/scene.cpp`'s coalescing loop in `kf_scene_commit()`
+now also merges the globally cheapest available pair whenever that pair
+costs under `kCheapMergeAreaPx` (1,024 pixels / 2,048 bytes), regardless of
+whether the candidate count is anywhere near the cap. Because `poop_count`
+only ever grows or shrinks a contiguous run of slots, whatever subset of
+poops changes in one frame is always adjacent in that strip, and merging
+adjacent 12x12 neighbours in it costs a constant ~216px per step — nowhere
+near genuinely distant regions of the same screen (the same strip merged
+with the stats band nine rows below costs over 4,000px) — so the whole
+changed run collapses to one dirty rectangle without ever bridging unrelated
+parts of the screen. `kf_creature_screen.cpp` now declares
+`KF_PET_MAX_POOPS` individual poop objects again; see the block comment
+above its `kCheapMergeAreaPx`-adjacent poop code
+(`hakoniwaos/src/scene.cpp`) for the full arithmetic.
+
+This also moved check 4's own measured numbers, "The proof" section below:
+twelve objects spread so none of their own moves touch or overlap for free
+now also picks up some of these opportunistic merges (their own erase/redraw
+pairs, and near neighbours within the same row, are cheap enough to qualify)
+and settles at **3** dirty rectangles, 13,200 of 153,600 bytes — still well
+under `KF_MAX_DIRTY_RECTS` and well under a quarter of the framebuffer,
+which is all that check ever asserted; the 8-rectangle/11,200-byte figure
+recorded below was simply what the mandatory-only rule happened to produce
+against that particular layout, not a claim the check pins in place.
+
 ### `kf_scene_reset()` forces a full repaint, on purpose
 
 A reset discards every declared object and the background, and sets a flag
