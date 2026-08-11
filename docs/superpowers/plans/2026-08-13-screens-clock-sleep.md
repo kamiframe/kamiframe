@@ -215,7 +215,12 @@ comments tight; long reasoning goes in the C++ binding or an ADR.
 settled this: *"Local time is set once in the device's global settings and
 every creature on it shares that. Core carries a UTC offset from config, and
 nothing per-egg."* That is why the clock lives on a **global Settings screen**
-and its offset goes in its **own storage key**, not in the pet save.
+and, once Task 4 persists it, in its **own storage key**, not in the pet save
+— the "device setting, not per-creature" half of this still holds exactly as
+written. The "UTC offset from config" half is superseded: see "Timezone:
+settled by Chris" below, which the spec predates. There is no offset — the
+RTC holds local time directly, and what Task 4 persists is that local time
+(or, on desktop, its equivalent), not an offset applied to something else.
 
 ---
 
@@ -463,7 +468,7 @@ if it is on the desk.**
 |---|---|---|---|
 | 1 | **Two owners of "which screen is showing."** Lua's `screen:show()` and `kf_screen_nav.cpp`'s `load()` both switching is exactly the class of bug ADR 0042 documented and ADR 0043 fixed. | Task 1 makes `screen:show()` call *into* the registry, never around it, and its check switches screens from both sides and asserts one consistent result. | Stale pixels from the previous screen, appearing only on some transition orders. The worst kind to reproduce. |
 | 2 | **The night window is computed against a clock Core does not advance.** `last_advanced` moves only at load (finding 2). | Task 6, step 1, before any sleep logic exists. | Sleep works after a reload and never during a session, or vice versa — and the symptom looks like a sleep bug, not a clock bug. |
-| 3 | **Offline sleep needs analytic arithmetic, not a loop.** The spec says so: a fortnight offline cannot be stepped second by second, so the seconds falling inside a daily 22:00–07:00 window have to be solved as whole days plus two partials. | Task 3 builds and tests the window arithmetic **with no pet in the picture**, against hand-computed cases including DST-free month and year boundaries and a negative UTC offset. Task 6 then only has to call it. | Silently corrupted offline ageing — the feature the entire product rests on, per the spec's own words. |
+| 3 | **Offline sleep needs analytic arithmetic, not a loop.** The spec says so: a fortnight offline cannot be stepped second by second, so the seconds falling inside a daily 22:00–07:00 window have to be solved as whole days plus two partials. | Task 3 builds and tests the window arithmetic **with no pet in the picture**, against hand-computed cases including DST-free month and year boundaries. Task 6 then only has to call it. | Silently corrupted offline ageing — the feature the entire product rests on, per the spec's own words. |
 | 4 | **A power-cut test that passes for the wrong reason.** The RAM clock and the RTC agree in the good case, so a green result proves nothing unless the bad case was also run. | Task 5's negative run with the coin cell removed. | Shipping a device that forgets the time the first night a customer's cell is flat, having "verified" that it does not. |
 | 5 | **The 64-object scene ceiling.** Three screens share one table; counted at 47, but nobody has run all three at once. | Task 1's check asserts the live-object count after every screen has been declared, and fails with the number rather than with a scene-full log nobody reads. | The 65th `kf.text()` returns 0 and the Lua binding raises — at script load, so it fails loudly. Legible, but it stops the device. |
 | 6 | **A Lua script can still hang the frame loop.** No `lua_sethook`, no deadline. Named in ADR 0014 and ADR 0028; Task 9 of the Lua plan. | **Nothing in this plan.** | A frozen device needing a power cycle. Acceptable while Chris is the only author; not acceptable before third parties ship. It gets worse with every screen Lua owns, and this plan hands it two more. |
@@ -785,7 +790,12 @@ the "got right the first time" the spec demands of it.
 - Modify: `simulator/CMakeLists.txt` (register `clock_check`)
 - Create: `docs/architecture/adr-0046-core-civil-clock.md`
 
-**The API this task produces.** Names Tasks 4 and 6 both depend on:
+**The API this task produces.** Names Tasks 4 and 6 both depend on. Updated
+2026-08-13 after "Timezone: settled by Chris" below landed mid-task-3: **no
+UTC offset field.** The RTC holds local time directly — the wall clock's own
+epoch counter already means "local", because the owner dials it in by hand.
+`kf/clock.h` therefore does not carry, set, or apply any offset; it converts
+between that local epoch and a calendar date, and nothing else:
 
 ```c
 typedef struct {
@@ -797,16 +807,13 @@ typedef struct {
     uint8_t second;  /* 0..59 */
 } kf_civil;
 
-void    kf_clock_set_utc_offset_seconds(int32_t offset);
-int32_t kf_clock_utc_offset_seconds(void);
-
-void    kf_civil_from_epoch(int64_t epoch_seconds, kf_civil *out);  /* LOCAL */
-int64_t kf_epoch_from_civil(const kf_civil *in);                    /* LOCAL */
+void    kf_civil_from_epoch(int64_t epoch_seconds, kf_civil *out);
+int64_t kf_epoch_from_civil(const kf_civil *in);
 
 /* Seconds of [from, to) that fall inside the daily [start_hour, end_hour)
- * local window, where a window whose end_hour is <= start_hour wraps
- * midnight. Solved analytically -- whole days plus two partials -- never by
- * stepping. Task 6's night accounting is exactly this call. */
+ * window, where a window whose end_hour is <= start_hour wraps midnight.
+ * Solved analytically -- whole days plus two partials -- never by stepping.
+ * Task 6's night accounting is exactly this call. */
 int64_t kf_clock_seconds_in_daily_window(int64_t from, int64_t to,
                                           uint8_t start_hour, uint8_t end_hour);
 ```
@@ -820,22 +827,28 @@ on `TZ`, which is process state neither target sets and which would make the
 same epoch produce different answers on desktop and device; and it drags in
 locale machinery on a build that counts kilobytes. The integer form — days
 since the epoch to a civil date and back — is about twenty lines, is
-well-documented, and has no state at all beyond the offset this module owns.
+well-documented, and has no state of its own at all (no offset, no anything —
+this module is stateless, which is a direct consequence of the no-offset
+decision, not an unrelated simplification).
 
 Second trap, and it is the one that will actually cost time: **the window
 function must be right at the edges, and the edges are where a loop-based
 implementation and an analytic one disagree.** A `from` that is already inside
 the window; a `to` inside the same window on the same day; a span shorter than
 the window; a span of exactly one day; a span crossing a month end, a year end,
-and a leap day. And a **negative** UTC offset, because the device UTC offset
-can be negative and a `/` on a negative numerator truncates toward zero in C,
-which is the classic off-by-one-day here.
+and a leap day. And floor division on a negative numerator still matters even
+with no offset to go negative: any window whose `start_hour` shift pushes an
+early instant below zero, or any epoch before 1970 (a bogus RTC value, or a
+test), truncates toward zero rather than flooring in plain C division, which
+is the classic off-by-one-day here.
 
-Third: no DST. State it in the header as a deliberate limitation rather than
-letting someone discover it. The spec's eventual intent is that the device
-learns its zone over BLE or WiFi; a fixed offset is what the settings screen
-sets and what the pet uses, and an hour's error twice a year on a bedtime is
-not what this product is about.
+Third: no DST, and no timezone conversion of any kind — settled by Chris, see
+"Timezone: settled by Chris" below. State it in the header as a deliberate
+limitation rather than letting someone discover it: the RTC's local time is
+"what the person holding it told us", set by hand on the Settings screen
+(Task 4) today, and an internet time sync is real future work the board's
+WiFi makes possible, not a hypothetical this module needs to design around now
+beyond keeping its own conversion total and honest.
 
 - [ ] **Step 1: Write the failing check**
 
@@ -843,8 +856,9 @@ not what this product is about.
 
 1. Round-trip: for a spread of known epochs — a leap day, a year boundary, an
    hour before and after midnight, epoch 0 — assert
-   `kf_epoch_from_civil(kf_civil_from_epoch(e)) == e`, at UTC offset 0, at
-   `+9h`, and at `-5h`.
+   `kf_epoch_from_civil(kf_civil_from_epoch(e)) == e`. No offset variants:
+   there is no offset parameter any more, so one pass over the spread is the
+   whole test.
 2. Assert specific hand-computed civil values for at least three epochs. Write
    the expected values into the check from an independent calculation (Python's
    `datetime.utcfromtimestamp` is fine as the oracle **while writing the
@@ -854,7 +868,11 @@ not what this product is about.
    entirely inside the night; entirely outside; starting mid-night; ending
    mid-night; exactly 24 hours from an arbitrary instant (**must be exactly
    9 * 3600**, whatever the start time — that single assertion catches most
-   partial-day bugs on its own); 14 days; and 14 days at a `-5h` offset.
+   partial-day bugs on its own); 14 days; and 14 days crossing a month
+   boundary (replaces the old "-5h offset" case, which no longer applies now
+   that there is no offset — a month-boundary span is the better use of that
+   test slot, since it exercises `kf_epoch_from_civil`'s day-arithmetic across
+   a calendar edge the plain 14-day case does not touch).
 4. Anti-vacuity: the check must **fail** if
    `kf_clock_seconds_in_daily_window()`'s body is replaced with `return 0`.
    Verify by actually doing it once and watching it go red.
@@ -870,9 +888,10 @@ Expected: an undefined-symbol link error. Anything else, fix that first.
 
 - [ ] **Step 3: Implement, with no heap and no float**
 
-`hakoniwaos/src/clock.cpp`. One file-static `int32_t` for the offset and
-nothing else. `python3 tools/check_no_heap.py .` must stay clean, and there
-must be no `float` or `double` anywhere in the file.
+`hakoniwaos/src/clock.cpp`. No file-static state at all — with no offset to
+hold, the module is pure functions over their arguments.
+`python3 tools/check_no_heap.py .` must stay clean, and there must be no
+`float` or `double` anywhere in the file.
 
 - [ ] **Step 4: Suite and cross-compile**
 
@@ -893,9 +912,11 @@ check clean; ESP-IDF clean with zero warnings.
 rather than the Lua binding (sleep and the clock display must agree, and one
 implementation is how they agree); why not `localtime()`; the integer algorithm
 and where it came from; the analytic window rule and the whole-days-plus-two-
-partials shape; no DST, stated as a decision; where the offset is persisted
-(Task 4) and that it is device-wide per the care-loop spec; a "Not verified"
-section stating nothing calls this yet.
+partials shape; no DST and no offset at all — the RTC holds local time
+directly, set by hand on the Settings screen (Task 4), per "Timezone: settled
+by Chris" — and why that keeps this module's conversion honest for a future
+internet time sync (it only has to set the clock, never reinterpret a stored
+timestamp); a "Not verified" section stating nothing calls this yet.
 
 **How you would know it worked:** `--verify-clock` passes and fails when the
 window function is stubbed to zero. There is nothing visible to see; that is
