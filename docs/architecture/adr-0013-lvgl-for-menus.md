@@ -492,3 +492,18 @@ reverted; it served its purpose and is too noisy to keep permanently.
   gameplay-integrated text) -- open, not yet decided.
 - The actual pet-care menu screens themselves, once there's a pet with
   state worth navigating to.
+
+## Superseded in part
+
+**"LVGL owns menus, stat displays and settings"** described the intended
+split; the pet-care screens that got built did not end up going through
+LVGL. The hunger/happiness/energy bars are scene objects on the retained
+scene engine (`simulator/src/pet/kf_creature_screen.cpp`,
+`docs/architecture/adr-0040-retained-scene.md`), not LVGL widgets, and LVGL
+now defaults **off** (`KF_ENABLE_LVGL=OFF`, ADR 0045). LVGL's last
+production job on this platform was the Info screen, which itself moved to
+a `kf.screen("info")` Lua group over the scene engine (ADR 0045) rather than
+staying LVGL. LVGL remains buildable behind `-DKF_ENABLE_LVGL=ON` as this
+ADR's own evaluation path (see `CLAUDE.md`'s "Already decided" section) but
+is not, in practice, running any screen by default. Settings has not been
+built yet either way, so which engine it ends up on remains open.
