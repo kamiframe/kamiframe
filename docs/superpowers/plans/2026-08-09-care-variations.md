@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status: COMPLETE
+
+`pet_care_variation_check` is registered in `simulator/CMakeLists.txt` and
+passing. The screen work this plan's own "what this deliberately does not
+do" section named as future is also done — see that section's note.
+
 **Goal:** Each of the four care actions has three variations, and every creature likes one of them, tolerates one, and dislikes one — according to a fixed table the player learns by experiment.
 
 **Architecture:** The preference table is a pure function of base trait and action, `constexpr` data in `pet.cpp`, queryable without a creature. Care actions take a variation index and restore an amount that depends on whether the creature liked it. The reaction is recorded on the state so the screen and scripts can show it — that reaction, not the bar, is what the player reads.
@@ -644,7 +650,14 @@ git add -A && git commit -m "Variations and reactions reach the cartridge layer"
 
 - **No developed-trait push.** The spec says disliked care should shape who the creature becomes and then says the mechanism is undecided. It stays undecided.
 - **No unlock progression.** All twelve available, as Chris asked, so the interactions can be tuned.
-- **No screen work.** Nothing draws a reaction yet. The pet screen's three buttons pass variation 0 and look exactly as they do now. Choosing a variation is a UI design question that belongs with the layout pass, and inventing a picker now would only be undone.
+- **No screen work — at the time this plan was written.** That has since
+  changed: `simulator/src/pet/kf_home_screen_input.cpp` gives feed, play,
+  rest and bath each their own variation counter that cycles on every press
+  (`% KF_PET_CARE_VARIATION_COUNT`), and all five care buttons (feed, play,
+  rest, bath, flush) are drawn on the creature screen. This bullet is left
+  for its original reasoning (choosing a variation was a UI design question
+  that belonged with the layout pass) rather than deleted, since that
+  reasoning held until the layout pass happened.
 - **No names for anything.** Core knows there are three variations. What they are is content.
 
 ## Report back
