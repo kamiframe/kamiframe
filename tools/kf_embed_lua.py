@@ -153,10 +153,18 @@ def generate_one(
     # macOS, red on the Windows CI job, with a message ("content differs from
     # its .lua source") that points at the .lua file rather than at the
     # platform. Nothing about the source had drifted at all.
-    source = lua_path.read_text(encoding="utf-8", newline="")
+    # Explicit open() rather than Path.read_text()/write_text() purely for
+    # version reach: the newline= keyword arrived on write_text() in Python
+    # 3.10 but not on read_text() until 3.13, so the tidier pathlib form built
+    # fine on a 3.14 dev machine and died on CI with "Path.read_text() got an
+    # unexpected keyword argument 'newline'". open() has taken newline= since
+    # Python 3.0. Do not "simplify" this back.
+    with open(lua_path, "r", encoding="utf-8", newline="") as f:
+        source = f.read()
     header_text = render_header(source, name, lua_rel_path)
     header_path.parent.mkdir(parents=True, exist_ok=True)
-    header_path.write_text(header_text, encoding="utf-8", newline="\n")
+    with open(header_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(header_text)
 
 
 def cmd_regenerate(repo_root: pathlib.Path) -> int:
