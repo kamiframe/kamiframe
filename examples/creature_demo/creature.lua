@@ -19,6 +19,10 @@
 -- clock-sleep.md, ADR 0045) is declared below unconditionally -- unlike
 -- Home, Info does not care which build owns the creature's own screen, so
 -- it is not gated behind kf.home_screen_active().
+--
+-- The settings screen (Task 4 of that same plan, ADR 0047) is declared
+-- below unconditionally too, for the identical reason -- the global system
+-- clock is not part of any one creature's screen either.
 
 -- kf_pet_millipercent is 0..100000 (kf/pet.h) -- these thresholds are
 -- fractions of that same range, not raw percent, so they read directly
@@ -220,6 +224,85 @@ function on_info_frame(dt_ms)
         info_trait:set("BASE TRAIT " .. pet.base_trait() ..
                         ", CARE TRAIT " .. pet.dominant_care_trait())
     end
+end
+
+-- Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+-- global system clock -- read, edited and saved with the seven hardware
+-- buttons, registered third so MENU cycles HOME -> INFO -> SETTINGS ->
+-- HOME. The cursor logic (which field is selected, hold-to-repeat) lives
+-- in C++ (kf_lua_settings_screen.cpp) and reads the buttons directly, NOT
+-- through kf.on_button -- see that file's own header comment for why a
+-- shared button registry would let this screen's buttons also fire while
+-- Home is showing. This screen only ever DRAWS: on_settings_frame below
+-- gets handed the current field/hour/minute/AM-PM/save-result every frame
+-- and sets text and colour, nothing else.
+local settings_screen = kf.screen("settings")
+local settings_bg = kf.color(20, 24, 32)
+settings_screen:background(settings_bg)
+
+local function settings_label(str, x, y)
+    local t = settings_screen:text(str)
+    t:move(x, y)
+    t:color(kf.WHITE, settings_bg)
+    return t
+end
+
+do
+    local title = "SETTINGS"
+    settings_label(title, (kf.width() - #title * 6) // 2, 4) -- 6 = KF_FONT_CELL_W
+end
+settings_label("HOUR", 16, 60)
+settings_label("MIN", 96, 60)
+settings_label("AM/PM", 160, 60)
+local hour_value = settings_label("", 16, 80)
+local min_value = settings_label("", 96, 80)
+local ampm_value = settings_label("", 160, 80)
+local save_row = settings_label("SAVE", 16, 140)
+settings_label("B: CANCEL", 16, 280)
+
+-- Minutes read "05", not "5" -- hours do not: kf.time()'s own "9:05 AM"
+-- never zero-pads the hour, and this editor should not invent a
+-- convention kf.time() itself does not use.
+local function pad2(n)
+    if n < 10 then
+        return "0" .. n
+    end
+    return "" .. n
+end
+
+-- Global, not local -- kf_lua_port_settings_frame() (sdk/lua/kf_lua_
+-- port.cpp) calls this by name while Settings is the active screen, its
+-- own dedicated entry point for the identical reason on_info_frame() is
+-- separate from on_frame(): one screen's per-frame logic must never touch
+-- another screen's objects. `saved` is nil (no save attempted since this
+-- screen was opened), true, or false.
+function on_settings_frame(dt_ms, field, hour, minute, ampm, saved)
+    hour_value:set("" .. hour)
+    min_value:set(pad2(minute))
+    ampm_value:set(ampm)
+
+    if saved == true then
+        save_row:set("SAVED")
+    elseif saved == false then
+        save_row:set("SAVE FAILED")
+    else
+        save_row:set("SAVE")
+    end
+
+    -- Highlights exactly the selected field by inverting its colours --
+    -- kf_scene_set_colors() already does this, no new drawing primitive
+    -- needed (the plan's own answer to the button-map question).
+    local function paint(obj, name)
+        if field == name then
+            obj:color(settings_bg, kf.WHITE)
+        else
+            obj:color(kf.WHITE, settings_bg)
+        end
+    end
+    paint(hour_value, "hour")
+    paint(min_value, "minute")
+    paint(ampm_value, "ampm")
+    paint(save_row, "save")
 end
 
 function on_frame(dt_ms)
