@@ -85,6 +85,17 @@ cartridge/public-SDK effort actually starts (see the platform notes' "Still
 open" list), not before -- building tutorial-grade polish for an audience
 that cannot reach it yet would be work with nowhere to land.
 
+## The one button that is not the game's
+
+`kf.on_button("menu", ...)` compiles and looks like every other button
+binding, but do not use it: MENU is consumed by the screen navigation
+registry (`kf_screen_nav.cpp`) to cycle Home -> Info -> Settings -> Home,
+and nothing stops a script from binding it anyway on top of that -- see
+ADR 0047 for the mechanism. A handler that fires on every screen change,
+regardless of which screen is showing, is a bad first experience and not
+an obvious one to debug from the script side. Every other button
+(A/B/UP/DOWN/LEFT/RIGHT) is the game's to bind freely.
+
 ## Summary
 
 - Small, guessable, single-purpose functions, not generic dispatch.

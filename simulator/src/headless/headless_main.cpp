@@ -83,6 +83,7 @@
 #include "../pet/kf_creature_screen.h"
 #include "../pet/kf_home_screen_input.h"
 #include "../pet/kf_lua_home_screen.h"
+#include "../pet/kf_lua_settings_screen.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
 #include "headless_probe.h"
@@ -6946,6 +6947,226 @@ int run_clock_check(void) {
     return ok ? 0 : 1;
 }
 
+/* Live scene-object count once Home, Info AND Settings have all declared
+ * everything they ever will, in the real interactive app -- not the
+ * synthetic two-screen fixture run_screen_group_check() uses. Closes risk
+ * 5 (ADR 0044/ the plan's own risk table): "the 65th kf.text() returns 0
+ * and raises -- nobody had measured the count before this." Measured, not
+ * assumed -- see run_settings_screen_check()'s own comment at the assert
+ * site for how. */
+constexpr int kSettingsCheckExpectedObjectCount = 43;
+
+/* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+ * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
+ * screen's four-field editor, driven exactly the way a real MENU/LEFT/
+ * RIGHT/UP/DOWN/A/B sequence would -- kf_screen_nav_debug_advance() for
+ * MENU (the same edge screen_nav_check already uses) and kf_app_debug_
+ * set_buttons() (kf/app.h) for everything else, since nothing here ever
+ * calls kf_app_frame() to populate that state for real. */
+int run_settings_screen_check() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-settings-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_arena_init_all();
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+    /* ---- 1. kf.time() on a device whose clock has never been set --
+     * driven through the REAL Lua binding via kf.report(), the same "hand
+     * a value back to C++ without a real save/telemetry API" mechanism the
+     * codebase already uses elsewhere (kf_lua_port.cpp's own comment on
+     * lua_kf_report): there is no C accessor for a scene object's text, so
+     * this is the only way to prove the actual string kf.time() returns
+     * without inventing a new one. Two small, throwaway scripts, run and
+     * torn down BEFORE creature.lua ever loads -- kf_lua_port_shutdown()
+     * does not reset kf/scene.h's own object table, so loading creature.lua
+     * a second time in this same process would DECLARE ITS ~40 OBJECTS
+     * TWICE; doing these probes first avoids that entirely rather than
+     * requiring a kf_scene_reset() nobody else in this file's checks needs
+     * either. Neither probe calls kf.screen() or draws anything, so
+     * kf_fb_init()/kf_scene_reset() are not needed for them. ---- */
+    kf_host_time_set_wall_unset();
+    {
+        constexpr const char *kUnsetClockScript = R"lua(
+function on_frame(dt_ms)
+    if kf.time() == "--:-- --" then
+        kf.report(1)
+    else
+        kf.report(0)
+    end
+end
+)lua";
+        check(kf_lua_port_init(kUnsetClockScript,
+                                "=settings_unset_clock_check"),
+              "the unset-clock probe script loads");
+        kf_lua_port_frame(kFixedDtMs);
+        check(kf_lua_port_last_report() == 1,
+              "kf.time() on a device whose clock has never been set "
+              "returns \"--:-- --\"");
+        kf_lua_port_shutdown();
+    }
+
+    /* ---- 2. kf.time()'s exact 12-hour format, the same way: 09:05:00Z on
+     * 2026-01-01 is chosen so the expected string ("9:05 AM") is
+     * hand-checkable at a glance -- no leading zero on the hour, a leading
+     * zero on the minute, uppercase AM. ---- */
+    kf_host_time_set_wall_fixed(1767258300); /* 2026-01-01T09:05:00Z */
+    {
+        constexpr const char *kFormatScript = R"lua(
+function on_frame(dt_ms)
+    if kf.time() == "9:05 AM" then
+        kf.report(1)
+    else
+        kf.report(0)
+    end
+end
+)lua";
+        check(kf_lua_port_init(kFormatScript, "=settings_format_check"),
+              "the time-format probe script loads");
+        kf_lua_port_frame(kFixedDtMs);
+        check(kf_lua_port_last_report() == 1,
+              "kf.time() at 09:05:00 formats as \"9:05 AM\"");
+        kf_lua_port_shutdown();
+    }
+
+    /* ---- 3. Bring up the real interactive app: Home, Info, Settings and
+     * the real demo creature script, loaded exactly once from here on --
+     * see step 1's own comment for why a second load never happens in this
+     * check. ---- */
+    kf_fb_init();
+    kf_pet_session_init();
+    kf_screen_nav_init();
+    kf_host_time_set_wall_fixed(1767225600); /* 2026-01-01T00:00:00Z, midnight */
+
+#ifdef KF_HOME_SCREEN_LUA
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+    check(kf_screen_nav_debug_index() == 0,
+          "Home is active immediately after kf_screen_nav_init()");
+    check(kf_screen_nav_count() == 3, "exactly 3 screens are registered");
+    check(std::strcmp(kf_screen_nav_name(0), "home") == 0,
+          "screen 0 is named 'home'");
+    check(std::strcmp(kf_screen_nav_name(1), "info") == 0,
+          "screen 1 is named 'info'");
+    check(std::strcmp(kf_screen_nav_name(2), "settings") == 0,
+          "screen 2 is named 'settings' -- registered third, so MENU "
+          "cycles HOME -> INFO -> SETTINGS -> HOME");
+
+    /* ---- 4. Risk 5 (ADR 0044): the 64-object scene ceiling, measured for
+     * real now that Home, Info AND Settings all exist together, after a
+     * few quiet frames so nothing is mid-declaration. kSettingsCheckExpec
+     * tedObjectCount above was set from THIS assertion's own printed
+     * mismatch the first time this check was run, the same "measured, not
+     * assumed" discipline kf/budget.h's own banner requires. ---- */
+    for (int i = 0; i < 5; ++i) {
+        kf_pet_session_frame(kFixedDtMs);
+        kf_screen_nav_frame(kFixedDtMs);
+    }
+    check(kf_scene_live_object_count() == kSettingsCheckExpectedObjectCount,
+          "Home + Info + Settings together declare exactly the measured "
+          "number of live scene objects (well under the 64-slot ceiling)");
+
+    /* ---- 5. Drive the editor: Home -> Info -> Settings (two MENU edges,
+     * the same kf_screen_nav_debug_advance() screen_nav_check already
+     * uses), then LEFT/RIGHT/UP/DOWN/A through all four fields via
+     * kf_app_debug_set_buttons() -- see that function's own header comment
+     * for why nothing here can just call kf_app_frame(). `tap` presses for
+     * one frame and releases for one frame, so the NEXT tap is always a
+     * fresh press edge, matching how a real momentary button behaves. ---- */
+    kf_screen_nav_debug_advance(); /* home -> info */
+    kf_screen_nav_debug_advance(); /* info -> settings */
+    check(kf_screen_nav_debug_index() == 2, "MENU, MENU reaches Settings");
+
+    auto tap = [&](uint32_t button) {
+        kf_app_debug_set_buttons(button, button);
+        kf_screen_nav_frame(kFixedDtMs);
+        kf_app_debug_set_buttons(0, 0);
+        kf_screen_nav_frame(kFixedDtMs);
+    };
+
+    /* Midnight resets the editor to 12:00 AM, field HOUR (kf_lua_settings_
+     * screen_enter()). Three UP presses on HOUR: 12 -> 1 -> 2 -> 3. */
+    check(kf_lua_settings_screen_debug_field() == 0 &&
+              kf_lua_settings_screen_debug_hour12() == 12,
+          "entering Settings at midnight starts on HOUR, showing 12");
+    tap(KF_BTN_UP);
+    tap(KF_BTN_UP);
+    tap(KF_BTN_UP);
+    check(kf_lua_settings_screen_debug_hour12() == 3,
+          "three UP presses on HOUR move 12 -> 1 -> 2 -> 3");
+
+    /* RIGHT x3: HOUR -> MINUTE -> AM/PM -> SAVE, visiting every field the
+     * plan's own four-field cursor names. */
+    tap(KF_BTN_RIGHT);
+    check(kf_lua_settings_screen_debug_field() == 1, "RIGHT moves to MINUTE");
+    tap(KF_BTN_RIGHT);
+    check(kf_lua_settings_screen_debug_field() == 2, "RIGHT moves to AM/PM");
+    tap(KF_BTN_RIGHT);
+    check(kf_lua_settings_screen_debug_field() == 3, "RIGHT moves to SAVE");
+
+    const int64_t before_save = kf_time_wall().epoch_seconds;
+    tap(KF_BTN_A); /* A on SAVE commits */
+    const int64_t after_save = kf_time_wall().epoch_seconds;
+    check(after_save - before_save == 3 * 3600,
+          "saving HOUR=3, MINUTE=0, AM moved the clock by exactly 3 hours "
+          "and nothing else -- same date, same seconds field");
+
+    /* ---- 6. Cancel: re-enter Settings (a fresh edit, reset from the
+     * just-saved 03:00), modify HOUR again, then B -- kf_screen_nav_frame()
+     * consumes B itself and jumps home BEFORE Settings' own frame function
+     * ever runs that tick (kf_screen_nav.cpp's own ordering), so nothing
+     * below can have written anything. The cancel path is the one nobody
+     * tests and the one that silently corrupts a clock (Task 4's own
+     * words). ---- */
+    kf_screen_nav_debug_home();
+    kf_screen_nav_debug_advance(); /* home -> info */
+    kf_screen_nav_debug_advance(); /* info -> settings */
+    check(kf_lua_settings_screen_debug_hour12() == 3,
+          "re-entering Settings after the save starts from the new 3 "
+          "o'clock, not the pre-save 12");
+    tap(KF_BTN_UP); /* modified, not yet saved */
+    check(kf_lua_settings_screen_debug_hour12() == 4,
+          "the modification actually took effect before cancelling");
+
+    const int64_t before_cancel = kf_time_wall().epoch_seconds;
+    kf_app_debug_set_buttons(KF_BTN_B, KF_BTN_B);
+    kf_screen_nav_frame(kFixedDtMs);
+    kf_app_debug_set_buttons(0, 0);
+    const int64_t after_cancel = kf_time_wall().epoch_seconds;
+    check(kf_screen_nav_debug_index() == 0, "B returned to Home from Settings");
+    check(after_cancel == before_cancel,
+          "cancelling with B from a modified state did not move the clock");
+
+#ifdef KF_HOME_SCREEN_LUA
+    kf_lua_port_shutdown();
+#endif
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -6996,6 +7217,7 @@ int main(int argc, char *argv[]) {
     bool verify_screen_parity = false;
     bool verify_screen_groups = false;
     bool verify_clock = false;
+    bool verify_settings_screen = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -7110,6 +7332,8 @@ int main(int argc, char *argv[]) {
             verify_screen_groups = true;
         } else if (std::strcmp(argv[i], "--verify-clock") == 0) {
             verify_clock = true;
+        } else if (std::strcmp(argv[i], "--verify-settings-screen") == 0) {
+            verify_settings_screen = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -7158,7 +7382,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lua-draw\n"
                         "kamiframe-headless --verify-screen-parity\n"
                         "kamiframe-headless --verify-screen-groups\n"
-                        "kamiframe-headless --verify-clock\n");
+                        "kamiframe-headless --verify-clock\n"
+                        "kamiframe-headless --verify-settings-screen\n");
             return 0;
         }
     }
@@ -7364,6 +7589,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_clock) {
         return run_clock_check();
+    }
+
+    if (verify_settings_screen) {
+        return run_settings_screen_check();
     }
 
     kf_app_init(mode);

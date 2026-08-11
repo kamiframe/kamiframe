@@ -52,6 +52,7 @@ future us in month eight asking the same question with less patience.
 | [0044](adr-0044-lua-screen-groups.md) | `kf.screen()` — named object groups over one shared scene, and a registry that learns names | Accepted |
 | [0045](adr-0045-info-screen-in-lua.md) | Info leaves LVGL for a `kf.screen()` group, and LVGL leaves the default build | Accepted |
 | [0046](adr-0046-core-civil-clock.md) | `kf/clock.h` — civil time in Core, integers only, no offset | Accepted |
+| [0047](adr-0047-lua-time-api-and-settings-screen.md) | The Lua time API, and the Settings screen | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 
