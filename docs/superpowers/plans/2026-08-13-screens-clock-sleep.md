@@ -22,24 +22,36 @@ named risk; the branch is green after every one.
 `kamiframe-headless --verify-*` check modes, `tools/kf_debug.py` over UART at
 115200 for the bench work.
 
-## Status: NOT STARTED, written 2026-08-13
+## Status: Tasks 1, 2 and 3 landed; Task 1's own checkboxes below are still
+unticked
 
-No task below has been executed. Every figure in "What is true today" was
-measured in this worktree on this machine on 2026-08-13 by running the command
-named next to it — not copied from an ADR, and not carried over from the brief
-that commissioned this plan (three of that brief's figures turned out to be
-wrong; see "Six things the premise got wrong").
+Written 2026-08-13 as NOT STARTED. Since then: Task 1 (`kf.screen()` groups,
+Info declared in Lua — `d3354cf`, `83c140e`), Task 2 (`KF_ENABLE_LVGL`
+default OFF, Info's LVGL screen deleted — `f3ddbc8`, `27a6649`), and further
+work (`df9315b`) have landed; Tasks 4-9 have not. The task checkboxes in this
+document were not updated when the work landed — treat the checkbox state
+below as unreliable and verify against the tree, not the boxes. Every figure
+in "What is true today" was measured in this worktree on this machine on
+2026-08-13 by running the command named next to it — not copied from an ADR,
+and not carried over from the brief that commissioned this plan (three of
+that brief's figures turned out to be wrong; see "Six things the premise got
+wrong") — but several have since drifted as Tasks 1 and 2 landed; corrections
+are noted inline below rather than silently re-measured, since this table's
+whole point is to be checked against the tree, not trusted.
 
 ---
 
 ## READ THIS BEFORE DISPATCHING ANY TASK FROM THIS PLAN
 
-**This project's plan documents have manufactured five defects by being copied
+**This project's plan documents have manufactured six defects by being copied
 verbatim.** Three were comments contradicting their own code; one was a real
 `ValueError` in a listing; one was a function called four times against an
-assert that fires on the second call, which cost two implementers time. See the
-identical banner on `2026-08-12-lua-game-layer.md` and
-`2026-08-10-animated-indexed-sprites.md`.
+assert that fires on the second call, which cost two implementers time; one
+was a requirement to build and persist a config field (this plan's clock
+storage key — see "What is true today" and Task 4) that a previous decision
+had deliberately decided not to implement. See the identical banner on
+`2026-08-12-lua-game-layer.md` and `2026-08-10-animated-indexed-sprites.md`,
+and `CLAUDE.md`'s "If you are the operator" section.
 
 This plan therefore keeps code listings **minimal and load-bearing only**.
 Where an exact snippet is not required for correctness, the step states the
@@ -71,15 +83,15 @@ result. Record what was actually observed in its ADR.
 | The device backend writes through to the DS3231 | `ports/esp32/hal/esp_time.cpp:311` | Sets the RAM clock via `settimeofday()`, then writes the seven time registers and clears the OSF bit. Best-effort: a write failure logs and keeps the RAM clock |
 | Nothing outside tests calls it | `grep -rn kf_time_set_wall hakoniwaos simulator ports sdk tools` | Three call sites, all in `simulator/src/headless/headless_main.cpp` (`:435`, `:733`, `:1013`). The comment at `esp_time.cpp:34` that says so is **accurate** |
 | The desktop backend implements it properly | `simulator/src/host/host_time.cpp:80` | Adjusts `g_wall_offset` against the simulated clock. Works, and is what the headless checks exercise |
-| There is no Lua time binding | read all three `luaL_Reg` tables | `kf` = `log`, `report`, `home_screen_active` (`sdk/lua/kf_lua_port.cpp:106`) plus nine drawing entries (`kf_lua_scene.cpp:611`); `pet` = 22 (`:345`); `creature` = 5 read-only (`:425`). **Nothing exposes a clock** |
+| There is no Lua time binding | read all three `luaL_Reg` tables | `kf` = `log`, `report`, `home_screen_active` (`sdk/lua/kf_lua_port.cpp:112`) plus ten drawing/screen entries including **`screen`, added by Task 1** (`kf_lua_scene.cpp:861`); `pet` = **23**, `pet.stage_seconds()` added since (`:366`); `creature` = 5 read-only (`:447`). **Nothing exposes a clock still** |
 | `kf/scene.h` has no clipping primitive | read the header | `kf_clip_push()/pop()` is named at `:136` as an ADR 0040 follow-up that was **not built**. Fixed lists and icon rows are fine; a scrolling list of arbitrary length is not |
 | Text is the bitmap font | `hakoniwaos/include/kf/font.h:34-37` | `KF_FONT_GLYPH_W/H` 5x7 in a `KF_FONT_CELL_W/H` 6x8 cell. Uppercase only |
-| Screen navigation is C++ | `wc -l simulator/src/lvgl/kf_screen_nav.cpp` | **184 lines**, not 152. Two fixed entries in `g_screens[kScreenCount]`, `kScreenCount = 2` |
-| The SDL debug window depends on it | `sdl_debug_window.cpp:131`, `:444`, `:870` | "Next Screen" button → `kf_screen_nav_debug_advance()`; readout → `kf_screen_nav_debug_index()` through a local `screen_name()` (`:216-224`) that hardcodes `0 = Home`, `1 = Info`, `"?"` otherwise |
+| Screen navigation is C++ | `wc -l simulator/src/pet/kf_screen_nav.cpp` | **Moved and grown since Task 1 landed: 228 lines, at `simulator/src/pet/` (no longer `simulator/src/lvgl/`, no longer `#include <lvgl.h>` — ADR 0044/0045). Register-by-name, `g_screens[KF_SCREEN_NAV_MAX_SCREENS]`, `KF_SCREEN_NAV_MAX_SCREENS = 8`, not the old fixed two-entry array |
+| The SDL debug window depends on it | `sdl_debug_window.cpp:129`, `:428`, `:862` | "Next Screen" button → `kf_screen_nav_debug_advance()`; readout → `kf_screen_nav_name(kf_screen_nav_debug_index())` — the local `screen_name()` switch Task 1 was meant to replace is gone, queries the registry directly now |
 | LVGL's arena | `hakoniwaos/include/kf/budget.h:195`, device boot log | `KF_ARENA_LVGL_BYTES` = `256u * 1024u`; the board logs `handing LVGL 262144 bytes from KF_ARENA_LVGL` |
-| LVGL's footprint in the tree | `ls simulator/src/lvgl/`, `simulator/CMakeLists.txt:123-135` | **27 files** in that directory (not ten); `kamiframe_lvgl_port` compiles **11 `.cpp` files**, three of which (`kf_screen_nav`, `kf_lua_home_screen`, `kf_error_banner`) are not LVGL code and only live there because `kf_screen_nav.cpp` includes `<lvgl.h>` |
-| Info is a pure widget tree | `simulator/src/lvgl/kf_pet_info_screen.cpp` | **183 lines**, a `Screen` struct of five `lv_obj_t *` and `lv_label_*` calls. No framebuffer drawing at all. Moving it is a rewrite, not a port |
-| The old LVGL Home is unreachable | `kf_screen_nav.h:37-47`, `grep kf_pet_screen` | `kf_pet_screen.cpp` (**364 lines**) is initialised by nothing in a running build. Its only remaining caller is `run_pet_screen_check()`, gated on `KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM` = `132458f0171a2c0b` (`simulator/CMakeLists.txt:566`) |
+| LVGL's footprint in the tree | `ls simulator/src/lvgl/`, `simulator/CMakeLists.txt:135-144` | **Shrunk since Task 1/2 landed: 18 files** in that directory (not 27); `kamiframe_lvgl_port` compiles **8 `.cpp` files**, all genuinely LVGL code now — `kf_screen_nav`, `kf_lua_home_screen` and `kf_error_banner` are no longer in this list, having moved out with Task 1/2 |
+| Info is a pure widget tree | — | **No longer true: `kf_pet_info_screen.cpp`/`.h` are deleted (Task 2, ADR 0045).** Info is a `kf.screen("info")` group in `creature.lua` now, not an LVGL widget tree |
+| The old LVGL Home is unreachable | `kf_screen_nav.h:94-102` (moved from `:37-47`), `grep kf_pet_screen` | `kf_pet_screen.cpp` (**364 lines**, unchanged) is initialised by nothing in a running build. Its only remaining caller is `run_pet_screen_check()`, gated on `KAMIFRAME_PET_SCREEN_GOLDEN_CHECKSUM` = `132458f0171a2c0b` (`simulator/CMakeLists.txt:618`, not `:566`) |
 | Core has no sleep field | `grep -i sleep hakoniwaos/include/kf/pet.h` | Nothing. The only hits are `kf_power_deep_sleep_until()` references |
 | `KF_CREATURE_POSE_SLEEPING` is unreachable | `hakoniwaos/include/kf/creature.h:32`, `:47-48` | The enum exists; the header says outright *"Sleeping is never returned yet: nothing in Core can say the creature is asleep"* |
 | Sleeping art in the shipped pack | `find examples/creature_demo/sprites -name '*sleeping*'` | **18 files**, one frame each: `{baby,child,teen0..3}_sleeping_{s,e,n}_01.png`. **No `egg_sleeping`, no adult family at all** |
@@ -157,18 +169,14 @@ take for granted.
 Each task that touches the file fixes its own. The rest are listed so nobody
 rediscovers them.
 
-- `simulator/src/lvgl/kf_screen_nav.h:4-5` — *"Switches which LVGL screen is on
-  top -- Home (kf_pet_screen.cpp) or Info"*. Home has not been
-  `kf_pet_screen.cpp` since Task 4 of the Lua plan, and under the current
-  default it is not even C++. The file's own later paragraph (`:37-47`)
-  contradicts its opening line. **Task 1 fixes.**
-- `simulator/src/lvgl/kf_pet_info_screen.h:5` and `:35` — both describe Info's
-  relationship to *"kf_pet_screen.cpp's Home screen"*, same staleness, same
-  cause. **Task 2 fixes**, since Task 2 deletes the file.
-- `simulator/src/sdl/sdl_debug_window.cpp:211-224` — `screen_name()`'s comment
-  says index 0 = Home, 1 = Info is *"a small, deliberate duplication of that
-  contract"*. Correct today; it becomes a lie the moment a third screen exists.
-  **Task 1 replaces the duplication with a query rather than extending it.**
+Three of the original four entries here are fixed as of Task 1 and Task 2
+landing and have been pruned: `kf_screen_nav.h`'s stale "Home
+(kf_pet_screen.cpp) or Info" line (the file, now at `simulator/src/pet/`, no
+longer even mentions `kf_pet_screen.cpp`), `kf_pet_info_screen.h`'s same
+staleness (the file is deleted), and `sdl_debug_window.cpp`'s
+`screen_name()` duplication (deleted; it now calls `kf_screen_nav_name()`
+directly). One remains open:
+
 - `tools/kf_panel.py:630-633` — `STATE_FIELD_ORDER` still names `hunger`,
   `happiness`, `energy`, `time_in_stage_s`, `frame_time_ms`, `free_heap_bytes`
   where the firmware emits `hunger_mp`, `happiness_mp`, `energy_mp`,
