@@ -934,14 +934,16 @@ void kf_lua_scene_set_screen_nav(kf_screen_nav_register_fn register_fn,
     g_screen_show = show_fn;
 }
 
-void kf_lua_scene_activate_screen(int index) {
+/* The visibility half of activating a screen, split out of kf_lua_scene_
+ * activate_screen() below so kf_lua_scene_hide_other_screens() (ADR 0045)
+ * can reuse it WITHOUT the repaint/commit that follows it there -- see
+ * that function's own comment for why the two must not always travel
+ * together. Returns false (and touches nothing) if no group is registered
+ * under `index`. */
+static bool set_active_visibility(int index) {
     LuaScreenGroup *target = find_group_by_registry_index(index);
     if (target == nullptr) {
-        /* No kf.screen() group is registered under this index -- Info,
-         * still LVGL as of this task, is exactly this case. Nothing about
-         * the retained scene changes; kf_screen_nav_show() handles Info's
-         * own repaint through LVGL's own path, not this one. */
-        return;
+        return false;
     }
     for (int i = 0; i < g_lua_screen_count; ++i) {
         LuaScreenGroup &g = g_lua_screens[i];
@@ -953,8 +955,39 @@ void kf_lua_scene_activate_screen(int index) {
     if (target->bg_set) {
         kf_scene_set_background_color(target->bg);
     }
+    return true;
+}
+
+void kf_lua_scene_activate_screen(int index) {
+    /* No kf.screen() group is registered under this index: nothing about
+     * the retained scene changes -- kf_screen_nav_show() handles that
+     * index's own screen (an LVGL one, under -DKF_ENABLE_LVGL=ON) through
+     * its own path, not this one. */
+    if (!set_active_visibility(index)) {
+        return;
+    }
     kf_scene_force_repaint();
     if (kf_lua_scene_declared_anything()) {
         kf_scene_commit();
     }
+}
+
+void kf_lua_scene_hide_other_screens(int active_index) {
+    /* Visibility only -- deliberately no kf_scene_force_repaint() or
+     * kf_scene_commit() here, unlike kf_lua_scene_activate_screen() above.
+     * kf_lua_port_init() (sdk/lua/kf_lua_port.cpp) calls this right after
+     * a script's top-level code finishes declaring every kf.screen()
+     * group it ever will, and that caller is NOT guaranteed to have a
+     * framebuffer up yet -- several headless checks (run_lua_creature_
+     * check() among them) call kf_lua_port_init() to exercise pet.*
+     * logic with no rendering surface at all, and kf_scene_commit()
+     * asserts one exists. Setting the `visible` flags now, without
+     * painting anything, is enough: hakoniwaos/src/scene.cpp's own
+     * g_force_full_redraw already starts true and stays true until this
+     * process's first REAL kf_scene_commit() ever runs, so that first
+     * commit -- whenever a caller that does have a framebuffer makes it --
+     * already repaints everything from these correct flags with no
+     * special-casing needed here. See kf_lua_port_init()'s own call site
+     * for the actual bug this exists to close (Task 2, ADR 0045). */
+    set_active_visibility(active_index);
 }

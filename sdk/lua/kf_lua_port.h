@@ -57,6 +57,32 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name);
  * frame should not spam the log 30 times a second. */
 void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms);
 
+/* Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md (ADR
+ * 0045): calls the script's global on_info_frame(dt_ms) function, if it
+ * defined one -- the exact same shape as kf_lua_port_frame()/on_frame()
+ * above, deliberately a SEPARATE entry point rather than a second call to
+ * on_frame() itself.
+ *
+ * WHY A SEPARATE FUNCTION, NOT ANOTHER CALL TO on_frame(): creature.lua's
+ * on_frame() unconditionally mutates Home's own scene objects (body:show()/
+ * shrine:hide()/poop visibility) whenever kf.home_screen_active() is true --
+ * a correct, harmless no-op every frame Home actually IS the active screen,
+ * but a real bug the frame Info is active instead: those calls set the
+ * `visible` flag directly, which fights kf_lua_scene_activate_screen()'s own
+ * "hide every screen except the active one" bookkeeping and un-hides Home's
+ * placeholder creature sprite on top of Info. Found rendering Info for the
+ * first time, this task -- see docs/architecture/adr-0045-info-screen-in-
+ * lua.md. Calling a screen's OWN dedicated entry point instead, kept
+ * separate from every other screen's, is what keeps one screen's per-frame
+ * logic from ever touching another's objects, without adding a "which
+ * screen is currently active" query no other part of the Lua API needs.
+ *
+ * Not dispatched through kf.on_button (unlike on_frame()): Info has no
+ * interactive widgets of its own, matching kf_pet_info_screen.h's original
+ * "no interactive widgets, no LVGL group" note about the screen it
+ * replaced. */
+void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms);
+
 void kf_lua_port_shutdown();
 
 /* The value most recently passed to kf.report() from Lua, and how many

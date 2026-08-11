@@ -32,6 +32,12 @@ struct State {
     bool ready = false;
     bool disabled_after_error = false;
     uint64_t last_call_us = 0;
+    /* kf_lua_port_info_frame()'s OWN real-elapsed-time tracker -- see that
+     * function's own comment for why it cannot share last_call_us above.
+     * Reset alongside it in kf_lua_port_init(), for the identical reason:
+     * a stale timestamp surviving an init/shutdown/init cycle would
+     * compute one bogus, oversized dt_ms on the first post-reinit call. */
+    uint64_t last_info_call_us = 0;
     int64_t last_report = 0;
     uint32_t frame_count = 0;
 
@@ -256,6 +262,21 @@ int lua_pet_stage(lua_State *L) {
     return 1;
 }
 
+/* pet.stage_seconds() -- how long the pet has been in ITS CURRENT stage,
+ * added for the Info screen (Task 2, docs/superpowers/plans/2026-08-13-
+ * screens-clock-sleep.md): stage_elapsed_seconds is the one field Info's
+ * old LVGL implementation read that this binding had not exposed yet.
+ * uint64_t straight to lua_Integer, no clamping, same as neglect_seconds()
+ * above -- a Tamagotchi-scale lifetime never comes close to overflowing
+ * either lua_Integer width this project builds with (64-bit on desktop,
+ * 32-bit under LUA_32BITS on the ESP32 build; see kf_lua_scene.cpp's own
+ * comment on that split). */
+int lua_pet_stage_seconds(lua_State *L) {
+    lua_pushinteger(L, static_cast<lua_Integer>(
+                            kf_pet_session_state()->stage_elapsed_seconds));
+    return 1;
+}
+
 /* pet.teen_form() / pet.adult_branch() -- WHICH branch was taken, as plain
  * 0-based indices (0..KF_PET_TEEN_FORM_COUNT-1, 0..kf_pet_adults_in_family
  * (teen_form)-1 -- the adult count is per-family, not one shared constant,
@@ -358,6 +379,7 @@ const luaL_Reg kKfPetFuncs[] = {
     {"neglect_seconds", lua_pet_neglect_seconds},
     {"save", lua_pet_save},
     {"stage", lua_pet_stage},
+    {"stage_seconds", lua_pet_stage_seconds},
     {"teen_form", lua_pet_teen_form},
     {"adult_branch", lua_pet_adult_branch},
     {"base_trait", lua_pet_base_trait},
@@ -501,6 +523,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
     g.disabled_after_error = false;
     g.last_error[0] = '\0';
     g.last_call_us = 0;
+    g.last_info_call_us = 0;
     g.last_report = 0;
     g.frame_count = 0;
     /* g.home_screen_active is deliberately NOT touched here -- see its own
@@ -524,6 +547,30 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
         kf_lua_alloc_shutdown();
         return false;
     }
+
+    /* A latent gap in ADR 0044's original design, closed here because Task
+     * 2 (ADR 0045) is the first thing to actually trip it: a script's
+     * top-level kf.screen() calls just above CREATE every group's scene
+     * objects visible-by-default (kf/scene.h's own "a new object starts
+     * visible" rule), and nothing has ever hidden any of them yet -- the
+     * only thing that hides an inactive group is kf_lua_scene_activate_
+     * screen(), which normally runs from inside kf_screen_nav_show(), which
+     * nothing has called yet either, this early. A script with exactly one
+     * kf.screen() group (Home, before this task) never showed the gap: one
+     * group, always the "active" one by default. A script with two or
+     * more -- creature.lua's kf.screen("info") added this task -- would
+     * otherwise sit fully visible on top of screen 0 from the very first
+     * frame, until whatever first MENU/B press or screen:show() call
+     * happened to hide it. kf_lua_scene_hide_other_screens(), not the
+     * full kf_lua_scene_activate_screen(): this function has no guarantee
+     * a framebuffer exists yet (several headless checks exercise
+     * pet.* / on_frame logic with none at all), so it sets only the
+     * visibility bookkeeping, not a repaint -- see that function's own
+     * header comment for why that split is safe. Index 0, by the "Home
+     * registers first" convention every caller of kf_screen_nav_register()
+     * already follows -- a no-op for a script that never calls
+     * kf.screen() at all, since there is nothing to hide. */
+    kf_lua_scene_hide_other_screens(0);
 
     g.ready = true;
     KF_LOGI(TAG, "Lua " LUA_VERSION_MAJOR "." LUA_VERSION_MINOR "."
@@ -584,6 +631,53 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms) {
         return;
     }
     g.frame_count++;
+}
+
+void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms) {
+    if (!g.ready || g.disabled_after_error) {
+        return;
+    }
+
+    /* No kf_lua_scene_dispatch_buttons() call here, unlike kf_lua_port_
+     * frame() above -- see this function's own header comment in kf_lua_
+     * port.h for why Info's screen has no buttons to dispatch. `dt_ms` is
+     * a real elapsed-time-tracking dance too, but its own INDEPENDENT one:
+     * sharing g.last_call_us with kf_lua_port_frame() above would corrupt
+     * BOTH functions' "time since I was last called" math the moment a
+     * script's active screen alternates between calling one and the
+     * other, which is exactly what happens every time the player presses
+     * MENU. */
+    uint32_t dt_ms = synthetic_frame_delta_ms;
+    if (dt_ms == 0u) {
+        const uint64_t now_us = kf_time_mono_us();
+        dt_ms = g.last_info_call_us == 0u
+                    ? 0u
+                    : static_cast<uint32_t>(
+                          (now_us >= g.last_info_call_us
+                               ? now_us - g.last_info_call_us
+                               : 0u) /
+                          1000u);
+        g.last_info_call_us = now_us;
+    }
+
+    lua_getglobal(g.L, "on_info_frame");
+    if (!lua_isfunction(g.L, -1)) {
+        lua_pop(g.L, 1);
+        return; /* a script is not required to define on_info_frame */
+    }
+    lua_pushinteger(g.L, static_cast<lua_Integer>(dt_ms));
+    if (lua_pcall(g.L, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(g.L, -1);
+        KF_LOGE(TAG,
+                "on_info_frame raised an error, disabling further calls "
+                "until the next kf_lua_port_init(): %s",
+                msg);
+        std::snprintf(g.last_error, sizeof(g.last_error), "%s",
+                      msg != nullptr ? msg : "(no message)");
+        lua_pop(g.L, 1);
+        g.disabled_after_error = true;
+        return;
+    }
 }
 
 void kf_lua_port_shutdown() {

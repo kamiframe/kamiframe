@@ -110,7 +110,26 @@ void kf_lua_scene_set_screen_nav(kf_screen_nav_register_fn register_fn,
  * so a caller that inspects the panel right after the switch -- screen_
  * nav_check does exactly this -- sees the result without waiting for a
  * frame. A no-op, changing nothing, if no group is registered under
- * `index` (Info, still LVGL as of this task). */
+ * `index` -- every screen this build can show is a kf.screen() group as of
+ * ADR 0045, except an LVGL screen under -DKF_ENABLE_LVGL=ON, which
+ * kf_screen_nav_show() handles through its own, separate path. */
 void kf_lua_scene_activate_screen(int index);
+
+/* Called once by kf_lua_port_init() (sdk/lua/kf_lua_port.cpp), right after
+ * a script's top-level code finishes running -- i.e., right after every
+ * kf.screen() call that script will ever make has already created its
+ * group. Sets ONLY the `visible` flags (hiding every group except
+ * `active_index`'s), the exact same bookkeeping kf_lua_scene_activate_
+ * screen() does -- deliberately WITHOUT that function's own kf_scene_
+ * force_repaint()/kf_scene_commit(), because kf_lua_port_init() has no
+ * guarantee a framebuffer exists yet (several headless checks exercise
+ * pet.* / on_frame logic with none at all, and kf_scene_commit() asserts
+ * one). See this function's own definition for the bug this closes: a
+ * script with two or more kf.screen() groups (Home and Info, since Task 2
+ * of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) would
+ * otherwise leave every group's objects visible-by-default and
+ * overlapping until the first real screen switch. No-op if no group is
+ * registered under `active_index`. */
+void kf_lua_scene_hide_other_screens(int active_index);
 
 #endif /* KF_LUA_SCENE_H */
