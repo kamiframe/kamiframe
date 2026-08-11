@@ -131,6 +131,8 @@ add_library(kamiframe_lvgl_port STATIC
     src/lvgl/kf_pet_screen.cpp
     src/lvgl/kf_pet_info_screen.cpp
     src/lvgl/kf_screen_nav.cpp
+    src/lvgl/kf_lua_home_screen.cpp
+    src/lvgl/kf_error_banner.cpp
 )
 target_include_directories(kamiframe_lvgl_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/lvgl)
@@ -169,6 +171,44 @@ target_include_directories(kamiframe_lua_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../sdk/lua)
 target_link_libraries(kamiframe_lua_port
     PUBLIC hakoniwaos lua_core kamiframe_pet_port kamiframe_options)
+
+# ---------------------------------------------------------------------------
+# KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/plans/
+# 2026-08-12-lua-game-layer.md): which Home implementation a build's
+# interactive app wires up -- kf_creature_screen.cpp ("cpp", the default,
+# unchanged since Task 4) or examples/creature_demo/creature.lua declaring
+# it directly through the SAME kf/scene.h retained scene ("lua", Task 5's
+# whole point). Both are ALWAYS compiled, regardless of this setting: the
+# headless parity check (kamiframe-headless --verify-screen-parity) drives
+# both halves of the comparison from ONE binary, at runtime, independent of
+# which one this flag wires up for the INTERACTIVE app. Same CACHE STRING +
+# configure-time FATAL_ERROR pattern as ports/esp32/main/CMakeLists.txt's
+# own KF_PANEL, for the identical reason: a typo here should read as a
+# command-line mistake, not a mysterious preprocessor failure three files
+# away.
+#
+# kamiframe_lvgl_port needs KF_HOME_SCREEN_LUA (not kamiframe_pet_port):
+# kf_screen_nav.cpp, which owns the choice of which Home implementation is
+# wired up, lives there. It also needs kamiframe_lua_port added as a link
+# dependency here, for the first time -- kf_lua_home_screen.cpp (new this
+# task) is the first file in this library to call into the Lua port glue
+# directly, rather than the other way around (kamiframe_lua_port already
+# depends on kamiframe_pet_port). No cycle: kamiframe_lua_port does not, and
+# must not, depend back on kamiframe_lvgl_port.
+set(KF_HOME_SCREEN "cpp" CACHE STRING "Home screen implementation: cpp or lua")
+if(NOT KF_HOME_SCREEN STREQUAL "cpp" AND NOT KF_HOME_SCREEN STREQUAL "lua")
+    message(FATAL_ERROR
+        "KF_HOME_SCREEN must be 'cpp' or 'lua', got '${KF_HOME_SCREEN}'")
+endif()
+
+target_link_libraries(kamiframe_lvgl_port PUBLIC kamiframe_lua_port)
+
+if(KF_HOME_SCREEN STREQUAL "lua")
+    target_compile_definitions(kamiframe_lvgl_port PUBLIC KF_HOME_SCREEN_LUA=1)
+    # kf_lua_port.cpp's own compile-time default for kf.home_screen_active()
+    # -- see that file's own comment on kf_lua_port_set_home_screen_active().
+    target_compile_definitions(kamiframe_lua_port PUBLIC KF_HOME_SCREEN_LUA=1)
+endif()
 
 # ---------------------------------------------------------------------------
 # SDL3 simulator
@@ -815,6 +855,22 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_lua_draw_check() for the seven things it checks, in order.
     add_test(NAME lua_draw_check
              COMMAND kamiframe-headless --verify-lua-draw)
+
+    # Task 5 of the Lua game layer plan (docs/superpowers/plans/2026-08-12-
+    # lua-game-layer.md): THE correctness argument for the whole plan. Drives
+    # a fresh pet through an identical 250-frame timeline -- egg bob, wander,
+    # mess appearing and being flushed, a button-triggered care reaction,
+    # death and the shrine, revival clearing it -- once through kf_creature_
+    # screen.cpp (unchanged since Task 4) and once through examples/
+    # creature_demo/creature.lua (this task's own home-screen declarations),
+    # and asserts the two painted byte-identical framebuffers on every one of
+    # those 250 frames, not just the last. See headless_main.cpp's
+    # run_lua_vs_cpp_screen_check() for the FNV-1a rolling hash and the exact
+    # event timeline. This build's own KF_HOME_SCREEN setting is irrelevant
+    # here: both implementations are always compiled in, and this check
+    # drives each directly at runtime.
+    add_test(NAME screen_parity_check
+             COMMAND kamiframe-headless --verify-screen-parity)
 endif()
 
 # ---------------------------------------------------------------------------

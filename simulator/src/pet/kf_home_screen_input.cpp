@@ -78,3 +78,10 @@ void kf_home_screen_handle_care_buttons(const kf_pet_state *pet,
         KF_LOGI(TAG, "flush");
     }
 }
+
+void kf_home_screen_input_reset_variations_for_test(void) {
+    g_feed_variation = 0u;
+    g_play_variation = 0u;
+    g_rest_variation = 0u;
+    g_bath_variation = 0u;
+}

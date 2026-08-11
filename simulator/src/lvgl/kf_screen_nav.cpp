@@ -6,7 +6,11 @@
 
 #include "kf_pet_info_screen.h"
 
+#ifdef KF_HOME_SCREEN_LUA
+#include "kf_lua_home_screen.h"
+#else
 #include "../pet/kf_creature_screen.h"
+#endif
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
@@ -47,6 +51,24 @@ void update_info_screen(uint32_t /*dt_ms*/) { kf_pet_info_screen_update(); }
 void load(size_t index) {
     g_active = index;
     if (g_screens[index].root == nullptr) {
+#ifdef KF_HOME_SCREEN_LUA
+        /* KNOWN GAP (Task 5 of the Lua game-layer plan, not fixed here):
+         * under KF_HOME_SCREEN=lua there is no equivalent of kf_creature_
+         * screen_enter()'s forced full-panel repaint on re-entry, because
+         * kf/scene.h has no way to force one WITHOUT kf_scene_reset() also
+         * destroying every scene id creature.lua's top-level code created
+         * and is still holding onto -- there is no "repaint everything,
+         * but keep my objects" primitive. A Home -> Info -> Home cycle
+         * under this build can therefore leave Info's last LVGL pixels
+         * showing in any row the Lua scene's own diff considers
+         * unchanged, the exact black-trail shape ADR 0017 already fixed
+         * once for a different cause. Left for Task 7 ("Input and
+         * navigation are the game's"), which is where kf.screen()/
+         * screen:show() -- the real fix -- belongs. Does not affect the
+         * parity check (headless_main.cpp's run_lua_vs_cpp_screen_check()
+         * never touches Info) or a fresh boot (Home is active from process
+         * start, before anything else has painted a pixel). */
+#else
         /* Switching TO a screen that owns the framebuffer directly (Home):
          * it must repaint the whole panel in full right now, or it
          * inherits whatever LVGL last left in those pixels and then only
@@ -55,6 +77,7 @@ void load(size_t index) {
          * 188) in a new shape. kf_creature_screen_enter() is exactly that
          * repaint; see its own header comment. */
         kf_creature_screen_enter();
+#endif
         return;
     }
     /* Switching TO an LVGL screen (Info, today): LVGL's own dirty
@@ -123,8 +146,20 @@ void kf_screen_nav_init(void) {
      * kf_screen_nav.h's own header comment). It still exists, still
      * compiles, and is still exercised directly by headless_main.cpp's
      * run_pet_screen_check(), unaffected by any of this. */
+#ifdef KF_HOME_SCREEN_LUA
+    /* Task 5 of the Lua game-layer plan: creature.lua itself already
+     * declared every scene object it will ever create by the time this
+     * runs -- kf_lua_port_init() (sdl_main.cpp/app_main.cpp) loads and runs
+     * the script's top-level code before kf_screen_nav_init() is called.
+     * kf_lua_home_screen_init() only flips the runtime flag the script
+     * reads to decide it should have declared them at all
+     * (kf.home_screen_active()) and creates the error banner. */
+    kf_lua_home_screen_init();
+    g_screens[0] = {nullptr, kf_lua_home_screen_frame};
+#else
     kf_creature_screen_init();
     g_screens[0] = {nullptr, kf_creature_screen_frame};
+#endif
 
     kf_pet_info_screen_init();
     g_screens[1] = {kf_pet_info_screen_root(), update_info_screen};

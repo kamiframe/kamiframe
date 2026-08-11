@@ -7,6 +7,7 @@
 #include "kf_lua_alloc.h"
 #include "kf_lua_scene.h"
 
+#include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_pet_session.h"
 
 #include "kf/hal/entropy.h"
@@ -32,6 +33,32 @@ struct State {
     uint64_t last_call_us = 0;
     int64_t last_report = 0;
     uint32_t frame_count = 0;
+
+    /* Task 5 of the Lua game-layer plan: see kf_lua_port.h's own comment on
+     * kf_lua_port_set_home_screen_active(). The compile-time default lives
+     * HERE, in the member initializer (evaluated once, at process start,
+     * before main() even runs) rather than being re-applied inside kf_lua_
+     * port_init() every time -- kf_lua_port_init() runs the script's
+     * top-level chunk as part of the SAME call, and that chunk needs to see
+     * whatever value the LAST kf_lua_port_set_home_screen_active() call
+     * left (or this default, if none ever ran) at the moment IT runs, not
+     * a value kf_lua_port_init() has just reset out from under a caller
+     * that set it moments earlier. kamiframe-headless --verify-screen-
+     * parity is exactly that caller: one binary, built with one KF_HOME_
+     * SCREEN default, overriding this before EACH kf_lua_port_init() call
+     * so the SAME script's top-level `if kf.home_screen_active() then`
+     * gate goes the right way for both halves of the comparison. */
+#ifdef KF_HOME_SCREEN_LUA
+    bool home_screen_active = true;
+#else
+    bool home_screen_active = false;
+#endif
+    /* Copy of the error on_frame most recently raised, if disabled_after_
+     * error is true -- kept in addition to the KF_LOGE this project already
+     * emits, so a screen's error banner can show the same words rather than
+     * "something went wrong, check the log a device in someone's pocket has
+     * no way to show". Truncated, never unterminated. */
+    char last_error[160] = {};
 };
 State g;
 
@@ -60,9 +87,25 @@ int lua_kf_report(lua_State *L) {
     return 0;
 }
 
+/* kf.home_screen_active() -- Task 5 of the Lua game-layer plan. True when
+ * THIS build's KF_HOME_SCREEN chose "lua" (or the headless parity check has
+ * overridden the flag for this half of its comparison), false under
+ * KF_HOME_SCREEN=cpp. examples/creature_demo/creature.lua reads this ONCE,
+ * at the top level, to decide whether to declare a screen at all -- the
+ * same single script file runs under either build, and only one
+ * implementation may ever declare into the shared scene at a time (kf/
+ * scene.h has no notion of "two games sharing a screen"). See kf_lua_port.h
+ * 's own comment on why this is a runtime flag rather than a second
+ * compiled script. */
+int lua_kf_home_screen_active(lua_State *L) {
+    lua_pushboolean(L, g.home_screen_active ? 1 : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
+    {"home_screen_active", lua_kf_home_screen_active},
     {nullptr, nullptr},
 };
 
@@ -329,6 +372,59 @@ void register_pet_bindings(lua_State *L) {
     lua_setglobal(L, "pet");
 }
 
+/* creature.* -- Task 5 of the Lua game-layer plan. Read-only, plain getters
+ * (no jQuery no-arg-read/arg-write pair: there is nothing to WRITE here
+ * yet, the wander stays in C++ until Task 6 -- see kf_creature_presenter.h
+ * 's own header comment for exactly why). Every one of these reads whatever
+ * kf_creature_presenter_advance() most recently resolved for the CURRENT
+ * frame -- kf_lua_port_frame() below calls that once, before on_frame, the
+ * same "advance once, then declare" shape kf_creature_screen_frame() (the
+ * C++ screen) already has, so both screens see identical numbers on a
+ * frame they are both asked to render (the parity check's whole premise).
+ * Meaningless before the first frame has ever advanced; a script calling
+ * these from its own top-level code (before on_frame ever runs) sees
+ * whatever kf_creature_presenter_reset() leaves behind (x=y=0, an empty
+ * sprite name) -- exactly why the minimal-pet style is "read these inside
+ * on_frame", not at load time. */
+int lua_creature_x(lua_State *L) {
+    lua_pushinteger(L, kf_creature_presenter_x());
+    return 1;
+}
+
+int lua_creature_y(lua_State *L) {
+    lua_pushinteger(L, kf_creature_presenter_y());
+    return 1;
+}
+
+int lua_creature_sprite(lua_State *L) {
+    lua_pushstring(L, kf_creature_presenter_sprite_name());
+    return 1;
+}
+
+int lua_creature_mirrored(lua_State *L) {
+    lua_pushboolean(L, kf_creature_presenter_mirrored() ? 1 : 0);
+    return 1;
+}
+
+int lua_creature_frame(lua_State *L) {
+    lua_pushinteger(L, kf_creature_presenter_anim_frame());
+    return 1;
+}
+
+const luaL_Reg kKfCreatureFuncs[] = {
+    {"x", lua_creature_x},
+    {"y", lua_creature_y},
+    {"sprite", lua_creature_sprite},
+    {"mirrored", lua_creature_mirrored},
+    {"frame", lua_creature_frame},
+    {nullptr, nullptr},
+};
+
+void register_creature_bindings(lua_State *L) {
+    luaL_newlib(L, kKfCreatureFuncs);
+    lua_setglobal(L, "creature");
+}
+
 } // namespace
 
 bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
@@ -385,15 +481,20 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
 
     register_bindings(g.L);
     register_pet_bindings(g.L);
+    register_creature_bindings(g.L);
     /* Task 3 of the Lua game layer plan: the drawing surface over kf/
      * scene.h. Runs after register_bindings() on purpose -- it adds to the
      * `kf` table that call just created, rather than creating its own. */
     kf_lua_scene_register(g.L);
 
     g.disabled_after_error = false;
+    g.last_error[0] = '\0';
     g.last_call_us = 0;
     g.last_report = 0;
     g.frame_count = 0;
+    /* g.home_screen_active is deliberately NOT touched here -- see its own
+     * member-initializer comment above for why resetting it on every init
+     * would be wrong. */
 
     if (luaL_loadbuffer(g.L, script_source, std::strlen(script_source),
                          chunk_name) != LUA_OK) {
@@ -456,10 +557,18 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms) {
     }
     lua_pushinteger(g.L, static_cast<lua_Integer>(dt_ms));
     if (lua_pcall(g.L, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(g.L, -1);
         KF_LOGE(TAG,
                 "on_frame raised an error, disabling further calls until "
                 "the next kf_lua_port_init(): %s",
-                lua_tostring(g.L, -1));
+                msg);
+        /* Task 5's error banner needs the same words the log just got --
+         * copied here, not re-derived from the (already popped) Lua stack
+         * later, since a screen implementation may not read this until
+         * several frames after the error. */
+        std::strncpy(g.last_error, msg != nullptr ? msg : "(no message)",
+                     sizeof(g.last_error) - 1u);
+        g.last_error[sizeof(g.last_error) - 1u] = '\0';
         lua_pop(g.L, 1);
         g.disabled_after_error = true;
         return;
@@ -481,3 +590,11 @@ void kf_lua_port_shutdown() {
 
 int64_t kf_lua_port_last_report() { return g.last_report; }
 uint32_t kf_lua_port_frame_count() { return g.frame_count; }
+
+void kf_lua_port_set_home_screen_active(bool active) {
+    g.home_screen_active = active;
+}
+bool kf_lua_port_home_screen_active(void) { return g.home_screen_active; }
+
+bool kf_lua_port_disabled_after_error(void) { return g.disabled_after_error; }
+const char *kf_lua_port_last_error(void) { return g.last_error; }

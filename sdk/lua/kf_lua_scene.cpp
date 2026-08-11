@@ -63,6 +63,7 @@ struct LuaSceneObject {
     /* Sprite only. */
     char sprite_name[KF_SCENE_SPRITE_NAME_MAX + 1] = {};
     bool mirrored = false;
+    uint16_t frame = 0;
 
     /* Text only. Already uppercased -- see prepare_text() below. */
     char text[KF_SCENE_TEXT_MAX + 1] = {};
@@ -384,6 +385,27 @@ int obj_flip(lua_State *L) {
     return 0;
 }
 
+/* kf_scene_set_frame() (kf/scene.h) has existed since Task 2, but Task 3's
+ * binding never wired a Lua method to it -- found while building Task 5's
+ * demo screen, which needs to declare a multi-frame idle pose's animation
+ * cursor and had no way to. Sprite only, no-arg-read/arg-write like every
+ * other property here. */
+int obj_frame(lua_State *L) {
+    LuaSceneObject *obj = check_live_obj(L, 1);
+    if (obj->kind != LuaObjKind::kSprite) {
+        return luaL_error(L, "':frame' is only valid on a sprite object "
+                              "(created with kf.sprite())");
+    }
+    if (lua_gettop(L) < 2) {
+        lua_pushinteger(L, obj->frame);
+        return 1;
+    }
+    const int16_t clamped = clamp_i16(luaL_checkinteger(L, 2));
+    obj->frame = static_cast<uint16_t>(clamped < 0 ? 0 : clamped);
+    kf_scene_set_frame(obj->id, obj->frame);
+    return 0;
+}
+
 int obj_set(lua_State *L) {
     LuaSceneObject *obj = check_live_obj(L, 1);
     if (obj->kind != LuaObjKind::kText) {
@@ -457,6 +479,7 @@ const luaL_Reg kObjMethods[] = {
     {"hide", obj_hide},       {"visible", obj_visible},
     {"layer", obj_layer},     {"remove", obj_remove},
     {"sprite", obj_sprite},   {"flip", obj_flip},
+    {"frame", obj_frame},
     {"set", obj_set},         {"color", obj_color},
     {"size", obj_size},       {nullptr, nullptr},
 };

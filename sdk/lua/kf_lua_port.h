@@ -67,4 +67,29 @@ void kf_lua_port_shutdown();
 int64_t kf_lua_port_last_report();
 uint32_t kf_lua_port_frame_count();
 
+/* ---------------------------------------------------------------------
+ * Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-
+ * lua-game-layer.md): the same creature.lua file has to behave differently
+ * depending on whether IT is the one drawing Home this build (KF_HOME_
+ * SCREEN=lua) or the C++ screen is (KF_HOME_SCREEN=cpp, narration only) --
+ * see kf.home_screen_active() in kf_lua_port.cpp for the Lua-facing half of
+ * this and examples/creature_demo/creature.lua for how the script uses it.
+ * A RUNTIME flag, not a second compiled copy of the script: kf_lua_port_
+ * init() seeds it from the build's KF_HOME_SCREEN_LUA compile define, but
+ * kamiframe-headless's parity check overrides it explicitly so ONE binary,
+ * built with ONE KF_HOME_SCREEN default, can still drive both halves of
+ * the comparison.
+ * --------------------------------------------------------------------- */
+void kf_lua_port_set_home_screen_active(bool active);
+bool kf_lua_port_home_screen_active(void);
+
+/* Whether on_frame is currently disabled after raising an error, and what
+ * that error said -- kf_lua_port_frame()'s own pcall failure branch already
+ * logs this once; these two let a screen implementation draw the SAME
+ * message into the reserved band (Task 5's one-line error banner), so the
+ * panel says what the console already said rather than freezing silently.
+ * kf_lua_port_last_error() returns "" (never NULL) when nothing has failed. */
+bool kf_lua_port_disabled_after_error(void);
+const char *kf_lua_port_last_error(void);
+
 #endif /* KF_LUA_PORT_H */

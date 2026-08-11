@@ -66,6 +66,7 @@
 #include "../host/host_assets.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
+#include "../lvgl/kf_lua_home_screen.h"
 #include "../lvgl/kf_lvgl_port.h"
 #include "../lvgl/kf_lvgl_proof_screen.h"
 #include "../lvgl/kf_pet_screen.h"
@@ -75,7 +76,9 @@
 #include "../../../sdk/lua/kf_lua_port.h"
 #include "../lua/kf_lua_pet_proof_script.h"
 #include "../lua/kf_lua_proof_script.h"
+#include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_creature_screen.h"
+#include "../pet/kf_home_screen_input.h"
 #include "../pet/kf_pet_session.h"
 #include "headless_probe.h"
 
@@ -6230,6 +6233,247 @@ kf.report(ok and 1 or 0)
     return ok ? 0 : 1;
 }
 
+/* Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-lua-
+ * game-layer.md): THE correctness argument for the whole plan. Both screen
+ * implementations declare into the same kf/scene.h retained scene and
+ * render into the same framebuffer, so a fresh pet driven through the
+ * IDENTICAL frame-by-frame event sequence -- same seed, same dt_ms per
+ * frame, same debug levers pulled at the same frame indices -- must paint
+ * the identical pixels on every single frame if the Lua screen is a
+ * faithful port of the C++ one. Hashed PER FRAME (the same rolling FNV-1a
+ * headless_display.cpp:54-78 computes, reproduced here since neither
+ * screen implementation goes through kf_display_present() -- both draw
+ * straight into kf_fb_pixels(), never through kf_app_frame()), not just at
+ * the end: a divergence names the exact frame it started on, not merely
+ * that SOME frame in 250 differed.
+ *
+ * The event sequence deliberately visits every behaviour named in this
+ * task's brief: the egg sitting still and bobbing (frames 0-49, no wander
+ * yet), the wander once past the egg (50-149), all eight poops appearing
+ * and then being flushed (150-189), a button-triggered care reaction
+ * (190-209), death and the shrine (210-229), and revival clearing it
+ * (230-249) -- 250 frames in total, each one hashed.
+ */
+
+/* The FNV-1a 64 offset basis and prime -- literally headless_display.cpp's
+ * own two constants, reproduced because this check draws straight into
+ * kf_fb_pixels() and never calls kf_display_present() (neither screen
+ * implementation runs through kf_app_frame()), so that file's own g_
+ * checksum never sees these frames at all. */
+uint64_t fnv1a_step(uint64_t running, const kf_color *framebuffer) {
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(framebuffer);
+    for (size_t i = 0; i < KF_FRAMEBUFFER_BYTES; ++i) {
+        running ^= bytes[i];
+        running *= 1099511628211ull;
+    }
+    return running;
+}
+
+/* One shared timeline both screen implementations are driven through,
+ * identically -- see this function's own comment above for what each
+ * phase exercises. Called once per frame, BEFORE that frame's screen
+ * function runs, so an event applied at frame i is visible to the frame i
+ * declares. Uses only functions that act on the live pet session directly
+ * (kf_pet_session_*, kf_home_screen_handle_care_buttons()) -- nothing here
+ * is specific to either screen implementation, which is what lets the same
+ * sequence drive both. */
+void apply_screen_parity_event(long frame_index, const kf_pet_state *pet) {
+    switch (frame_index) {
+    case 50:
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_CHILD, 0, 0);
+        break;
+    case 150: {
+        kf_pet_state *mutable_pet = kf_pet_session_state_mutable_for_test();
+        mutable_pet->poop_count = KF_PET_MAX_POOPS;
+        break;
+    }
+    case 170:
+        kf_pet_session_flush();
+        break;
+    case 190:
+        kf_home_screen_handle_care_buttons(pet, KF_BTN_A);
+        break;
+    case 210: {
+        kf_pet_state *mutable_pet = kf_pet_session_state_mutable_for_test();
+        mutable_pet->dead = true;
+        break;
+    }
+    case 230:
+        /* Revives -- see kf_pet_session_debug_jump_to_stage()'s own header
+         * comment: "a genuinely dead ... pet comes back alive and clean
+         * after a jump". This is what proves the shrine's clearing on
+         * revive, not just its appearance on death. */
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_CHILD, 0, 0);
+        break;
+    default:
+        break;
+    }
+}
+
+constexpr long kScreenParityFrameCount = 250;
+constexpr uint32_t kScreenParityFrameDtMs = 33u;
+constexpr uint32_t kScreenParitySeed = 0xA11CE5Eu;
+
+/* Runs the timeline through ONE screen implementation, from a fresh pet, and
+ * returns the rolling FNV-1a hash after every frame. Brings its own
+ * isolated storage directory up and back down (same pattern every other
+ * pet-session-owning check in this file uses) so the two calls this
+ * function's caller makes cannot see each other's saves. Does NOT touch
+ * kf_arena_init_all()/kf_fb_init()/kf_assets_init() -- the caller brings
+ * those up once, shared, since they are process-wide resources with no
+ * per-half state to isolate. */
+std::vector<uint64_t> run_screen_parity_timeline(bool use_lua, bool *ok) {
+    std::vector<uint64_t> hashes;
+    hashes.reserve(static_cast<size_t>(kScreenParityFrameCount));
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-screen-parity-" +
+         std::string(use_lua ? "lua-" : "cpp-") +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    if (kf_store_init() != KF_OK || kf_power_init() != KF_OK) {
+        KF_LOGE(TAG, "FAILED: kf_store_init/kf_power_init (screen parity, "
+                     "use_lua=%d)", use_lua ? 1 : 0);
+        *ok = false;
+        return hashes;
+    }
+
+    /* Same seed before EACH half, not once for the whole process: this is
+     * what makes choose_target()'s wander (hakoniwaos/src/creature.cpp)
+     * and kf_pet_init()'s base_trait roll identical run to run, regardless
+     * of how many kf_rng_below() calls the OTHER half already made in this
+     * same process. */
+    kf_rng_seed(kScreenParitySeed);
+    kf_pet_session_init();
+    /* The per-action variation counters (kf_home_screen_input.cpp) are
+     * process-global -- see kf_home_screen_input_reset_variations_for_
+     * test()'s own comment for why this check needs to reset them for
+     * EACH half rather than once. */
+    kf_home_screen_input_reset_variations_for_test();
+
+    /* kf_scene_reset() before starting the SECOND half (use_lua == true,
+     * given the caller always runs cpp first): the first half's objects
+     * are still declared and still "presented" otherwise, and creature.lua
+     * 's own kf.sprite()/kf.text()/kf.box() calls would add to them rather
+     * than replace them. kf_creature_screen_init() (the cpp half, below)
+     * already resets the scene itself via kf_creature_screen_enter() --
+     * calling it again here would be harmless but redundant, so this only
+     * runs for the lua half. Same reasoning for kf_creature_presenter_
+     * reset(): the wander/anim state is process-global and must restart
+     * from the same fresh position both halves begin from. */
+    if (use_lua) {
+        kf_scene_reset();
+        kf_creature_presenter_reset();
+    }
+
+    bool loaded = true;
+    if (use_lua) {
+        /* MUST run before kf_lua_port_init(): that call runs the script's
+         * top-level chunk as part of the SAME call, and creature.lua's
+         * top-level `if kf.home_screen_active() then` gate has to see
+         * "true" at that exact moment to declare anything at all -- see
+         * kf_lua_port.cpp's own comment on why kf_lua_port_init() no
+         * longer resets this flag itself. */
+        kf_lua_port_set_home_screen_active(true);
+        loaded = kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                                   kKfLuaDemoCreatureScriptChunkName);
+        if (loaded) {
+            kf_lua_home_screen_init();
+        }
+    } else {
+        kf_creature_screen_init();
+    }
+    if (!loaded) {
+        KF_LOGE(TAG, "FAILED: the demo creature script would not load for "
+                     "the screen parity check's lua half");
+        *ok = false;
+    }
+
+    uint64_t rolling = 1469598103934665603ull; /* FNV-1a 64 offset basis */
+    for (long i = 0; i < kScreenParityFrameCount; ++i) {
+        apply_screen_parity_event(i, kf_pet_session_state());
+        if (use_lua) {
+            kf_lua_home_screen_frame(kScreenParityFrameDtMs);
+        } else {
+            kf_creature_screen_frame(kScreenParityFrameDtMs);
+        }
+        rolling = fnv1a_step(rolling, kf_fb_pixels());
+        hashes.push_back(rolling);
+    }
+
+    if (use_lua) {
+        kf_lua_port_shutdown();
+    }
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    return hashes;
+}
+
+int run_lua_vs_cpp_screen_check(void) {
+    bool ok = true;
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    if (kf_assets_init() != KF_OK) {
+        KF_LOGE(TAG, "FAILED: kf_assets_init mounts the creature demo pack");
+        ok = false;
+    }
+
+    const std::vector<uint64_t> cpp_hashes =
+        run_screen_parity_timeline(/*use_lua=*/false, &ok);
+    const std::vector<uint64_t> lua_hashes =
+        run_screen_parity_timeline(/*use_lua=*/true, &ok);
+
+    if (cpp_hashes.size() != lua_hashes.size()) {
+        KF_LOGE(TAG, "FAILED: the two halves ran a different number of "
+                     "frames (%zu vs %zu) -- one of them must have stopped "
+                     "early", cpp_hashes.size(), lua_hashes.size());
+        ok = false;
+    } else {
+        long first_divergence = -1;
+        for (size_t i = 0; i < cpp_hashes.size(); ++i) {
+            if (cpp_hashes[i] != lua_hashes[i]) {
+                first_divergence = static_cast<long>(i);
+                break;
+            }
+        }
+        if (first_divergence >= 0) {
+            KF_LOGE(TAG,
+                    "FAILED: the C++ screen and the Lua screen diverge at "
+                    "frame %ld of %ld (cpp=%016llx lua=%016llx) -- the two "
+                    "implementations painted different pixels on this "
+                    "frame or an earlier one whose difference this frame's "
+                    "hash still carries",
+                    first_divergence, kScreenParityFrameCount,
+                    static_cast<unsigned long long>(cpp_hashes[static_cast<size_t>(first_divergence)]),
+                    static_cast<unsigned long long>(lua_hashes[static_cast<size_t>(first_divergence)]));
+            ok = false;
+        } else {
+            KF_LOGI(TAG,
+                    "screen-parity: the C++ screen and the Lua screen "
+                    "painted byte-identical framebuffers on all %ld "
+                    "frames (final hash %016llx)",
+                    kScreenParityFrameCount,
+                    static_cast<unsigned long long>(cpp_hashes.back()));
+        }
+    }
+
+    kf_scene_reset();
+    kf_assets_shutdown();
+    kf_host_assets_set_pack_path(nullptr);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -6277,6 +6521,7 @@ int main(int argc, char *argv[]) {
     bool verify_creature_screen_budget_combo = false;
     bool verify_scene = false;
     bool verify_lua_draw = false;
+    bool verify_screen_parity = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -6382,6 +6627,8 @@ int main(int argc, char *argv[]) {
             verify_scene = true;
         } else if (std::strcmp(argv[i], "--verify-lua-draw") == 0) {
             verify_lua_draw = true;
+        } else if (std::strcmp(argv[i], "--verify-screen-parity") == 0) {
+            verify_screen_parity = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -6427,7 +6674,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless "
                         "--verify-creature-screen-budget-combo\n"
                         "kamiframe-headless --verify-scene\n"
-                        "kamiframe-headless --verify-lua-draw\n");
+                        "kamiframe-headless --verify-lua-draw\n"
+                        "kamiframe-headless --verify-screen-parity\n");
             return 0;
         }
     }
@@ -6595,6 +6843,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_lua_draw) {
         return run_lua_draw_check();
+    }
+
+    if (verify_screen_parity) {
+        return run_lua_vs_cpp_screen_check();
     }
 
     kf_app_init(mode);

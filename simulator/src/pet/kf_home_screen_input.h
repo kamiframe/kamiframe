@@ -30,4 +30,14 @@
 void kf_home_screen_handle_care_buttons(const kf_pet_state *pet,
                                         uint32_t pressed);
 
+/* Resets all four per-action variation counters to 0 -- TEST ONLY. They are
+ * process-global (one shared counter set outlives any single pet session),
+ * which is exactly wrong for headless_main.cpp's run_lua_vs_cpp_screen_
+ * check(): it drives the SAME button press through two separate pet
+ * sessions in one process, and the second session must see variation 0
+ * again, not wherever the first session's presses left the counters. Not
+ * useful outside a test that resets its whole pet session between runs in
+ * one process the way that check does. */
+void kf_home_screen_input_reset_variations_for_test(void);
+
 #endif /* KF_HOME_SCREEN_INPUT_H */
