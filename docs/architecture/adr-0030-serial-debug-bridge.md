@@ -441,6 +441,17 @@ worked example above than to noise -- see "Not verified".
   portable codec, a cross-check against the real host-side Python, or a
   clean cross-compile -- never a byte actually sent or received over a
   physical UART.
+
+  **Flagged, not resolved, during a later documentation pass:** ADR 0032
+  (one day later, 2026-08-09) opens "Once the pet was rendering on real
+  hardware" and describes observing tearing get "obvious when the time
+  multiplier is turned up" -- the time multiplier is exactly ADR 0031's
+  `KFDBG MULT`, reachable only over this bridge. Whether that multiplier
+  was actually driven live over the physical UART on real hardware by
+  2026-08-09 (which would mean this claim was current for less than a day)
+  or set some other way (a compile-time default, a desktop-only
+  observation) is not established by either document. Left for Chris to
+  confirm rather than guessed at here.
 - **`uart_driver_install()` sharing the console UART with zero
   reconfiguration is the single biggest real risk here.** ESP-IDF's own
   startup already configures UART0 for `printf`/`KF_LOGx` output via a
