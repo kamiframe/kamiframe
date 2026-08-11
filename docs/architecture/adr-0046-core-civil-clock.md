@@ -275,3 +275,25 @@ never against a real Lua script, a real button press, or real hardware.
 
 The timezone decision itself is Chris's, recorded verbatim in the plan under
 "Timezone: settled by Chris"; this ADR implements it but did not make it.
+
+### Superseded in part
+
+Two claims above do not hold up against the tree, both worth flagging because
+they are the load-bearing argument for why the no-offset design is safe.
+
+**"exactly what the Settings screen already does today"** (the "Kept total
+and honest" section) and **"the Settings screen already lets the owner
+hand-set the clock"** (two paragraphs later) were never accurate — this
+document's own "Not verified" section above says plainly that no Settings
+screen exists. There is still no Settings screen as of this correction. The
+underlying argument (a future sync only ever has to call
+`kf_time_set_wall()`, the same call the Settings screen editor will make) is
+sound and does not depend on the screen existing yet; only the present-tense
+"already does" was wrong.
+
+**"the time API in Lua and the Settings screen, which will also be the
+first thing to persist a wall-clock value under its own storage key"** is
+also superseded: `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s
+Task 4 was corrected to *not* add a storage key — nothing about the clock
+persists outside the RTC itself, "ready for" internet sync or otherwise. See
+that plan's own note against adding one.

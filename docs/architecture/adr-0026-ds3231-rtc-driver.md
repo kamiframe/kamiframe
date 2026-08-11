@@ -196,3 +196,21 @@ already reads whatever `kf_time_wall()` reports, exactly as ADR 0025's own
 "Cost to change" predicted -- the fast-forward starts working the moment
 the HAL layer beneath it does, with no change needed on the pet-session
 side at all.
+
+## Superseded in part
+
+**"No timezone or DST handling... DS3231 registers and `epoch_seconds` are
+both treated as raw UTC, always"** is superseded by ADR 0046: `epoch_seconds`
+is defined to be LOCAL time, directly, with no timezone or offset applied
+anywhere -- not UTC. ADR 0046 predates neither `kf/types.h`'s
+`kf_wall_time` contract this ADR cites nor this driver's registers; both
+this driver and `kf/clock.h` read and write the same `epoch_seconds`, so
+this driver's write-through (decision #5) writes local time into the
+DS3231's registers, and `ds3231_regs_to_epoch()`/`epoch_to_ds3231_regs()`
+should be read as converting to and from local time, not UTC. Implementing
+this ADR's Task 4 (or any future write path) against the "raw UTC" reading
+above would write UTC into the chip that `kf/clock.h`'s night-window
+accounting then reads back as local time -- exactly the bug ADR 0046 exists
+to prevent elsewhere. The pure BCD/civil-date arithmetic this ADR verifies
+is unaffected either way; only the meaning attached to the epoch second
+changes.
