@@ -699,6 +699,16 @@ kf_rect kf_scene_bounds(kf_scene_id id) {
     return bounds_of(obj->kind, obj->declared);
 }
 
+int kf_scene_live_object_count(void) {
+    int n = 0;
+    for (const auto &obj : g_objects) {
+        if (obj.in_use && !obj.removed) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 void kf_scene_commit(void) {
     /* ---- Resolve sprite names that changed since the last commit. Runs
      * for every live sprite object regardless of whether it turns out to

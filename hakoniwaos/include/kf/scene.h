@@ -196,6 +196,16 @@ void kf_scene_set_size(kf_scene_id id, int16_t w, int16_t h);
  * from a debug accessor (Task 4) without its own caching. */
 kf_rect kf_scene_bounds(kf_scene_id id);
 
+/* How many objects are currently live -- in use and not yet removed, out
+ * of the KF_SCENE_MAX_OBJECTS total. A debug/test accessor (ADR 0044's
+ * screen-group check uses it to pin the object count multiple kf.screen()
+ * groups over one shared scene declare, against a named constant, rather
+ * than assuming one); no interactive caller needs it, since a script never
+ * has a reason to ask how many objects a scene holds. O(KF_SCENE_MAX_
+ * OBJECTS), same cost class as kf_scene_bounds() above -- cheap enough to
+ * call from a check, not meant for a hot per-frame path. */
+int kf_scene_live_object_count(void);
+
 /* Diffs this frame's declarations against what was actually painted last
  * frame, computes the minimal set of dirty rectangles, and repaints
  * exactly that. Call once per frame, after the game has finished declaring
