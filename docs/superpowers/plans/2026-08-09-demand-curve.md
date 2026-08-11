@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status: COMPLETE
+
+`pet_demand_curve_check` is registered in `simulator/CMakeLists.txt` and
+passing.
+
 **Goal:** Make need decay depend on life stage, so a baby demands attention every ~30 minutes and an adult every ~4 hours, replacing today's single uniform rate where hunger takes four real days to empty.
 
 **Architecture:** `kf_pet_config` currently holds three flat `*_decay_mp_per_hour` fields. Replace them with a table indexed by `kf_pet_stage`, and have `apply_stage_segment()` look up the row for the pet's current stage. No new subsystem, no new file — the decay maths, the segmenting, and the offline fast-forward all stay exactly as they are. Only the number they read changes.

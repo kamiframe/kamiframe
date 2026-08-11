@@ -2,6 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status: COMPLETE
+
+`evolution_tree_shape_check` is registered in `simulator/CMakeLists.txt` and
+passing. `KF_PET_ADULT_BRANCH_MAX` now exists in `hakoniwaos/include/kf/pet.h`
+— the "does not exist" note below Step 2 describes the expected compile
+failure *before* Step 3 creates it, part of that step's own TDD sequence, not
+the state of the tree today.
+
 **Goal:** Bring the simulation's evolution tree in line with the character bible — four verb families instead of three teen forms, an uneven number of adults per family instead of a uniform two, and a separate path to Hokorimaru for a creature that is never interacted with.
 
 **Architecture:** The stage machine does not change: five stages, one transition at a time, driven by `kf_pet_advance()`. What changes is the branch *shape* — two compile-time constants become a constant plus a per-family table, `select_branch()` learns to clamp against a per-family count, and a new "never interacted" condition is checked at the child-to-teen transition. `teen_form` and `adult_branch` are saved, so the save format version must rise.
