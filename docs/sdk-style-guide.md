@@ -25,15 +25,21 @@ a product shaped like this one.
 ## The rule
 
 Every `kf.*`/`pet.*`-style binding is a small number of clearly-named,
-single-purpose global functions. Prefer a plain verb a non-expert would
+single-purpose functions or methods. Prefer a plain verb a non-expert would
 guess correctly (`feed`, `play`, `stage`) over a generic, overloaded entry
-point (no `pet.call("feed")`, no `pet.set("hunger", value)`). If a value
-needs a name rather than a number where one actually exists yet, return
-the name (`pet.stage()` returns `"baby"`, not the raw enum integer) --
-see "What this does not mean" below for the limits of that. Consistency
-matters more than cleverness: once a shape exists (`pet.hunger()`,
-`pet.happiness()`, `pet.energy()`), the next value follows the same shape
-without a special case.
+point (no `pet.call("feed")`, no `pet.set("hunger", value)`). `pet.*` stays
+flat global functions (`pet.feed()`, `pet.hunger()`); the drawing and screen
+API (`kf.sprite()`, `kf.screen()`, ADR 0044) returns an **object with
+methods** instead (`sprite:move(x, y)`, `screen:show()`) because those
+objects are stateful things you keep a handle to and act on repeatedly, not
+one-shot queries — the same rule (plain verb, single purpose, no generic
+dispatch) applies to the method name either way. If a value needs a name
+rather than a number where one actually exists yet, return the name
+(`pet.stage()` returns `"baby"`, not the raw enum integer) -- see "What this
+does not mean" below for the limits of that. Consistency matters more than
+cleverness: once a shape exists (`pet.hunger()`, `pet.happiness()`,
+`pet.energy()`), the next value follows the same shape without a special
+case.
 
 ## The wrapper/raw-power question, answered
 
@@ -56,12 +62,15 @@ of those four was excluded.
 
 Core stays generic; the binding owns the vocabulary, but never invents
 content. `pet.teen_form()` and `pet.adult_branch()` return raw indices, not
-invented names, because naming those branches is real creative content
-that does not exist yet (ADR 0021) -- a wrapper function being
+invented names. The branches themselves are named now -- every entity has a
+`display_name` in `tools/character_manifest.toml` (Marumaru, Hamaru,
+Chokimaru, and the rest) -- but that naming lives in the demo creature's own
+art and manifest data, not in Core or in this binding, and returning an
+index rather than a name here is still correct: a wrapper function being
 "beginner-friendly" is about how easy the mechanism is to call, not a
-license to make up names, characters, or behaviour on Core's or the
-binding's own authority. That line stays exactly where `kf/pet.h`'s header
-comment already draws it.
+license for Core or the binding to make up or hardcode names, characters, or
+behaviour that belongs to a specific creature's content instead. That line
+stays exactly where `kf/pet.h`'s header comment already draws it.
 
 ## What this is not, yet
 
