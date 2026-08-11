@@ -10,9 +10,10 @@
 -- by the Lua VM at every boot.
 --
 -- Also declares the whole home screen now (Task 5, docs/superpowers/plans/
--- 2026-08-12-lua-game-layer.md), gated by kf.home_screen_active() so this
--- one file runs under either KF_HOME_SCREEN build. Layout numbers match
--- kf_creature_screen.cpp's own constants -- see that file for the why.
+-- 2026-08-12-lua-game-layer.md; grouped via kf.screen() since ADR 0044),
+-- gated by kf.home_screen_active() so this one file runs under either
+-- KF_HOME_SCREEN build. Layout numbers match kf_creature_screen.cpp's own
+-- constants -- see that file for the why.
 
 -- kf_pet_millipercent is 0..100000 (kf/pet.h) -- these thresholds are
 -- fractions of that same range, not raw percent, so they read directly
@@ -90,20 +91,24 @@ end
 local body, shrine, poop, fill
 
 if kf.home_screen_active() then
+    -- ADR 0044: Home's objects are declared through a named screen group
+    -- rather than bare kf.* calls -- a receiver change only, same layout,
+    -- same object count, same declaration order.
+    local home = kf.screen("home")
     local bg = kf.color(232, 240, 216)
-    kf.background(bg)
+    home:background(bg)
 
     -- on_frame() sets the real sprite/position every frame, including its
     -- first -- this placeholder is never painted.
-    body = kf.sprite("")
+    body = home:sprite("")
     body:layer(1) -- over the mess
 
-    shrine = kf.sprite("shrine_idle_s")
+    shrine = home:sprite("shrine_idle_s")
     shrine:move(96, 106) -- centred, 48x48
 
     poop = {} -- 8 fixed slots, field 240px / 8
     for i = 1, 8 do
-        poop[i] = kf.box(12, 12, kf.color(92, 64, 51))
+        poop[i] = home:box(12, 12, kf.color(92, 64, 51))
         poop[i]:move((i - 1) * 30 + 9, 232)
     end
 
@@ -115,12 +120,12 @@ if kf.home_screen_active() then
     fill = {}
     for i = 1, 3 do
         local y = 262 + (i - 1) * 9
-        local track = kf.box(190, 8, track_color)
+        local track = home:box(190, 8, track_color)
         track:move(42, y)
-        fill[i] = kf.box(0, 8, colors[i])
+        fill[i] = home:box(0, 8, colors[i])
         fill[i]:move(42, y)
         fill[i]:layer(1) -- over the track
-        local label = kf.text(names[i])
+        local label = home:text(names[i])
         label:move(2, y)
         label:color(kf.BLACK, bg)
     end
@@ -129,7 +134,7 @@ if kf.home_screen_active() then
     for i = 1, 5 do -- centred per 48px slot, never touched again
         local slot_x = (i - 1) * 48
         local w = #guide[i] * 6 -- KF_FONT_CELL_W
-        local label = kf.text(guide[i])
+        local label = home:text(guide[i])
         label:move(slot_x + (48 - w) // 2, 300)
         label:color(kf.BLACK, bg)
     end
