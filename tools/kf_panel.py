@@ -639,10 +639,41 @@ if tk is not None:
     # A/B (a common emulator-style layout for a left-hand + right-hand
     # split), Return and Escape both map to MENU since it's the one button
     # people reach for on either a "confirm" or a "back out" instinct.
+    #
+    # 1-5 are ADDED alongside the above, not a replacement for it: unlike
+    # the desktop simulator's own keyboard (simulator/src/sdl/sdl_input.cpp),
+    # which moves its five care buttons onto 1-5 entirely, this panel also
+    # drives a real device that can be sitting on a screen with no care
+    # guide at all (a menu screen, the boot log) -- arrows/Z/X/Enter/Esc
+    # have to keep working as the general-purpose D-pad+A+B+MENU layout for
+    # those. The five numbers exist ONLY because the creature screen's own
+    # on-screen guide (kf_creature_screen.cpp's kGuideLabels, mirrored in
+    # creature.lua) reads "1:FEED 2:PLAY 3:REST 4:BATH 5:FLUSH" -- on that
+    # one screen, someone reading the panel and pressing what the device
+    # tells them to press should get exactly what the device promised.
+    # Mapped to the same physical buttons in the same order the guide (and
+    # sdl_input.cpp, and kf_home_screen_input.cpp's handle_care_buttons())
+    # already use: A/UP/DOWN/LEFT/RIGHT = feed/play/rest/bath/flush.
     KEY_TO_BUTTON = {
         "Up": "UP", "Down": "DOWN", "Left": "LEFT", "Right": "RIGHT",
         "z": "A", "Z": "A", "x": "B", "X": "B",
         "Return": "MENU", "Escape": "MENU",
+        "1": "A", "2": "UP", "3": "DOWN", "4": "LEFT", "5": "RIGHT",
+    }
+
+    # name -> the on-screen guide caption for that button, verbatim
+    # (kGuideLabels' own "N:LABEL" spelling, not a paraphrase of it) so the
+    # pad and the keyboard hint below can both show "what does this feed
+    # the pet" right next to "what is this button called" instead of
+    # making the reader hold kGuideLabels in their head. Deliberately only
+    # the five care buttons: B and MENU do the same thing on every screen
+    # (jump Home, advance screens) and UP/DOWN/LEFT/RIGHT are the ordinary
+    # D-pad everywhere except the creature screen, so captioning THOSE with
+    # a care action they only sometimes perform would be the wrong kind of
+    # confident. Order matches KEY_TO_BUTTON's 1-5 above.
+    CARE_ACTION_CAPTION = {
+        "A": "1:FEED", "UP": "2:PLAY", "DOWN": "3:REST",
+        "LEFT": "4:BATH", "RIGHT": "5:FLUSH",
     }
 
     # A press is NEVER sent as a bare one-shot KFDBG BTN, however brief the
@@ -934,8 +965,18 @@ if tk is not None:
             grid = ttk.Frame(frame)
             grid.pack(padx=10, pady=10)
 
+            # Second line is the creature screen's own guide caption
+            # (CARE_ACTION_CAPTION above), e.g. "UP\n2:PLAY" -- so someone
+            # looking at the pad while the device shows "2:PLAY" doesn't
+            # have to go translate physical-button-name to care-action in
+            # their head. Only the five care buttons get one: B and MENU
+            # do the same thing (jump Home, advance screens) regardless of
+            # which screen is up, so a caption on THEM would be claiming a
+            # meaning the button doesn't actually have everywhere.
             def make(name, r, c, cspan=1):
-                b = tk.Button(grid, text=name, width=6, height=2,
+                caption = CARE_ACTION_CAPTION.get(name)
+                text = f"{name}\n{caption}" if caption else name
+                b = tk.Button(grid, text=text, width=6, height=2,
                               background=COLOR_BUTTON_BG, foreground=COLOR_FG,
                               activebackground=COLOR_BUTTON_ACTIVE_BG,
                               activeforeground=COLOR_FG,
@@ -958,9 +999,14 @@ if tk is not None:
             ttk.Label(frame, text="Keyboard: arrows = D-pad, Z/X = A/B, "
                                    "Enter/Esc = MENU. Left/Up move the "
                                    "selection back, Right/Down move it "
-                                   f"forward, A activates. Every press is at "
-                                   f"least {MIN_PRESS_MS}ms so the device "
-                                   "always sees it.",
+                                   "forward, A activates. On the creature "
+                                   "screen, 1-5 also work and match its "
+                                   "on-screen guide directly: 1=feed, "
+                                   "2=play, 3=rest, 4=bath, 5=flush -- same "
+                                   "buttons as A/UP/DOWN/LEFT/RIGHT above, "
+                                   f"just easier to read off the screen. "
+                                   f"Every press is at least {MIN_PRESS_MS}ms "
+                                   "so the device always sees it.",
                       style="Muted.TLabel", wraplength=500,
                       justify="left").pack(padx=10, pady=(0, 10), anchor="w")
 
