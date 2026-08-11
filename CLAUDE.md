@@ -30,9 +30,9 @@ Flag mistakes early and directly. He'd rather hear it now.
 
 **1. There is no emulator.** The simulator is the real firmware compiled against a desktop backend of the same HAL the ESP32 build uses. Same sprite engine, same Lua runtime, same simulation code, different bottom layer. Two codebases that mimic each other is a failure state, not a design.
 
-**2. The desktop build enforces the device's real constraints from commit one.** 240×320 RGB565 framebuffer, Lua heap capped to realistic PSRAM, assets budgeted to 16MB flash, warnings when a frame runs long. Desktop speed lies. Constraint enforcement lives somewhere it can't be accidentally bypassed.
+**2. The desktop build enforces the device's real constraints from commit one.** 240×320 RGB565 framebuffer, Lua heap capped to realistic PSRAM, assets budgeted to 12MB of the part's 16MB flash (`kf/budget.h`'s `KF_FLASH_ASSET_BUDGET_BYTES`; the rest is firmware, doubled for OTA), warnings when a frame runs long. Desktop speed lies. Constraint enforcement lives somewhere it can't be accidentally bypassed.
 
-**3. Software first, no hardware yet.** Parts get ordered only when the demo pet runs in the simulator under enforced constraints with save + offline fast-forward working, AND an ESP-IDF hello-world boots in Wokwi. Don't plan work that assumes hardware on the desk.
+**3. Hardware is real now — bring-up is in progress, not hypothetical.** The trigger this rule used to gate on has already fired: the demo pet ran in the simulator under enforced constraints with save + offline fast-forward working, and an ESP-IDF hello-world booted in Wokwi. Parts were ordered, the board is on the bench, and the care loop runs on it over the debug bridge. Work can now assume hardware on the desk — but the discipline that got us here still applies going forward: don't build ahead of what is proven on the bench, and keep the desktop build as the fast, enforced-constraints loop for anything that doesn't specifically need silicon.
 
 ## Naming rules
 
@@ -55,6 +55,8 @@ Monorepo, Apache 2.0:
                offline fast-forward)
 /sdk           Lua game API, packaging CLI
 /simulator     desktop HAL backend (SDL) + WASM later
+/ports         device backends for the HAL (esp32, esp32-bringup)
+/tools         asset pipeline, packing, debug bridge, and dev scripts
 /examples      sample creatures
 /docs          docs site source
 ```
@@ -65,8 +67,15 @@ Demo creature code is Apache; its characters and artwork are **not** licensed fo
 
 ## Don't decide yet
 
-- **LVGL vs a custom sprite engine.** That's a deliberate later evaluation, a week each. Don't prejudge it in early slices.
 - The creature class name.
+
+## Already decided
+
+- **LVGL vs a custom sprite engine.** Decided: ADR 0013. The retained scene
+  engine now drives the whole home screen, and `KF_ENABLE_LVGL` defaults
+  OFF on both build systems (Info moved off LVGL onto the scene engine too —
+  ADR 0045). LVGL is kept buildable behind that flag as the ADR 0013
+  evaluation path, not deleted, but it is off by default.
 
 ## If you are the operator, these two things are your job
 
