@@ -51,6 +51,14 @@ jobs:
       - name: Core is heap-free
         run: python3 tools/check_no_heap.py .
 
+      # Stdlib-only (see that file's own header comment), so it runs on
+      # every platform this workflow builds on -- unlike
+      # tools/kf_panel_layout_check.py, which needs tkinter and a real
+      # display and is intentionally NOT wired in here; see dev.sh's
+      # do_test() for that one.
+      - name: kf_debug.py self-test
+        run: python3 tools/kf_debug_selftest.py
+
   windows-msvc:
     name: windows / msvc
     runs-on: windows-latest
@@ -65,3 +73,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
+      - name: kf_debug.py self-test
+        run: python3 tools/kf_debug_selftest.py

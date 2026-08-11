@@ -107,6 +107,31 @@ do_test() {
     ctest --test-dir "$BUILD_DIR" --output-on-failure
     echo "==> Checking core stays heap-free"
     python3 tools/check_no_heap.py
+    echo "==> Running kf_debug.py's self-test (no hardware needed)"
+    python3 tools/kf_debug_selftest.py
+    # tools/kf_panel_layout_check.py needs tkinter AND a real display --
+    # neither is guaranteed everywhere this script runs (WSL2 with no X
+    # server, a minimal CI container, ...), and a missing display is an
+    # environment gap, not a layout bug. Best-effort: run it if tkinter
+    # imports, skip with a clear reason otherwise. NOT wired into CI
+    # (.github/workflows/ci.yml) for the same reason -- those runners have
+    # no display and forcing this on would fail on environment grounds
+    # every time, not on a real regression.
+    if python3 -c "import tkinter" >/dev/null 2>&1; then
+        echo "==> Checking kf_panel.py's layout (needs tkinter + a display)"
+        python3 tools/kf_panel_layout_check.py || {
+            echo "    kf_panel_layout_check.py failed -- see output above." >&2
+            echo "    If this is 'couldn't connect to display' rather than" >&2
+            echo "    a real layout problem, that's this machine having no" >&2
+            echo "    display, not a bug; run it locally with a screen to" >&2
+            echo "    confirm before treating this as a real failure." >&2
+            exit 1
+        }
+    else
+        echo "==> Skipping kf_panel.py's layout check: this python3 has no" \
+             "tkinter (see kf_panel_layout_check.py's own header for how to" \
+             "get one)"
+    fi
 }
 
 do_clean() {
