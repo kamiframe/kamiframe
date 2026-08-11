@@ -41,6 +41,14 @@ const char *reaction_name(uint8_t reaction) {
 
 void kf_home_screen_handle_care_buttons(const kf_pet_state *pet,
                                         uint32_t pressed) {
+    if (pet->asleep) {
+        /* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+         * feed/play/rest/bath/flush are meaningless against a sleeping
+         * creature -- waking it deliberately is its own real interaction
+         * (pet.wake(), read from creature.lua via kf.button("a")), not a
+         * side effect of feeding it in its sleep. */
+        return;
+    }
     if (pressed & KF_BTN_A) {
         const uint8_t variation = g_feed_variation;
         g_feed_variation = static_cast<uint8_t>(

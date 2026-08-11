@@ -118,6 +118,19 @@ if kf.home_screen_active() then
     local shrine = home:sprite("shrine_idle_s")
     shrine:move(96, 106) -- centred, 48x48
 
+    -- Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+    -- the tuck-in interaction's bedding. A real sprite, "futon_idle_s" --
+    -- one generic 48x48 entry for EVERY stage, no per-stage/per-direction
+    -- variants -- scenery, looked up by literal name exactly like
+    -- shrine_idle_s above, never through the creature name resolver.
+    -- Starts hidden; on_home_frame() below is the only place that shows
+    -- it.
+    local futon = home:sprite("futon_idle_s")
+    futon:hide()
+    local zzz = home:text("ZZZ")
+    zzz:color(kf.BLACK, bg)
+    zzz:hide()
+
     local poop = {} -- 8 fixed slots, field 240px / 8
     for i = 1, 8 do
         poop[i] = home:box(12, 12, kf.color(92, 64, 51))
@@ -170,6 +183,51 @@ if kf.home_screen_active() then
     -- as a closure over `body`/`shrine`/`poop`/`fill` above, rather than
     -- forward-declared outer locals the way this used to be structured,
     -- because nothing outside this `if` block needs to see them any more.
+
+    -- The futon's subtle wiggle: the same integer triangle wave kf_
+    -- creature_presenter.cpp's egg_bob_offset_y() uses, period and
+    -- amplitude matched to it for the identical "subtle, not distracting"
+    -- feel -- duplicated here in Lua because that helper is private to its
+    -- own C++ file. Integer-only on purpose, matching hakoniwaos's own
+    -- no-float rule even though this script is not built by check_no_
+    -- heap.py.
+    local kFutonWigglePeriodMs = 3000
+    local kFutonWiggleAmplitudePx = 2
+    local futon_elapsed_ms = 0
+    local function futon_wiggle_offset()
+        local quarter = kFutonWigglePeriodMs // 4
+        local phase = futon_elapsed_ms % kFutonWigglePeriodMs
+        local a = kFutonWiggleAmplitudePx
+        if phase < quarter then
+            return (phase * a) // quarter
+        elseif phase < 2 * quarter then
+            return ((2 * quarter - phase) * a) // quarter
+        elseif phase < 3 * quarter then
+            return -((phase - 2 * quarter) * a) // quarter
+        else
+            return -((4 * quarter - phase) * a) // quarter
+        end
+    end
+
+    -- ZZZ blinks slowly over the futon -- "flashing here and there, not
+    -- rapid" (the owner's own words). Visible 2000ms of every 3000ms:
+    -- mostly on, a brief pause, never a fast flicker. Both numbers are
+    -- feel, to be judged on the board.
+    local kZzzCyclePeriodMs = 3000
+    local kZzzVisibleMs = 2000
+    local zzz_elapsed_ms = 0
+
+    -- The hour before bedtime -- Core's own night window starts at 22:00
+    -- (kNightStartHour, hakoniwaos/src/pet.cpp, ADR 0048). Duplicated as a
+    -- literal here rather than read from Core: this is display-only, never
+    -- fed back into when the creature actually falls asleep, which stays
+    -- entirely Core's, against the real wall clock.
+    local kDrowsyHour = 21
+
+    local tucked_in = false -- decorative only; Core's own sleep timing
+    local was_asleep = false -- notices the wake edge, to put the bedding away
+    local bed_x, bed_y = 0, 0
+
     function on_home_frame(dt_ms)
         fill[1]:size(pet.hunger() * 190 // 100000, 8)
         fill[2]:size(pet.happiness() * 190 // 100000, 8)
@@ -178,17 +236,88 @@ if kf.home_screen_active() then
         if pet.dead() then
             shrine:show()
             body:hide()
+            futon:hide()
+            zzz:hide()
         else
             shrine:hide()
-            body:show()
             local poops = pet.poops()
             for i = 1, 8 do
                 if i <= poops then poop[i]:show() else poop[i]:hide() end
             end
-            body:sprite(creature.sprite())
-            body:flip(creature.mirrored())
-            body:frame(creature.frame())
-            body:move(creature.x(), creature.y())
+
+            local asleep = pet.asleep()
+
+            -- Waking it deliberately is allowed and costs happiness (the
+            -- spec's own words, kept small -- pet.wake()). Checked before
+            -- anything below reads `asleep` again, so a wake this frame
+            -- shows immediately rather than one frame late.
+            if asleep and kf.button("a") then
+                pet.wake()
+                asleep = false
+            end
+
+            -- The morning: Core wakes the creature on its own (the next
+            -- clock-crossing segment simply computes asleep = false) --
+            -- "it wakes, gets itself out of bed, and puts the bedding
+            -- away" is this edge, not a player action.
+            if was_asleep and not asleep then
+                tucked_in = false
+            end
+            was_asleep = asleep
+
+            -- Tuck-in: available only in the hour before bedtime, while
+            -- still awake and not already tucked in. Purely decorative --
+            -- Core has no "settle early" mechanism (ADR 0048 removed it
+            -- from the design entirely), so pressing B here never changes
+            -- WHEN the creature actually falls asleep, only what it looks
+            -- like doing it.
+            local drowsy = kf.clock_set() and kf.hour() == kDrowsyHour and
+                not asleep and not tucked_in
+            if drowsy and kf.button("b") then
+                tucked_in = true
+                bed_x, bed_y = creature.x(), creature.y()
+                futon_elapsed_ms = 0
+            end
+
+            if tucked_in then
+                -- The futon's own art already shows a sleeping shape, so
+                -- the creature's own body sprite is hidden rather than
+                -- drawn underneath it.
+                body:hide()
+                futon_elapsed_ms = futon_elapsed_ms + dt_ms
+                futon:show()
+                futon:move(bed_x, bed_y + futon_wiggle_offset())
+
+                zzz_elapsed_ms = zzz_elapsed_ms + dt_ms
+                if (zzz_elapsed_ms % kZzzCyclePeriodMs) < kZzzVisibleMs then
+                    zzz:show()
+                else
+                    zzz:hide()
+                end
+                zzz:move(bed_x + 30, math.max(0, bed_y - 10))
+            else
+                -- Not tucked in -- whether wide awake or asleep on its own
+                -- (kf_creature_presenter.cpp freezes the wander the
+                -- instant pet.asleep() is true, so it is drawn "settled
+                -- where it stands"), creature.sprite() already resolves
+                -- the right pose either way (kf_creature_pose_for()).
+                futon:hide()
+                body:show()
+                body:sprite(creature.sprite())
+                body:flip(creature.mirrored())
+                body:frame(creature.frame())
+                body:move(creature.x(), creature.y())
+
+                -- The drowsy cue: signals tucking in is available. A
+                -- nicety, not a duty -- static, not blinking (blinking is
+                -- reserved for "already tucked in", above).
+                if drowsy then
+                    zzz:show()
+                    zzz:move(creature.x() + 30, math.max(0, creature.y() - 10))
+                else
+                    zzz:hide()
+                end
+            end
         end
     end
 end

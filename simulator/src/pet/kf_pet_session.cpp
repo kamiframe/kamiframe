@@ -285,6 +285,13 @@ void kf_pet_session_flush(void) {
     debug_snapshot_push();
 }
 
+void kf_pet_session_wake(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_wake called before kf_pet_session_init");
+    kf_pet_wake(&g.state, &g.config);
+    debug_snapshot_push();
+}
+
 void kf_pet_session_save(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_save called before kf_pet_session_init");

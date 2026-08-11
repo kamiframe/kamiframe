@@ -121,6 +121,25 @@ void kf_creature_presenter_advance(const kf_pet_state *pet, uint32_t dt_ms) {
         }
         g_egg_bob_elapsed_ms += dt_ms;
         kf_creature_tick_anim(&g_creature, dt_ms);
+    } else if (pet->asleep) {
+        /* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+         * "the creature settled where it stands, and the wander stopped."
+         * kf_creature_update() is what owns c->x/y/target_x/target_y
+         * (hakoniwaos/src/creature.cpp) -- calling it here regardless of
+         * pose, the way this function did before sleep existed, would keep
+         * choosing new wander targets and walking toward them every frame,
+         * invisibly under the sleeping sprite. Skipped entirely rather than
+         * called with dt_ms=0: dwell_ms/reaction_hold_ms must not tick down
+         * either, so a creature that falls asleep mid-dwell or mid-reaction
+         * resumes EXACTLY there on waking, not part-way through a countdown
+         * that kept running while nothing was drawn.
+         *
+         * Animation still ticks -- harmless, since every shipped
+         * *_sleeping_* sprite is a single frame (kf_creature_anim_wrap()
+         * always re-wraps to 0) -- kept only so this branch does not need
+         * its own special case if a future pack ever adds a breathing
+         * loop. */
+        kf_creature_tick_anim(&g_creature, dt_ms);
     } else {
         kf_creature_update(&g_creature, KF_CREATURE_PRESENTER_FIELD, dt_ms);
     }

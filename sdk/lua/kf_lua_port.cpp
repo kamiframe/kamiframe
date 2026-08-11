@@ -10,10 +10,12 @@
 #include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_pet_session.h"
 
+#include "kf/app.h"
 #include "kf/clock.h"
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "kf/types.h"
 
 extern "C" {
 #include <lauxlib.h>
@@ -221,6 +223,59 @@ int lua_kf_set_clock(lua_State *L) {
     return 1;
 }
 
+/* kf.button(name) -- true on the exact frame `name` went from not-pressed
+ * to pressed (kf/app.h's kf_app_buttons_pressed(), the same debounced edge
+ * every C++ input handler in this codebase already reads -- Home's own
+ * feed/play/rest/bath/flush, kf_home_screen_input.cpp, and Settings' field
+ * editor, kf_lua_settings_screen.cpp). Lowercase button names
+ * ("up"/"down"/"left"/"right"/"a"/"b"/"menu"), matching pet.stage()'s own
+ * lowercase-string convention rather than exposing kf_button's integer
+ * bitmask.
+ *
+ * Added for Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md): the tuck-in interaction is declared entirely in creature.lua,
+ * not wired through a NEW C++ input handler the way feed/play/rest/bath/
+ * flush are -- this is the one call that makes that possible without
+ * inventing a shared cross-screen button registry (kf_lua_settings_
+ * screen.cpp's own header comment explains why THAT would be a mistake;
+ * reading kf_app_buttons_pressed() directly, scoped to whichever screen's
+ * own per-frame function happens to be running, carries none of that risk
+ * -- it is exactly what every C++ handler already does, just reachable
+ * from Lua now too).
+ *
+ * An unrecognised name is a script bug, not a corrupted button state --
+ * raises via luaL_error(), matching this codebase's existing convention
+ * for "the argument itself is wrong" (see e.g. lua_pet_reaction_to()'s own
+ * out-of-range handling elsewhere in this file, which chooses the opposite
+ * -- clamp, not raise -- because THAT input is data the creature computed,
+ * not a literal a script author typed by hand). */
+int lua_kf_button(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    uint32_t bit;
+    if (std::strcmp(name, "up") == 0) {
+        bit = KF_BTN_UP;
+    } else if (std::strcmp(name, "down") == 0) {
+        bit = KF_BTN_DOWN;
+    } else if (std::strcmp(name, "left") == 0) {
+        bit = KF_BTN_LEFT;
+    } else if (std::strcmp(name, "right") == 0) {
+        bit = KF_BTN_RIGHT;
+    } else if (std::strcmp(name, "a") == 0) {
+        bit = KF_BTN_A;
+    } else if (std::strcmp(name, "b") == 0) {
+        bit = KF_BTN_B;
+    } else if (std::strcmp(name, "menu") == 0) {
+        bit = KF_BTN_MENU;
+    } else {
+        return luaL_error(L,
+                           "kf.button: unknown button name '%s' (expected "
+                           "one of up/down/left/right/a/b/menu)",
+                           name);
+    }
+    lua_pushboolean(L, (kf_app_buttons_pressed() & bit) != 0u ? 1 : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
@@ -230,6 +285,7 @@ const luaL_Reg kKfFuncs[] = {
     {"minute", lua_kf_minute},
     {"clock_set", lua_kf_clock_set},
     {"set_clock", lua_kf_set_clock},
+    {"button", lua_kf_button},
     {nullptr, nullptr},
 };
 
@@ -306,6 +362,18 @@ int lua_pet_flush(lua_State *L) {
     return 0;
 }
 
+/* pet.wake() -- Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md): wakes a sleeping creature deliberately. Costs happiness (kf/
+ * pet.h's kf_pet_wake(), config->wake_happiness_cost_mp) and is a no-op if
+ * the creature is already awake, or dead. No argument, no return value --
+ * same shape as pet.flush(): one way to do it, nothing to configure at the
+ * call site. */
+int lua_pet_wake(lua_State *L) {
+    (void)L;
+    kf_pet_session_wake();
+    return 0;
+}
+
 /* Mess, readable from a script. Poops are a plain count and dirtiness is
  * millipercent like the three needs, so a creature script can react to
  * "there are three poops down" or "we are past the flies threshold" the
@@ -333,6 +401,19 @@ int lua_pet_sick(lua_State *L) {
 
 int lua_pet_dead(lua_State *L) {
     lua_pushboolean(L, kf_pet_session_state()->dead ? 1 : 0);
+    return 1;
+}
+
+/* pet.asleep() -- true while the creature is asleep (kf/pet.h's
+ * kf_pet_state::asleep, ADR 0048). A plain boolean, exactly like
+ * pet.sick()/pet.dead() above, deliberately not an enum: there is no
+ * richer sleep sub-state in Core to expose (ADR 0048's own decision --
+ * "settling the creature into bed is the game layer's decoration"), so a
+ * script that wants to know whether it is bedtime has exactly one question
+ * to ask. Task 7 of docs/superpowers/plans/2026-08-13-screens-clock-
+ * sleep.md. */
+int lua_pet_asleep(lua_State *L) {
+    lua_pushboolean(L, kf_pet_session_state()->asleep ? 1 : 0);
     return 1;
 }
 
@@ -489,10 +570,12 @@ const luaL_Reg kKfPetFuncs[] = {
     {"rest", lua_pet_rest},
     {"bath", lua_pet_bath},
     {"flush", lua_pet_flush},
+    {"wake", lua_pet_wake},
     {"poops", lua_pet_poops},
     {"dirtiness", lua_pet_dirtiness},
     {"sick", lua_pet_sick},
     {"dead", lua_pet_dead},
+    {"asleep", lua_pet_asleep},
     {"neglect_seconds", lua_pet_neglect_seconds},
     {"save", lua_pet_save},
     {"stage", lua_pet_stage},

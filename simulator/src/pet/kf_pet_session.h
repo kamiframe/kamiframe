@@ -107,6 +107,12 @@ void kf_pet_session_bath(uint8_t variation);
 /* Clears the waiting poops. No variation: see kf/pet.h's kf_pet_flush(). */
 void kf_pet_session_flush(void);
 
+/* Wakes the active pet deliberately, if it is currently asleep -- see kf/
+ * pet.h's kf_pet_wake(). A no-op otherwise (already awake, or dead), same
+ * as every other care action against a dead pet. Task 7 of docs/
+ * superpowers/plans/2026-08-13-screens-clock-sleep.md. */
+void kf_pet_session_wake(void);
+
 /* Persists the active pet's state now, via kf_pet_save(). Called
  * automatically by kf_pet_session_shutdown(), and exposed here too (and to
  * Lua, via the pet.save() binding) so a caller can save at a meaningful

@@ -1005,6 +1005,18 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_screen_isolation_check().
     add_test(NAME screen_isolation_check
              COMMAND kamiframe-headless --verify-screen-isolation)
+
+    # Task 7 of the screens/clock/sleep plan: sleep on screen -- pet.asleep()/
+    # pet.wake() bound to Lua, kf_pet_wake()'s Core mechanics, the wander
+    # freezing while asleep (screen_parity_check hashes one frame and cannot
+    # catch a creature that keeps walking asleep -- this drives 300+ real
+    # frames and checks position stays put), the *_sleeping_* pose, the
+    # tuck-in interaction (kf.button()) and its futon_idle_s scenery, the ZZZ
+    # blink/wiggle actually animating, and the worst-case dirty-rect count
+    # while sleep's own scenery is on screen. See headless_main.cpp's
+    # run_sleep_screen_check().
+    add_test(NAME sleep_screen_check
+             COMMAND kamiframe-headless --verify-sleep-screen)
 endif()
 
 # ---------------------------------------------------------------------------

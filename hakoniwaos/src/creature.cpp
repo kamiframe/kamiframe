@@ -124,6 +124,17 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
         snprintf(out, out_len, "egg_idle_%s", dir_tok);
         return;
     }
+    /* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md,
+     * ADR 0049): ADULT has no `adult*_sleeping_*` art in the shipped pack
+     * at all (the 18 sleeping sprites cover baby/child/teen0-3 only), so
+     * an adult that falls asleep resolves a name this pack does not
+     * contain. Deliberately NOT special-cased the way EGG is above: unlike
+     * the egg (which never asks for SLEEPING in the first place), an adult
+     * genuinely can be asleep, and the honest behaviour is the SAME
+     * missing-sprite fallback every other absent name in this pack already
+     * gets (kf/scene.h's placeholder box, logged once) -- not a silent
+     * substitution for a pose that has no real art. Generating real adult
+     * sleeping art, or picking a specific stand-in pose, is Chris's call. */
     char stage_buf[16];
     stage_token(pet, stage_buf, sizeof(stage_buf));
     snprintf(out, out_len, "%s_%s_%s", stage_buf, pose_name(pose), dir_tok);

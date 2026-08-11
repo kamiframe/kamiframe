@@ -7392,7 +7392,7 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 43;
+constexpr int kSettingsCheckExpectedObjectCount = 45;
 
 /* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -7825,6 +7825,383 @@ int run_screen_isolation_check() {
     return ok ? 0 : 1;
 }
 
+/* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): sleep
+ * on screen -- everything screen_parity_check CANNOT catch, per the plan's
+ * own warning: "A sleeping creature that keeps walking is the obvious bug
+ * and the parity check will not catch it." That check only ever hashes a
+ * SINGLE committed frame; it has no notion of "did this stay still across
+ * many frames", which is exactly the shape of the wander-freeze bug. Part A
+ * proves the pet.asleep() binding and kf_pet_wake()'s Core mechanics
+ * directly (no screen needed); Part C brings up the real interactive app --
+ * Home, the real creature.lua -- and drives it through sleep, waking, and
+ * the tuck-in interaction the way real button presses would. */
+int run_sleep_screen_check() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-sleep-screen-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_arena_init_all();
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    const kf_pet_millipercent kWakeCost =
+        kf_pet_default_config().wake_happiness_cost_mp;
+
+    /* ---- A. pet.asleep() reads Core's own state, via two throwaway probe
+     * scripts -- the same "hand a value back with kf.report()" technique
+     * run_settings_screen_check() uses for kf.time(), and for the identical
+     * reason: there is no C accessor for what a scene object shows, but
+     * this binding has a plain return value worth checking directly rather
+     * than only indirectly through creature.lua's own use of it. ---- */
+    kf_pet_session_init();
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+
+    constexpr const char *kAsleepProbeScript = R"lua(
+function on_frame(dt_ms)
+    kf.report(pet.asleep() and 1 or 0)
+end
+)lua";
+
+    pet->asleep = false;
+    check(kf_lua_port_init(kAsleepProbeScript, "=sleep_probe_awake"),
+          "the asleep-probe script loads");
+    kf_lua_port_frame(kFixedDtMs);
+    check(kf_lua_port_last_report() == 0,
+          "pet.asleep() reads false while state->asleep is false");
+    kf_lua_port_shutdown();
+
+    pet->asleep = true;
+    check(kf_lua_port_init(kAsleepProbeScript, "=sleep_probe_asleep"),
+          "the asleep-probe script reloads");
+    kf_lua_port_frame(kFixedDtMs);
+    check(kf_lua_port_last_report() == 1,
+          "pet.asleep() reads true while state->asleep is true");
+    kf_lua_port_shutdown();
+
+    /* ---- B. kf_pet_wake()'s Core mechanics, direct C calls -- no Lua, no
+     * screen, exactly the level run_pet_sleep_check() (Task 6) already
+     * tests sleep's OTHER mechanics at. ---- */
+    pet->dead = false;
+    pet->asleep = true;
+    pet->happiness_mp = 80000u;
+    kf_pet_session_wake();
+    check(!pet->asleep, "kf_pet_wake() clears asleep");
+    check(pet->happiness_mp == 80000u - kWakeCost,
+          "kf_pet_wake() costs exactly wake_happiness_cost_mp happiness, "
+          "nothing more");
+
+    pet->asleep = false;
+    pet->happiness_mp = 50000u;
+    kf_pet_session_wake();
+    check(pet->happiness_mp == 50000u,
+          "waking an already-awake creature is a no-op -- no happiness "
+          "cost for a wake that never happened");
+
+    pet->dead = true;
+    pet->asleep = true;
+    pet->happiness_mp = 50000u;
+    kf_pet_session_wake();
+    check(pet->dead && pet->asleep && pet->happiness_mp == 50000u,
+          "waking a dead creature is a no-op, same as every other care "
+          "action against a dead pet");
+    pet->dead = false;
+
+    kf_pet_session_shutdown();
+
+    /* ---- C. The real interactive app: Home, the real creature.lua, driven
+     * through kf_screen_nav_frame()/kf_lua_port_frame(0) exactly the way
+     * the real main loop does (screen_isolation_check's own drive_frame()
+     * pattern) -- so every assertion below is exercising the actual demo
+     * script third-party developers will read, not a synthetic fixture. ---- */
+    kf_fb_init();
+    kf_pet_session_init();
+    kf_screen_nav_init();
+
+    /* Noon: clock set, well outside the 21:00 drowsy hour and the 22:00-
+     * 07:00 night window, so the creature starts wide awake with no
+     * pending drowsy cue. */
+    kf_host_time_set_wall_fixed(1767268800); /* 2026-01-01T12:00:00Z */
+
+#ifdef KF_HOME_SCREEN_LUA
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+    kf_pet_state *pet2 = kf_pet_session_state_mutable_for_test();
+    pet2->stage = KF_PET_STAGE_CHILD; /* has real sleeping art, unlike EGG */
+    pet2->asleep = false;
+
+    auto drive_frame = [&](uint32_t dt_ms) {
+        kf_screen_nav_frame(dt_ms);
+        kf_lua_port_frame(0);
+        kf_scene_commit();
+    };
+    auto tap = [&](uint32_t button) {
+        kf_app_debug_set_buttons(button, button);
+        drive_frame(kFixedDtMs);
+        kf_app_debug_set_buttons(0, 0);
+        drive_frame(kFixedDtMs);
+    };
+
+    for (int i = 0; i < 20; ++i) {
+        drive_frame(kFixedDtMs); /* wander a while, awake */
+    }
+
+    /* ---- C1: the wander stops the instant it is asleep -- the assertion
+     * the plan explicitly says screen_parity_check cannot make. Forced
+     * directly (kf_pet_session_state_mutable_for_test()) rather than
+     * waited for: nothing in this loop ever calls kf_pet_session_frame(),
+     * so state->asleep stays exactly what this test sets it to, isolating
+     * the PRESENTER's reaction to it from Core's own night-window timing
+     * (already covered by pet_sleep_check). ---- */
+    pet2->asleep = true;
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs); /* let the presenter register asleep once */
+    }
+    const int16_t settled_x = kf_creature_presenter_x();
+    const int16_t settled_y = kf_creature_presenter_y();
+    for (int i = 0; i < 300; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    check(kf_creature_presenter_x() == settled_x &&
+              kf_creature_presenter_y() == settled_y,
+          "asleep: the creature does not wander -- settled exactly where "
+          "it stood the instant it fell asleep, even across 300 more "
+          "frames of real elapsed time");
+
+    /* ---- C2: the resolved sprite is the sleeping pose. ---- */
+    check(std::strstr(kf_creature_presenter_sprite_name(), "_sleeping_") !=
+              nullptr,
+          "asleep: creature.sprite() resolves to a *_sleeping_* pose "
+          "sprite");
+
+    /* ---- C2b: worst-case dirty rects for the PLAIN "plopped down, not
+     * tucked in" sleeping case -- a static single-frame sprite that has
+     * stopped moving, so this is really measuring how much the REST of
+     * Home (bars, poop slots -- none of which change value across this
+     * loop, since kf_pet_session_frame() is never called here) still
+     * costs on a settled screen. Reported alongside C7's tucked-in figure
+     * below, not instead of it -- "sleep active" covers both shapes. ---- */
+    {
+        size_t worst_rects_plain = 0;
+        for (int i = 0; i < 120; ++i) {
+            kf_fb_clear_dirty();
+            drive_frame(kFixedDtMs);
+            const size_t count =
+                static_cast<size_t>(kf_fb_dirty_rects().count);
+            if (count > worst_rects_plain) {
+                worst_rects_plain = count;
+            }
+        }
+        KF_LOGI(TAG,
+                "sleep-screen: worst-case dirty rects while asleep (not "
+                "tucked in) = %zu (KF_MAX_DIRTY_RECTS = %d)",
+                worst_rects_plain, KF_MAX_DIRTY_RECTS);
+        check(worst_rects_plain <= KF_MAX_DIRTY_RECTS,
+              "plain-asleep Home stays within the dirty-rect budget");
+    }
+
+    /* ---- C3: care buttons are inert against a sleeping creature -- RIGHT
+     * (flush) does not clear waiting poops while asleep. ---- */
+    pet2->poop_count = 3u;
+    tap(KF_BTN_RIGHT);
+    check(pet2->poop_count == 3u,
+          "asleep: flush (and every other care button) does nothing -- "
+          "kf_home_screen_input.cpp's own asleep gate");
+
+    /* ---- C4: A wakes it -- the button, wired all the way through
+     * kf.button("a")/pet.wake() in the REAL script, not the direct kf_pet_
+     * wake() call Part B already proved. Confirms the wiring, not the
+     * mechanics again. ---- */
+    const kf_pet_millipercent happiness_before_wake = pet2->happiness_mp;
+    tap(KF_BTN_A);
+    check(!pet2->asleep,
+          "pressing A while asleep wakes the creature, through creature."
+          "lua's own kf.button(\"a\")/pet.wake() call");
+    check(pet2->happiness_mp == happiness_before_wake - kWakeCost,
+          "the deliberate wake through the button costs exactly the "
+          "configured happiness, matching Part B's direct call");
+
+    /* Wander resumes once awake again -- the mirror image of C1, proving
+     * the freeze in kf_creature_presenter.cpp is specifically keyed to
+     * asleep, not a general "creature.lua stopped calling move()" bug that
+     * C1 alone could not tell apart from a correct freeze. */
+    const int16_t woken_x = kf_creature_presenter_x();
+    const int16_t woken_y = kf_creature_presenter_y();
+    for (int i = 0; i < 300; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    check(kf_creature_presenter_x() != woken_x ||
+              kf_creature_presenter_y() != woken_y,
+          "once woken, the wander resumes -- the freeze was specific to "
+          "being asleep, not a permanent stop");
+
+    /* ---- C5: the tuck-in interaction -- B during the drowsy hour shows
+     * the futon at the creature's own current position. The background
+     * colour is sampled once, fresh, rather than hardcoded, so this
+     * assertion is not coupled to Home's own bg literal. ---- */
+    pet2->asleep = false;
+    kf_host_time_set_wall_fixed(1767301200); /* 2026-01-01T21:00:00Z */
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    const kf_color home_bg = kf_fb_pixels()[0];
+
+    kf_app_debug_set_buttons(KF_BTN_B, KF_BTN_B);
+    drive_frame(kFixedDtMs); /* the tuck-in frame itself */
+    const int16_t bed_x = kf_creature_presenter_x();
+    const int16_t bed_y = kf_creature_presenter_y();
+    kf_app_debug_set_buttons(0, 0);
+    drive_frame(kFixedDtMs);
+
+    auto pixel_at = [&](int16_t x, int16_t y) -> kf_color {
+        return kf_fb_pixels()[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                               static_cast<size_t>(x)];
+    };
+    check(pixel_at(static_cast<int16_t>(bed_x + 24),
+                    static_cast<int16_t>(bed_y + 24)) != home_bg,
+          "drowsy + B: something shows at the creature's own tuck-in "
+          "position (its own art once landed, a placeholder box until "
+          "then -- see this check's own report on which it saw)");
+
+    /* The check above alone is NOT proof the futon specifically is what is
+     * showing there: bed_x/bed_y is captured at the SAME instant the
+     * creature's own body would otherwise be drawn at that exact spot, so
+     * a version of this check with tuck-in completely disabled still
+     * passes it -- the pixel sampled is the body's own placeholder, not
+     * the futon's. Caught only by trying it: temporarily breaking kf.
+     * button() (returning false unconditionally) left this single
+     * assertion GREEN. Closed by running the underlying wander well away
+     * from bed_x/bed_y (it keeps moving invisibly while tucked in -- pet2
+     * is not Core-asleep here, only decoratively tucked in) and checking
+     * BOTH ends: the body is not ALSO being drawn at its new, live
+     * position (proving body:hide() is real), and the futon is still
+     * showing at the ORIGINAL, fixed bed position (proving it did not
+     * move with the body it replaced). */
+    for (int i = 0; i < 60; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    const int16_t moved_x = kf_creature_presenter_x();
+    const int16_t moved_y = kf_creature_presenter_y();
+    check(moved_x != bed_x || moved_y != bed_y,
+          "tucked in: the underlying wander kept moving (sanity check, so "
+          "the two assertions below are not sampling the same spot twice)");
+    check(pixel_at(static_cast<int16_t>(moved_x + 24),
+                    static_cast<int16_t>(moved_y + 24)) == home_bg,
+          "tucked in: the creature's own body sprite is NOT drawn at its "
+          "live, invisible wander position -- body:hide() is real");
+    check(pixel_at(static_cast<int16_t>(bed_x + 24),
+                    static_cast<int16_t>(bed_y + 24)) != home_bg,
+          "tucked in: the futon is still showing at the FIXED bed "
+          "position, unmoved by the body's own hidden wandering");
+
+    /* ---- C6: tucked in, a frame with nothing else changing still dirties
+     * something -- the wiggle and the ZZZ blink are actually animating,
+     * not frozen decoration. The mirror image of screen_isolation_check's
+     * own "a settled frame transfers zero bytes" assertions: here, staying
+     * NONZERO is the correct behaviour. A single ordinary kFixedDtMs
+     * (~33ms) step is NOT long enough to prove this: the wiggle only steps
+     * its integer offset once per quarter-period (750ms of the 3000ms
+     * wiggle), so most individual 33ms frames legitimately dirty nothing
+     * from the wiggle alone. 1600ms -- over two full quarter-periods --
+     * guarantees the wiggle's own offset has moved at least once,
+     * independent of the ZZZ blink's own (slower, 3000ms) cycle. ---- */
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs); /* absorb the tuck-in transition's own dirty */
+    }
+    kf_fb_clear_dirty();
+    drive_frame(1600u);
+    check(kf_fb_dirty_bytes() > 0u,
+          "tucked in: a step that changes nothing else still dirties "
+          "something -- the futon wiggle / ZZZ blink are live, not frozen "
+          "decoration");
+
+    /* ---- C7: the worst-case dirty-rect count while sleep's own scenery
+     * (futon + blinking ZZZ) is active alongside the rest of Home --
+     * exactly the number kf/scene.h's KF_MAX_DIRTY_RECTS (8) budget is
+     * about. Measured, not assumed, over enough frames to cross several
+     * ZZZ blink cycles. ---- */
+    size_t worst_rects = 0;
+    for (int i = 0; i < 300; ++i) {
+        kf_fb_clear_dirty();
+        drive_frame(kFixedDtMs);
+        const size_t count =
+            static_cast<size_t>(kf_fb_dirty_rects().count);
+        if (count > worst_rects) {
+            worst_rects = count;
+        }
+    }
+    KF_LOGI(TAG,
+            "sleep-screen: worst-case dirty rects while tucked in = %zu "
+            "(KF_MAX_DIRTY_RECTS = %d)",
+            worst_rects, KF_MAX_DIRTY_RECTS);
+    check(worst_rects <= KF_MAX_DIRTY_RECTS,
+          "tucked-in Home stays within the dirty-rect budget");
+
+    /* ---- C8: waking puts the bedding away -- the spec's own words. NOTE:
+     * the obvious version of this check -- "does kf_creature_presenter_x()/
+     * y() read something different after a second B press" -- is VACUOUS:
+     * the presenter keeps moving every frame regardless of tucked_in (it is
+     * gated on Core's asleep, not on this decorative flag), so it always
+     * reads a different number, whether or not the second B press did
+     * anything at all. Caught only by trying it: this exact comparison,
+     * with the tucked_in reset (creature.lua's `if was_asleep and not
+     * asleep then tucked_in = false end`) disabled, still passed. The
+     * decisive check instead samples the PIXEL at the ORIGINAL bed
+     * position: if tucked_in never reset, `drowsy` stays false forever
+     * (it requires `not tucked_in`), the second B press is silently
+     * ignored, and the futon is still sitting at C5's exact bed_x/bed_y --
+     * still non-background. Only a genuine reset lets the futon move away
+     * from that spot. ---- */
+    pet2->asleep = true; /* bedtime arrives while still tucked in */
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    pet2->asleep = false; /* the morning -- Core's own wake edge */
+    for (int i = 0; i < 20; ++i) {
+        drive_frame(kFixedDtMs); /* wander well clear before re-tucking */
+    }
+    kf_app_debug_set_buttons(KF_BTN_B, KF_BTN_B);
+    drive_frame(kFixedDtMs);
+    const int16_t second_bed_x = kf_creature_presenter_x();
+    const int16_t second_bed_y = kf_creature_presenter_y();
+    kf_app_debug_set_buttons(0, 0);
+    drive_frame(kFixedDtMs);
+    check(second_bed_x != bed_x || second_bed_y != bed_y,
+          "sanity: the wander moved on before the second tuck-in attempt "
+          "(otherwise the decisive check below could pass by coincidence)");
+    check(pixel_at(static_cast<int16_t>(bed_x + 24),
+                    static_cast<int16_t>(bed_y + 24)) == home_bg,
+          "waking put the bedding away -- the ORIGINAL bed position is "
+          "vacated, which only happens if tucked_in actually reset and "
+          "the futon moved to a fresh spot");
+
+#ifdef KF_HOME_SCREEN_LUA
+    kf_lua_port_shutdown();
+#endif
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -7878,6 +8255,7 @@ int main(int argc, char *argv[]) {
     bool verify_settings_screen = false;
     bool verify_screen_isolation = false;
     bool verify_sleep = false;
+    bool verify_sleep_screen = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -7998,6 +8376,8 @@ int main(int argc, char *argv[]) {
             verify_screen_isolation = true;
         } else if (std::strcmp(argv[i], "--verify-sleep") == 0) {
             verify_sleep = true;
+        } else if (std::strcmp(argv[i], "--verify-sleep-screen") == 0) {
+            verify_sleep_screen = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -8049,7 +8429,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-clock\n"
                         "kamiframe-headless --verify-settings-screen\n"
                         "kamiframe-headless --verify-screen-isolation\n"
-                        "kamiframe-headless --verify-sleep\n");
+                        "kamiframe-headless --verify-sleep\n"
+                        "kamiframe-headless --verify-sleep-screen\n");
             return 0;
         }
     }
@@ -8267,6 +8648,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_sleep) {
         return run_pet_sleep_check();
+    }
+
+    if (verify_sleep_screen) {
+        return run_sleep_screen_check();
     }
 
     kf_app_init(mode);

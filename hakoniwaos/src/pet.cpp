@@ -1061,6 +1061,13 @@ kf_pet_config kf_pet_default_config(void) {
      * argument, not by evidence -- it is the only route to a character the
      * bible describes, so it wants testing with a real creature. */
     c.dust_care_average_mp = 20000u;
+
+    /* Waking a sleeping creature deliberately costs 5% happiness -- "kept
+     * small" (the spec's own words), a fraction of what a single disliked
+     * care action already costs relative to a liked one
+     * (care_boost_disliked_mp vs care_boost_liked_mp above), illustrative
+     * like every other figure in this function, not a tuned value. */
+    c.wake_happiness_cost_mp = 5000u;
     return c;
 }
 
@@ -1305,6 +1312,28 @@ void kf_pet_flush(kf_pet_state *state) {
      * creature's response to the last thing that was actually done TO it,
      * which is what the screen is showing. */
     state->poop_count = 0u;
+}
+
+void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config) {
+    if (state->dead || !state->asleep) {
+        return;
+    }
+    /* Deliberately does NOT touch care_actions_taken -- unlike feed/play/
+     * rest/bath, waking a creature is not something it has an OPINION
+     * about (kf_pet_reaction_to() is never consulted), so there is no
+     * reaction to record and no reason to start the presenter's reaction-
+     * hold window (kf_creature_presenter.cpp's own care_actions_taken
+     * watch). Pose precedence already puts asleep above the held reaction
+     * (kf_creature_pose_for(), ADR 0048) for the identical reason: nothing
+     * about waking should make the creature flash a happy/objecting pose
+     * it never actually performed.
+     *
+     * Same underflow-safe subtraction apply_decay() above already uses:
+     * floor at zero rather than wrap. */
+    const kf_pet_millipercent cost = config->wake_happiness_cost_mp;
+    state->happiness_mp =
+        (cost >= state->happiness_mp) ? 0u : state->happiness_mp - cost;
+    state->asleep = false;
 }
 
 /* ADR 0023: a pure query over the three whole-life accumulators, computed

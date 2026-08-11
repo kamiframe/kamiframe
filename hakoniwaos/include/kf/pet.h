@@ -326,6 +326,15 @@ typedef struct {
      * See advance_to_next_stage() for why this is a threshold on the
      * average rather than "was it ever touched". */
     kf_pet_millipercent dust_care_average_mp;
+
+    /* What waking a sleeping creature deliberately costs it, in happiness --
+     * kf_pet_wake(), Task 7 of docs/superpowers/plans/2026-08-13-screens-
+     * clock-sleep.md. The spec's own words: "kept small" -- this is a
+     * config field, not a hardcoded constant, for the identical reason
+     * every other care number in this struct is: a dev writes a pet by
+     * configuring and skinning this, and there is no reason waking should
+     * be the one number that cannot be tuned. */
+    kf_pet_millipercent wake_happiness_cost_mp;
 } kf_pet_config;
 
 /* A reasonable illustrative default: hunger drains fastest (empty from
@@ -623,6 +632,22 @@ void kf_pet_bath(kf_pet_state *state, const kf_pet_config *config,
  * has slowed the problem without solving it, which is the right shape for
  * two actions that both live under "keep it clean". */
 void kf_pet_flush(kf_pet_state *state);
+
+/* Wakes a sleeping creature deliberately -- Task 7 of docs/superpowers/
+ * plans/2026-08-13-screens-clock-sleep.md, the care-loop spec's own words:
+ * "Waking it deliberately is allowed and costs happiness. The original
+ * punished you for leaving the light on; this is the same idea, kept
+ * small." A no-op if the creature is already awake, or dead: there is
+ * nothing to wake either way, and a dead creature's happiness is not this
+ * function's business (kf_pet_feed()/etc. all take the identical
+ * `if (state->dead) return;` guard for the same reason).
+ *
+ * Sets `state->asleep = false` directly -- Core does not need to know WHY
+ * the creature is awake, only that it is (ADR 0048's own reasoning for why
+ * `asleep` has no richer sub-state). The next segment
+ * apply_stage_segment() runs will simply recompute `asleep` fresh against
+ * the wall clock, same as always; nothing here needs to suppress that. */
+void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config);
 
 /* Which of the three care-derived traits is currently dominant --
  * 0 = hunger, 1 = happiness, 2 = energy -- computed fresh from the three
