@@ -326,3 +326,14 @@ current values is meant to survive that.
   rely on the same wall clock offline fast-forward already depends on, so
   closing that gap benefits life stages the identical way it benefits
   ordinary decay.
+
+## Superseded in part
+
+**"The pet screen blob"** describes `kf_pet_screen.cpp` as the live Home
+screen; it no longer is. Since ADR 0021's own later work
+(creature-on-screen) and ADR 0044/0045, Home is `kf_creature_screen.cpp` or
+a `kf.screen("home")` Lua group, and draws the real sprite this section's
+"real character content... once Chris's designer is involved" looked
+forward to, not a placeholder blob. `kf_pet_screen.cpp`'s blob still exists
+and still compiles under `-DKF_ENABLE_LVGL=ON` as `pet_screen_check`'s
+golden-checksum subject, but nothing in a running build shows it.

@@ -280,3 +280,20 @@ issue, `fetch_lvgl.cmake`'s `EXCLUDE REGEX` filter is the one place to
 extend -- it already runs by filename pattern, not a fixed list assuming
 exactly two files. Wiring the demo creature (Lua) in behind this screen is
 future work this slice deliberately left alone; nothing here blocks it.
+
+## Superseded in part
+
+**"The pet screen itself (ADR 0017) already exists and already works on
+desktop -- `kf_pet_screen.cpp`, reached via `kf_screen_nav.cpp`"** described
+the live Home screen as of this ADR's date (2026-08-08); it no longer is.
+Home is `kf_creature_screen.cpp` or a `kf.screen("home")` Lua group now
+(ADR 0021, 0044, 0045), and `kf_pet_screen.cpp` is reachable only through
+`pet_screen_check`'s direct call under `-DKF_ENABLE_LVGL=ON`.
+`kf_pet_info_screen.cpp`, named throughout this ADR as a hard compile
+dependency of `kf_screen_nav.cpp`, is deleted (ADR 0045 — Info moved to a
+`kf.screen("info")` Lua group). `kf_screen_nav.cpp` itself moved out of
+`simulator/src/lvgl/` to `simulator/src/pet/` and no longer includes
+`<lvgl.h>` at all (ADR 0044/0045), so the plumbing this ADR built for
+getting LVGL onto the ESP32 build remains valid, but the component's `SRCS`
+list quoted above (decision 1) no longer matches
+`ports/esp32/kamiframe_lvgl_port/CMakeLists.txt`'s actual contents.

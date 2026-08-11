@@ -262,3 +262,19 @@ on and off, worth knowing rather than worth changing.
 - Retiring `kf_lvgl_proof_screen.h`/`.cpp` for real, if `lvgl_determinism_
   check` is ever rewritten against the pet screen instead -- not needed
   now, see "Decision" above for why that rewrite was not this slice's job.
+
+## Superseded in part
+
+`kf_pet_screen.cpp` is no longer the live Home screen. "Boot and frame
+ordering both changed" (Decision, above) said `sdl_main.cpp` "now calls
+`kf_pet_screen_init()`" in the old proof screen's place — true when written.
+Since ADR 0021 (creature-on-screen) it has not been: `sdl_main.cpp` calls
+`kf_screen_nav_init()`, and Home resolves through the registry to
+`kf_creature_screen.cpp` (`KF_HOME_SCREEN=cpp`) or a `kf.screen("home")`
+Lua group (`KF_HOME_SCREEN=lua`, the default since ADR 0043) — not this
+file's bars-and-buttons widget tree. `kf_pet_screen.cpp` still exists and
+still compiles under `-DKF_ENABLE_LVGL=ON`, but only as
+`run_pet_screen_check()`'s golden-checksum subject; nothing in a running
+build initialises it. This ADR's design reasoning (LVGL widgets driven live
+by `kf_pet_session`) is not wrong for what it built at the time — it is
+superseded by where Home moved, not by a flaw in this decision.

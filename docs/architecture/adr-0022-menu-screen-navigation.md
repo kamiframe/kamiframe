@@ -222,3 +222,17 @@ change to what MENU itself does.
   at all, now that it has caused real friction twice (ADR 0017, and this
   addendum) -- a genuine device/input-design question, and Chris's to
   weigh in on, not something to change unilaterally a third time.
+
+## Superseded in part
+
+**"`kf_pet_screen.cpp` itself is untouched... Home still builds its widgets
+directly onto `lv_screen_active()`"** described the mechanism as this ADR
+built it; it no longer describes Home. Since ADR 0021 (creature-on-screen)
+and ADR 0044/0045 (register-by-name navigation, LVGL optional), Home is
+`kf_creature_screen.cpp` or a `kf.screen("home")` Lua group, and
+`kf_screen_nav_init()` no longer calls `kf_pet_screen_init()` at all —
+`kf_pet_screen.cpp` is reachable only through `pet_screen_check`'s own
+direct call, gated behind `-DKF_ENABLE_LVGL=ON`. The two-screen switching
+mechanism this ADR introduced (register, advance, debug entry points) is
+not superseded — that shape is exactly what ADR 0044 generalised from a
+fixed two-entry array to register-by-name.
