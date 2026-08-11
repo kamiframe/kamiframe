@@ -175,10 +175,11 @@ target_link_libraries(kamiframe_lua_port
 # ---------------------------------------------------------------------------
 # KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/plans/
 # 2026-08-12-lua-game-layer.md): which Home implementation a build's
-# interactive app wires up -- kf_creature_screen.cpp ("cpp", the default,
-# unchanged since Task 4) or examples/creature_demo/creature.lua declaring
-# it directly through the SAME kf/scene.h retained scene ("lua", Task 5's
-# whole point). Both are ALWAYS compiled, regardless of this setting: the
+# interactive app wires up -- examples/creature_demo/creature.lua declaring
+# it directly through kf/scene.h's retained scene ("lua", the default since
+# Task 6 -- ADR 0043) or kf_creature_screen.cpp ("cpp", unchanged since
+# Task 4, kept as the parity reference and fallback for one release, per
+# the plan). Both are ALWAYS compiled, regardless of this setting: the
 # headless parity check (kamiframe-headless --verify-screen-parity) drives
 # both halves of the comparison from ONE binary, at runtime, independent of
 # which one this flag wires up for the INTERACTIVE app. Same CACHE STRING +
@@ -195,7 +196,7 @@ target_link_libraries(kamiframe_lua_port
 # directly, rather than the other way around (kamiframe_lua_port already
 # depends on kamiframe_pet_port). No cycle: kamiframe_lua_port does not, and
 # must not, depend back on kamiframe_lvgl_port.
-set(KF_HOME_SCREEN "cpp" CACHE STRING "Home screen implementation: cpp or lua")
+set(KF_HOME_SCREEN "lua" CACHE STRING "Home screen implementation: cpp or lua")
 if(NOT KF_HOME_SCREEN STREQUAL "cpp" AND NOT KF_HOME_SCREEN STREQUAL "lua")
     message(FATAL_ERROR
         "KF_HOME_SCREEN must be 'cpp' or 'lua', got '${KF_HOME_SCREEN}'")

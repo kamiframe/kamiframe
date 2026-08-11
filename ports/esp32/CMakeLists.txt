@@ -19,21 +19,22 @@ cmake_minimum_required(VERSION 3.20)
 
 ## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/
 ## plans/2026-08-12-lua-game-layer.md): which Home implementation this
-## firmware wires up -- "cpp" (kf_creature_screen.cpp, the default) or
-## "lua" (examples/creature_demo/creature.lua, declaring the same screen
-## through kf/scene.h directly). Set here, at the TOP of the whole project
-## file, rather than in main/CMakeLists.txt where KF_PANEL lives: both
-## main and the kamiframe_lvgl_port component (kamiframe_lvgl_port/
-## CMakeLists.txt, added to EXTRA_COMPONENT_DIRS below) need to see it, and
-## a plain CACHE variable set here is visible to every component ESP-IDF's
-## build goes on to configure, in either order.
+## firmware wires up -- "lua" (examples/creature_demo/creature.lua,
+## declaring the screen through kf/scene.h directly -- the default since
+## Task 6, ADR 0043) or "cpp" (kf_creature_screen.cpp, kept as the parity
+## reference and fallback for one release). Set here, at the TOP of the
+## whole project file, rather than in main/CMakeLists.txt where KF_PANEL
+## lives: both main and the kamiframe_lvgl_port component (kamiframe_lvgl_
+## port/CMakeLists.txt, added to EXTRA_COMPONENT_DIRS below) need to see
+## it, and a plain CACHE variable set here is visible to every component
+## ESP-IDF's build goes on to configure, in either order.
 ##
-##     idf.py -DKF_HOME_SCREEN=lua build
+##     idf.py -DKF_HOME_SCREEN=cpp build   # the fallback, for comparison
 ##
 ## Same CACHE STRING + configure-time FATAL_ERROR pattern as KF_PANEL
 ## below, for the identical reason: a typo should read as a command-line
 ## mistake, not a mysterious preprocessor failure three components away.
-set(KF_HOME_SCREEN "cpp" CACHE STRING "Home screen implementation: cpp or lua")
+set(KF_HOME_SCREEN "lua" CACHE STRING "Home screen implementation: cpp or lua")
 if(NOT KF_HOME_SCREEN STREQUAL "cpp" AND NOT KF_HOME_SCREEN STREQUAL "lua")
     message(FATAL_ERROR
         "KF_HOME_SCREEN must be 'cpp' or 'lua', got '${KF_HOME_SCREEN}'")
