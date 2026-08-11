@@ -25,14 +25,10 @@ inline constexpr const char *kKfLuaDemoCreatureScriptSource = R"lua(
 -- short: embedded verbatim into flash by tools/kf_embed_lua.py and parsed
 -- by the Lua VM at every boot.
 --
--- Task 5 (docs/superpowers/plans/2026-08-12-lua-game-layer.md): this now
--- also declares the whole home screen -- background, creature, mess, stat
--- bars, care guide -- guarded by kf.home_screen_active(), so the SAME file
--- runs unchanged under either KF_HOME_SCREEN build: narration only under
--- "cpp" (the C++ screen owns drawing), narration AND drawing under "lua".
--- Layout numbers below are chosen to match simulator/src/pet/kf_creature_
--- screen.cpp's own constants exactly -- see that file for what each one is
--- FOR; the reasoning is not repeated here to keep this file cheap to boot.
+-- Also declares the whole home screen now (Task 5, docs/superpowers/plans/
+-- 2026-08-12-lua-game-layer.md), gated by kf.home_screen_active() so this
+-- one file runs under either KF_HOME_SCREEN build. Layout numbers match
+-- kf_creature_screen.cpp's own constants -- see that file for the why.
 
 -- kf_pet_millipercent is 0..100000 (kf/pet.h) -- these thresholds are
 -- fractions of that same range, not raw percent, so they read directly
@@ -105,36 +101,28 @@ local function announce_stage()
     end
 end
 
--- The whole home screen -- forward-declared here so on_frame() below can
--- reach them as upvalues; only actually created (and only ever moved)
--- when this build's Lua owns Home. See kf.home_screen_active()'s own
--- comment (sdk/lua/kf_lua_port.cpp) for why one script file needs this
--- guard at all.
+-- Forward-declared for on_frame() below; only created under KF_HOME_
+-- SCREEN=lua (kf.home_screen_active()).
 local body, shrine, poop, fill
 
 if kf.home_screen_active() then
     local bg = kf.color(232, 240, 216)
     kf.background(bg)
 
-    -- Placeholder name/position: on_frame() below sets the real ones every
-    -- frame, including its very first call, before this scene ever commits
-    -- -- see kf_creature_screen.cpp's own enter()/declare_creature() for
-    -- why that ordering makes the placeholder harmless.
+    -- on_frame() sets the real sprite/position every frame, including its
+    -- first -- this placeholder is never painted.
     body = kf.sprite("")
-    body:layer(1) -- paints over the mess
+    body:layer(1) -- over the mess
 
     shrine = kf.sprite("shrine_idle_s")
-    shrine:move(96, 106) -- centred in the 240x260 field, 48x48 sprite
+    shrine:move(96, 106) -- centred, 48x48
 
-    -- Mess: 8 fixed slots, field is 240px wide / 8 -- see kf_creature_
-    -- screen.cpp's own poop_rect() for the identical arithmetic.
-    poop = {}
+    poop = {} -- 8 fixed slots, field 240px / 8
     for i = 1, 8 do
         poop[i] = kf.box(12, 12, kf.color(92, 64, 51))
         poop[i]:move((i - 1) * 30 + 9, 232)
     end
 
-    -- Stats band: a track + a fill box per need, label to its left.
     local names = {"HUNGER", "HAPPY", "ENERGY"}
     local colors = {
         kf.color(214, 118, 40), kf.color(224, 196, 32), kf.color(60, 140, 210),
@@ -147,18 +135,16 @@ if kf.home_screen_active() then
         track:move(42, y)
         fill[i] = kf.box(0, 8, colors[i])
         fill[i]:move(42, y)
-        fill[i]:layer(1) -- paints over the track
+        fill[i]:layer(1) -- over the track
         local label = kf.text(names[i])
         label:move(2, y)
         label:color(kf.BLACK, bg)
     end
 
-    -- Care guide: five static labels, centred in their own slot, never
-    -- touched again after this.
     local guide = {"1:FEED", "2:PLAY", "3:REST", "4:BATH", "5:FLUSH"}
-    for i = 1, 5 do
+    for i = 1, 5 do -- centred per 48px slot, never touched again
         local slot_x = (i - 1) * 48
-        local w = #guide[i] * 6 -- KF_FONT_CELL_W, fixed-width font
+        local w = #guide[i] * 6 -- KF_FONT_CELL_W
         local label = kf.text(guide[i])
         label:move(slot_x + (48 - w) // 2, 300)
         label:color(kf.BLACK, bg)

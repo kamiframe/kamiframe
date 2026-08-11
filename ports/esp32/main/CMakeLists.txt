@@ -256,3 +256,15 @@ endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PANEL_PROFILE=kf_panel_${KF_PANEL}
 )
+
+## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan): set at the top of
+## ../CMakeLists.txt, not here -- see that file's own comment for why. This
+## is only the half of it main needs: kf_lua_port.cpp (compiled straight
+## into this component, see the SRCS list above) reads KF_HOME_SCREEN_LUA
+## for kf.home_screen_active()'s compile-time default. kamiframe_lvgl_
+## port/CMakeLists.txt applies the identical define to ITS OWN component
+## for kf_screen_nav.cpp's build-time choice of which Home implementation
+## to wire up.
+if(KF_HOME_SCREEN STREQUAL "lua")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_HOME_SCREEN_LUA=1)
+endif()

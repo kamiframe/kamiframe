@@ -1001,35 +1001,50 @@ mistakes them for oversights.
 
 ---
 
-## Status: Tasks 1-3 COMPLETE, 2026-08-10 overnight
+## Status: Tasks 1-5 COMPLETE, 2026-08-12
 
 | Task | Commits | Result |
 |---|---|---|
 | 1 — real `.lua` file, generator, `sdk/` | `8155af5`, `9bf948f` | `examples/creature_demo/creature.lua` exists; drift test guards the generated header |
 | 2 — the retained scene differ, in Core | `bc1f938`, `9f7e81f`, `b25692a` | `kf/scene.h`; 12 moving objects coalesce to 8 rects / 11,200 of 153,600 bytes; ADR 0040 |
 | 3 — the Lua drawing binding | `76e087b`, `b427335`, `58deb89`, `1905f11` | `sdk/lua/kf_lua_scene.*`; `examples/hello_pet/pet.lua`; ADR 0041 |
+| 4 — the C++ screen rebuilt on the scene | `df5e9fc`, `0b6f8f4`, `8b1ee58`, `d533bd9`, `58492b1`, `3f9ab61` | Ten creature-screen tests pass unchanged; eight discrete poop objects; ADR 0040 opportunistic-merge addendum |
+| 5 — the demo creature declares the whole home screen | see `.superpowers/sdd/lua-task-5-report.md` | `KF_HOME_SCREEN=cpp\|lua`; `run_lua_vs_cpp_screen_check()` proves 250 frames byte-identical; `kf_creature_presenter.h`/`kf_home_screen_input.h` split out so both screens share one wander and one set of buttons; ADR 0042 |
 
-**43/43, Core heap-free, ESP32 firmware 683,792 bytes (57% of partition free).
-Both golden rendering checksums unmoved. Nothing renders differently yet** —
-the creature screen is still C++ and stays so until Task 4. That separation is
-what let all three land without risking tomorrow's hardware redeploy.
+**44/44 on the default `cpp` build (43 baseline + `screen_parity_check`), Core
+heap-free, ESP32 firmware ~672KB (57% of partition free) in BOTH
+`KF_HOME_SCREEN` values. Both golden rendering checksums unmoved.** The demo
+creature genuinely draws the home screen now, byte-for-byte identical to the
+C++ one on every frame the parity check drives — see the Task 5 report for
+what that check found (and fixed) before it passed, and the one known gap it
+surfaced (Home re-entry under `KF_HOME_SCREEN=lua`, left for Task 7).
 
-**Resume at Task 4.** It rebuilds the C++ creature screen on the scene, with ten
-existing creature-screen tests as its judge, and deserves a fresh session.
+**Resume at Task 6.** It flips `KF_HOME_SCREEN`'s default to `lua` and moves
+the wander itself into the script — `--verify-screen-parity` stays in CI as
+the thing that keeps the move honest.
 
 ### The API that came out of it
+
+Task 5 additions marked `[T5]` — everything else is Task 3.
 
 ```
 kf.sprite(name) · kf.text(str) · kf.box(w,h,color) · kf.background(color_or_name)
 kf.color(r,g,b) · kf.WHITE/BLACK/RED/... · kf.on_button(name,fn)
 kf.width() · kf.height() · kf.sprites()
+kf.home_screen_active()                 -- [T5] read-only; see ADR 0042
 
 obj:move(x,y) · obj:x([n]) · obj:y([n]) · obj:show() · obj:hide()
 obj:visible([bool]) · obj:layer([n]) · obj:remove()
 obj:sprite([name]) · obj:flip([bool])   -- sprite only
+obj:frame([n])                          -- [T5] sprite only -- kf_scene_set_frame() existed
+                                         --      since Task 2, Task 3 never bound it
 obj:set([str])                          -- text only
 obj:color([fg[,bg]])                    -- text or box
 obj:size([w,h])                         -- box only
+
+creature.x() · creature.y() · creature.sprite() · creature.mirrored() · creature.frame()
+                                         -- [T5] read-only; the wander stays in C++
+                                         --      until Task 6 -- see ADR 0042
 ```
 
 No-arg reads, args write. No dirty rectangles, frame indices, colour keys, byte
