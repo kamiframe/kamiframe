@@ -30,6 +30,11 @@ inline constexpr const char *kKfLuaDemoCreatureScriptSource = R"lua(
 -- gated by kf.home_screen_active() so this one file runs under either
 -- KF_HOME_SCREEN build. Layout numbers match kf_creature_screen.cpp's own
 -- constants -- see that file for the why.
+--
+-- The info screen (Task 2 of docs/superpowers/plans/2026-08-13-screens-
+-- clock-sleep.md, ADR 0045) is declared below unconditionally -- unlike
+-- Home, Info does not care which build owns the creature's own screen, so
+-- it is not gated behind kf.home_screen_active().
 
 -- kf_pet_millipercent is 0..100000 (kf/pet.h) -- these thresholds are
 -- fractions of that same range, not raw percent, so they read directly
@@ -153,6 +158,83 @@ if kf.home_screen_active() then
         local label = home:text(guide[i])
         label:move(slot_x + (48 - w) // 2, 300)
         label:color(kf.BLACK, bg)
+    end
+end
+
+-- ADR 0045: Info, the read-only stage/personality readout -- eight text
+-- objects, replacing kf_pet_info_screen.cpp's LVGL widget tree. Positions
+-- match that screen's own layout. info_stage/info_time/info_branch/
+-- info_trait are updated every frame below; the other four are captions,
+-- set once here and never touched again.
+local info = kf.screen("info")
+local info_bg = kf.color(20, 24, 32)
+info:background(info_bg)
+
+local function info_label(str, x, y)
+    local t = info:text(str)
+    t:move(x, y)
+    t:color(kf.WHITE, info_bg)
+    return t
+end
+
+do
+    local title = "INFO"
+    info_label(title, (kf.width() - #title * 6) // 2, 4) -- 6 = KF_FONT_CELL_W
+end
+info_label("STAGE", 12, 40)
+info_label("TIME IN STAGE", 12, 96)
+info_label("PERSONALITY", 12, 188)
+local info_stage = info_label("", 12, 60)
+local info_time = info_label("", 12, 116)
+-- Blank until TEEN picks a form -- kf_pet_info_screen.cpp:118-131 (deleted
+-- this task) explains why; the reasoning is copied into ADR 0045, not
+-- here, since script comments cost flash.
+local info_branch = info_label("", 12, 152)
+local info_trait = info_label("", 12, 208)
+
+-- "2D 4H" / "3H 12M" / "5M 09S" / "42S" -- the largest two units that keep
+-- the value readable. Moved from kf_pet_info_screen.cpp's set_duration_
+-- label(), uppercased: the bitmap font has no lowercase and LVGL's did.
+local function format_duration(s)
+    if s >= 86400 then
+        return (s // 86400) .. "D " .. ((s % 86400) // 3600) .. "H"
+    elseif s >= 3600 then
+        return (s // 3600) .. "H " .. ((s % 3600) // 60) .. "M"
+    elseif s >= 60 then
+        return string.format("%dM %02dS", s // 60, s % 60)
+    else
+        return s .. "S"
+    end
+end
+
+-- Global, not local -- kf_lua_port_info_frame() (sdk/lua/kf_lua_port.cpp)
+-- calls this by name while Info is the active screen, a SEPARATE entry
+-- point from on_frame() below on purpose: on_frame()'s own Home block
+-- mutates Home's scene objects unconditionally, which would un-hide them
+-- on top of Info if it ran while Info is showing -- see kf_lua_port.h's
+-- own header comment on kf_lua_port_info_frame() for the full reasoning.
+function on_info_frame(dt_ms)
+    local stage = pet.stage()
+    info_stage:set(stage) -- kf.text auto-uppercases, e.g. "egg" -> "EGG"
+    info_time:set(format_duration(pet.stage_seconds()))
+
+    if stage == "teen" then
+        info_branch:set("TEEN FORM " .. pet.teen_form())
+    elseif stage == "adult" then
+        info_branch:set("ADULT FORM " .. pet.teen_form() .. "-" ..
+                         pet.adult_branch())
+    else
+        info_branch:set("")
+    end
+
+    -- base_trait is meaningful from the moment a pet exists; care_trait
+    -- reads 0/hunger-leaning by default before any care has accumulated
+    -- (still an egg) -- see ADR 0045 for the full reasoning.
+    if stage == "egg" then
+        info_trait:set("BASE TRAIT " .. pet.base_trait())
+    else
+        info_trait:set("BASE TRAIT " .. pet.base_trait() ..
+                        ", CARE TRAIT " .. pet.dominant_care_trait())
     end
 end
 
