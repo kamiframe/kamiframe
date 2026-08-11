@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kf_character_manifest import (
+    ALL_STAGE_KEYS,
     DEFAULT_MANIFEST_PATH,
     EntrySpec,
     SpriteSpec,
@@ -330,7 +331,7 @@ def main(argv=None) -> int:
     p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     p.add_argument("-o", "--out", type=Path, help=".kfpack path to write (only sprites that validate are packed)")
     p.add_argument("--id", help="only this entity id, e.g. chokimaru")
-    p.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
+    p.add_argument("--stage", choices=list(ALL_STAGE_KEYS))
     p.add_argument("--strict", action="store_true",
                     help="write nothing if anything is missing or invalid (default: pack what validates, report the rest)")
     p.add_argument("--verify-lossless", action="store_true",

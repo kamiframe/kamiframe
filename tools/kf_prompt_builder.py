@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 from kf_character_manifest import (
+    ALL_STAGE_KEYS,
     DEFAULT_MANIFEST_PATH,
     SpriteSpec,
     iter_sprites,
@@ -186,7 +187,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST_PATH)
     p.add_argument("--id", help="only this entity id, e.g. chokimaru")
-    p.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
+    p.add_argument("--stage", choices=list(ALL_STAGE_KEYS))
     p.add_argument("--state", help="only this state, e.g. happy")
     p.add_argument("--sprite", help="only this exact sprite name, e.g. baby_happy_e_01")
     p.add_argument("--skip-no-brief", action="store_true",

@@ -194,6 +194,46 @@ quirk = "Sits still. There is nothing to react to -- it is the one sprite in the
 note = "Chris, 2026-08-09 (via the core-care-loop spec): \"Shrine, not a gravestone ... it gives the eventual 'start a new egg' action somewhere natural to live -- you leave an offering rather than dig.\" Added in the second art-generation pass alongside marumaru (child) and hamaru (teen0) specifically because the screen code was already falling back to a placeholder rectangle without it."
 render_note = "Same 48x48 canvas as every other creature sprite, centred, generous transparent margin -- kf_creature_screen.cpp centres whatever size this sprite actually is, so exact framing is a style choice, not a hard requirement, but 48x48 keeps it consistent with the rest of the roster and with the placeholder it replaces."
 
+# The bedding for the optional tuck-in interaction. NOT a creature life
+# stage -- there is no KF_PET_STAGE_FUTON, no evolution branch, nothing with
+# a face of its own. Declared under the same [stages.X] table shape as the
+# shrine above, and for the identical reason: the naming MECHANISM matches
+# (one code_token equal to the stage key, no branch indices, no
+# [[teens]]/[[adults]] machinery), so kf_character_manifest.py's
+# iter_sprites() picks it up via SHARED_STAGE_KEYS. Looked up by the literal
+# name "futon_idle_s", not through hakoniwaos/src/creature.cpp's
+# kf_creature_sprite_name() -- bedding is scenery, not a creature with a
+# pose/direction to resolve -- so like the shrine it needs exactly one state
+# and one direction, via the `directions` override.
+#
+# ONE SPRITE FOR EVERY STAGE, ON PURPOSE. Chris, 2026-08-11, authorising the
+# generation: "OK to generate a comfy looking japanese futon with a blob
+# under it. Generic for now and generic enough that you can assume the small
+# bit of head poking out is any of the characters so you don't need a
+# generation per sprite." That is a cost decision as much as an art one -- a
+# per-stage bedding set would be six more generations for a prop the
+# creature is almost entirely hidden under. Do not add a {stage}_bed_{dir}
+# family later without checking that decision still stands.
+#
+# THE WIGGLE AND THE ZZZ ARE NOT ART, and deliberately are not declared
+# here. The futon wiggles by reusing the egg's integer triangle wave (a
+# positional Y offset, simulator/src/pet/kf_creature_presenter.cpp) and the
+# ZZZ is drawn as text from the built-in bitmap font, whose 'Z' at 0x5A is a
+# real glyph and not one of the blank entries. Both cost zero generations,
+# which is exactly why neither is a sprite.
+[stages.futon]
+stage = "futon"
+kind = "scenery"
+name_verified = false
+states = ["idle"]
+directions = ["s"]  # scenery has no facings -- see [stages.shrine]'s comment
+has_design_brief = true
+object = "none -- this is scenery, not a creature derived from a source object the way the bible's derivation rule works for every other entity"
+read = "A Japanese futon laid directly on the floor -- no bed frame, no legs, no headboard, no raised base. A thin flat mattress pad with a plump puffy quilt over it and a small flat pillow at the head end. A small round creature sleeps underneath, and only the top of its head pokes out above the quilt: a smooth, near-featureless pale dome, so it reads as ANY creature in the roster rather than one of them. Cozy and inviting, not clinical."
+quirk = "The one sprite in the roster that is deliberately ambiguous about who is in it. Every other entity is a specific creature; this has to work for all of them at once."
+note = "Chris, 2026-08-11, authorising the art. Sleep itself is automatic -- the creature plops down where it stands and shows its own {stage}_sleeping_{dir} sprite -- so this futon is for the OPTIONAL tuck-in the care-loop spec's \"Sleep, settled\" section calls \"a nicety, not a duty\". Generated 2026-08-11; the first batch came back as Western beds with frames and headboards and nobody in them, and was rejected. See docs/architecture/adr-0049-sleep-on-screen.md."
+render_note = "Same 48x48 canvas as every other sprite in this roster, centred, generous transparent margin. Generated with an existing *_sleeping_s sprite passed as a style reference, which is also what forced the 48x48 output size. 25 distinct colours, 912 fully-transparent pixels, no partial alpha -- which matters, because the pack format keys on a colour rather than carrying an alpha channel."
+
 # ---------------------------------------------------------------------------
 # The four verb-family juveniles ("teen" in code terms). Bible section 6.
 # `object` is deliberately absent: the bible gives each teen a `read` and a

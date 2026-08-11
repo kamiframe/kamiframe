@@ -108,6 +108,26 @@ PACK_NAME_MAX_CHARS = PACK_NAME_BYTES - 1  # one byte reserved as terminator
 # correctness.
 DIRECTIONS = ("s", "e", "n")
 
+# Every stage key declared as a [stages.X] table -- the two real early life
+# stages plus the scenery entities, which use that table shape purely
+# because the naming MECHANISM matches (see iter_sprites() below and
+# [stages.shrine]'s own comment in the manifest).
+#
+# DEFINED ONCE, ON PURPOSE. Before the futon was added this list was
+# hardcoded in FIVE places: three in this file (iter_sprites(), the `stats`
+# subcommand, the `list` subcommand's --stage choices) and one each in
+# kf_prompt_builder.py and kf_ingest_sprites.py. Adding a sixth stage key
+# to five duplicated tuples is exactly the shape of defect this project
+# keeps paying for -- miss one and the sprite silently never gets packed,
+# or --stage rejects a name the manifest accepts. Add new stage keys HERE
+# and nowhere else.
+SHARED_STAGE_KEYS = ("egg", "baby", "child", "shrine", "futon")
+
+# The above plus the two branching stages, which iter_sprites() builds from
+# [[teens]]/[[adults]] rather than [stages.X] tables. This is the set any
+# user-facing --stage filter should offer.
+ALL_STAGE_KEYS = ("egg", "baby", "child", "teen", "adult", "shrine", "futon")
+
 # Mirrors KF_PET_TEEN_FORM_COUNT (hakoniwaos/include/kf/pet.h) and
 # kAdultsInFamily (hakoniwaos/src/pet.cpp) exactly -- imported by value, not
 # by import, for the same cross-language reason PACK_NAME_BYTES above is
@@ -368,7 +388,7 @@ def iter_sprites(raw: dict) -> Iterator[SpriteSpec]:
     # (unlike egg/baby/child, which have been required since the first
     # pass) so a manifest without a [stages.shrine] table -- e.g. an older
     # one -- does not KeyError here.
-    for stage_key in ("egg", "baby", "child", "shrine"):
+    for stage_key in SHARED_STAGE_KEYS:
         if stage_key not in raw.get("stages", {}):
             continue
         yield from _iter_shared_stage(stage_key, raw, meta)
@@ -597,7 +617,7 @@ def _cmd_stats(raw: dict, args) -> int:
 
     print(f"manifest: {args.manifest}")
     print(f"total sprites: {len(specs)}")
-    for stage in ("egg", "baby", "child", "teen", "adult", "shrine"):
+    for stage in ALL_STAGE_KEYS:
         print(f"  {stage:6s}: {by_stage.get(stage, 0)}")
     print(f"distinct entities: {len({s.entity_id for s in specs})}")
     print(f"total pack entries: {len(entries)}")
@@ -635,7 +655,7 @@ def main(argv=None) -> int:
     sub.add_parser("stats", help="print sprite counts and validate names")
 
     listp = sub.add_parser("list", help="list sprite names, one per line")
-    listp.add_argument("--stage", choices=["egg", "baby", "child", "teen", "adult", "shrine"])
+    listp.add_argument("--stage", choices=list(ALL_STAGE_KEYS))
     listp.add_argument("--id", help="filter to one entity id, e.g. chokimaru")
     listp.add_argument("--state", help="filter to one state, e.g. happy")
     listp.add_argument("--direction", choices=list(DIRECTIONS), help="filter to one facing direction")
