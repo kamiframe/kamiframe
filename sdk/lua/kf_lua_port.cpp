@@ -33,18 +33,31 @@ struct State {
     bool ready = false;
     bool disabled_after_error = false;
     uint64_t last_call_us = 0;
-    /* kf_lua_port_info_frame()'s OWN real-elapsed-time tracker -- see that
-     * function's own comment for why it cannot share last_call_us above.
-     * Reset alongside it in kf_lua_port_init(), for the identical reason:
-     * a stale timestamp surviving an init/shutdown/init cycle would
-     * compute one bogus, oversized dt_ms on the first post-reinit call. */
+    /* kf_lua_port_home_frame()'s OWN real-elapsed-time tracker -- a SECOND
+     * independent one, for the identical reason last_info_call_us/last_
+     * settings_call_us below need their own: sharing last_call_us above
+     * would corrupt both functions' "time since I was last called" math
+     * the moment a script's active screen alternates between Home and
+     * anything else, which is exactly what a MENU press does. In practice
+     * kf_lua_home_screen_frame() always passes a non-zero dt_ms (computed
+     * by the caller, never 0 = "use real elapsed time"), so this fallback
+     * path is not expected to fire outside a test that calls this function
+     * directly -- kept anyway so kf_lua_port_home_frame() has the exact
+     * same contract as its two siblings rather than a silently narrower
+     * one. Reset alongside the others in kf_lua_port_init(), for the
+     * identical reason: a stale timestamp surviving an init/shutdown/init
+     * cycle would compute one bogus, oversized dt_ms on the first
+     * post-reinit call. */
+    uint64_t last_home_call_us = 0;
+    /* kf_lua_port_info_frame()'s OWN real-elapsed-time tracker -- see
+     * last_home_call_us above for why it cannot share any of its siblings'. */
     uint64_t last_info_call_us = 0;
-    /* kf_lua_port_settings_frame()'s own real-elapsed-time tracker -- same
-     * reasoning as last_info_call_us above, a THIRD independent one:
-     * sharing either of the other two would corrupt whichever pair's own
-     * "time since I was last called" math the moment a script's active
-     * screen alternates between Home/Info and Settings, which is exactly
-     * what a MENU press does. */
+    /* kf_lua_port_settings_frame()'s OWN real-elapsed-time tracker -- a
+     * FOURTH independent one, same reasoning as last_home_call_us/last_
+     * info_call_us above: sharing any of the others would corrupt whichever
+     * pair's own "time since I was last called" math the moment a script's
+     * active screen alternates between them, which is exactly what a MENU
+     * press does. */
     uint64_t last_settings_call_us = 0;
     int64_t last_report = 0;
     uint32_t frame_count = 0;
@@ -627,6 +640,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
     g.disabled_after_error = false;
     g.last_error[0] = '\0';
     g.last_call_us = 0;
+    g.last_home_call_us = 0;
     g.last_info_call_us = 0;
     g.last_settings_call_us = 0;
     g.last_report = 0;
@@ -736,6 +750,48 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms) {
         return;
     }
     g.frame_count++;
+}
+
+void kf_lua_port_home_frame(uint32_t synthetic_frame_delta_ms) {
+    if (!g.ready || g.disabled_after_error) {
+        return;
+    }
+
+    /* Own independent dt tracker -- see g.last_home_call_us's own member
+     * comment for why sharing g.last_call_us (or either of the other two
+     * screens' trackers) would corrupt more than one function's "time
+     * since I was last called" math. */
+    uint32_t dt_ms = synthetic_frame_delta_ms;
+    if (dt_ms == 0u) {
+        const uint64_t now_us = kf_time_mono_us();
+        dt_ms = g.last_home_call_us == 0u
+                    ? 0u
+                    : static_cast<uint32_t>(
+                          (now_us >= g.last_home_call_us
+                               ? now_us - g.last_home_call_us
+                               : 0u) /
+                          1000u);
+        g.last_home_call_us = now_us;
+    }
+
+    lua_getglobal(g.L, "on_home_frame");
+    if (!lua_isfunction(g.L, -1)) {
+        lua_pop(g.L, 1);
+        return; /* a script is not required to define on_home_frame */
+    }
+    lua_pushinteger(g.L, static_cast<lua_Integer>(dt_ms));
+    if (lua_pcall(g.L, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(g.L, -1);
+        KF_LOGE(TAG,
+                "on_home_frame raised an error, disabling further calls "
+                "until the next kf_lua_port_init(): %s",
+                msg);
+        std::snprintf(g.last_error, sizeof(g.last_error), "%s",
+                      msg != nullptr ? msg : "(no message)");
+        lua_pop(g.L, 1);
+        g.disabled_after_error = true;
+        return;
+    }
 }
 
 void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms) {

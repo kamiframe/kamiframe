@@ -111,10 +111,13 @@ local function announce_stage()
     end
 end
 
--- Forward-declared for on_frame() below; only created under KF_HOME_
--- SCREEN=lua (kf.home_screen_active()).
-local body, shrine, poop, fill
-
+-- Home's objects and on_home_frame() both live inside this one `if` block,
+-- only created/defined under KF_HOME_SCREEN=lua (kf.home_screen_active())
+-- -- unlike info/settings below, Home does not exist at all under
+-- KF_HOME_SCREEN=cpp, so there is nothing to gate at call time: on_home_
+-- frame() itself simply never gets defined as a global under that build,
+-- and kf_lua_port_home_frame() (sdk/lua/kf_lua_port.cpp) already treats an
+-- undefined on_home_frame the same as any script that never defined it.
 if kf.home_screen_active() then
     -- ADR 0044: Home's objects are declared through a named screen group
     -- rather than bare kf.* calls -- a receiver change only, same layout,
@@ -123,15 +126,15 @@ if kf.home_screen_active() then
     local bg = kf.color(232, 240, 216)
     home:background(bg)
 
-    -- on_frame() sets the real sprite/position every frame, including its
-    -- first -- this placeholder is never painted.
-    body = home:sprite("")
+    -- on_home_frame() below sets the real sprite/position every frame,
+    -- including its first -- this placeholder is never painted.
+    local body = home:sprite("")
     body:layer(1) -- over the mess
 
-    shrine = home:sprite("shrine_idle_s")
+    local shrine = home:sprite("shrine_idle_s")
     shrine:move(96, 106) -- centred, 48x48
 
-    poop = {} -- 8 fixed slots, field 240px / 8
+    local poop = {} -- 8 fixed slots, field 240px / 8
     for i = 1, 8 do
         poop[i] = home:box(12, 12, kf.color(92, 64, 51))
         poop[i]:move((i - 1) * 30 + 9, 232)
@@ -142,7 +145,7 @@ if kf.home_screen_active() then
         kf.color(214, 118, 40), kf.color(224, 196, 32), kf.color(60, 140, 210),
     }
     local track_color = kf.color(190, 190, 190)
-    fill = {}
+    local fill = {}
     for i = 1, 3 do
         local y = 262 + (i - 1) * 9
         local track = home:box(190, 8, track_color)
@@ -162,6 +165,47 @@ if kf.home_screen_active() then
         local label = home:text(guide[i])
         label:move(slot_x + (48 - w) // 2, 300)
         label:color(kf.BLACK, bg)
+    end
+
+    -- Global, not local -- kf_lua_port_home_frame() (sdk/lua/kf_lua_
+    -- port.cpp) calls this by name while Home is the active screen, its
+    -- own dedicated entry point, the same reasoning on_info_frame/on_
+    -- settings_frame below are separate from on_frame(): one screen's
+    -- per-frame logic must never touch another screen's objects. THIS WAS
+    -- A REAL HARDWARE BUG, not just a design preference: this block used
+    -- to live inside on_frame() below, guarded by `if kf.home_screen_
+    -- active() then` -- a check that reads like "is Home showing right
+    -- now" but is actually a BUILD-TIME flag, true for this entire
+    -- process on a KF_HOME_SCREEN=lua build. on_frame() runs every real
+    -- frame regardless of the active screen (the main loop calls it
+    -- unconditionally), so that guard never actually excluded Info or
+    -- Settings -- Home's creature/poop/shrine kept getting `:show()`n on
+    -- top of whichever screen was really active, every frame, frozen
+    -- (the wander only advances inside kf_lua_home_screen_frame(), which
+    -- only runs while Home actually is active) but never hidden. Defined
+    -- as a closure over `body`/`shrine`/`poop`/`fill` above, rather than
+    -- forward-declared outer locals the way this used to be structured,
+    -- because nothing outside this `if` block needs to see them any more.
+    function on_home_frame(dt_ms)
+        fill[1]:size(pet.hunger() * 190 // 100000, 8)
+        fill[2]:size(pet.happiness() * 190 // 100000, 8)
+        fill[3]:size(pet.energy() * 190 // 100000, 8)
+
+        if pet.dead() then
+            shrine:show()
+            body:hide()
+        else
+            shrine:hide()
+            body:show()
+            local poops = pet.poops()
+            for i = 1, 8 do
+                if i <= poops then poop[i]:show() else poop[i]:hide() end
+            end
+            body:sprite(creature.sprite())
+            body:flip(creature.mirrored())
+            body:frame(creature.frame())
+            body:move(creature.x(), creature.y())
+        end
     end
 end
 
@@ -213,10 +257,11 @@ end
 
 -- Global, not local -- kf_lua_port_info_frame() (sdk/lua/kf_lua_port.cpp)
 -- calls this by name while Info is the active screen, a SEPARATE entry
--- point from on_frame() below on purpose: on_frame()'s own Home block
--- mutates Home's scene objects unconditionally, which would un-hide them
--- on top of Info if it ran while Info is showing -- see kf_lua_port.h's
--- own header comment on kf_lua_port_info_frame() for the full reasoning.
+-- point from on_home_frame() above and the screen-agnostic on_frame()
+-- below on purpose: a screen's own per-frame drawing must never run while
+-- some OTHER screen is the one actually showing -- see kf_lua_port.h's own
+-- header comment on kf_lua_port_home_frame() for the hardware bug that
+-- taught this codebase why, the hard way.
 function on_info_frame(dt_ms)
     local stage = pet.stage()
     info_stage:set(stage) -- kf.text auto-uppercases, e.g. "egg" -> "EGG"
@@ -321,6 +366,14 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved)
     paint(save_row, "save")
 end
 
+-- Screen-agnostic: the main loop (sdl_main.cpp/app_main.cpp) calls this
+-- unconditionally, every real frame, regardless of which screen is active
+-- -- these three announcements are pet-state observations, not any one
+-- screen's pixels, so they keep firing whether the owner is looking at
+-- Home, Info or Settings. A screen's own drawing belongs in that screen's
+-- OWN entry point instead (on_home_frame/on_info_frame/on_settings_frame
+-- above) -- see kf_lua_port.h's own comment on kf_lua_port_home_frame()
+-- for why Home's drawing used to live here, and what that cost.
 function on_frame(dt_ms)
     announce_stage()
     announce("hunger", pet.hunger(), {
@@ -338,28 +391,6 @@ function on_frame(dt_ms)
         low = "getting a little tired",
         full = "fully rested!",
     })
-
-    if kf.home_screen_active() then
-        fill[1]:size(pet.hunger() * 190 // 100000, 8)
-        fill[2]:size(pet.happiness() * 190 // 100000, 8)
-        fill[3]:size(pet.energy() * 190 // 100000, 8)
-
-        if pet.dead() then
-            shrine:show()
-            body:hide()
-        else
-            shrine:hide()
-            body:show()
-            local poops = pet.poops()
-            for i = 1, 8 do
-                if i <= poops then poop[i]:show() else poop[i]:hide() end
-            end
-            body:sprite(creature.sprite())
-            body:flip(creature.mirrored())
-            body:frame(creature.frame())
-            body:move(creature.x(), creature.y())
-        end
-    end
 end
 
 kf.log("the creature stirs")

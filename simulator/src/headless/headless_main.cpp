@@ -6652,12 +6652,21 @@ std::vector<uint64_t> run_screen_parity_timeline(bool use_lua, bool *ok) {
      * than replace them. kf_creature_screen_init() (the cpp half, below)
      * already resets the scene itself via kf_creature_screen_enter() --
      * calling it again here would be harmless but redundant, so this only
-     * runs for the lua half. Same reasoning for kf_creature_presenter_
-     * reset(): the wander/anim state is process-global and must restart
-     * from the same fresh position both halves begin from. */
+     * runs for the lua half.
+     *
+     * NOT calling kf_creature_presenter_reset() here too, unlike an earlier
+     * version of this comment: kf_lua_home_screen_init() (below) now does
+     * that itself -- see its own comment for why a fix to a real hardware
+     * bug (a fresh egg starting in the top-left corner instead of centred)
+     * put it there, matching kf_creature_screen_init()'s existing call
+     * exactly. Calling it a SECOND time here as well would not just be
+     * redundant, unlike kf_scene_reset() above: kf_creature_init() (inside
+     * the reset) draws from kf_rng for the wander target, so an extra call
+     * would consume two more kf_rng_below() draws than the cpp half's
+     * single kf_creature_screen_init() call does, desyncing this check's
+     * whole premise -- an identical RNG sequence -- from frame 0 on. */
     if (use_lua) {
         kf_scene_reset();
-        kf_creature_presenter_reset();
     }
 
     bool loaded = true;
@@ -7167,6 +7176,226 @@ end
     return ok ? 0 : 1;
 }
 
+/* Regression for a real hardware bug (owner's own report running the ESP32
+ * build): Home's creature/poop/shrine objects kept showing on top of Info
+ * and Settings -- frozen (the wander only advances inside kf_lua_home_
+ * screen_frame(), which only runs while Home actually is active) but never
+ * actually hidden. Root cause: creature.lua's Home-drawing block used to
+ * live inside the SHARED on_frame(), guarded by `if kf.home_screen_active()
+ * then` -- a check that reads like "is Home showing right now" but is
+ * actually a BUILD-TIME flag, true for this whole process on a KF_HOME_
+ * SCREEN=lua build (kf_lua_port_set_home_screen_active()'s own comment).
+ * That guard never excluded Info or Settings, because the main loop
+ * (sdl_main.cpp/app_main.cpp) calls the shared on_frame() unconditionally,
+ * every real frame, on top of kf_screen_nav_frame() already having called
+ * Home's own update whenever Home actually was active -- two calls into
+ * Home's block on Home's own frames, one leaked call on every other
+ * screen's. Fixed by giving Home its own dedicated on_home_frame() entry
+ * point (kf_lua_port_home_frame(), sdk/lua/kf_lua_port.cpp), the same
+ * shape Info and Settings already had -- see that function's own header
+ * comment in kf_lua_port.h for the full account.
+ *
+ * NONE of the existing screen checks would have caught this. screen_group_
+ * check's synthetic fixture has no generic on_frame()/screen-specific split
+ * to get wrong. screen_parity_check and screen_nav_check both drive frames
+ * through kf_screen_nav_frame() or kf_lua_home_screen_frame() directly,
+ * never replicating the SECOND, unconditional kf_lua_port_frame(0) call
+ * the real main loop also makes every frame -- exactly the call this bug
+ * needed to actually surface. This check replicates BOTH calls, in the
+ * real main loop's own order, via drive_frame() below, for the same
+ * reason drive_frame() exists at all. */
+int run_screen_isolation_check() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-screen-isolation-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_pet_session_init();
+    kf_screen_nav_init();
+
+#ifdef KF_HOME_SCREEN_LUA
+    /* Same ordering the real interactive app uses (and run_screen_nav_
+     * check()/run_settings_screen_check() already establish for this file):
+     * kf_screen_nav_init() first, so kf_lua_home_screen_init()'s per-screen
+     * registration exists before kf_lua_port_init() runs creature.lua's own
+     * top-level kf.screen() calls, which is what actually declares Home's
+     * objects (gated on kf.home_screen_active()) and Info/Settings' (not
+     * gated at all). */
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+    check(kf_screen_nav_debug_index() == 0,
+          "Home is active immediately after kf_screen_nav_init()");
+
+    /* ---- Bug 2's own regression: a fresh egg starts centred in the field
+     * (96,106), not left at the screen's top-left corner (0,0) -- the tell
+     * -tale sign of a presenter whose module-level globals were never
+     * reset before their first advance (see kf_lua_home_screen.cpp's own
+     * comment on kf_lua_home_screen_init() for the exact mechanism). 96,106
+     * is not a value invented for this check: it is KF_CREATURE_PRESENTER_
+     * FIELD's own centre for a 48x48 sprite, computed by kf_creature_init()
+     * (hakoniwaos/src/creature.cpp) the identical way for both screen
+     * implementations -- creature.lua's own shrine sprite hand-codes this
+     * same 96,106 for the identical reason (`shrine:move(96, 106) --
+     * centred, 48x48`). Asserted here, before this check's first frame ever
+     * runs, because kf_screen_nav_init() -> kf_lua_home_screen_init() is
+     * exactly the call that used to skip the reset. ---- */
+    check(kf_creature_presenter_x() == 96 && kf_creature_presenter_y() == 106,
+          "a fresh egg starts centred in the field (96,106), not at the "
+          "top-left corner a never-reset presenter would leave it at");
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+    /* All eight poop slots visible on Home -- a plain, solid-colour box
+     * (kf/scene.h's kf_scene_add_box(), not a sprite), so its own pixel
+     * colour is exact and asset-pack-independent, unlike the creature or
+     * shrine sprites this check deliberately avoids depending on. Poop
+     * slot 0 sits at (9,232) in field coordinates (examples/creature_demo/
+     * creature.lua's own `(i - 1) * 30 + 9, 232`) -- easy to sample
+     * directly, the same "no leftover pixel survives" technique run_
+     * screen_group_check() already uses for its own synthetic fixture. */
+    kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+    pet->poop_count = KF_PET_MAX_POOPS;
+
+    /* Drives BOTH calls the real main loop makes every frame, in the real
+     * main loop's own order (sdl_main.cpp/app_main.cpp): kf_screen_nav_
+     * frame() (the active screen's OWN per-frame update) followed
+     * unconditionally by kf_lua_port_frame(0) (the shared, screen-agnostic
+     * on_frame()). This second call is exactly what neither screen_parity_
+     * check nor screen_nav_check ever replicates -- see this function's
+     * own header comment. */
+    auto drive_frame = [&](uint32_t dt_ms) {
+        kf_screen_nav_frame(dt_ms);
+        kf_lua_port_frame(0);
+        /* Unconditional, not guarded on kf_lua_scene_declared_anything()
+         * the way sdl_main.cpp/app_main.cpp are: by the time this lambda
+         * ever runs, kf_lua_port_init() above has already declared every
+         * object all three screens will ever have, so the guard would
+         * never actually skip anything here. */
+        kf_scene_commit();
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+
+    constexpr kf_color kPoopColor = KF_RGB(92, 64, 51);
+    auto poop_slot0_color = [](void) -> kf_color {
+        const kf_color *px = kf_fb_pixels();
+        return px[232 * KF_DISPLAY_WIDTH + 9];
+    };
+    check(poop_slot0_color() == kPoopColor,
+          "poop slot 0 is visible on Home, as a sanity baseline for the "
+          "assertions below");
+
+    /* ---- Bug 3's own regression, measured on Home itself (not just Info/
+     * Settings below): once nothing about the pet's state is changing
+     * (dt_ms=0, no wander/decay), the redundant SECOND on_frame() call this
+     * check's own drive_frame() replicates must still cost nothing extra --
+     * both calls redeclare the identical, already-committed values, and
+     * kf_scene_commit() only ever marks a rectangle dirty by diffing
+     * `declared` against `presented` (hakoniwaos/src/scene.cpp), never by
+     * counting how many times something was set. Measured directly (not
+     * assumed): an identical 60-frame moving-wander byte total with and
+     * without Bug 1's fix confirmed the redundant call costs zero bytes
+     * even during real motion, which is why this check's own Bug 3
+     * assertions below sample steady STATE (dt_ms=0) rather than trying to
+     * catch a per-byte difference that direct measurement showed does not
+     * exist -- see this check's own header comment. ---- */
+    drive_frame(0u);
+    kf_fb_clear_dirty();
+    drive_frame(0u);
+    check(kf_fb_dirty_bytes() == 0u,
+          "a settled frame on Home, with nothing visibly changed, "
+          "transfers zero bytes");
+
+    /* ---- MENU: Home -> Info. Bug 1's own symptom: Home's poop box must
+     * stop showing on top of Info, and the pixel it occupied must read as
+     * Info's OWN background colour instead. ---- */
+    kf_screen_nav_debug_advance();
+    check(kf_screen_nav_debug_index() == 1, "MENU reaches Info");
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    constexpr kf_color kInfoBg = KF_RGB(20, 24, 32);
+    check(poop_slot0_color() == kInfoBg,
+          "Home's poop box is NOT showing on top of Info -- the pixel it "
+          "occupies reads as Info's own background colour");
+
+    /* ---- Bug 3's own regression: once nothing about Info's own state is
+     * changing (dt_ms=0 below, so info_time's ticking "time in stage" text
+     * does not advance either), a frame that visibly changes nothing must
+     * cost NOTHING to redraw -- the whole point of the retained scene.
+     * Measured with kf_fb_dirty_bytes() (kf/framebuffer.h's own transfer-
+     * cost estimate) after kf_fb_clear_dirty(), so this frame's own count
+     * starts from zero; one settling frame first absorbs whatever the MENU
+     * transition itself dirtied. ---- */
+    drive_frame(0u);
+    kf_fb_clear_dirty();
+    drive_frame(0u);
+    check(kf_fb_dirty_bytes() == 0u,
+          "a settled frame on Info, with nothing visibly changed, "
+          "transfers zero bytes");
+
+    /* ---- MENU: Info -> Settings, the "second menu screen" the owner's
+     * own report names. Same two assertions. ---- */
+    kf_screen_nav_debug_advance();
+    check(kf_screen_nav_debug_index() == 2, "MENU, MENU reaches Settings");
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    constexpr kf_color kSettingsBg = KF_RGB(20, 24, 32);
+    check(poop_slot0_color() == kSettingsBg,
+          "Home's poop box is NOT showing on top of Settings either -- the "
+          "pixel it occupies reads as Settings' own background colour");
+
+    drive_frame(0u);
+    kf_fb_clear_dirty();
+    drive_frame(0u);
+    check(kf_fb_dirty_bytes() == 0u,
+          "a settled frame on Settings, with nothing visibly changed, "
+          "transfers zero bytes");
+
+    /* ---- B: back to Home. The poop box reappears -- proves the isolation
+     * above is real hiding, via kf_lua_scene_activate_screen()'s own
+     * bookkeeping, not some accident of this check's own assertions. ---- */
+    kf_screen_nav_debug_home();
+    check(kf_screen_nav_debug_index() == 0, "B returns to Home");
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    check(poop_slot0_color() == kPoopColor,
+          "Home's poop box is visible again after returning to Home");
+
+#ifdef KF_HOME_SCREEN_LUA
+    kf_lua_port_shutdown();
+#endif
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -7218,6 +7447,7 @@ int main(int argc, char *argv[]) {
     bool verify_screen_groups = false;
     bool verify_clock = false;
     bool verify_settings_screen = false;
+    bool verify_screen_isolation = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -7334,6 +7564,8 @@ int main(int argc, char *argv[]) {
             verify_clock = true;
         } else if (std::strcmp(argv[i], "--verify-settings-screen") == 0) {
             verify_settings_screen = true;
+        } else if (std::strcmp(argv[i], "--verify-screen-isolation") == 0) {
+            verify_screen_isolation = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -7383,7 +7615,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-screen-parity\n"
                         "kamiframe-headless --verify-screen-groups\n"
                         "kamiframe-headless --verify-clock\n"
-                        "kamiframe-headless --verify-settings-screen\n");
+                        "kamiframe-headless --verify-settings-screen\n"
+                        "kamiframe-headless --verify-screen-isolation\n");
             return 0;
         }
     }
@@ -7593,6 +7826,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_settings_screen) {
         return run_settings_screen_check();
+    }
+
+    if (verify_screen_isolation) {
+        return run_screen_isolation_check();
     }
 
     kf_app_init(mode);

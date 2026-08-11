@@ -31,19 +31,35 @@ void kf_lua_home_screen_init(void) {
      * inside kf_lua_port_init()'s ifdef. */
     kf_lua_port_set_home_screen_active(true);
     g_error_banner_id = kf_error_banner_create();
+    /* Matches kf_creature_screen_init()'s own ordering exactly: reset the
+     * shared presenter FIRST, before ever calling advance(). kf_creature_
+     * presenter_reset() is what centres a brand-new creature (kf_creature_
+     * init() sets x/y to the field's own midpoint) and starts g_was_egg
+     * true so a genuinely fresh egg is not mistaken for one "reverting"
+     * from some other stage -- see kf_creature_presenter_advance()'s own
+     * `if (!g_was_egg)` branch, which re-centres on exactly that
+     * transition. Skipping this call left the presenter's module-level
+     * globals at their C++ static zero-initialisation (x=0, y=0 -- the
+     * screen's top-left corner, not the field's centre) for a fresh pet's
+     * entire egg stage, because g_was_egg's own default (true) already
+     * matched a fresh egg's stage and so never tripped that re-centre
+     * branch either: a real bug shipped to hardware, found the same way
+     * kf_creature_screen_init() already avoids it by calling this first. */
+    kf_creature_presenter_reset();
     /* Matches kf_creature_screen_enter()'s own dt_ms==0 presenter advance
-     * exactly, and for the identical reason: kf_creature_presenter_
+     * exactly (called from kf_creature_screen_init() right after that same
+     * reset), and for the identical reason: kf_creature_presenter_
      * advance()'s "did the resolved sprite name just change" check (kf_
      * creature_presenter.cpp's resolve_and_declare()) fires on the very
      * FIRST call regardless of dt_ms (g_last_requested_name starts empty),
      * and that first call also resets the animation accumulator to 0 as
      * part of "treat this as a fresh pose". Skipping this and letting the
-     * script's first on_frame() -- necessarily a REAL, non-zero dt_ms --
-     * be that first call would wipe out the very ms it just accumulated,
-     * a one-time animation-timing offset the C++ screen never has because
-     * its own first call is this same harmless dt_ms==0 one. Found by
-     * run_lua_vs_cpp_screen_check() diverging at frame 3 before this fix
-     * -- see that check's own header comment. */
+     * script's first on_home_frame() -- necessarily a REAL, non-zero
+     * dt_ms -- be that first call would wipe out the very ms it just
+     * accumulated, a one-time animation-timing offset the C++ screen never
+     * has because its own first call is this same harmless dt_ms==0 one.
+     * Found by run_lua_vs_cpp_screen_check() diverging at frame 3 before
+     * this fix -- see that check's own header comment. */
     kf_creature_presenter_advance(kf_pet_session_state(), 0);
 }
 
@@ -76,26 +92,40 @@ void kf_lua_home_screen_enter(void) {
 void kf_lua_home_screen_frame(uint32_t dt_ms) {
     const kf_pet_state *pet = kf_pet_session_state();
     kf_home_screen_handle_care_buttons(pet, kf_app_buttons_pressed());
-    /* Advance the shared presenter BEFORE running the script's on_frame(),
-     * so creature.x()/y()/sprite()/mirrored()/frame() (sdk/lua/kf_lua_
-     * port.cpp) read this frame's fresh result, not last frame's -- the
-     * same "advance, then declare" order kf_creature_screen_frame() (the
-     * C++ path) has. Skipped entirely once pet->dead, to match that
+    /* Advance the shared presenter BEFORE running the script's on_home_
+     * frame(), so creature.x()/y()/sprite()/mirrored()/frame() (sdk/lua/
+     * kf_lua_port.cpp) read this frame's fresh result, not last frame's --
+     * the same "advance, then declare" order kf_creature_screen_frame()
+     * (the C++ path) has. Skipped entirely once pet->dead, to match that
      * function's own death branch EXACTLY: it returns before ever
      * advancing the presenter once dead, so the wander freezes rather than
      * continuing to walk (and consume kf_rng draws) somewhere neither
      * screen shows. Deliberately lives HERE, not inside kf_lua_port_
-     * frame(): that file is generic Lua glue shared by every script this
-     * codebase loads (including the proof scripts, which bring up no pet
-     * session at all), and it must not assume a pet session exists just
-     * because SOME OTHER script (this one) needs one -- found via
-     * run_lua_vs_cpp_screen_check() diverging at the revive event before
-     * the death gate existed, and via lua_determinism_check/lua_draw_check
-     * aborting when this lived in kf_lua_port_frame() unconditionally. */
+     * home_frame(): that file (sdk/lua/kf_lua_port.cpp) is generic Lua glue
+     * shared by every script this codebase loads (including the proof
+     * scripts, which bring up no pet session at all), and it must not
+     * assume a pet session exists just because SOME OTHER script (this
+     * one) needs one -- found via run_lua_vs_cpp_screen_check() diverging
+     * at the revive event before the death gate existed, and via lua_
+     * determinism_check/lua_draw_check aborting when this lived in the
+     * generic on_frame() path unconditionally. */
     if (!pet->dead) {
         kf_creature_presenter_advance(pet, dt_ms);
     }
-    kf_lua_port_frame(dt_ms);
+    /* kf_lua_port_home_frame(), NOT kf_lua_port_frame(): calls the script's
+     * on_home_frame(), Home's own dedicated entry point, NOT the shared
+     * on_frame() the main loop already calls unconditionally every real
+     * frame regardless of which screen is active. This used to call
+     * kf_lua_port_frame() directly, which put Home's own :show()/:hide()/
+     * :move() calls inside the shared on_frame() -- harmless while Home was
+     * the ONLY other thing calling it, but a real bug once the main loop's
+     * own unconditional on_frame() call (sdl_main.cpp/app_main.cpp) started
+     * running every frame no matter which screen was active: Home's
+     * objects came back to `visible=true` on top of Info/Settings every
+     * single frame, frozen (the presenter above never advanced off-Home)
+     * but never actually hidden. See kf_lua_port_home_frame()'s own header
+     * comment in kf_lua_port.h for the full account. */
+    kf_lua_port_home_frame(dt_ms);
     kf_error_banner_update(g_error_banner_id);
     /* Guarded exactly like sdl_main.cpp/app_main.cpp's own pre-Task-5
      * commit call: a script that never declares anything (the narration-

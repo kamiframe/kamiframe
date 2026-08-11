@@ -209,16 +209,18 @@ void kf_screen_nav_init(void) {
      * own kf.screen("info") call, unconditional (unlike Home, it does not
      * check kf.home_screen_active()), will fetch this same index moments
      * from now. Registered here, ahead of that call, purely so it has a
-     * per-frame update: kf_lua_info_screen_frame() just re-runs the
-     * shared Lua VM's on_frame(), the same thing Home's own update does,
-     * so Info's text objects keep refreshing (the ticking "time in stage"
-     * duration, in particular) while Info is the active screen -- without
-     * this, on_frame() would only run while Home is active, since that is
-     * the only OTHER path that reaches kf_lua_port_frame() from inside
-     * kf_screen_nav_frame() below. Registering it here rather than letting
-     * kf.screen("info") register it bare (update = nullptr) is the same
-     * "pre-register with the real per-frame function" move
-     * kf_screen_nav.h's own header comment already describes for Home. */
+     * per-frame update: kf_lua_info_screen_frame() runs the shared Lua
+     * VM's on_info_frame() -- Info's OWN dedicated entry point, kept
+     * deliberately separate from Home's on_home_frame() and the generic
+     * on_frame() the main loop calls every frame regardless of active
+     * screen (see kf_lua_port.h's own comment on kf_lua_port_home_frame()
+     * for why this separation matters: it is what a real hardware bug
+     * traced back to) -- so Info's text objects keep refreshing (the
+     * ticking "time in stage" duration, in particular) while Info is the
+     * active screen. Registering it here rather than letting kf.screen(
+     * "info") register it bare (update = nullptr) is the same "pre-
+     * register with the real per-frame function" move kf_screen_nav.h's
+     * own header comment already describes for Home. */
     kf_screen_nav_register("info", kf_lua_info_screen_frame);
 
     /* Settings (Task 4): registered THIRD, so MENU cycles HOME -> INFO ->

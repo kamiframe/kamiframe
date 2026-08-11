@@ -21,13 +21,15 @@
  *
  * ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
  * sleep.md) added kf_lua_info_screen_frame() below, the same idea applied
- * to Info: no buttons, no presenter, just the shared VM's on_frame() and
- * the error banner, registered as Info's own per-frame update
- * (kf_screen_nav.cpp) so its text objects keep refreshing while it is the
- * active screen. This file also moved out of simulator/src/lvgl/ that
- * same task, alongside kf_screen_nav.cpp and kf_error_banner.cpp: none of
- * the three has ever had an LVGL dependency of its own -- see ADR 0045
- * for the full reasoning. */
+ * to Info: no buttons, no presenter, just the shared VM's on_info_frame()
+ * (its OWN dedicated entry point, not the generic on_frame() -- see kf_lua_
+ * port.h's own comment on why Home needed the identical treatment) and the
+ * error banner, registered as Info's own per-frame update (kf_screen_
+ * nav.cpp) so its text objects keep refreshing while it is the active
+ * screen. This file also moved out of simulator/src/lvgl/ that same task,
+ * alongside kf_screen_nav.cpp and kf_error_banner.cpp: none of the three
+ * has ever had an LVGL dependency of its own -- see ADR 0045 for the full
+ * reasoning. */
 
 #ifndef KF_LUA_HOME_SCREEN_H
 #define KF_LUA_HOME_SCREEN_H
@@ -63,12 +65,13 @@ void kf_lua_home_screen_init(void);
 void kf_lua_home_screen_enter(void);
 
 /* One frame: reads the hardware care buttons (kf_home_screen_input.h),
- * advances the shared creature presenter (inside kf_lua_port_frame() --
- * see that function's own Task 5 comment), runs on_frame, updates the
- * error banner, and commits the scene if the script has ever declared
- * anything (kf_lua_scene_declared_anything()). Call once per frame while
- * this is the active screen -- the exact role kf_creature_screen_frame()
- * plays for the C++ path, same signature, same per-frame contract. */
+ * advances the shared creature presenter, runs on_home_frame (kf_lua_port_
+ * home_frame() -- see that function's own comment for why this is a
+ * dedicated entry point rather than a call to the generic on_frame()),
+ * updates the error banner, and commits the scene if the script has ever
+ * declared anything (kf_lua_scene_declared_anything()). Call once per frame
+ * while this is the active screen -- the exact role kf_creature_screen_
+ * frame() plays for the C++ path, same signature, same per-frame contract. */
 void kf_lua_home_screen_frame(uint32_t dt_ms);
 
 /* Info's own per-frame contract -- same shape, no buttons or presenter to

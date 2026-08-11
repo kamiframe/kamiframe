@@ -43,7 +43,16 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name);
 
 /* Calls the script's global on_frame(dt_ms) function, if it defined one, in
  * a protected call (lua_pcall) -- a script error here cannot bring down the
- * process, only be logged and reported.
+ * process, only be logged and reported. GENERIC and screen-agnostic: the
+ * main loop (sdl_main.cpp/app_main.cpp) calls this exactly once per real
+ * frame, unconditionally, regardless of which kf.screen() is currently
+ * active -- on_frame() is where creature.lua puts its own screen-agnostic
+ * observations (announce_stage()/announce(), the hunger/happiness/energy
+ * log lines), NOT where any one screen's pixels get declared. A screen's
+ * own drawing belongs in that screen's OWN dedicated entry point instead
+ * (kf_lua_port_home_frame()/_info_frame()/_settings_frame() below) --
+ * see kf_lua_port_home_frame()'s own comment for why on_frame() used to get
+ * this wrong for Home specifically, and what that cost on real hardware.
  *
  * `synthetic_frame_delta_ms`: 0 means "use real elapsed time" (tracked
  * internally via kf_time_mono_us(), the same monotonic clock every other
@@ -57,25 +66,54 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name);
  * frame should not spam the log 30 times a second. */
 void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms);
 
+/* Calls the script's global on_home_frame(dt_ms) function, if it defined
+ * one -- Home's own dedicated entry point, called ONLY from kf_lua_home_
+ * screen.cpp's kf_lua_home_screen_frame(), itself only ever invoked while
+ * Home is the active screen (kf_screen_nav.cpp's per-screen `update`
+ * dispatch). Same shape as kf_lua_port_info_frame()/_settings_frame()
+ * below, added for the identical reason theirs were: a screen's own
+ * per-frame drawing must never run while some OTHER screen is the one
+ * actually showing.
+ *
+ * A HARDWARE BUG, NOT JUST A DESIGN PREFERENCE: before this function
+ * existed, Home's :show()/:hide()/:move() calls lived directly inside the
+ * shared on_frame() above, guarded by `if kf.home_screen_active() then`.
+ * That guard does not mean what it reads as -- kf.home_screen_active() is a
+ * BUILD-TIME flag (true for the life of the process on a KF_HOME_SCREEN=lua
+ * build, kf_lua_port_set_home_screen_active()'s own comment), not "is Home
+ * the screen showing right now" -- so it passed on every call regardless of
+ * the active screen. That would have been harmless if on_frame() only ever
+ * ran while Home was active, but it does not: the main loop calls it
+ * unconditionally, every real frame (see this function's own header comment
+ * above), on top of kf_screen_nav_frame() already having called Home's own
+ * update whenever Home actually was active. On a real device this put
+ * Home's creature/poop/shrine objects back to `visible=true` every single
+ * frame no matter which screen kf_lua_scene_activate_screen() had actually
+ * selected -- frozen (the wander itself never advanced, since that only
+ * happens inside kf_lua_home_screen_frame()) but sitting on top of Info and
+ * Settings regardless. Splitting Home's block into its OWN entry point,
+ * exactly like Info and Settings already had, closes this: on_frame() no
+ * longer touches any screen's objects, so the main loop's unconditional
+ * call is safe on every screen, and on_home_frame() only ever runs while
+ * kf_lua_home_screen_frame() calls it, which only happens while Home is
+ * active. */
+void kf_lua_port_home_frame(uint32_t synthetic_frame_delta_ms);
+
 /* Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md (ADR
  * 0045): calls the script's global on_info_frame(dt_ms) function, if it
- * defined one -- the exact same shape as kf_lua_port_frame()/on_frame()
- * above, deliberately a SEPARATE entry point rather than a second call to
+ * defined one -- the exact same shape as kf_lua_port_home_frame() above,
+ * deliberately a SEPARATE entry point rather than a second call to
  * on_frame() itself.
  *
- * WHY A SEPARATE FUNCTION, NOT ANOTHER CALL TO on_frame(): creature.lua's
- * on_frame() unconditionally mutates Home's own scene objects (body:show()/
- * shrine:hide()/poop visibility) whenever kf.home_screen_active() is true --
- * a correct, harmless no-op every frame Home actually IS the active screen,
- * but a real bug the frame Info is active instead: those calls set the
- * `visible` flag directly, which fights kf_lua_scene_activate_screen()'s own
- * "hide every screen except the active one" bookkeeping and un-hides Home's
- * placeholder creature sprite on top of Info. Found rendering Info for the
- * first time, this task -- see docs/architecture/adr-0045-info-screen-in-
- * lua.md. Calling a screen's OWN dedicated entry point instead, kept
- * separate from every other screen's, is what keeps one screen's per-frame
- * logic from ever touching another's objects, without adding a "which
- * screen is currently active" query no other part of the Lua API needs.
+ * WHY A SEPARATE FUNCTION, NOT ANOTHER CALL TO on_frame(): a screen's own
+ * per-frame drawing must never run while some OTHER screen is the one
+ * actually showing -- kf_lua_port_home_frame()'s own comment above is the
+ * account of what got this wrong for Home specifically before it existed.
+ * Calling a screen's OWN dedicated entry point instead, kept separate from
+ * every other screen's, is what keeps one screen's per-frame logic from
+ * ever touching another's objects, without adding a "which screen is
+ * currently active" query no other part of the Lua API needs. See
+ * docs/architecture/adr-0045-info-screen-in-lua.md.
  *
  * Not dispatched through kf.on_button (unlike on_frame()): Info has no
  * interactive widgets of its own, matching kf_pet_info_screen.h's original
