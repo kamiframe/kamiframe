@@ -22,13 +22,28 @@ named risk; the branch is green after every one.
 `kamiframe-headless --verify-*` check modes, `tools/kf_debug.py` over UART at
 115200 for the bench work.
 
-## Status: Tasks 1, 2 and 3 landed; Task 1's own checkboxes below are still
-unticked
+## Status: Tasks 1–4 landed; Task 5 partly done; Tasks 6–8 not started
+
+**Updated 2026-08-11.** Tasks 1, 2, 3 and **4** (Lua time API, Settings
+screen with an editable 12-hour clock) have landed and Task 4 is confirmed
+working on hardware by its owner. **Task 5's core risk is retired** — the
+DS3231 kept time across a real power cut on its coin cell, measured at the
+bench; see the STATUS block on Task 5 itself for the numbers and for the
+three sub-requirements that were *not* done (`KFDBG RTC`, the
+cell-removed negative case, and on-device confirmation that the pet actually
+ages across the gap). **Tasks 6, 7 and 8 have not started.**
+
+Task 6 is next and it is the heavy one: it changes the save format and the
+offline fast-forward. Its first step is not sleep at all — it is that
+`last_advanced` only moves when a save is *loaded*, so during live play Core
+does not know what time it is (`hakoniwaos/src/pet.cpp:1229` is the only
+assignment; `kf_pet_advance()` never touches it). Verified again on
+2026-08-11. The night window rests entirely on fixing that first.
 
 Written 2026-08-13 as NOT STARTED. Since then: Task 1 (`kf.screen()` groups,
 Info declared in Lua — `d3354cf`, `83c140e`), Task 2 (`KF_ENABLE_LVGL`
 default OFF, Info's LVGL screen deleted — `f3ddbc8`, `27a6649`), and further
-work (`df9315b`) have landed; Tasks 4-9 have not. The task checkboxes in this
+work (`df9315b`) have landed. The task checkboxes in this
 document were not updated when the work landed — treat the checkbox state
 below as unreliable and verify against the tree, not the boxes. Every figure
 in "What is true today" was measured in this worktree on this machine on
@@ -1028,6 +1043,57 @@ near the board.
 ---
 
 ### Task 5: `KFDBG RTC`, and the power-cut test
+
+> ## STATUS 2026-08-11: the core risk is RETIRED. Three sub-requirements are not.
+>
+> **What was actually run**, by Chris at the bench, board powered from USB with
+> the DS3231 coin cell fitted. The clock was set from the Lua Settings screen,
+> then read from the boot log line `DS3231: wall clock set from RTC
+> (epoch ...)` across three boots, with USB **fully removed** for about a
+> minute between the second and third:
+>
+> | Reading | Epoch | Delta |
+> |---|---|---|
+> | first boot | 1786384202 | — |
+> | before the power cut | 1786384432 | +230 s |
+> | after ~1 min unplugged | 1786384549 | **+117 s** |
+>
+> **+117 s across a genuine power cut, OSF clear on all three boots.** The
+> cell holds time; the write-through reaches the chip from a production
+> caller; the register map and the temperature-based DS3231/MPU-6050
+> disambiguation are correct on real silicon. Recorded in
+> `docs/architecture/adr-0026-ds3231-rtc-driver.md` under "Confirmed on
+> hardware, 2026-08-11", and that ADR's two stale "not reached" bullets and
+> `ports/esp32/hal/esp_time.cpp`'s "NOT yet run against real hardware" header
+> have been corrected. **ADR 0048 was not written** — the result went into
+> ADR 0026, where the claims it falsifies actually lived.
+>
+> **Do not treat this task as closed.** Three requirements below were NOT
+> done, and the first two of them are the ones that would catch a fault:
+>
+> 1. **`KFDBG RTC` was never built.** The measurement above used the boot log
+>    instead, which is minute-resolution-adequate for a power-cut test but
+>    reads the RAM clock's *source* only at boot and cannot compare RAM
+>    against chip at will. The command is still worth having; it is now
+>    unblocked and independent of Tasks 6–8.
+> 2. **The negative case — coin cell removed — was NOT run.** So the OSF-set
+>    branch, the "wall clock not set yet" skip in
+>    `hakoniwaos/src/pet.cpp:1201`, and "the pet does not age on a dead cell"
+>    all remain unexercised on hardware. The plan called this "not optional"
+>    and it was right to.
+> 3. **Offline *ageing* was NOT confirmed on device.** `stage_elapsed_s` was
+>    never captured either side of the cut. We proved the *clock* survives;
+>    we did not observe the *pet* consuming that elapsed time on hardware.
+>    The simulator covers this path thoroughly, and the RTC half is now
+>    proven, so this is a gap in observation rather than a suspected fault —
+>    but it is the actual product, so say "unobserved", not "working".
+>
+> One thing the run surfaced that the plan did not anticipate: the board's
+> **date** was a day behind while its time-of-day was correct, because
+> `kf_lua_port_apply_clock()` preserves the RTC's existing date and the
+> Settings screen edits hour and minute only. Nothing reads the date today,
+> so it breaks nothing — but there is no in-app way to fix a drifted date.
+> Noted in ADR 0026 and in `ports/esp32/README.md`'s open-questions list.
 
 **Needs Chris, the board, a DS3231, a coin cell, and two physical unplugs.**
 Retires the risk that `esp_time.cpp:311`'s write-through has never executed on

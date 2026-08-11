@@ -442,10 +442,13 @@ These are already true and need to stay true:
   read a mapped byte on a real ESP32-S3 yet. This is the single biggest
   open question left in this port; see `main/app_main.cpp`'s own header
   comment.
-- A caller for `kf_time_set_wall()` in production -- ADR 0026 implemented
-  the write-through correctly, but nothing (no settings screen, no NTP
-  sync) actually calls it yet, so a DS3231 that lost its seed still needs
-  a human re-running the bring-up diagnostic to recover, not an in-app fix.
+- Setting the **date** from the device. The Lua Settings screen calls
+  `kf_time_set_wall()` (via `kf_lua_port_apply_clock()`) and its
+  write-through to the DS3231 is confirmed on hardware -- see ADR 0026's
+  "Confirmed on hardware, 2026-08-11" -- but the screen edits hour and
+  minute only and preserves whatever date the chip already holds. A board
+  whose date has drifted cannot be corrected in-app; that still needs the
+  bring-up diagnostic, a `KFDBG` command taking a full epoch, or NTP.
 - A panel that can synchronise with the host, if full-screen animation ever
   matters -- ADR 0032's own conclusion. Both panels on hand today (the
   ILI9341 in use and the ST7789 intended as primary) tear on fast-moving

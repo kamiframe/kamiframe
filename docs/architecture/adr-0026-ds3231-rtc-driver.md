@@ -117,14 +117,25 @@ whether a caller exists, the same discipline ADR 0020 used for
 
 ## What this slice does NOT reach
 
-- **Not run on real hardware.** See "Not yet done" below.
-- **No caller for `kf_time_set_wall()` in production.** The write-through
-  in decision #5 is implemented and host-verified for its pure-math half,
-  but has no real code path exercising the DS3231-write side yet -- there
-  is no settings screen (ADR 0017 territory) or NTP sync to drive it.
+> **Both of the first two bullets below were retired on 2026-08-11.** The
+> driver has now run against a physical DS3231 and survived a power cut, and
+> the Lua Settings screen is a real production caller of
+> `kf_time_set_wall()`. See "Confirmed on hardware, 2026-08-11" below. They
+> are left in place, struck through, because the rest of this section is
+> still accurate and rewriting history here would hide what this slice
+> actually did and did not reach when it was written.
+
+- ~~**Not run on real hardware.**~~ Retired 2026-08-11 -- see below.
+- ~~**No caller for `kf_time_set_wall()` in production.**~~ Retired
+  2026-08-11: the Lua Settings screen calls it via
+  `kf_lua_port_apply_clock()`.
 - **No timezone or DST handling.** DS3231 registers and `epoch_seconds`
-  are both treated as raw UTC, always -- consistent with `kf/types.h`'s own
-  `kf_wall_time` contract, not a gap this slice introduces.
+  are both treated as one unlabelled number, always. This slice called that
+  number "raw UTC"; `kf/clock.h` later settled it explicitly as **local
+  time**, with no timezone and no UTC offset anywhere in the system (ADR
+  0046/0047). Nothing changed in behaviour -- the number was always
+  unlabelled -- but the naming here predates that decision, so read
+  `kf/clock.h`, not this bullet, for what the epoch means.
 - **No day-of-week tracking.** Register `0x03` is written with a fixed,
   valid-but-meaningless placeholder, matching the bring-up seed's own
   approach -- nothing in this codebase reads it back.
@@ -173,16 +184,54 @@ whether a caller exists, the same discipline ADR 0020 used for
   proved the code *should* link; this proves it *does*, against the actual
   ESP-IDF headers this environment cannot see.
 
-## Not yet done
+## Confirmed on hardware, 2026-08-11
 
-**Nothing has run against a physical DS3231.** Every register-map claim in
-this file was checked against `stage_i2c_and_rtc()`'s source, which is
-itself unverified against real hardware as of this writing (ADR 0024's own
-"Not yet done" section says the same) -- real hardware arrives 2026-08-07.
-Until then, this stands on the same footing every pinout and register map
-in this codebase has stood on before its first real board: reasoned
-carefully from the chip's documented behavior and a working reference
-implementation, not yet proven against a real chip.
+This is the Task 5 bench result from
+`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`, which required
+that what was *seen* be recorded here rather than a verdict. Observed on the
+owner's board -- ESP32-S3-WROOM-1 N16R8, ILI9341 panel, DS3231 module with
+its coin cell fitted, I2C on GPIO13 (SDA) / GPIO14 (SCL).
+
+The clock was set from the Lua Settings screen, then read back from the
+boot log (`DS3231: wall clock set from RTC (epoch ...)`) across three
+boots, with USB power **fully removed** for roughly one minute between the
+second and third:
+
+| Reading | Epoch | Delta |
+|---|---|---|
+| first boot | 1786384202 | -- |
+| before the power cut | 1786384432 | +230 s |
+| after ~1 minute unplugged | 1786384549 | **+117 s** |
+
+**+117 seconds across the power cut**, consistent with about a minute
+unplugged plus reconnect, boot and monitor attach. Every read was
+monotonic and tracked real elapsed time. OSF was clear on all three boots,
+so the oscillator never stopped -- the coin cell carried the chip with the
+board's own supply removed. That is the claim this driver was written to
+support, and it now holds on silicon rather than on reasoning.
+
+What this establishes, end to end: the I2C bus config and pins are right,
+the temperature-based DS3231/MPU-6050 disambiguation passes on a real
+DS3231, the register map reads back correctly, `kf_time_set_wall()`'s
+write-through reaches the physical chip from a production caller, and the
+seed survives a genuine power-off.
+
+### Still not exercised on hardware
+
+The success path is proven; the failure paths are not. Specifically, on a
+real board nothing has yet exercised: the OSF-set branch (would need a
+drained or removed coin cell), the wrong-chip temperature rejection (would
+need an MPU-6050 at 0x68), a bus-init or device-add failure, or the
+write-through failure path. These are all reasoned and host-testable only.
+
+One real limitation surfaced by this run rather than by the code: the
+board's **date** was a day behind while its time-of-day was correct, because
+the Settings screen edits hour and minute only and
+`kf_lua_port_apply_clock()` preserves whatever date the RTC already held.
+Nothing in the system reads the date today -- the night window uses
+hour-of-day, ageing counts elapsed seconds -- but there is no way to
+correct a drifted date from the device. A `KFDBG` command taking a full
+epoch, or an NTP sync, is the fix; neither exists yet.
 
 ## Cost to change
 

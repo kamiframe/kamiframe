@@ -30,15 +30,21 @@
  * documented contract ("Used by whatever configures the RTC: a settings
  * screen, an NTP sync, a companion app"). A write that only updated RAM
  * would silently undo the entire point of a battery-backed chip: the next
- * genuine power-off would forget the correction. Nothing in this codebase
- * calls kf_time_set_wall() outside tests yet (grep before assuming
- * otherwise), but the HAL contract is implemented correctly now regardless
- * of whether a caller exists yet -- same discipline ADR 0020 used for
- * esp_power.cpp's real deep sleep before anything called it.
+ * genuine power-off would forget the correction. This DOES have a
+ * production caller now -- the Lua Settings screen, via
+ * kf_lua_port_apply_clock() (sdk/lua/kf_lua_port.cpp). An earlier version
+ * of this comment said nothing outside tests called it; that was true when
+ * written and stopped being true when the Settings screen landed.
  *
- * NOT yet run against real hardware. See
- * docs/architecture/adr-0026-ds3231-rtc-driver.md for exactly what is and
- * is not verified.
+ * RUN AGAINST REAL HARDWARE AND CONFIRMED, 2026-08-11: a board with a
+ * DS3231 on GPIO13/14 was set from the Settings screen, unplugged from USB
+ * for roughly a minute, and re-read at the next boot. The clock had
+ * advanced 117 seconds across the power cut with OSF still clear -- the
+ * coin cell carried it. Three consecutive boot reads were monotonic and
+ * tracked real elapsed time. See
+ * docs/architecture/adr-0026-ds3231-rtc-driver.md for the full result and
+ * for what remains unverified (the OSF and wrong-chip failure paths have
+ * still never been exercised on a real board).
  */
 
 #include "kf/hal/time.h"
