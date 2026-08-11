@@ -1,8 +1,12 @@
 # The frame budget, and whether full-screen animation works
 
-**Short answer: yes.** A scrolling tile background with sprites on top, every
-pixel redrawn every frame, runs at about **31fps today and 60fps with a faster
-bus**. Drawing is not the problem. The wire to the screen is.
+**Short answer: yes, at 31fps today.** A scrolling tile background with
+sprites on top, every pixel redrawn every frame, runs at about **31fps**.
+Drawing is not the problem. The wire to the screen is — and the obvious free
+lever, a faster SPI clock, was tried at bring-up and failed on the wiring
+tested (see "Run the bus faster" below). 60fps is still reachable, but
+through a different lever: a parallel panel, a smaller panel, or reducing
+what a frame sends.
 
 Run it yourself:
 
@@ -109,15 +113,22 @@ the next strip while the first is in flight. Same overlap, a fraction of the
 RAM. `budget.h` has `KF_DISPLAY_DOUBLE_BUFFERED` sitting at 0, and the report
 prints both numbers so the headroom is always visible.
 
-### 2. Run the bus faster (free, needs verifying on real hardware)
+### 2. Run the bus faster — tried, and it did not pan out
 
-40MHz is a conservative assumption. The ST7789 datasheet is around 62MHz for
-serial writes, and 80MHz is very widely used in practice on the ESP32-S3 and
-generally works. Going from 40 to 80 doubles the ceiling: **32fps to 65fps**,
-for a single configuration line and no code changes.
+40MHz was a conservative assumption, and the theoretical case for 80MHz
+looked good: the ST7789 datasheet is around 62MHz for serial writes, and
+80MHz is widely used in practice on the ESP32-S3. Going from 40 to 80 would
+double the ceiling — **32fps to 65fps** — for a single configuration line and
+no code changes, if the wiring cooperated.
 
-This is the first thing to measure at bring-up, and there is a real chance
-60fps full-screen is simply available.
+**It didn't.** Measured at bring-up (`docs/hardware-bringup.md`'s Stage 2b
+clock sweep, 2026-08-08, on the breadboard ILI9341): 40MHz rendered the test
+card correctly; 80MHz came out **solid white** — wholesale data corruption on
+this wiring, not a subtle glitch. `KF_DISPLAY_SPI_HZ` stays 40MHz, now as a
+measured ceiling rather than a guess. Worth re-trying if the wiring changes
+(shorter leads, a PCB instead of jumpers) or once the primary 2in ST7789
+panel is on the bench — this result is from the 2.8in ILI9341 — but treat it
+as a re-test, not a free win still on the table.
 
 ### 3. Choose a parallel panel instead of SPI (a hardware decision)
 
@@ -220,7 +231,8 @@ of the frame: **measure the work, not the machine.**
 - Drawing is 4% of the frame. The wire is 96%.
 - Dirty rectangles are how a quiet screen gets cheap, not a limit on a busy
   one. Pass the whole screen when the whole screen changes.
-- The biggest lever is the bus: 40MHz to 80MHz doubles the ceiling, for free,
-  if the hardware cooperates.
+- The biggest lever would have been the bus, 40MHz to 80MHz doubling the
+  ceiling for free — but it was tried at bring-up and 80MHz came out solid
+  white on the wiring tested. 40MHz is the measured ceiling for now.
 - The decision this eventually forces is a hardware one, SPI versus parallel
   panel, and it is due before the PCB rather than now.
