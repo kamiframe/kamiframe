@@ -202,6 +202,7 @@ target_link_libraries(kamiframe_lua_port
 add_library(kamiframe_screen_port STATIC
     src/pet/kf_screen_nav.cpp
     src/pet/kf_lua_home_screen.cpp
+    src/pet/kf_lua_settings_screen.cpp
     src/pet/kf_error_banner.cpp
 )
 target_link_libraries(kamiframe_screen_port
@@ -961,6 +962,18 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # and the 22:00-07:00 night-window arithmetic it checks, in that order.
     add_test(NAME clock_check
              COMMAND kamiframe-headless --verify-clock)
+
+    # Task 4 of the screens/clock/sleep plan: the Lua time API (kf.time/
+    # hour/minute/clock_set/set_clock) and the Settings screen's four-field
+    # editor, driven with kf_app_debug_set_buttons() the way a real MENU/
+    # LEFT/RIGHT/UP/DOWN/A/B sequence would be. Proves kf.time()'s "--:--
+    # --" unset-clock string and its exact 12-hour format, the real Home +
+    # Info + Settings live-object count (closing risk 5), that saving moves
+    # the wall clock by exactly the expected amount and nothing else, and
+    # that cancelling with B from a modified state does not move it at all.
+    # See headless_main.cpp's run_settings_screen_check().
+    add_test(NAME settings_screen_check
+             COMMAND kamiframe-headless --verify-settings-screen)
 endif()
 
 # ---------------------------------------------------------------------------

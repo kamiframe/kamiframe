@@ -10,6 +10,7 @@
 #include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_pet_session.h"
 
+#include "kf/clock.h"
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
@@ -38,6 +39,13 @@ struct State {
      * a stale timestamp surviving an init/shutdown/init cycle would
      * compute one bogus, oversized dt_ms on the first post-reinit call. */
     uint64_t last_info_call_us = 0;
+    /* kf_lua_port_settings_frame()'s own real-elapsed-time tracker -- same
+     * reasoning as last_info_call_us above, a THIRD independent one:
+     * sharing either of the other two would corrupt whichever pair's own
+     * "time since I was last called" math the moment a script's active
+     * screen alternates between Home/Info and Settings, which is exactly
+     * what a MENU press does. */
+    uint64_t last_settings_call_us = 0;
     int64_t last_report = 0;
     uint32_t frame_count = 0;
 
@@ -109,10 +117,106 @@ int lua_kf_home_screen_active(lua_State *L) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------
+ * kf.time()/hour()/minute()/clock_set()/set_clock() -- Task 4 of docs/
+ * superpowers/plans/2026-08-13-screens-clock-sleep.md, "the answer to
+ * question 2": four reads and one write, no epoch ever crosses into Lua.
+ * Every one of these goes through kf/clock.h's stateless civil-time
+ * conversion (ADR 0046) rather than reimplementing hour/minute arithmetic
+ * here, for the exact reason that header gives: the clock on screen and
+ * whatever else reads "what hour is it locally" (sleep's night window,
+ * Task 6) must never be able to disagree.
+ * --------------------------------------------------------------------- */
+
+/* kf.time() -- "9:05 AM", ready to draw, the only call most scripts need.
+ * 12-hour with AM/PM, uppercase (kf/font.h has no lowercase), matching
+ * kf.hour()'s own 24-hour reading underneath via a plain %12 -- midnight is
+ * 12 AM, noon is 12 PM, kf/clock.h's civil hour handles that, this just
+ * folds it into the display convention. On a device whose clock has never
+ * been set (kf_time_wall().valid false), returns "--:-- --" -- not a lie,
+ * not an empty string, still eight characters so nothing shifts when the
+ * clock IS finally set. */
+int lua_kf_time(lua_State *L) {
+    const kf_wall_time wt = kf_time_wall();
+    if (!wt.valid) {
+        lua_pushstring(L, "--:-- --");
+        return 1;
+    }
+    kf_civil civil;
+    kf_civil_from_epoch(wt.epoch_seconds, &civil);
+    int hour12 = civil.hour % 12;
+    if (hour12 == 0) {
+        hour12 = 12; /* midnight and noon both fold to 12, not 0 */
+    }
+    const char *ampm = civil.hour < 12 ? "AM" : "PM";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%d:%02u %s", hour12,
+                  static_cast<unsigned>(civil.minute), ampm);
+    lua_pushstring(L, buf);
+    return 1;
+}
+
+/* kf.hour() -- 0..23, integer, local. Meaningless (0, epoch 0's hour) before
+ * the clock has ever been set -- check kf.clock_set() first, the same
+ * convention pet.teen_form()/pet.adult_branch() already use for "meaningless
+ * before its own branch point" (sdk/lua/kf_lua_port.cpp's own comment on
+ * those two). */
+int lua_kf_hour(lua_State *L) {
+    kf_civil civil;
+    kf_civil_from_epoch(kf_time_wall().epoch_seconds, &civil);
+    lua_pushinteger(L, civil.hour);
+    return 1;
+}
+
+/* kf.minute() -- 0..59, integer, local. Same "meaningless before kf.clock_
+ * set()" caveat as kf.hour() above. */
+int lua_kf_minute(lua_State *L) {
+    kf_civil civil;
+    kf_civil_from_epoch(kf_time_wall().epoch_seconds, &civil);
+    lua_pushinteger(L, civil.minute);
+    return 1;
+}
+
+/* kf.clock_set() -- true once the clock has been set (by the Settings
+ * screen, or, later, an internet time sync); false on a fresh device. The
+ * one call a script needs before trusting kf.hour()/kf.minute()'s numbers,
+ * or before deciding whether kf.time()'s "--:-- --" is the honest answer. */
+int lua_kf_clock_set(lua_State *L) {
+    lua_pushboolean(L, kf_time_wall().valid ? 1 : 0);
+    return 1;
+}
+
+/* kf.set_clock(hour, minute) -- the ONE write in this whole surface.
+ * Deliberately not part of kf.time()'s read family: setting the clock is a
+ * device-settings action, not a game action -- "the Settings screen calls
+ * this; your game almost certainly should not." Takes two plain integers
+ * (0..23, 0..59; luaL_checkinteger rejects a non-number outright, same as
+ * every other numeric binding in this codebase), applies today's date and
+ * the current seconds field itself (kf_lua_port_apply_clock(), shared with
+ * the Settings screen's own SAVE action so the two can never disagree), and
+ * returns true/false -- never raises -- so a script can show "could not
+ * save" on screen rather than crash when the backend refuses
+ * (KF_ERR_UNAVAILABLE on a read-only clock). The script never sees an epoch
+ * second either way. */
+int lua_kf_set_clock(lua_State *L) {
+    const lua_Integer hour = luaL_checkinteger(L, 1);
+    const lua_Integer minute = luaL_checkinteger(L, 2);
+    lua_pushboolean(L, kf_lua_port_apply_clock(static_cast<int>(hour),
+                                                static_cast<int>(minute))
+                            ? 1
+                            : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
     {"home_screen_active", lua_kf_home_screen_active},
+    {"time", lua_kf_time},
+    {"hour", lua_kf_hour},
+    {"minute", lua_kf_minute},
+    {"clock_set", lua_kf_clock_set},
+    {"set_clock", lua_kf_set_clock},
     {nullptr, nullptr},
 };
 
@@ -524,6 +628,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
     g.last_error[0] = '\0';
     g.last_call_us = 0;
     g.last_info_call_us = 0;
+    g.last_settings_call_us = 0;
     g.last_report = 0;
     g.frame_count = 0;
     /* g.home_screen_active is deliberately NOT touched here -- see its own
@@ -678,6 +783,88 @@ void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms) {
         g.disabled_after_error = true;
         return;
     }
+}
+
+void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
+                                 const char *field, int hour, int minute,
+                                 bool is_pm, int save_result) {
+    if (!g.ready || g.disabled_after_error) {
+        return;
+    }
+
+    /* A THIRD independent dt tracker -- see g.last_settings_call_us's own
+     * member comment for why sharing either of the other two would corrupt
+     * both. */
+    uint32_t dt_ms = synthetic_frame_delta_ms;
+    if (dt_ms == 0u) {
+        const uint64_t now_us = kf_time_mono_us();
+        dt_ms = g.last_settings_call_us == 0u
+                    ? 0u
+                    : static_cast<uint32_t>(
+                          (now_us >= g.last_settings_call_us
+                               ? now_us - g.last_settings_call_us
+                               : 0u) /
+                          1000u);
+        g.last_settings_call_us = now_us;
+    }
+
+    lua_getglobal(g.L, "on_settings_frame");
+    if (!lua_isfunction(g.L, -1)) {
+        lua_pop(g.L, 1);
+        return; /* a script is not required to define on_settings_frame */
+    }
+    lua_pushinteger(g.L, static_cast<lua_Integer>(dt_ms));
+    lua_pushstring(g.L, field);
+    lua_pushinteger(g.L, hour);
+    lua_pushinteger(g.L, minute);
+    lua_pushstring(g.L, is_pm ? "PM" : "AM");
+    if (save_result < 0) {
+        lua_pushnil(g.L);
+    } else {
+        lua_pushboolean(g.L, save_result != 0);
+    }
+    if (lua_pcall(g.L, 6, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(g.L, -1);
+        KF_LOGE(TAG,
+                "on_settings_frame raised an error, disabling further calls "
+                "until the next kf_lua_port_init(): %s",
+                msg);
+        std::snprintf(g.last_error, sizeof(g.last_error), "%s",
+                      msg != nullptr ? msg : "(no message)");
+        lua_pop(g.L, 1);
+        g.disabled_after_error = true;
+        return;
+    }
+}
+
+bool kf_lua_port_apply_clock(int hour, int minute) {
+    int h = hour;
+    if (h < 0) {
+        h = 0;
+    } else if (h > 23) {
+        h = 23;
+    }
+    int m = minute;
+    if (m < 0) {
+        m = 0;
+    } else if (m > 59) {
+        m = 59;
+    }
+
+    const kf_wall_time now = kf_time_wall();
+    kf_civil civil;
+    kf_civil_from_epoch(now.epoch_seconds, &civil);
+    civil.hour = static_cast<uint8_t>(h);
+    civil.minute = static_cast<uint8_t>(m);
+    /* civil.second/.day/.month/.year all come straight from `now` above,
+     * untouched -- "preserves today's date and the seconds field" (Task 4's
+     * own requirement). On a device whose clock has never been set, kf_
+     * time_wall() reports epoch 0 (1970-01-01T00:00:00), so that is what
+     * "today" resolves to the first time anyone ever saves -- a known
+     * limitation of a screen that edits hour/minute only, not a bug: there
+     * is no date-setting UI in this task, and none is promised by it. */
+    const int64_t new_epoch = kf_epoch_from_civil(&civil);
+    return kf_time_set_wall(new_epoch) == KF_OK;
 }
 
 void kf_lua_port_shutdown() {

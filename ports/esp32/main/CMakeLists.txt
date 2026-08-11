@@ -160,6 +160,7 @@ idf_component_register(
         ../../../simulator/src/pet/kf_home_screen_input.cpp
         ../../../simulator/src/pet/kf_screen_nav.cpp
         ../../../simulator/src/pet/kf_lua_home_screen.cpp
+        ../../../simulator/src/pet/kf_lua_settings_screen.cpp
         ../../../simulator/src/pet/kf_error_banner.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * Switches which screen is on top -- Home and Info so far, more later, any
+ * Switches which screen is on top -- Home, Info and Settings so far, any
  * number up to KF_SCREEN_NAV_MAX_SCREENS -- and owns the ONE input mapping
  * that does it: MENU advances to the next screen, wrapping back to Home; B
  * jumps straight back to Home from anywhere. See ADR 0022 for the original

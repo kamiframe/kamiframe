@@ -16,6 +16,7 @@
  * including THIS header) is what is forbidden -- see kf_lua_scene.h's own
  * comment on the function-pointer boundary that exists because of it. */
 #include "kf_lua_scene.h"
+#include "kf_lua_settings_screen.h"
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
@@ -57,6 +58,16 @@ ScreenEntry g_screens[KF_SCREEN_NAV_MAX_SCREENS];
 size_t g_screen_count = 0;
 size_t g_active = 0;
 
+/* Set once by kf_screen_nav_init() below, from kf_screen_nav_register()'s
+ * own return value -- NOT hardcoded to 2, even though "home", "info",
+ * "settings" registering in that order today makes 2 the actual number:
+ * show() below needs to know which index is Settings without assuming
+ * registration order stays fixed forever, the same reasoning g_active
+ * already follows by being an index rather than a name everywhere else in
+ * this file. -1 (kSettingsIndexUnset) until kf_screen_nav_init() runs. */
+constexpr int kSettingsIndexUnset = -1;
+int g_settings_index = kSettingsIndexUnset;
+
 void show(size_t index) {
     g_active = index;
 
@@ -84,6 +95,18 @@ void show(size_t index) {
 #else
         kf_creature_screen_enter();
 #endif
+    } else if (g_settings_index != kSettingsIndexUnset &&
+               index == static_cast<size_t>(g_settings_index)) {
+        /* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-
+         * sleep.md: Settings is special beyond the scene-group bookkeeping
+         * above too, the same way Home is -- resetting its four-field
+         * editor from whatever the wall clock currently says, every time
+         * the screen is entered, so a cancelled edit never resurfaces the
+         * next time the owner opens it. kf_lua_scene_activate_screen()
+         * above already repainted the screen's pixels; this only resets
+         * the C++-side edit state kf_lua_settings_screen_frame() reads and
+         * writes from here on. */
+        kf_lua_settings_screen_enter();
     }
 }
 
@@ -197,6 +220,22 @@ void kf_screen_nav_init(void) {
      * "pre-register with the real per-frame function" move
      * kf_screen_nav.h's own header comment already describes for Home. */
     kf_screen_nav_register("info", kf_lua_info_screen_frame);
+
+    /* Settings (Task 4): registered THIRD, so MENU cycles HOME -> INFO ->
+     * SETTINGS -> HOME, per the plan's own requirement. kf_lua_settings_
+     * screen_init() first, matching Home's own order above (init creates
+     * this screen's error banner before anything can possibly show it),
+     * then register with a real per-frame update the same way Home and
+     * Info both already do -- creature.lua's own kf.screen("settings")
+     * call (unconditional, like Info's, not gated on kf.home_screen_
+     * active()) will fetch this same index moments from now. The return
+     * value is g_settings_index, not discarded like Info's: show() above
+     * needs to know which index this is, to call kf_lua_settings_screen_
+     * enter() on the way in -- Info needs no such hook, so it never
+     * bothered keeping its own index around. */
+    kf_lua_settings_screen_init();
+    g_settings_index =
+        kf_screen_nav_register("settings", kf_lua_settings_screen_frame);
 
     g_active = 0;
     KF_LOGI(TAG, "%d screens ready, starting on Home", kf_screen_nav_count());
