@@ -75,12 +75,17 @@ the current 2.8in module cannot do at all:
 - **A flex connector instead of eight jumper wires**, which is the correct
   mechanical answer for anything that goes in an enclosure.
 
-**Use the 2" Coolwell panel, not the 2.8" HiLetgo.** Both are 240x320 SPI
-and they wire identically, but the 2.8" is an ILI9341 and the 2" is an
-ST7789. `esp_display.cpp` calls `esp_lcd_new_panel_st7789()`, so the ILI9341
-will stay black no matter how correct the wiring is. Supporting it later is
-a one-function change and a good second target, since it also has a touch
-controller.
+**This is backwards from where the code actually is today.** Both panels
+are 240x320 SPI and wire identically — the 2.8" is an ILI9341, the 2" is an
+ST7789 — but `esp_display.cpp` supports both through one panel-profile
+mechanism now (ADR 0039, `KF_PANEL`), and the **ILI9341 is the default
+profile and the only panel that has ever put a pixel on glass** —
+`ports/esp32/main/CMakeLists.txt` defaults `KF_PANEL` to `ili9341` for
+exactly that reason. **The ST7789 has never lit up.** It remains the
+intended primary panel (this doc's own hardware table above, ADR 0039), and
+the hardware bring-up plan's Tasks 5-8 build with `-DKF_PANEL=st7789`
+explicitly to get it there — but until that lands, wire and test against
+the 2.8" HiLetgo (ILI9341) first if you want to see a picture.
 
 **The battery is last, not first.** The 503030 cells ship with bare leads
 that need JST PH connectors soldered on, and feeding the devkit's 5V pin
@@ -118,7 +123,7 @@ fine, which is exactly why the visual guide marks them in red.
 | Display MOSI | 11 | SPI2 |
 | Display SCLK | 12 | SPI2 |
 | Display CS | 10 | |
-| Display DC | 9 | |
+| Display DC | 7 | |
 | Display RST | 8 | |
 | Display backlight | 6 | plain GPIO on/off, not PWM |
 | I2C SDA | 13 | RTC now; IMU, light sensor, haptic driver later |
@@ -130,7 +135,7 @@ fine, which is exactly why the visual guide marks them in red.
 | Buttons UP/DOWN/LEFT/RIGHT | 4, 5, 15, 16 | active-low, internal pull-ups |
 | Buttons A/B/MENU | 17, 18, 21 | |
 | *reserved* I2S BCLK/WS | 1, 2 | shared by amplifier and microphone |
-| *reserved* I2S DOUT / DIN | 7, 47 | |
+| *reserved* I2S DOUT / DIN | 9, 47 | DOUT swapped with Display DC — was 7, now 9 (`kf_esp_pins.h`) |
 
 That leaves nothing spare. The passive buzzer never gets a pin, because the
 MAX98357A does everything it does and better.
