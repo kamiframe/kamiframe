@@ -215,12 +215,12 @@ comments tight; long reasoning goes in the C++ binding or an ADR.
 settled this: *"Local time is set once in the device's global settings and
 every creature on it shares that. Core carries a UTC offset from config, and
 nothing per-egg."* That is why the clock lives on a **global Settings screen**
-and, once Task 4 persists it, in its **own storage key**, not in the pet save
-— the "device setting, not per-creature" half of this still holds exactly as
-written. The "UTC offset from config" half is superseded: see "Timezone:
-settled by Chris" below, which the spec predates. There is no offset — the
-RTC holds local time directly, and what Task 4 persists is that local time
-(or, on desktop, its equivalent), not an offset applied to something else.
+not in the pet save — the "device setting, not per-creature" half of this
+still holds exactly as written. The "UTC offset from config" half is
+superseded: see "Timezone: settled by Chris" below, which the spec predates.
+There is no offset — the RTC holds local time directly, and Task 4 persists
+nothing at all beyond the RTC itself: no storage key, "ready for" internet
+sync or otherwise (see Task 4's own note against adding one).
 
 ---
 
@@ -366,7 +366,15 @@ at a glance across a room:
    for every stage in the pack.
 2. **A pulsing indicator.** A single text object showing `!` in the reserved
    band, toggling visible/invisible at 1 Hz. One scene object, two setter calls
-   per second, and the differ makes the still frames free.
+   per second, and the differ makes the still frames free. **`!` does not
+   exist in the font yet** — `hakoniwaos/src/font_data.h`'s `0x21 '!'` entry is
+   all zeroes (so is `?`, `0x3F`); the character set `tools/make_font.py`
+   generates is deliberately limited to space, 0-9, A-Z and `. , : - / % + ( )`.
+   Task 8 must add the `!` glyph to `GLYPHS` in `tools/make_font.py` and
+   regenerate `font_data.h` as an explicit step (the module's own comment
+   already calls new glyphs "a later, mechanical addition" — this is that).
+   Do not ship the pulsing indicator against the current font: it would draw
+   an invisible rectangle.
 3. **The care-guide entry for the wanted action inverts** — the same
    `kf_scene_set_colors()` trick the Settings cursor uses. It tells the player
    *which* button, not merely *that* something is wrong.
@@ -998,9 +1006,11 @@ near the board.
       buttons and say whether the repeat rate and the field order feel right.
       **That judgement is the task's real acceptance**, not the check.
 - [ ] ADR 0047: the four-function surface and why no epoch reaches Lua; the
-      button map; the separate storage key and the device-wide decision behind
-      it; the MENU reservation; a "Not verified" section — the DS3231 write
-      path is still unproved on silicon, which is Task 5.
+      button map; that the clock persists nowhere but the RTC and why (no
+      storage key, "ready for" internet sync or otherwise) and the
+      device-wide decision behind it; the MENU reservation; a "Not verified"
+      section — the DS3231 write path is still unproved on silicon, which is
+      Task 5.
 
 ---
 
@@ -1151,7 +1161,14 @@ The game's half. Uses the 18 single-frame sleeping sprites that already ship.
 - [ ] **No want fires while asleep.** Task 6 runs first for exactly this reason.
 - [ ] The three presentation layers in `creature.lua`: pose and position, the
       1 Hz pulsing `!`, and the inverted care-guide entry naming the button.
-      All three are scene setters; no new Core drawing.
+      All three are scene setters; no new Core drawing. **Before this can
+      draw `!`, add the glyph.** `hakoniwaos/src/font_data.h`'s `0x21 '!'`
+      row is currently all zeroes — add `!` to `GLYPHS` in
+      `tools/make_font.py` and regenerate `font_data.h`
+      (`python3 tools/make_font.py > hakoniwaos/src/font_data.h`) as the
+      first step of this task. Do not substitute a different existing glyph
+      without checking with Chris first; the font's character set is
+      otherwise unchanged.
 - [ ] A check that a hungry pet reports `FOOD`, that feeding clears it, and that
       a need hovering at the threshold does **not** produce a want that changes
       on consecutive frames. The last one is the hysteresis assertion and it is
