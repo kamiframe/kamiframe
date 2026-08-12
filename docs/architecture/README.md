@@ -53,6 +53,13 @@ future us in month eight asking the same question with less patience.
 | [0045](adr-0045-info-screen-in-lua.md) | Info leaves LVGL for a `kf.screen()` group, and LVGL leaves the default build | Accepted |
 | [0046](adr-0046-core-civil-clock.md) | `kf/clock.h` — civil time in Core, integers only, no offset | Accepted |
 | [0047](adr-0047-lua-time-api-and-settings-screen.md) | The Lua time API, and the Settings screen | Accepted |
+| [0048](adr-0048-sleep-in-core.md) | Sleep in Core — the asleep flag, the waking-fraction constant, the save-format bump, and the egg decision | Accepted |
+| [0049](adr-0049-sleep-on-screen.md) | Sleep on screen — the Lua binding, the wander freeze, the tuck-in interaction, and the futon | Accepted |
+| [0050](adr-0050-attention-signal.md) | The attention signal — `kf_pet_wants()`, `pet.wants()`, and three layers on Home | Accepted |
+| [0051](adr-0051-home-clock-and-futon-always.md) | A HUD clock on Home, and the futon as sleep's one visual | Accepted |
+| [0052](adr-0052-drowsy-window-and-tuck-in-bonus.md) | The drowsy window becomes ten minutes, and tuck-in gets a real payoff | Accepted |
+| [0053](adr-0053-overnight-floors-poop-suppression.md) | Overnight floors, a dirtiness cap, and no poop while asleep | Accepted |
+| [0054](adr-0054-kfdbg-clock-and-rtc.md) | `KFDBG CLOCK`, `KFDBG RTC`, and sleep-state STATE parity | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 
@@ -82,9 +89,11 @@ existed under this name — worth Chris confirming rather than guessing here.
 
 **This index has drifted out of date before, more than once.** It previously
 stopped at ADR 0009 while the directory held files through ADR 0025, and
-was caught and fixed then. This pass catches the same drift again — it had
-stopped at ADR 0035 while the directory held files through ADR 0046, eight
-ADRs missing (0036, 0039-0046). Whoever next lands an ADR: add its row here
-in the same commit, not "later" — a broken index is worse than a slightly
-oversized diff to fix it, and this is now the second time that lesson
-needed relearning.
+was caught and fixed then. It happened again and stopped at ADR 0035 while
+the directory held files through ADR 0046, eight ADRs missing (0036,
+0039-0046), and was caught and fixed a second time. This pass catches the
+same drift a third time — it had stopped at ADR 0047 while the directory
+held files through ADR 0054, seven ADRs missing (0048-0054). Whoever next
+lands an ADR: add its row here in the same commit, not "later" — a broken
+index is worse than a slightly oversized diff to fix it, and this is now
+the third time that lesson needed relearning.

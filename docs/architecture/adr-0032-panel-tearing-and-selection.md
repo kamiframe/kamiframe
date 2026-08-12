@@ -16,7 +16,13 @@ continuously on its own clock, and nothing coordinates our writes with that
 scan, so for one refresh the scanned region contains a mix of old and new
 pixels. It is invisible on a static screen and obvious when the time
 multiplier is turned up, because then the numbers really are changing every
-frame.
+frame. (That multiplier is `KFDBG MULT`, ADR 0031's addition to ADR 0030's
+bridge from the day before -- this hands-on investigation is what first
+drove that bridge live, over a physical UART, against real hardware. See
+ADR 0030's "Not verified" section for why its own text still says "no
+board reachable" afterwards: that line describes what each individual
+coding task's own sandbox could reach, not whether the board was ever
+touched by anyone.)
 
 The standard fix is the panel's TE (tearing effect) signal, which pulses at
 vertical blanking so the host knows when writing is safe. **The 2.8in

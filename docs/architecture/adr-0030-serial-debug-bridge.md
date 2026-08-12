@@ -434,24 +434,40 @@ worked example above than to noise -- see "Not verified".
 
 ## Not verified
 
-- **Nothing in this ADR has run against real hardware.** No board is
-  reachable from this environment (see CLAUDE.md's "no hardware yet"
-  architecture rule and the task's own instruction to say this
+- **Nothing in *this task* drove the bridge itself.** No board was
+  reachable from *this coding session's own environment* (see CLAUDE.md's
+  architecture rule at the time and the task's own instruction to say this
   explicitly). Every claim above is either a native-host test of the
   portable codec, a cross-check against the real host-side Python, or a
-  clean cross-compile -- never a byte actually sent or received over a
-  physical UART.
+  clean cross-compile -- never a byte sent or received over a physical
+  UART **by this task**.
 
-  **Flagged, not resolved, during a later documentation pass:** ADR 0032
-  (one day later, 2026-08-09) opens "Once the pet was rendering on real
-  hardware" and describes observing tearing get "obvious when the time
-  multiplier is turned up" -- the time multiplier is exactly ADR 0031's
-  `KFDBG MULT`, reachable only over this bridge. Whether that multiplier
-  was actually driven live over the physical UART on real hardware by
-  2026-08-09 (which would mean this claim was current for less than a day)
-  or set some other way (a compile-time default, a desktop-only
-  observation) is not established by either document. Left for Chris to
-  confirm rather than guessed at here.
+  **Resolved, during a later documentation pass, after being flagged
+  unresolved in an earlier one:** ADR 0032 (one day later, 2026-08-09)
+  opens "Once the pet was rendering on real hardware" and describes
+  observing tearing get "obvious when the time multiplier is turned up"
+  -- the time multiplier is exactly ADR 0031's `KFDBG MULT`, reachable
+  only over this bridge (grepping the tree for "multiplier" turns up
+  exactly two places it can come from on real hardware: `KFDBG MULT`
+  here, and `simulator/src/sdl/sdl_debug_window.cpp`'s buttons, which are
+  desktop/SDL-only and physically cannot run on the device). So the
+  bridge this ADR built genuinely was driven live, over a physical UART,
+  against real hardware, by 2026-08-09 -- ADR 0032's own "Cost to change"
+  section confirms the same tooling in the same breath, naming
+  `kf_debug.py vsync on` as how its wait logic is reached. **Both
+  statements are correct; they are not describing the same thing.** This
+  bullet, and the identical "no board is reachable from this environment"
+  line repeated in every KFDBG-touching ADR from here through ADR 0039
+  (2026-08-11), describe what *that specific coding task's own sandboxed
+  environment* could reach: none of these tasks had a wire to a board, so
+  none of their own "Verified" sections could include a live UART round
+  trip, regardless of date. ADR 0032's hands-on scanline probing --
+  wiring a GPIO, reading at three different SPI clocks, timing microsecond
+  reply gaps -- is a different mode of verification entirely: hardware
+  operated directly, almost certainly by Chris, with physical access this
+  sandbox never had. Neither ADR is wrong; "no board reachable from this
+  environment" was never a claim that nobody, ever, touched the board --
+  only that the task writing it, from its own seat, did not.
 - **`uart_driver_install()` sharing the console UART with zero
   reconfiguration is the single biggest real risk here.** ESP-IDF's own
   startup already configures UART0 for `printf`/`KF_LOGx` output via a
