@@ -113,6 +113,43 @@ def known_adr_numbers(root: pathlib.Path):
     return numbers
 
 
+def check_adr_index(root: pathlib.Path, known):
+    """Every ADR file that exists must appear in the architecture index.
+
+    THE OTHER DIRECTION FROM check_adr_mentions(), AND THE ONE THAT HAS
+    ACTUALLY GONE WRONG. That function catches a mention of an ADR nobody
+    wrote. This one catches an ADR somebody wrote that the index never
+    learned about -- which is the failure this repo has had THREE times
+    (see docs/architecture/README.md's own closing note). The index stopped
+    at 0047 while the directory held files through 0054.
+
+    Worth being blunt about why the mentions check cannot cover this: a
+    missing index row is not a dangling reference, it is an ABSENT one, and
+    absence is invisible to anything that only validates the references it
+    can see. The two checks look similar and are not.
+    """
+    index = root / "docs" / "architecture" / "README.md"
+    if not index.is_file():
+        return [("docs/architecture/README.md", 0, "the ADR index is missing")]
+
+    text = index.read_text(encoding="utf-8", errors="replace")
+
+    # Table ROWS only -- not every mention anywhere in the file.
+    #
+    # The first version of this harvested any "ADR 0054" or "adr-0054-"
+    # text in README.md, which made the check vacuous: deleting 0054's
+    # table row still passed, because the closing note further down the
+    # same file mentions 0054 in prose. Caught by actually deleting a row
+    # and watching the check stay green, which is the only reason this
+    # comment exists. A row is `| [NNNN](adr-NNNN-...) | ... |`.
+    listed = {int(m.group(1))
+              for m in re.finditer(r"^\|\s*\[(\d{4})\]", text, re.M)}
+
+    return [("docs/architecture/README.md", 0,
+             f"ADR {n:04d} exists as a file but is not in the index")
+            for n in sorted(known - listed)]
+
+
 def check_adr_mentions(root: pathlib.Path, files, known):
     problems = []
     for path in files:
@@ -139,8 +176,9 @@ def main() -> int:
     link_problems = check_links(root, files)
     known = known_adr_numbers(root)
     adr_problems = check_adr_mentions(root, files, known)
+    index_problems = check_adr_index(root, known)
 
-    if link_problems or adr_problems:
+    if link_problems or adr_problems or index_problems:
         if link_problems:
             print("Dangling relative links found:\n")
             for path, lineno, target in link_problems:
@@ -152,10 +190,16 @@ def main() -> int:
             for path, lineno, number, snippet in adr_problems:
                 print(f"  {path}:{lineno}: ADR {number:04d}")
                 print(f"      {snippet}")
+        if index_problems:
+            if link_problems or adr_problems:
+                print()
+            print("ADRs written but missing from the index:\n")
+            for path, _lineno, message in index_problems:
+                print(f"  {path}: {message}")
         return 1
 
     print(f"check_doc_links: {len(files)} markdown files scanned, "
-          f"{len(known)} ADRs known, nothing dangling")
+          f"{len(known)} ADRs known, all indexed, nothing dangling")
     return 0
 
 
