@@ -430,6 +430,37 @@ These are already true and need to stay true:
   (ADR 0024). See `docs/architecture/adr-0039-panel-read-line-and-backlight.md`'s
   "Not verified" section.
 
+## What ADR 0054 added
+
+- Two new KFDBG commands: `CLOCK DROWSY|BEDTIME|MORNING` / `CLOCK EPOCH
+  <seconds>` (mutate tier -- the hardware equivalent of the desktop debug
+  window's Drowsy/Bedtime/Morning buttons, plus an arbitrary-epoch form
+  those buttons don't offer) and `RTC` (observe tier -- reads the DS3231
+  directly over I2C, not the in-RAM wall clock, so it can prove the two
+  haven't drifted apart and can observe the chip's OSF flag remotely).
+  **Closes this section's former "no way to set the date from the device"
+  open question** -- `KFDBG CLOCK EPOCH <seconds>` is exactly the "a
+  `KFDBG` command taking a full epoch" option that question named.
+- `KFDBG STATE` gained three fields, `asleep`/`drowsy`/`tucked_in` -- the
+  sleep state (ADR 0048/0052) the hardware debug bridge never carried, so
+  `tools/kf_panel.py`'s readout previously had no way to show it. The
+  reply buffer's worst-case size was recomputed by exhaustive enumeration
+  (809 bytes) against the unchanged 1024-byte buffer, not eyeballed.
+- The mutating-command count referenced throughout `kf_dbg_bridge.cpp`/
+  `.h`/this directory's `CMakeLists.txt` moves from eleven to twelve
+  (`CLOCK` joined the set).
+- `tools/kf_debug.py` gained `clock`/`rtc` subcommands and
+  `tools/kf_debug_selftest.py` gained matching wire-decode coverage (no
+  hardware needed); `tools/kf_panel.py` gained a Drowsy/Bedtime/Morning
+  row and surfaces the three new STATE fields.
+- **`idf.py -DKF_PANEL=ili9341 build` succeeded, zero warnings** --
+  `kamiframe-firmware.bin` at 536,336 bytes, 66% of the app partition free.
+  **Not run against real hardware.** See
+  `docs/architecture/adr-0054-kfdbg-clock-and-rtc.md`'s "Not verified"
+  section for the bench checklist this leaves open, including the
+  coin-cell-removed OSF path Task 5 (`docs/superpowers/plans/
+  2026-08-13-screens-clock-sleep.md`) already called "not optional."
+
 ## What still has to be written
 
 - **Confirming the demo creature is actually driving the pet screen**, not
@@ -442,13 +473,6 @@ These are already true and need to stay true:
   read a mapped byte on a real ESP32-S3 yet. This is the single biggest
   open question left in this port; see `main/app_main.cpp`'s own header
   comment.
-- Setting the **date** from the device. The Lua Settings screen calls
-  `kf_time_set_wall()` (via `kf_lua_port_apply_clock()`) and its
-  write-through to the DS3231 is confirmed on hardware -- see ADR 0026's
-  "Confirmed on hardware, 2026-08-11" -- but the screen edits hour and
-  minute only and preserves whatever date the chip already holds. A board
-  whose date has drifted cannot be corrected in-app; that still needs the
-  bring-up diagnostic, a `KFDBG` command taking a full epoch, or NTP.
 - A panel that can synchronise with the host, if full-screen animation ever
   matters -- ADR 0032's own conclusion. Both panels on hand today (the
   ILI9341 in use and the ST7789 intended as primary) tear on fast-moving

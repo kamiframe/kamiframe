@@ -259,7 +259,10 @@ typedef enum {
  * window instead means kf_pet_session_debug_set_clock()'s own one-second
  * advance settles the new state on the press itself.
  *
- * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS. */
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS. Reachable on ESP32 too, via
+ * KFDBG CLOCK DROWSY/BEDTIME/MORNING (kf_dbg_bridge.cpp's
+ * handle_clock_point()) -- the hardware debug bridge's equivalent of these
+ * desktop buttons, added so the two surfaces stay at parity. */
 int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point);
 
 /* Moves the WHOLE WORLD's clock to `epoch_seconds` without ageing the pet
@@ -294,7 +297,12 @@ int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point);
  * on the next flush, since sleep is only recomputed inside an advance.
  *
  * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
- * header comment. No KFDBG verb yet; desktop debug window only. */
+ * header comment. Reachable on ESP32 via KFDBG CLOCK (see
+ * kf_dbg_bridge.cpp's handle_clock_point()/handle_clock_epoch()), added
+ * alongside kf_pet_session_debug_clock_target() below to close the gap
+ * between the desktop debug window's Drowsy/Bedtime/Morning buttons and the
+ * hardware debug bridge -- see this file's own callers list for the
+ * desktop side, which predates the KFDBG verb and is unchanged by it. */
 void kf_pet_session_debug_set_clock(int64_t epoch_seconds);
 
 /* Resets the live pet to a fresh egg, in place -- without touching

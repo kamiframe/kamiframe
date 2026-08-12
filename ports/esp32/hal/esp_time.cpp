@@ -57,6 +57,7 @@
 
 #include "driver/i2c_master.h"
 #include "kf_esp_pins.h"
+#include "kf_esp_time_debug.h"
 
 #include <cstring>
 #include <sys/time.h>
@@ -347,6 +348,32 @@ kf_result kf_time_set_wall(int64_t epoch_seconds) {
     }
 
     return KF_OK;
+}
+
+/* kf_esp_time_debug.h's one accessor -- see that header for the full
+ * contract. Reads g_rtc_dev's registers directly, live, rather than
+ * reporting anything cached: kf_time_wall() above never touches the bus
+ * after boot (it reads gettimeofday(), the in-RAM clock), which is exactly
+ * why a second, bus-reading function has to exist for `KFDBG RTC` to be
+ * able to prove the two haven't drifted apart. */
+bool kf_esp_time_debug_read_rtc(int64_t *epoch_seconds, bool *osf) {
+    if (g_rtc_dev == nullptr) {
+        return false;
+    }
+
+    uint8_t status = 0;
+    if (!ds3231_read(g_rtc_dev, kRegStatus, &status, 1)) {
+        return false;
+    }
+
+    uint8_t regs[7] = {};
+    if (!ds3231_read(g_rtc_dev, kRegTime, regs, sizeof(regs))) {
+        return false;
+    }
+
+    *osf = (status & kStatusOsfBit) != 0;
+    *epoch_seconds = ds3231_regs_to_epoch(regs);
+    return true;
 }
 
 void kf_time_delay_us(uint32_t microseconds) {

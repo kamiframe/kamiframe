@@ -215,6 +215,17 @@ def kfdbg_reset(transport):
     return payload.decode("utf-8", "replace")
 
 
+def kfdbg_clock(transport, target):
+    """Same `KFDBG CLOCK <target>` command as kf_debug.py's cmd_clock --
+    jumps the world clock to a named point in the sleep cycle. `target` is
+    already the wire word (DROWSY/BEDTIME/MORNING) -- this panel only ever
+    offers the three named-point buttons below, never an arbitrary epoch
+    (that's kf_debug.py's `clock <epoch>`, for fixing a drifted date; not
+    a control this window needs)."""
+    payload = expect_frame(transport, f"KFDBG CLOCK {target}", "ack")
+    return payload.decode("utf-8", "replace")
+
+
 def kfdbg_mult(transport, factor):
     """Same `KFDBG MULT <n>` command as kf_debug.py's cmd_mult, n in
     1..256. The UI only ever offers the fixed multiplier buttons below, so
@@ -269,6 +280,27 @@ class FakeDevice:
         self.last_button_note = "none"
         self.time_multiplier = 1
         self.advanced_seconds = 0  # accumulated via KFDBG ADVANCE, demo-only
+        # Sleep state (ADR 0048/0052), demo-only -- not a real day/night
+        # simulation, just enough for KFDBG CLOCK's three buttons to
+        # visibly change the readout, matching handle_advance()'s own
+        # "prove the round trip, not the decay math" scope below.
+        self.asleep = False
+        self.drowsy = False
+        self.tucked_in = False
+
+    def handle_clock(self, target):
+        """KFDBG CLOCK for the fake device: flips the sleep-state flags a
+        real device's Drowsy/Bedtime/Morning buttons would settle into,
+        so the panel's readout visibly changes -- it does not model wall
+        time at all, so `EPOCH <seconds>` is accepted and acknowledged but
+        left a no-op here (the demo device has no wall clock to move)."""
+        if target == "DROWSY":
+            self.drowsy, self.asleep = True, False
+        elif target == "BEDTIME":
+            self.drowsy, self.asleep = False, True
+        elif target == "MORNING":
+            self.drowsy, self.asleep, self.tucked_in = False, False, False
+        return f"CLOCK {target} (demo)"
 
     def handle_advance(self, seconds):
         """KFDBG ADVANCE for the fake device: just banks the seconds so
@@ -331,6 +363,9 @@ class FakeDevice:
             "time_in_stage_s": round(elapsed, 1),
             "pet_age_s": round(pet_age_s, 1),
             "time_multiplier": self.time_multiplier,
+            "asleep": self.asleep,
+            "drowsy": self.drowsy,
+            "tucked_in": self.tucked_in,
             "free_heap_bytes": 181_000 - (self.frame_count * 37) % 4000,
             "free_psram_bytes": 7_800_000 - (self.frame_count * 191) % 20000,
             "fps": round(29.4 + 0.6 * ((self.frame_count % 10) / 10), 1),
@@ -437,6 +472,10 @@ class FakeTransport(Transport):
             return "ack", note.encode("utf-8")
         if head == ["KFDBG", "RESET"]:
             note = self.device.reset()
+            return "ack", note.encode("utf-8")
+        if head == ["KFDBG", "CLOCK"] and len(parts) >= 3:
+            target = " ".join(parts[2:])  # "DROWSY", or "EPOCH 1737936000"
+            note = self.device.handle_clock(target)
             return "ack", note.encode("utf-8")
         if head == ["KFDBG", "MULT"] and len(parts) >= 3:
             factor = int(parts[2])
@@ -626,9 +665,15 @@ if tk is not None:
     # protocol doesn't pin field names down -- see kf_debug.py).
     # time_multiplier and pet_age_s are the two fields KFDBG STATE grew for
     # the time controls below -- placed right after the stats a reader
-    # already cares about, not buried at the end.
+    # already cares about, not buried at the end. asleep/drowsy/tucked_in
+    # (ADR 0054) are the sleep-state fields the desktop debug window has
+    # always been able to see (it reads kf_pet_session_state() in-process)
+    # but this panel could not, until KFDBG STATE started carrying them --
+    # placed right after energy, alongside the other per-pet stats, not
+    # buried with the frame-budget numbers below.
     STATE_FIELD_ORDER = [
         "stage", "base_trait", "trait", "hunger", "happiness", "energy",
+        "asleep", "drowsy", "tucked_in",
         "time_in_stage_s", "pet_age_s", "time_multiplier",
         "free_heap_bytes", "free_psram_bytes", "fps", "frame_time_ms",
     ]
@@ -698,6 +743,19 @@ if tk is not None:
     ]
 
     MULT_PRESETS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+
+    # The three named points KFDBG CLOCK can jump the world clock to --
+    # parity with the desktop debug window's Drowsy/Bedtime/Morning row
+    # (sdl_debug_window.cpp's kButtons, same labels, same left-to-right
+    # order) so the two windows read the same. The wire word (DROWSY/
+    # BEDTIME/MORNING) is sent as-is; the actual times those names resolve
+    # to are defined once, device-side, in kf_pet_session.h -- this panel
+    # does not know or need to know them.
+    CLOCK_POINT_PRESETS = [
+        ("Drowsy", "DROWSY"),
+        ("Bedtime", "BEDTIME"),
+        ("Morning", "MORNING"),
+    ]
 
 
     class PanelApp:
@@ -1080,6 +1138,24 @@ if tk is not None:
             reset_btn.pack(side="left")
             self.time_control_buttons.append(reset_btn)
 
+            # Sleep cycle: KFDBG CLOCK's three named points (ADR 0054) --
+            # parity with the desktop debug window's own Drowsy/Bedtime/
+            # Morning row, same labels, same order, so someone reading both
+            # windows side by side sees the same three buttons in the same
+            # place. Its own row rather than folded into row1 above,
+            # matching the desktop window's own separate row for these.
+            clock_frame = ttk.Frame(frame)
+            clock_frame.pack(fill="x", padx=8, pady=(0, 6))
+            ttk.Label(clock_frame, text="Sleep cycle:").pack(anchor="w")
+            clock_row = ttk.Frame(clock_frame)
+            clock_row.pack(fill="x", pady=(2, 0))
+            for label, target in CLOCK_POINT_PRESETS:
+                btn = ttk.Button(
+                    clock_row, text=label,
+                    command=lambda l=label, t=target: self._on_clock_click(l, t))
+                btn.pack(side="left", padx=(0, 6))
+                self.time_control_buttons.append(btn)
+
             # The label gets its own line, and the nine multiplier buttons
             # split across two rows rather than one -- nine buttons plus a
             # label on one row doesn't fit at the window's minimum width
@@ -1246,6 +1322,12 @@ if tk is not None:
                 return
             self.cmd_queue.put({"type": "mult", "factor": factor})
 
+        def _on_clock_click(self, label, target):
+            if not self.connected:
+                self.status_var.set("Not connected -- command ignored.")
+                return
+            self.cmd_queue.put({"type": "clock", "target": target, "label": label})
+
         def _request_state_refresh(self):
             """Ask for one state poll right away rather than waiting for
             the next timer tick -- used after a time control fires, so the
@@ -1325,6 +1407,10 @@ if tk is not None:
                         note = kfdbg_mult(self.transport, item["factor"])
                         self.result_queue.put({"type": "mult", "ok": True,
                                                 "factor": item["factor"], "note": note})
+                    elif kind == "clock":
+                        note = kfdbg_clock(self.transport, item["target"])
+                        self.result_queue.put({"type": "clock", "ok": True,
+                                                "label": item["label"], "note": note})
                 except kfd.KfDebugError as e:
                     self.result_queue.put({"type": kind, "ok": False, "error": str(e)})
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
@@ -1415,6 +1501,12 @@ if tk is not None:
                     self._request_state_refresh()
                 else:
                     self.status_var.set(f"Time multiplier failed: {result['error']}")
+            elif kind == "clock":
+                if result["ok"]:
+                    self.status_var.set(f"{result['label']} -- {result['note']}")
+                    self._request_state_refresh()
+                else:
+                    self.status_var.set(f"Clock jump failed: {result['error']}")
 
         def _update_state_readout(self, data):
             keys = list(STATE_FIELD_ORDER) + \

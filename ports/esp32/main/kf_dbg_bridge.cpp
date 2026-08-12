@@ -5,9 +5,10 @@
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
  * tasks, the KFDBG command parser, and the command handlers -- PING, SHOT,
- * STATE, SCANLINE, VSYNC, BTN, BTNHOLD, the time-control trio ADVANCE/
- * RESET/MULT (see "Time control" below), the five care actions FEED/PLAY/
- * REST/BATH/FLUSH, and JUMP (see "Care actions and stage jump" below).
+ * STATE, SCANLINE, VSYNC, RTC (see "RTC" below), BTN, BTNHOLD, the
+ * time-control quartet ADVANCE/RESET/MULT/CLOCK (see "Time control"
+ * below), the five care actions FEED/PLAY/REST/BATH/FLUSH, and JUMP (see
+ * "Care actions and stage jump" below).
  *
  * SCANLINE: samples the ILI9341's Get_Scanline register (command 0x45) 64
  * times in a row over SPI and reports the pattern, so a human can judge
@@ -52,7 +53,29 @@
  * do and why they're safe to call directly -- kf_pet_advance()'s bounded-
  * loop design, ADR 0021). MULT mirrors sdl_debug_window.cpp's play-speed
  * multiplier: see handle_mult() and app_main.cpp's frame loop for how it
- * is applied.
+ * is applied. CLOCK mirrors sdl_debug_window.cpp's Drowsy/Bedtime/Morning
+ * buttons (KFDBG CLOCK DROWSY/BEDTIME/MORNING, via
+ * kf_pet_session_debug_clock_target() then kf_pet_session_debug_set_clock()
+ * -- see handle_clock_point(), and kf_pet_session.h's own comment on why
+ * BOTH clocks have to move together) plus one thing the desktop window
+ * doesn't offer at all: KFDBG CLOCK EPOCH <seconds> sets the world clock to
+ * an arbitrary epoch, which is what makes a drifted real-time-clock DATE on
+ * a real board fixable over this bridge (see handle_clock_epoch(), and
+ * ports/esp32/README.md's former "no way to set the date from the device"
+ * open question -- this closes it).
+ *
+ * RTC: KFDBG RTC reads the DS3231 real-time-clock chip's registers
+ * DIRECTLY over I2C, not kf_time_wall() (see kf_esp_time_debug.h's own
+ * comment on why that distinction is the entire point) -- an observe-tier
+ * command, gated by KF_DBG_BRIDGE_ENABLE alone like PING/SHOT/STATE/
+ * SCANLINE/VSYNC, never by KF_DBG_MUTATE_ENABLE, because reading a chip's
+ * registers changes nothing. Built for Task 5 of docs/superpowers/plans/
+ * 2026-08-13-screens-clock-sleep.md's bench procedure: comparing this
+ * against KFDBG STATE's implicit reliance on the RAM clock is what proves
+ * (or disproves) that the two haven't drifted apart, and is the only way to
+ * observe the chip's OSF (oscillator-stopped) flag from off-device at all --
+ * the coin-cell-removed negative case that plan explicitly calls "not
+ * optional" has no other way to be checked remotely.
  *
  * Care actions and stage jump: the desktop simulator reaches all five care
  * actions (feed/play/rest/bath/flush) off number keys 1-5 (sdl_input.cpp)
@@ -69,25 +92,28 @@
  * injection cannot reliably clear -- see tools/kf_debug.py's `press`
  * --hold-ms comment for that specific, already-found bug).
  *
- * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD -- every
- * command that changes the pet or the simulation, eleven in all -- are
- * gated behind KF_DBG_MUTATE_ENABLE (see kf_dbg_bridge.h and ADR 0035,
- * which supersedes the paragraph this replaced). The nine of those that
- * are not button injection (ADVANCE/RESET/MULT/FEED/PLAY/REST/BATH/FLUSH/
- * JUMP) had no flag narrower than the whole-bridge switch before ADR 0035
- * -- BTN/BTNHOLD alone were gated, by KF_DBG_INPUT_INJECT_ENABLE, on the
- * reasoning that only button injection was "remote control". That
- * boundary meant switching off button injection alone gave false
- * assurance -- a serial cable could still refill a neglected pet's needs
- * or jump it straight to adult, the ultimate cheat for a pet whose premise
- * is that time and care are real. require_mutate_enabled(), called first
- * thing in each of these eleven branches below (BTN/BTNHOLD included, now
- * nested one level deeper under this flag rather than losing their own
- * narrower gate), is the single choke point that now enforces the split
- * -- see its own comment. PING/SHOT/STATE/SCANLINE/VSYNC stay gated by
- * KF_DBG_BRIDGE_ENABLE alone, same as always: none of them changes
- * anything. Turning off KF_DBG_BRIDGE_ENABLE entirely still removes all
- * of it, same as everything else in this file.
+ * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/CLOCK/BTN/BTNHOLD --
+ * every command that changes the pet or the simulation, TWELVE in all
+ * since CLOCK joined the set -- are gated behind KF_DBG_MUTATE_ENABLE (see
+ * kf_dbg_bridge.h and ADR 0035, which supersedes the paragraph this
+ * replaced; CLOCK rides the identical gate for the identical reason: it
+ * changes the pet's own notion of what time it is, which is exactly the
+ * "time and care are real" premise this flag exists to protect). The nine
+ * ADR 0035 originally covered that are not button injection (ADVANCE/
+ * RESET/MULT/FEED/PLAY/REST/BATH/FLUSH/JUMP) had no flag narrower than the
+ * whole-bridge switch before that ADR -- BTN/BTNHOLD alone were gated, by
+ * KF_DBG_INPUT_INJECT_ENABLE, on the reasoning that only button injection
+ * was "remote control". That boundary meant switching off button injection
+ * alone gave false assurance -- a serial cable could still refill a
+ * neglected pet's needs or jump it straight to adult, the ultimate cheat
+ * for a pet whose premise is that time and care are real. require_mutate_
+ * enabled(), called first thing in each of these twelve branches below
+ * (BTN/BTNHOLD included, nested one level deeper under this flag rather
+ * than losing their own narrower gate), is the single choke point that
+ * enforces the split -- see its own comment. PING/SHOT/STATE/SCANLINE/
+ * VSYNC/RTC stay gated by KF_DBG_BRIDGE_ENABLE alone, same as always: none
+ * of them changes anything. Turning off KF_DBG_BRIDGE_ENABLE entirely
+ * still removes all of it, same as everything else in this file.
  *
  * Wire format, confirmed against tools/kf_debug.py and tools/
  * kf_debug_selftest.py (the host side, already written and tested):
@@ -124,6 +150,7 @@
 #include "kf_dbg_codec.h"
 #include "kf_esp_display_diag.h"
 #include "kf_esp_display_vsync.h"
+#include "kf_esp_time_debug.h"
 #include "kf_panel_profile.h"
 #include "kf_pet_session.h"
 
@@ -371,13 +398,15 @@ void reply_err(const char *line, const char *reason) {
 /* Plain compile-time constant, not a mutable global: KF_DBG_MUTATE_ENABLE
  * is always literally 0 or 1, so `if (!kMutateEnabled)` below is a branch
  * on a value known at compile time, not on state that changes at runtime.
- * That does NOT mean the eleven handle_*() bodies this flag guards vanish
+ * That does NOT mean the twelve handle_*() bodies this flag guards vanish
  * from the binary the way KF_DBG_BRIDGE_ENABLE=0 makes this entire file
  * vanish (see that flag's own #if near the top) -- confirmed by `nm`
  * against a real KF_DBG_MUTATE_ENABLE=0 esp32s3 build (ADR 0035's
- * Verified section): handle_feed()/handle_advance()/etc. are all still
+ * Verified section, for the eleven that existed at that time; CLOCK is new
+ * and rides the identical, already-verified mechanism, not a fresh one):
+ * handle_feed()/handle_advance()/handle_clock_point()/etc. are all still
  * present as local symbols in the compiled object file, because
- * process_command_line()'s eleven-way if/else chain is one large function
+ * process_command_line()'s twelve-way if/else chain is one large function
  * and the compiler does not fold the constant far enough to prove each
  * individual handler call unreachable at this optimization level.
  * Functionally identical either way -- every one of those calls is
@@ -395,8 +424,8 @@ void reply_err(const char *line, const char *reason) {
 constexpr bool kMutateEnabled = KF_DBG_MUTATE_ENABLE;
 
 /* Guards every KFDBG command that mutates the pet or the simulation --
- * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD -- called
- * as the first line of each of those eleven branches in
+ * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/CLOCK/BTN/BTNHOLD --
+ * called as the first line of each of those twelve branches in
  * process_command_line() below: `if (!require_mutate_enabled(line)) {
  * return; }`. Returns true (and does nothing else) when mutation is
  * allowed; otherwise replies `err` naming the exact flag to flip and
@@ -558,6 +587,17 @@ void handle_state() {
      * every device regardless of what this line reports. */
     const uint32_t post_us = kf_app_post_frame_us();
 
+    /* asleep/drowsy/tucked_in: the sleep state (ADR 0048/0052) the desktop
+     * debug window has always had in-process access to (it reads
+     * kf_pet_session_state() directly) but the hardware bridge never
+     * carried -- see this file's own header comment on why that gap
+     * mattered: the panel had no way to show sleep state at all. asleep and
+     * tucked_in are plain kf_pet_state fields; drowsy is derived, same as
+     * every other reader of it (kf_pet_drowsy(), hakoniwaos/include/kf/
+     * pet.h -- NOT a separate saved sub-state, see that function's own
+     * comment). */
+    const bool drowsy = kf_pet_drowsy(pet);
+
     /* Single-line, minified JSON -- see the ADR for the exact key set;
      * field names are not fixed by the protocol spec (tools/kf_debug.py
      * prints whatever keys arrive rather than expecting specific ones), so
@@ -571,17 +611,22 @@ void handle_state() {
      * app.h's kf_frame_stats::cpu_us field name instead of this file's
      * older, unrelated one.
      *
-     * 1024, not 512: the literal text of the format string below (every
-     * key name, quote, colon and comma, no substitutions) is 430 bytes;
-     * the worst-case width of every substituted value -- uint64_t fields
-     * as 20 digits, uint32_t/size_t fields as 10, the two %s fields as
-     * "false" (5) -- sums to 342; plus the NUL snprintf always writes,
-     * that is 773 in the worst case ADR 0036 measured this against. 512
-     * fit the OLD 16-field JSON with room to spare but not this one -- the
-     * thirteen new fields alone add ~206 bytes of literal key text before
-     * a single digit is counted. 1024 clears the worst case with margin
-     * for a future field or two without the buffer becoming the next
-     * thing that needs raising. */
+     * 1024, recomputed for asleep/drowsy/tucked_in (ADR 0054): the literal
+     * text of the format string below (every key name, quote, colon and
+     * comma, no substitutions) is 463 bytes; the worst-case width of every
+     * substituted value -- uint64_t fields (%llu, 4 of them) as 20 digits,
+     * every uint32_t/size_t/%d field (24 of them) as 10 digits, and the
+     * five %s fields (vsync_enabled, over_budget, and the three new
+     * booleans) as "false" (5) -- sums to 4*20 + 24*10 + 5*5 = 345; plus
+     * the NUL snprintf always writes, that is 809 in the worst case.
+     * (Derivation checked by exhaustively enumerating every specifier and
+     * its cast in the snprintf call below, not by re-deriving the OLD
+     * comment's 773 -- that number no longer matches a literal+specifier
+     * count of the pre-Task-5.5 format string either, so it is not trusted
+     * as a baseline here; 809 is verified against THIS format string as
+     * written.) 1024 clears 809 with 215 bytes of margin -- still enough
+     * for a future field or two before this buffer is the next thing that
+     * needs raising. */
     char json[1024];
     const int n = std::snprintf(
         json, sizeof json,
@@ -594,7 +639,8 @@ void handle_state() {
         "\"draw_us\":%lu,\"transfer_us\":%lu,\"cpu_us\":%lu,\"post_us\":%lu,"
         "\"dirty_rects\":%u,\"dirty_pct\":%u,\"opaque_px\":%lu,"
         "\"keyed_px\":%lu,\"over_budget\":%s,\"worst_us\":%lu,"
-        "\"p99_us\":%lu,\"frames\":%llu,\"over_budget_frames\":%llu}",
+        "\"p99_us\":%lu,\"frames\":%llu,\"over_budget_frames\":%llu,"
+        "\"asleep\":%s,\"drowsy\":%s,\"tucked_in\":%s}",
         static_cast<int>(pet->stage), static_cast<unsigned long>(pet->hunger_mp),
         static_cast<unsigned long>(pet->happiness_mp),
         static_cast<unsigned long>(pet->energy_mp),
@@ -621,7 +667,9 @@ void handle_state() {
         static_cast<unsigned long>(summary.worst_us),
         static_cast<unsigned long>(summary.p99_us),
         static_cast<unsigned long long>(summary.frames),
-        static_cast<unsigned long long>(summary.over_budget_frames));
+        static_cast<unsigned long long>(summary.over_budget_frames),
+        pet->asleep ? "true" : "false", drowsy ? "true" : "false",
+        pet->tucked_in ? "true" : "false");
 
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
         KF_LOGE(TAG, "STATE: JSON build failed or truncated (n=%d, cap=%zu)", n,
@@ -1214,6 +1262,105 @@ void handle_jump(uint32_t stage, uint32_t teen_form, uint32_t adult_branch) {
                           n > 0 ? static_cast<size_t>(n) : 0);
 }
 
+/* KFDBG CLOCK DROWSY|BEDTIME|MORNING, or KFDBG CLOCK EPOCH <seconds>: moves
+ * the world's clock, mirroring the desktop debug window's Drowsy/Bedtime/
+ * Morning buttons (sdl_debug_window.cpp) plus one thing those buttons don't
+ * offer -- an arbitrary epoch, for fixing a drifted DATE on real hardware
+ * (see this file's header comment's "Time control" section, and ports/
+ * esp32/README.md's former open question this closes).
+ *
+ * Both handlers below call kf_pet_session_debug_set_clock() DIRECTLY, never
+ * kf_time_set_wall() -- see that session function's own header comment in
+ * kf_pet_session.h for why: it moves the HAL wall clock AND Core's
+ * last_advanced TOGETHER, which a bare kf_time_set_wall() call would not,
+ * leaving Core still evaluating the night window against whatever time it
+ * last saw. This file does not reimplement any of that reasoning, only
+ * calls into it -- the same "call the session function directly" shape
+ * ADVANCE/RESET/JUMP already use above.
+ *
+ * The named-point handler additionally calls kf_pet_session_debug_clock_
+ * target(), never computing 21:50/22:00/07:00 itself -- those three times
+ * are defined exactly once, in kf_pet_session.h, specifically so the
+ * desktop buttons and this KFDBG verb can never drift apart the way an
+ * earlier version of the desktop buttons once did against their own test
+ * (see kf_pet_debug_clock_point's own comment for that history). */
+void handle_clock_point(kf_pet_debug_clock_point point, const char *name) {
+    const int64_t epoch = kf_pet_session_debug_clock_target(point);
+    kf_pet_session_debug_set_clock(epoch);
+    char content[64];
+    const int n = std::snprintf(content, sizeof content,
+                                 "CLOCK point=%s epoch=%lld", name,
+                                 static_cast<long long>(epoch));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+void handle_clock_epoch(int64_t epoch_seconds) {
+    kf_pet_session_debug_set_clock(epoch_seconds);
+    char content[48];
+    const int n = std::snprintf(content, sizeof content, "CLOCK epoch=%lld",
+                                 static_cast<long long>(epoch_seconds));
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                          n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+/* KFDBG RTC: reads the DS3231 directly over I2C via kf_esp_time_debug.h's
+ * one accessor -- NOT kf_time_wall(), which is the in-RAM clock and never
+ * touches the bus after boot. See this file's header comment's "RTC"
+ * section for why that distinction is the whole point, and kf_esp_time_
+ * debug.h for exactly what kf_esp_time_debug_read_rtc() reports and when
+ * it returns false.
+ *
+ * Observe tier: no require_mutate_enabled() call, unlike every handler
+ * above this one in the file -- reading a chip's registers changes
+ * nothing, the same reasoning PING/SHOT/STATE/SCANLINE/VSYNC already rest
+ * on (see this file's header comment).
+ *
+ * `present` is always true in the `json` reply below -- when no chip ever
+ * answered at boot, this replies `err` instead (see the read_ok check),
+ * the same "bail before building a reply with nothing to report" shape
+ * require_read_line() already uses for SCANLINE/VSYNC on a panel with no
+ * read line. Kept as an explicit field rather than removed once redundant
+ * with "did KFDBG RTC reply err" specifically so a host script parsing the
+ * `json` reply never needs to branch on frame type to know it -- the same
+ * "the field says what the type already implies" convenience over_budget
+ * and vsync_enabled already provide elsewhere in this file.
+ *
+ * `wall`/`wall_valid`: kf_time_wall()'s own two fields, alongside `epoch`/
+ * `osf` in the SAME reply so a host can compare RAM clock against physical
+ * chip in one line, rather than needing a second KFDBG STATE round trip
+ * (which does not carry wall/wall_valid at all) racing a clock that could
+ * tick between the two requests. */
+void handle_rtc() {
+    int64_t epoch = 0;
+    bool osf = false;
+    const bool read_ok = kf_esp_time_debug_read_rtc(&epoch, &osf);
+    if (!read_ok) {
+        reply_err("KFDBG RTC", "no DS3231 answered at boot -- nothing to "
+                                "read (see esp_time.cpp's try_init_ds3231())");
+        return;
+    }
+
+    const kf_wall_time wall = kf_time_wall();
+
+    char json[192];
+    const int n = std::snprintf(
+        json, sizeof json,
+        "{\"present\":true,\"epoch\":%lld,\"osf\":%s,\"wall\":%lld,"
+        "\"wall_valid\":%s}",
+        static_cast<long long>(epoch), osf ? "true" : "false",
+        static_cast<long long>(wall.epoch_seconds),
+        wall.valid ? "true" : "false");
+
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
+        KF_LOGE(TAG, "RTC: JSON build failed or truncated (n=%d)", n);
+        reply_err("KFDBG RTC", "internal error formatting result");
+        return;
+    }
+    kf_dbg_enqueue_reply("json", reinterpret_cast<uint8_t *>(json),
+                          static_cast<size_t>(n));
+}
+
 /* --------------------------------------------------------------------------
  * Parsing. Hand-rolled rather than sscanf("KFDBG %15s", ...): a format
  * string's literal-then-%s pattern matches zero or more whitespace where
@@ -1253,6 +1400,50 @@ bool parse_decimal(const char *tok, uint32_t *out) {
     }
     *out = static_cast<uint32_t>(v);
     return true;
+}
+
+/* Same shape as parse_decimal() above, 64 bits wide -- KFDBG CLOCK EPOCH's
+ * argument is an epoch second handed straight to kf_pet_session_debug_
+ * set_clock(int64_t), and uint32_t (parse_decimal()'s width) only reaches
+ * to the year 2106. Not a signed parser, same as parse_decimal() above: the
+ * C standard lets strtoull() accept a leading '-' and wrap the result
+ * rather than rejecting it, a quirk this file already lives with for every
+ * OTHER decimal argument (ADVANCE seconds, MULT, JUMP's stage/teen_form/
+ * adult_branch, ...) rather than fixing it here alone. In practice this
+ * only matters for a hand-typed negative epoch, which is not a real
+ * request this project has: every legitimate epoch is positive. */
+bool parse_decimal64(const char *tok, uint64_t *out) {
+    char *endp = nullptr;
+    const unsigned long long v = std::strtoull(tok, &endp, 10);
+    if (endp == tok || *endp != '\0') {
+        return false;
+    }
+    *out = static_cast<uint64_t>(v);
+    return true;
+}
+
+/* KFDBG CLOCK's first argument: DROWSY/BEDTIME/MORNING map to
+ * kf_pet_session.h's three named points; anything else (including "EPOCH",
+ * handled separately by process_command_line() below) is not one of these
+ * three, so this returns false rather than erroring itself -- the caller
+ * decides what a non-match means. Uppercase only, matching every other
+ * KFDBG subcommand and argument keyword in this file (PING, BTN's button
+ * names are the one exception, and those come through kf_debug.py's own
+ * BUTTON_BITS table, not this parser). */
+bool parse_clock_point(const char *tok, kf_pet_debug_clock_point *out) {
+    if (std::strcmp(tok, "DROWSY") == 0) {
+        *out = KF_PET_DEBUG_CLOCK_DROWSY;
+        return true;
+    }
+    if (std::strcmp(tok, "BEDTIME") == 0) {
+        *out = KF_PET_DEBUG_CLOCK_BEDTIME;
+        return true;
+    }
+    if (std::strcmp(tok, "MORNING") == 0) {
+        *out = KF_PET_DEBUG_CLOCK_MORNING;
+        return true;
+    }
+    return false;
 }
 
 /* Shared by KFDBG FEED/PLAY/REST/BATH's four otherwise-identical parse
@@ -1298,6 +1489,10 @@ void process_command_line(const char *line) {
         handle_shot();
     } else if (std::strcmp(tok1, "STATE") == 0) {
         handle_state();
+    } else if (std::strcmp(tok1, "RTC") == 0) {
+        /* Observe tier, like PING/SHOT/STATE/SCANLINE/VSYNC above -- no
+         * require_mutate_enabled() call. See handle_rtc()'s own comment. */
+        handle_rtc();
     } else if (std::strcmp(tok1, "SCANLINE") == 0) {
         /* Optional trailing arg: a decimal read clock in Hz, so a human can
          * try 1MHz or 4MHz from the host without a firmware rebuild -- see
@@ -1374,6 +1569,34 @@ void process_command_line(const char *line) {
             return;
         }
         handle_mult(mult);
+    } else if (std::strcmp(tok1, "CLOCK") == 0) {
+        if (!require_mutate_enabled(line)) {
+            return;
+        }
+        char tok2[16];
+        if (!next_token(p, tok2, sizeof tok2)) {
+            reply_err(line, "KFDBG CLOCK needs DROWSY, BEDTIME, MORNING, or "
+                             "EPOCH <seconds>");
+            return;
+        }
+        kf_pet_debug_clock_point point{};
+        if (parse_clock_point(tok2, &point)) {
+            handle_clock_point(point, tok2);
+        } else if (std::strcmp(tok2, "EPOCH") == 0) {
+            char tok3[24];
+            uint64_t epoch_u = 0;
+            if (!next_token(p, tok3, sizeof tok3) ||
+                !parse_decimal64(tok3, &epoch_u)) {
+                reply_err(line, "KFDBG CLOCK EPOCH needs one decimal seconds "
+                                 "argument");
+                return;
+            }
+            handle_clock_epoch(static_cast<int64_t>(epoch_u));
+        } else {
+            reply_err(line, "KFDBG CLOCK's argument must be DROWSY, "
+                             "BEDTIME, MORNING, or EPOCH <seconds>");
+            return;
+        }
     } else if (std::strcmp(tok1, "VSYNC") == 0) {
         char tok2[16];
         uint32_t v = 0;

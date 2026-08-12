@@ -99,8 +99,8 @@ extern "C" {
  *                          anything without it.
  *   KF_DBG_MUTATE_ENABLE   every command that changes the pet or the
  *                          simulation: FEED/PLAY/REST/BATH/FLUSH/JUMP/
- *                          ADVANCE/RESET/MULT/BTN/BTNHOLD. Off leaves
- *                          PING/SHOT/STATE/SCANLINE/VSYNC (pure
+ *                          ADVANCE/RESET/MULT/CLOCK/BTN/BTNHOLD. Off leaves
+ *                          PING/SHOT/STATE/SCANLINE/VSYNC/RTC (pure
  *                          introspection) working -- a serial connection
  *                          can watch the device, never drive it.
  *   KF_DBG_INPUT_INJECT_ENABLE   nested inside KF_DBG_MUTATE_ENABLE:
@@ -127,11 +127,14 @@ extern "C" {
 #endif
 
 /* Every command that mutates the pet or the simulation: FEED, PLAY, REST,
- * BATH, FLUSH, JUMP, ADVANCE, RESET, MULT, BTN, BTNHOLD -- see ADR 0035.
- * 0 makes process_command_line() (kf_dbg_bridge.cpp) reply `err` to each of
- * those, naming this flag, instead of running them; PING/SHOT/STATE/
- * SCANLINE/VSYNC are untouched by this flag, since none of them changes
- * anything. Independent of KF_DBG_INPUT_INJECT_ENABLE below -- that flag
+ * BATH, FLUSH, JUMP, ADVANCE, RESET, MULT, CLOCK, BTN, BTNHOLD -- see
+ * ADR 0035 (CLOCK joined the set later, under ADR 0054, on the identical
+ * gate, for the identical reason: it changes the pet's own notion of the
+ * time of day). 0 makes process_command_line() (kf_dbg_bridge.cpp) reply
+ * `err` to each of those, naming this flag, instead of running them;
+ * PING/SHOT/STATE/SCANLINE/VSYNC/RTC are untouched by this flag, since none
+ * of them changes anything. Independent of KF_DBG_INPUT_INJECT_ENABLE
+ * below -- that flag
  * narrows the mutate set further, it does not widen it -- so setting only
  * this one to 0 is what a build wants for "observation only": the bridge
  * stays up, screenshots and state reads keep working, nothing can touch
@@ -145,15 +148,16 @@ extern "C" {
 /* Button injection specifically (KFDBG BTN / KFDBG BTNHOLD OR-ing into
  * esp_input.cpp's real GPIO reads) -- nested inside KF_DBG_MUTATE_ENABLE
  * above, not the bridge flag directly, since BTN/BTNHOLD are themselves
- * two of the eleven commands that flag already gates (ADR 0035). Kept as
- * its own flag, rather than folded away now that mutation as a whole has
- * a gate, because button injection is a strictly larger attack surface
- * than every other mutating command put together: FEED/PLAY/REST/BATH/
- * FLUSH/JUMP/ADVANCE/RESET/MULT each has one bounded, enumerable effect on
- * the pet, but a BTN mask can drive ANY UI flow reachable by button
- * presses -- including menu screens this file has never heard of and
- * never will need to. A build that wants remote care actions and time
- * control (say, for a support technician) without handing a serial
+ * two of the twelve commands that flag already gates (ADR 0035, ADR 0054).
+ * Kept as its own flag, rather than folded away now that mutation as a
+ * whole has a gate, because button injection is a strictly larger attack
+ * surface than every other mutating command put together: FEED/PLAY/REST/
+ * BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/CLOCK each has one bounded,
+ * enumerable effect on the pet, but a BTN mask can drive ANY UI flow
+ * reachable by button presses -- including menu screens this file has
+ * never heard of and never will need to. A build that wants remote care
+ * actions and time control (say, for a support technician) without
+ * handing a serial
  * connection the ability to navigate arbitrary menus can set
  * KF_DBG_INPUT_INJECT_ENABLE=0 while leaving KF_DBG_MUTATE_ENABLE=1; a
  * build with mutation off entirely gets this for free, since nothing

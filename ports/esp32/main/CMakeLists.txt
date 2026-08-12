@@ -201,16 +201,19 @@ esptool_py_flash_to_partition(flash "assets"
 ## flags, not one, because they cost very differently --
 ##
 ##   KF_PET_SESSION_ENABLE_DEBUG_CONTROLS (advance/reset/age_seconds/
-##   jump_to_stage) is a handful of instructions on top of code the
-##   gameplay path already links in. Left ON (its default) here,
-##   deliberately: it is how kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/MULT
-##   commands below reach the pet session at all, letting a developer
+##   jump_to_stage/clock_target/set_clock) is a handful of instructions on
+##   top of code the gameplay path already links in. Left ON (its default)
+##   here, deliberately: it is how kf_dbg_bridge.cpp's KFDBG ADVANCE/RESET/
+##   MULT commands below reach the pet session at all, letting a developer
 ##   fast-forward a real device's multi-day decay curve over the serial
 ##   bridge instead of watching it do nothing for days (see ADR 0030's
 ##   "Time control" section). jump_to_stage now has a KFDBG command too
 ##   (KFDBG JUMP -- see kf_dbg_bridge.cpp's handle_jump()), so this flag
 ##   staying on is no longer merely harmless, it is load-bearing for that
-##   command as well, not just the other three.
+##   command as well, not just the other three. clock_target/set_clock are
+##   the newest pair (ADR 0054): KFDBG CLOCK reaches them the same way,
+##   verified by the same "does this build even have a caller for it"
+##   question this comment already asks about jump_to_stage.
 ##
 ##   KF_PET_SESSION_ENABLE_DEBUG_TOOLS gates the scrubbable-timeline
 ##   snapshot ring and kf_pet_session_debug_seek() -- a real static
@@ -234,16 +237,19 @@ esptool_py_flash_to_partition(flash "assets"
 ## firmware. Three flags, one nested inside the next, because KFDBG's
 ## commands split into three risk tiers, not two:
 ##
-##   - PING/SHOT/STATE/SCANLINE/VSYNC are read-only introspection --
+##   - PING/SHOT/STATE/SCANLINE/VSYNC/RTC are read-only introspection --
 ##     nothing a serial connection could learn that watching the screen
-##     couldn't.
-##   - FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/BTN/BTNHOLD all
-##     change the pet or the simulation -- for a pet whose whole premise is
-##     that time and care are real, a serial cable reaching any of these is
-##     the cheat this split exists to gate.
+##     couldn't. RTC (ADR 0054) joined this tier reading the DS3231 chip
+##     directly, not the pet -- still nothing that changes.
+##   - FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/CLOCK/BTN/BTNHOLD
+##     all change the pet or the simulation -- for a pet whose whole premise
+##     is that time and care are real, a serial cable reaching any of these
+##     is the cheat this split exists to gate. CLOCK (ADR 0054) joined this
+##     tier for the same reason ADVANCE/RESET/MULT are in it: it moves the
+##     pet's own notion of what time it is.
 ##   - BTN/BTNHOLD specifically can drive ANY UI flow reachable by button
 ##     presses, not just the pet's state -- a strictly larger surface than
-##     the other nine mutating commands put together.
+##     the other ten mutating commands put together.
 ##
 ## A SHIPPING build removes the bridge (and therefore everything below)
 ## entirely by adding, right here:
@@ -254,16 +260,16 @@ esptool_py_flash_to_partition(flash "assets"
 ## screenshots and state reads in the field without handing a serial
 ## connection any way to touch the pet keeps the bridge on and adds:
 ##     target_compile_definitions(${COMPONENT_LIB} PRIVATE KF_DBG_MUTATE_ENABLE=0)
-## which leaves PING/SHOT/STATE/SCANLINE/VSYNC working and makes every
+## which leaves PING/SHOT/STATE/SCANLINE/VSYNC/RTC working and makes every
 ## mutating command reply `err` instead of running (see kf_dbg_bridge.cpp's
 ## require_mutate_enabled()). Setting only KF_DBG_INPUT_INJECT_ENABLE=0
 ## narrows the mutate set further, refusing button injection specifically
 ## while leaving named care/time-control commands available -- meaningless
 ## on top of KF_DBG_MUTATE_ENABLE=0, since nothing nested inside an off
 ## flag matters. A build that removes the bridge entirely also loses
-## ADVANCE/RESET/MULT/JUMP below, since they are KFDBG commands like any
-## other -- KF_PET_SESSION_ENABLE_DEBUG_CONTROLS staying on costs nothing
-## by itself in that configuration, it simply has no caller left.
+## ADVANCE/RESET/MULT/CLOCK/JUMP below, since they are KFDBG commands like
+## any other -- KF_PET_SESSION_ENABLE_DEBUG_CONTROLS staying on costs
+## nothing by itself in that configuration, it simply has no caller left.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PET_SESSION_ENABLE_DEBUG_CONTROLS=1
     KF_PET_SESSION_ENABLE_DEBUG_TOOLS=0

@@ -353,6 +353,104 @@ def test_jump_command_building():
         check("teen_form past TEEN_FORM_DUST raises", True)
 
 
+def _clock_args(target):
+    return argparse.Namespace(target=target)
+
+
+def test_clock_command_building():
+    print("`clock` builds the exact KFDBG CLOCK wire command, name or epoch")
+    for point in kfd.CLOCK_POINTS:
+        link = FakeLink()
+        kfd.cmd_clock(link, _clock_args(point))
+        check(f"clock {point} -> KFDBG CLOCK {point.upper()}",
+              link.sent[-1] == f"KFDBG CLOCK {point.upper()}")
+
+    # Case-insensitive, matching parse_stage()'s own "name or number"
+    # convention (test_stage_parsing() above).
+    link = FakeLink()
+    kfd.cmd_clock(link, _clock_args("DROWSY"))
+    check("clock DROWSY (uppercase) -> KFDBG CLOCK DROWSY",
+          link.sent[-1] == "KFDBG CLOCK DROWSY")
+
+    link = FakeLink()
+    kfd.cmd_clock(link, _clock_args("1737936000"))
+    check("clock 1737936000 (explicit epoch) -> KFDBG CLOCK EPOCH 1737936000",
+          link.sent[-1] == "KFDBG CLOCK EPOCH 1737936000")
+
+    try:
+        kfd.cmd_clock(FakeLink(), _clock_args("nonsense"))
+        check("clock with an unknown target raises", False)
+    except kfd.KfDebugError:
+        check("clock with an unknown target raises", True)
+
+
+def _rtc_args(as_json=False):
+    return argparse.Namespace(json=as_json)
+
+
+def test_rtc_command_decode():
+    print("`rtc` decodes a matching reply, an osf==1 reply, and an err "
+          "when no chip answered -- KFDBG RTC needs no hardware to prove "
+          "wire decoding, which is the whole point of this file")
+
+    # A healthy chip: OSF clear, RAM clock agrees with it.
+    healthy = {"present": True, "epoch": 1737936005, "osf": False,
+               "wall": 1737936005, "wall_valid": True}
+    link = FakeLink(reply_type="json",
+                     reply_payload=json.dumps(healthy).encode("utf-8"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        kfd.cmd_rtc(link, _rtc_args())
+    text = out.getvalue()
+    check("healthy reply prints epoch", "epoch: 1737936005" in text)
+    check("healthy reply prints osf: False", "osf: False" in text)
+    check("healthy reply's VERDICT reports the chip and RAM clock agreeing",
+          "agree" in text)
+
+    # OSF set: the chip does not trust its own registers -- a distinct,
+    # diagnosable outcome from "no chip at all" (see handle_rtc()'s own
+    # comment in kf_dbg_bridge.cpp), NOT folded into a generic failure.
+    osf_set = {"present": True, "epoch": 946684800, "osf": True,
+               "wall": 0, "wall_valid": False}
+    link = FakeLink(reply_type="json",
+                     reply_payload=json.dumps(osf_set).encode("utf-8"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        kfd.cmd_rtc(link, _rtc_args())
+    text = out.getvalue()
+    check("osf==1 reply decodes osf: True", "osf: True" in text)
+    check("osf==1 reply's VERDICT names OSF specifically",
+          "OSF is set" in text)
+
+    # No chip ever answered at boot: the device replies `err`, not a
+    # present:false JSON -- reading the RAM clock instead would make the
+    # whole command vacuous, which is exactly the trap this test guards
+    # against regressing into.
+    device_message = ("no DS3231 answered at boot -- nothing to read (see "
+                       "esp_time.cpp's try_init_ds3231()): KFDBG RTC")
+    link = FakeLink(reply_type="err",
+                     reply_payload=device_message.encode("utf-8"))
+    try:
+        kfd.cmd_rtc(link, _rtc_args())
+        check("no chip answered raises KfDebugError, not a silent "
+              "present:false", False)
+    except kfd.KfDebugError as e:
+        check("no chip answered raises KfDebugError, not a silent "
+              "present:false", True)
+        check("error message names the missing chip",
+              "no DS3231 answered" in str(e))
+
+    # --json passthrough: the raw wire line, unmodified -- same contract
+    # `state --json` and `scanline --json` already give.
+    link = FakeLink(reply_type="json",
+                     reply_payload=json.dumps(healthy).encode("utf-8"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        kfd.cmd_rtc(link, _rtc_args(as_json=True))
+    check("--json prints the raw JSON line verbatim",
+          out.getvalue().strip() == json.dumps(healthy))
+
+
 def test_mutate_gate_rejection_is_actionable():
     """A device with KF_DBG_MUTATE_ENABLE=0 (ADR 0035) replies `err` to
     every mutating command instead of running it -- kf_dbg_bridge.cpp's
@@ -390,6 +488,27 @@ def test_mutate_gate_rejection_is_actionable():
         check("mutate-gated JUMP raises KfDebugError", True)
         check("JUMP's rejection also names KF_DBG_MUTATE_ENABLE",
               "KF_DBG_MUTATE_ENABLE" in str(e))
+
+    # clock goes through the identical _expect() path too -- CLOCK joined
+    # the mutating set under ADR 0054, on the same gate as everything else
+    # in this test, not a special case.
+    link = FakeLink(reply_type="err",
+                     reply_payload=device_message.replace(
+                         "KFDBG FEED 0", "KFDBG CLOCK DROWSY").encode("utf-8"))
+    try:
+        kfd.cmd_clock(link, _clock_args("drowsy"))
+        check("mutate-gated CLOCK raises KfDebugError", False)
+    except kfd.KfDebugError as e:
+        check("mutate-gated CLOCK raises KfDebugError", True)
+        check("CLOCK's rejection also names KF_DBG_MUTATE_ENABLE",
+              "KF_DBG_MUTATE_ENABLE" in str(e))
+
+    # RTC, by contrast, is observe tier (ADR 0054) -- it must NOT go
+    # through this rejection path at all. Nothing to assert here beyond
+    # what test_rtc_command_decode() above already proves (a `json` reply
+    # decodes normally); this comment exists so a future reader doesn't
+    # wonder why RTC has no rejection case in this function -- it's
+    # deliberate, not an oversight.
 
 
 # The full ADR 0036 key set a real STATE reply carries, on top of the
@@ -505,6 +624,8 @@ def main():
     test_care_action_aliases()
     test_care_command_building()
     test_jump_command_building()
+    test_clock_command_building()
+    test_rtc_command_decode()
     test_mutate_gate_rejection_is_actionable()
     test_state_budget_line_with_every_key_present()
     test_state_budget_line_missing_keys_does_not_crash()

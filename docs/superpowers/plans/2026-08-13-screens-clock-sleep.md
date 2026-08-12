@@ -1199,6 +1199,34 @@ near the board.
 > Settings screen edits hour and minute only. Nothing reads the date today,
 > so it breaks nothing — but there is no in-app way to fix a drifted date.
 > Noted in ADR 0026 and in `ports/esp32/README.md`'s open-questions list.
+>
+> ## ADDENDUM 2026-08-11 (later same day): sub-requirement 1 is now built. 2 and 3 are still not.
+>
+> `KFDBG RTC` landed — see `docs/architecture/adr-0054-kfdbg-clock-and-rtc.md`.
+> Observe tier, gated by `KF_DBG_BRIDGE_ENABLE` only, reads the DS3231
+> **directly** over I2C via a new `kf_esp_time_debug_read_rtc()` accessor
+> (`ports/esp32/hal/kf_esp_time_debug.h`) — not `kf_time_wall()`, so it
+> genuinely compares RAM against chip rather than reading the RAM clock
+> twice. Replies `present`/`epoch`/`osf`/`wall`/`wall_valid`; replies `err`
+> (not a `present:false` JSON) when no chip ever answered at boot. Landed
+> alongside a new `KFDBG CLOCK` verb — the hardware equivalent of the
+> desktop debug window's Drowsy/Bedtime/Morning buttons, out of scope for
+> this task originally but built in the same pass since it touches the same
+> file and the same STATE-buffer arithmetic this task's own requirements
+> list already calls out. `tools/kf_debug.py rtc`/`clock`,
+> `tools/kf_debug_selftest.py` coverage (a matching reply, an `osf==1`
+> reply, and the `err`-when-no-chip case), and `tools/kf_panel.py`'s own
+> Drowsy/Bedtime/Morning row all landed in the same commit — see the ADR.
+>
+> **Still not done, and still exactly what sub-requirements 2 and 3 above
+> say:** the coin-cell-removed negative case, and observing offline ageing
+> across a real power gap. `KFDBG RTC` is what makes both checkable now —
+> see ADR 0054's bench checklist for the exact commands — but neither has
+> been run. **Do not treat this task as closed** for the same reason the
+> STATUS block above already gives: those are the two checks that would
+> catch a fault, and the "verified" boxes below reflect the C++ compiling
+> clean and the host tooling proving wire decoding with no hardware, not a
+> board actually being tested against.
 
 **Needs Chris, the board, a DS3231, a coin cell, and two physical unplugs.**
 Retires the risk that `esp_time.cpp:311`'s write-through has never executed on
@@ -1206,23 +1234,30 @@ silicon and that nobody knows whether the cell holds time.
 
 **Requirements:**
 
-- [ ] `KFDBG RTC` — observe tier, gated by `KF_DBG_BRIDGE_ENABLE` only, never
+- [x] `KFDBG RTC` — observe tier, gated by `KF_DBG_BRIDGE_ENABLE` only, never
       by `KF_DBG_MUTATE_ENABLE`, because it changes nothing. It reads the
       DS3231's registers over I2C **directly**, not `kf_time_wall()`, and
       replies with `present`, `epoch`, `osf`, and the RAM clock's `wall` and
       `wall_valid` alongside so the two can be compared in one line. Reading
-      the RAM clock instead would make the whole test vacuous.
-- [ ] **Check the reply buffer arithmetic.** `handle_state()`'s buffer is sized
+      the RAM clock instead would make the whole test vacuous. **Landed
+      2026-08-11, see ADR 0054** — compiled clean, never run against real
+      hardware (see the ADDENDUM above).
+- [x] **Check the reply buffer arithmetic.** `handle_state()`'s buffer is sized
       by an explicit computation documented at `kf_dbg_bridge.cpp:228`. If this
       task adds keys to `STATE` as well as adding a command, redo that
       computation and say in the comment what the new figure was computed
       from — a truncated reply surfaces to the host as a JSON parse error miles
-      from the cause.
-- [ ] Host side: `python3 tools/kf_debug.py rtc`, plus `tools/kf_debug_selftest.py`
+      from the cause. **Landed**: three sleep-state keys (`asleep`/`drowsy`/
+      `tucked_in`) added alongside `RTC`/`CLOCK`, buffer arithmetic recomputed
+      by exhaustive enumeration (463 literal + 345 value-width + 1 NUL = 809
+      worst case, against the unchanged 1024-byte buffer) — see ADR 0054.
+- [x] Host side: `python3 tools/kf_debug.py rtc`, plus `tools/kf_debug_selftest.py`
       coverage for a matching reply, an `osf == 1` reply, and an `err` when no
       chip answered. Wire protocol changes land in `kf_dbg_bridge.cpp`,
       `kf_debug.py` and `kf_debug_selftest.py` **in the same commit** — one
-      contract in two languages.
+      contract in two languages. **Landed**, plus `kf_debug.py clock` and
+      `kf_panel.py`'s Drowsy/Bedtime/Morning row (out of this task's original
+      scope, done in the same pass — see ADR 0054).
 - [ ] **The procedure, run and recorded.** Chris at the bench:
       1. Flash with `-DKF_PANEL=ili9341`, coin cell installed.
       2. Set the time on the Settings screen with the buttons. Note it, and the

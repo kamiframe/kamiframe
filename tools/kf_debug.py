@@ -20,6 +20,9 @@ Wire protocol (fixed; the device side implements the exact same spec):
         KFDBG ADVANCE <seconds>
         KFDBG RESET
         KFDBG MULT <n>
+        KFDBG CLOCK DROWSY|BEDTIME|MORNING
+        KFDBG CLOCK EPOCH <seconds>
+        KFDBG RTC
         KFDBG SCANLINE [read_hz]
         KFDBG VSYNC <0|1>
         KFDBG FEED <variation>
@@ -55,6 +58,9 @@ Usage:
     python3 tools/kf_debug.py [--port PORT] press UP,A [--hold-ms 300]
     python3 tools/kf_debug.py [--port PORT] advance 1d      # or 30s, 5m, 2h, 1w
     python3 tools/kf_debug.py [--port PORT] mult 64         # 1..256
+    python3 tools/kf_debug.py [--port PORT] clock drowsy    # or bedtime, morning
+    python3 tools/kf_debug.py [--port PORT] clock 1737936000  # an explicit epoch
+    python3 tools/kf_debug.py [--port PORT] rtc              # read the DS3231 directly
     python3 tools/kf_debug.py [--port PORT] reset           # back to a fresh egg
     python3 tools/kf_debug.py [--port PORT] watch [--interval 1.0]
     python3 tools/kf_debug.py [--port PORT] scanline [--read-hz 2000000]
@@ -132,6 +138,17 @@ STAGE_NAMES = {"egg": 0, "baby": 1, "child": 2, "teen": 3, "adult": 4}
 # device side's own range (see handle_jump()'s comment in
 # ports/esp32/main/kf_dbg_bridge.cpp) rather than silently clamping it away.
 TEEN_FORM_DUST = 4
+
+# The three named points `clock` can jump the world clock to, mirroring the
+# desktop debug window's Drowsy/Bedtime/Morning buttons (sdl_debug_window.cpp)
+# and kf_pet_session.h's kf_pet_debug_clock_point enum -- the actual times
+# (21:50:05 / 22:00:05 / 07:00:05) are defined exactly once, on the device
+# side (kf_pet_session_debug_clock_target()), not duplicated here: this host
+# script only ever sends the NAME and lets the firmware resolve it, so the
+# two can never drift apart the way an earlier version of the desktop
+# buttons once did against their own test.
+CLOCK_POINTS = ("drowsy", "bedtime", "morning")
+
 
 def resolve_shot_path(out):
     """Where a screenshot should land.
@@ -708,6 +725,88 @@ def cmd_mult(link, args):
           f"{payload.decode('utf-8', 'replace')}")
 
 
+def cmd_clock(link, args):
+    """Jump the world clock to a point in the sleep cycle, or to an
+    explicit epoch -- the hardware equivalent of the desktop debug window's
+    Drowsy/Bedtime/Morning buttons, plus one thing those buttons don't
+    offer: an arbitrary epoch, which is what makes a drifted real-time-clock
+    DATE on a real board fixable without opening a Settings screen that only
+    edits hour and minute (see ports/esp32/README.md's former "no way to
+    set the date from the device" open question).
+
+    `target` is either one of CLOCK_POINTS (case-insensitive) or a plain
+    decimal number of seconds since 1970 -- same "name or raw number"
+    convention `jump`'s stage argument already uses.
+
+    Moves BOTH the device's RAM wall clock and Core's own notion of "now"
+    together (see kf_pet_session_debug_set_clock()'s header comment in
+    simulator/src/pet/kf_pet_session.h for why one alone is not enough) --
+    NOT just kf_time_set_wall(), so this is not the same thing as (and is
+    not a substitute for) the Settings screen's own clock control.
+    """
+    text = args.target.strip()
+    point = text.lower()
+    if point in CLOCK_POINTS:
+        command = f"KFDBG CLOCK {point.upper()}"
+        payload = _expect(link, command, "ack")
+        print(f"clock -- {payload.decode('utf-8', 'replace')}")
+        return
+    try:
+        epoch = int(text)
+    except ValueError:
+        valid = ", ".join(CLOCK_POINTS)
+        raise KfDebugError(
+            f"unknown clock target '{args.target}' -- use a point name "
+            f"({valid}) or a decimal epoch (seconds since 1970)") from None
+    payload = _expect(link, f"KFDBG CLOCK EPOCH {epoch}", "ack")
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(epoch))
+    print(f"clock -- {payload.decode('utf-8', 'replace')} ({when})")
+
+
+def cmd_rtc(link, args):
+    """Read the DS3231 real-time-clock chip's registers DIRECTLY over I2C
+    -- NOT kf_time_wall(), the in-RAM clock KFDBG STATE and everything else
+    on this device implicitly relies on. That distinction is the entire
+    point: this is the one command that can prove the RAM clock and the
+    physical chip haven't drifted apart, and the only way to observe the
+    chip's OSF (oscillator-stopped) flag remotely -- see
+    ports/esp32/main/kf_dbg_bridge.cpp's handle_rtc() and Task 5 of
+    docs/superpowers/plans/2026-08-13-screens-clock-sleep.md, whose
+    coin-cell-removed negative case has no other way to be checked without
+    standing at the bench reading a boot log.
+
+    Observe tier: works even with KF_DBG_MUTATE_ENABLE=0, since reading a
+    chip's registers changes nothing. Raises KfDebugError (via `err`) if no
+    DS3231 ever answered at boot -- there is nothing to read in that case,
+    not a present:false reply to parse.
+    """
+    payload = _expect(link, "KFDBG RTC", "json")
+    text = payload.decode("utf-8", "replace")
+    if args.json:
+        print(text)
+        return
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        print(text)
+        return
+    for k in sorted(obj):
+        print(f"  {k}: {obj[k]}")
+    print()
+    if obj.get("osf"):
+        print("VERDICT: OSF is set -- the chip does not trust its own "
+              "registers (dead/missing backup cell, or never seeded). "
+              "`epoch` above is not meaningful until it is reseeded.")
+    elif obj.get("wall_valid"):
+        drift = obj.get("wall", 0) - obj.get("epoch", 0)
+        print(f"VERDICT: chip is healthy (OSF clear); RAM clock and chip "
+              f"agree within {drift:+d}s.")
+    else:
+        print("VERDICT: chip is healthy (OSF clear), but the RAM wall "
+              "clock is unset -- set it from the Settings screen or "
+              "`kf_debug.py clock`.")
+
+
 def cmd_scanline(link, args):
     """Ask the panel where its scan currently is, 64 times.
 
@@ -1008,6 +1107,20 @@ def build_parser():
     mult.add_argument("factor", type=int,
                        help="1 is normal speed, 256 is the fastest")
 
+    clock = sub.add_parser("clock", parents=[common],
+                            help="jump the world clock to a point in the "
+                                 "sleep cycle, or to an explicit epoch")
+    clock.add_argument("target",
+                        help="drowsy|bedtime|morning, or a decimal epoch "
+                             "(seconds since 1970)")
+
+    rtc = sub.add_parser("rtc", parents=[common],
+                          help="read the DS3231 directly over I2C -- "
+                               "observe tier, works even with "
+                               "KF_DBG_MUTATE_ENABLE=0")
+    rtc.add_argument("--json", action="store_true",
+                      help="print the raw JSON instead of a summary")
+
     scanline = sub.add_parser("scanline", parents=[common],
                                help="probe whether the panel can report its "
                                     "scan position (beam-racing feasibility)")
@@ -1078,6 +1191,10 @@ def main(argv=None):
                 cmd_reset(link, args)
             elif args.command == "mult":
                 cmd_mult(link, args)
+            elif args.command == "clock":
+                cmd_clock(link, args)
+            elif args.command == "rtc":
+                cmd_rtc(link, args)
             elif args.command == "scanline":
                 cmd_scanline(link, args)
             elif args.command == "watch":
