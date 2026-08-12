@@ -208,6 +208,20 @@ void kf_pet_session_shutdown(void);
  * relies on, so this is not a separate, less-tested code path -- it is
  * the same one, called on demand instead of at boot.
  *
+ * MOVES THE WALL CLOCK BY THE SAME `seconds` TOO, since 2026-08-11. It did
+ * not before, which was harmless while nothing read the hour and quietly
+ * wrong once sleep landed: Core's clock and kf_time_wall() -- what Lua's
+ * kf.hour(), the home screen's wall clock and the drowsy window all read --
+ * would drift apart by exactly however much was skipped, so skipping a week
+ * left a creature that would not go to bed at a bedtime the screen was
+ * plainly showing. Contrast kf_pet_session_debug_set_clock() below, which
+ * TELEPORTS both clocks without ageing the pet; this one ages the pet by
+ * the distance travelled, which is what "skip a week" should mean.
+ *
+ * On device this genuinely moves the DS3231, and the move survives a power
+ * cut -- see the implementation's own comment. Debug-gated, but not a
+ * display-only fast-forward.
+ *
  * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
  * header comment. Reachable on ESP32 via KFDBG ADVANCE (ADR 0030). */
 void kf_pet_session_debug_advance(uint32_t seconds);

@@ -342,6 +342,37 @@ void kf_pet_session_shutdown(void) {
 void kf_pet_session_debug_advance(uint32_t seconds) {
     KF_ASSERT(g.ready, "kf_pet_session_debug_advance called before "
                         "kf_pet_session_init");
+
+    /* The wall clock moves by the SAME amount, and the order matters: the
+     * clock is set BEFORE the advance, because kf_pet_advance() evaluates
+     * the night window against last_advanced and would otherwise be
+     * reasoning about a different day than the one Lua is displaying.
+     *
+     * Until 2026-08-11 this function moved only Core's clock. That was a
+     * deliberate choice when nothing read the hour -- and it quietly became
+     * wrong the moment sleep landed, because Core's idea of the time and
+     * kf_time_wall() (what Lua's kf.hour(), the wall clock on the home
+     * screen, and the drowsy window all read) then disagreed by however
+     * much had been skipped. Skip 1 Week and then wonder why the creature
+     * will not go to bed. Chris, 2026-08-11: "the skip 1 hour, skip 1 day,
+     * skip 1 week needs to also skip time on the real clock too".
+     *
+     * Fixed HERE rather than in sdl_debug_window.cpp on purpose: the three
+     * desktop buttons are not the only caller. ports/esp32/main/
+     * kf_dbg_bridge.cpp's KFDBG ADVANCE calls this too, so the device gets
+     * the same coherent behaviour from the same change.
+     *
+     * SIDE EFFECT WORTH KNOWING ON DEVICE: kf_time_set_wall() writes
+     * through to the DS3231 (ports/esp32/hal/esp_time.cpp), so a KFDBG
+     * ADVANCE now genuinely moves the board's battery-backed clock, and it
+     * stays moved across a power cut. That is the honest meaning of "skip
+     * a week" and it is debug-gated, but it does mean the bench clock needs
+     * resetting afterwards -- it is not a display-only fast-forward. */
+    const kf_wall_time before = kf_time_wall();
+    if (before.valid) {
+        kf_time_set_wall(before.epoch_seconds + static_cast<int64_t>(seconds));
+    }
+
     kf_pet_advance(&g.state, &g.config, seconds);
     debug_snapshot_push();
 }

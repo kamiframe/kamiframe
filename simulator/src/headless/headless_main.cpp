@@ -9502,6 +9502,53 @@ int run_clock_jump_check() {
         check(!pet->dead, "clock jump: the creature is not dead");
     }
 
+    /* 10. THE SKIP BUTTONS MOVE THE WALL CLOCK TOO (2026-08-11, Chris: "the
+     *     skip 1 hour, skip 1 day, skip 1 week needs to also skip time on
+     *     the real clock too"). kf_pet_session_debug_advance() used to move
+     *     only Core's clock, which was invisible until sleep started reading
+     *     the hour: after a skip, kf_time_wall() -- Lua's kf.hour(), the
+     *     home screen's clock, the drowsy window -- lagged Core by exactly
+     *     the skipped amount, so a creature would refuse to sleep at a
+     *     bedtime the screen was showing.
+     *
+     *     Asserted on the HAL wall clock and on Core's last_advanced
+     *     independently, because the bug is precisely the two disagreeing;
+     *     checking either alone would have passed throughout. */
+    {
+        kf_pet_session_debug_set_clock(epoch_at(12, 0, 0));
+        const int64_t wall_before = kf_time_wall().epoch_seconds;
+        const int64_t core_before =
+            kf_pet_session_state()->last_advanced.epoch_seconds;
+
+        constexpr uint32_t kOneHour = 3600u;
+        kf_pet_session_debug_advance(kOneHour);
+
+        const int64_t wall_moved = kf_time_wall().epoch_seconds - wall_before;
+        const int64_t core_moved =
+            kf_pet_session_state()->last_advanced.epoch_seconds - core_before;
+
+        check(wall_moved == static_cast<int64_t>(kOneHour),
+              "skip: the HAL wall clock moved by exactly the skipped hour");
+        check(core_moved == static_cast<int64_t>(kOneHour),
+              "skip: Core's last_advanced moved by exactly the skipped hour");
+        check(wall_moved == core_moved,
+              "skip: LOAD-BEARING -- the two clocks stayed in step across a "
+              "skip; they drifting apart is the entire bug this covers");
+
+        /* And the skip still ages the pet, unlike set_clock() above. If a
+         * future change makes the skip teleport instead of advance, the
+         * clocks would still agree and everything above would still pass --
+         * this is what notices. A week of an uncared-for child is well past
+         * any decay threshold, so "hunger fell" is a safe, non-brittle
+         * assertion rather than an exact figure. */
+        const kf_pet_millipercent hunger_before =
+            kf_pet_session_state()->hunger_mp;
+        kf_pet_session_debug_advance(7u * 24u * kOneHour);
+        check(kf_pet_session_state()->hunger_mp < hunger_before,
+              "skip: a week's skip still ages the creature, it does not "
+              "merely move the clocks");
+    }
+
     kf_pet_session_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
 
