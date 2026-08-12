@@ -338,6 +338,28 @@ void kf_pet_session_debug_advance(uint32_t seconds) {
     debug_snapshot_push();
 }
 
+void kf_pet_session_debug_set_clock(int64_t epoch_seconds) {
+    KF_ASSERT(g.ready, "kf_pet_session_debug_set_clock called before "
+                        "kf_pet_session_init");
+
+    /* Both clocks, together -- see this function's header comment in
+     * kf_pet_session.h for why moving only one of them produces a creature
+     * that looks broken but is behaving correctly against a clock nobody
+     * updated. */
+    kf_time_set_wall(epoch_seconds);
+    g.state.last_advanced.valid = true;
+    g.state.last_advanced.epoch_seconds = epoch_seconds;
+
+    /* `asleep` is only recomputed inside an advance (apply_stage_segment(),
+     * pet.cpp), so without this the creature would not notice the new hour
+     * until the next KF_PET_SESSION_FLUSH_SECONDS boundary. One second is
+     * the smallest advance that re-evaluates it, and is deliberately the
+     * only ageing this function does -- see the header comment on why
+     * travelling the real distance is the wrong behaviour here. */
+    kf_pet_advance(&g.state, &g.config, 1u);
+    debug_snapshot_push();
+}
+
 void kf_pet_session_debug_reset(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_debug_reset called before kf_pet_session_init");

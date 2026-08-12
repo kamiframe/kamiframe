@@ -11,7 +11,9 @@
 
 #include "kf/app.h"
 #include "kf/arena.h"
+#include "kf/clock.h"
 #include "kf/hal/log.h"
+#include "kf/hal/time.h"
 #include "kf/pet.h"
 
 #include <SDL3/SDL.h>
@@ -35,7 +37,12 @@ constexpr int kWindowW = kLeftColumnW + kRightColumnW;
  * buttons, and Next Stage) pushed the timeline and the text readout below
  * them further down the window -- see kTimelineBar and the readout's own
  * starting `y` further down in this file for where. */
-constexpr int kWindowH = 670;
+/* 670 -> 710 for the sleep-cycle button row (Drowsy/Bedtime/Morning at
+ * y=336), which pushed kTimelineBar and the left-hand text readout below it
+ * down by one 40px row each. Those three positions move together; changing
+ * one without the others overlaps the timeline with either the buttons
+ * above it or the readout below. */
+constexpr int kWindowH = 710;
 constexpr float kRightColumnX = static_cast<float>(kLeftColumnW) + 16.0f;
 
 enum class DebugAction {
@@ -103,6 +110,24 @@ enum class DebugAction {
      * once already at Adult: Adult is terminal (kf/pet.h), so "the
      * following stage" from Adult is Adult itself -- see perform() below. */
     kJumpNextStage,
+
+    /* Jump the world's clock to a named point in the sleep cycle, so the
+     * 22:00-07:00 night window (ADR 0048) is testable without waiting for
+     * the real hour to come round. All three go through
+     * kf_pet_session_debug_set_clock(), which moves the HAL wall clock and
+     * Core's last_advanced TOGETHER -- read that function's header comment
+     * in kf_pet_session.h before touching these. Moving only one of the two
+     * produces a creature that looks broken and is not.
+     *
+     * Deliberately NOT all aligned on the boundary. Drowsy lands exactly on
+     * 21:00:00 because that whole hour is the tuck-in window and there is
+     * nothing to watch cross. Bedtime and Morning land ten seconds SHORT of
+     * their transition, so falling asleep and waking are things you watch
+     * happen rather than things that already happened before the window
+     * redrew -- long enough to see, short enough not to be a wait. */
+    kClockDrowsy,
+    kClockBedtime,
+    kClockMorning,
 };
 
 struct DebugButton {
@@ -184,6 +209,19 @@ constexpr DebugButton kButtons[] = {
      * kJumpNextStage case for exactly what "forward" means once already
      * at Adult. */
     {{16, 296, 150, 32}, "Next Stage", DebugAction::kJumpNextStage},
+
+    /* The sleep-cycle row (2026-08-11, Chris: "add a button to the debug
+     * window to take the clock to bedtime ... I want to see if the clock
+     * time forces the pet to bed"). Three points rather than the one that
+     * was asked for, because the cycle has three moments worth seeing and
+     * the other two were free once the clock-setting plumbing existed:
+     * Drowsy is when tuck-in becomes available and is therefore the ONLY
+     * way to see the futon without waiting for 21:00 to come round;
+     * Morning is the other end of the same window. See the enum above for
+     * why two of the three land ten seconds early. */
+    {{16, 336, 84, 32}, "Drowsy", DebugAction::kClockDrowsy},
+    {{108, 336, 84, 32}, "Bedtime", DebugAction::kClockBedtime},
+    {{200, 336, 84, 32}, "Morning", DebugAction::kClockMorning},
 };
 
 /* Duplicated from sdl_main.cpp's identical helper and kf_pet_screen.cpp's
@@ -267,8 +305,9 @@ uint64_t timeline_axis_max_seconds(const kf_pet_config &config) {
 
 /* y moved from 200 to make room for the four Task 8 button rows above it
  * (teen_form picker, adult_branch picker, the stage-jump row, Next Stage --
- * see kButtons and kWindowH's own comments above). */
-constexpr SDL_FRect kTimelineBar = {16, 344, kLeftColumnW - 32, 14};
+ * see kButtons and kWindowH's own comments above), then 344 -> 384 again
+ * for the sleep-cycle row. */
+constexpr SDL_FRect kTimelineBar = {16, 384, kLeftColumnW - 32, 14};
 /* Grabbable beyond the bar's own drawn height -- a 14px-tall target is
  * fiddly to click precisely; this widens the hit region without widening
  * what's actually drawn. Vertical position only matters for STARTING a
@@ -401,8 +440,51 @@ kf_pet_stage jump_stage_for(DebugAction action) {
     }
 }
 
+/* The next time today's clock reads hh:mm:ss, as an epoch second. If that
+ * moment has already passed today, tomorrow's -- so "Bedtime" pressed at
+ * 23:00 means tomorrow's 21:59:50, never a jump backwards. Backwards would
+ * be worse than useless here: Core's night accounting is written against a
+ * forward-moving clock, and kf_pet_advance() is not defined for negative
+ * elapsed time.
+ *
+ * Uses kf/clock.h's civil conversions rather than libc's, for the reason
+ * that header gives: there is NO timezone anywhere in this system, the
+ * epoch IS local time, and localtime() would drag TZ and locale state into
+ * a calculation that must not depend on either. */
+int64_t next_local_time_of_day(uint8_t hour, uint8_t minute, uint8_t second) {
+    const kf_wall_time now = kf_time_wall();
+    kf_civil civil;
+    kf_civil_from_epoch(now.epoch_seconds, &civil);
+    civil.hour = hour;
+    civil.minute = minute;
+    civil.second = second;
+
+    int64_t target = kf_epoch_from_civil(&civil);
+    if (target <= now.epoch_seconds) {
+        target += 24 * 60 * 60;
+    }
+    return target;
+}
+
 void perform(DebugAction action) {
     switch (action) {
+    case DebugAction::kClockDrowsy:
+        /* On the hour, not short of it: the whole 21:00 hour is the tuck-in
+         * window (creature.lua's kDrowsyHour), so there is no edge to
+         * watch cross -- landing inside it is the point. */
+        kf_pet_session_debug_set_clock(next_local_time_of_day(21u, 0u, 0u));
+        break;
+    case DebugAction::kClockBedtime:
+        /* Ten seconds before 22:00 (kNightStartHour, pet.cpp) so falling
+         * asleep is watched, not arrived-at. */
+        kf_pet_session_debug_set_clock(next_local_time_of_day(21u, 59u, 50u));
+        break;
+    case DebugAction::kClockMorning:
+        /* Ten seconds before 07:00 (kNightEndHour, pet.cpp), the other end
+         * of the same window -- waking is the creature's own doing, so this
+         * is the only way to see it happen on demand. */
+        kf_pet_session_debug_set_clock(next_local_time_of_day(6u, 59u, 50u));
+        break;
     case DebugAction::kSkipHour:
         kf_pet_session_debug_advance(3600u);
         break;
@@ -780,7 +862,9 @@ void kf_sdl_debug_window_frame(void) {
     char line[128];
     /* Moved from 250 to make room for the four Task 8 button rows above
      * the timeline -- see kWindowH's and kTimelineBar's own comments. */
-    float y = 400.0f;
+    /* 400 -> 440 with the sleep-cycle button row; moves in lockstep with
+     * kTimelineBar and kWindowH -- see kWindowH's own comment. */
+    float y = 440.0f;
     constexpr float kLineHeight = 18.0f;
     SDL_SetRenderDrawColor(g.renderer, 220, 220, 225, 255);
 

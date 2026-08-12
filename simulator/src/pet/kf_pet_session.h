@@ -205,6 +205,41 @@ void kf_pet_session_shutdown(void);
  * header comment. Reachable on ESP32 via KFDBG ADVANCE (ADR 0030). */
 void kf_pet_session_debug_advance(uint32_t seconds);
 
+/* Moves the WHOLE WORLD's clock to `epoch_seconds` without ageing the pet
+ * by the distance travelled. Built for testing the night window (ADR 0048):
+ * "jump to just before bedtime and watch it fall asleep" is otherwise a
+ * ten-hour wait or a ten-hour fast-forward that starves the creature on the
+ * way, and a starving pet is noise when the thing under test is the clock.
+ *
+ * TWO CLOCKS HAVE TO MOVE TOGETHER, and this is the whole reason this
+ * function exists rather than the caller just calling kf_time_set_wall():
+ *
+ *   1. The HAL wall clock (kf_time_set_wall()), which is what Lua's
+ *      kf.hour() reads, and therefore what creature.lua's drowsy cue and
+ *      clock display are driven by.
+ *   2. kf_pet_state::last_advanced, which is what CORE evaluates the
+ *      22:00-07:00 window against (apply_stage_segment(), pet.cpp).
+ *
+ * They are NOT the same clock and nothing keeps them in step by itself.
+ * Wall time enters Core exactly once, at load (kf_pet_load_and_advance());
+ * after that kf_pet_session_frame() ticks the pet from the MONOTONIC clock
+ * and kf_pet_advance() carries last_advanced forward by that delta (Task 6,
+ * ADR 0048). So setting only the wall clock would leave Lua showing 22:00
+ * while Core still believed it was mid-afternoon, and the creature would
+ * stay stubbornly awake -- which looks exactly like a broken night window
+ * and is not one. Setting both is also self-correcting: it re-syncs the two
+ * if kf_pet_session_debug_advance() (which deliberately moves Core's clock
+ * and NOT the wall clock) has already pulled them apart.
+ *
+ * Needs are untouched, so this is NOT "skip ahead ten hours" -- it is
+ * "pretend it was always this time". A one-second advance is applied
+ * afterwards purely so Core re-evaluates `asleep` immediately rather than
+ * on the next flush, since sleep is only recomputed inside an advance.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS -- see this section's
+ * header comment. No KFDBG verb yet; desktop debug window only. */
+void kf_pet_session_debug_set_clock(int64_t epoch_seconds);
+
 /* Resets the live pet to a fresh egg, in place -- without touching
  * whatever is currently on disk. The next normal checkpoint (a care
  * action, or shutdown) overwrites the save with this fresh state. Lets

@@ -8251,6 +8251,136 @@ end
  * the pet.wants() Lua binding round-trips it as the documented uppercase
  * string, C drives the real creature.lua through Home and checks what
  * actually lands on the panel. */
+/* kf_pet_session_debug_set_clock() -- the mechanism behind the debug
+ * window's Drowsy/Bedtime/Morning buttons (2026-08-11, Chris: "I want to see
+ * if the clock time forces the pet to bed").
+ *
+ * The buttons themselves are SDL and cannot be clicked from here. What CAN
+ * be checked, and is the part that could silently do nothing, is the
+ * session function underneath them: that it moves BOTH clocks, and that
+ * Core actually changes its mind about being asleep as a result. A button
+ * that sets a clock nobody reads looks identical to a broken night window.
+ *
+ * Deliberately drives the session layer rather than kf_pet_advance()
+ * directly -- run_pet_sleep_check() already covers Core's own night
+ * arithmetic, and duplicating it here would prove nothing new. The
+ * untested gap this closes is the WIRING. */
+int run_clock_jump_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-clock-jump-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_pet_session_init();
+
+    /* Eggs never sleep (ADR 0048's requirement 9 -- apply_stage_segment()
+     * returns before the sleep computation for KF_PET_STAGE_EGG), so a
+     * fresh egg would report awake at every hour of the day and every
+     * assertion below would pass vacuously. Jump to Child first. */
+    kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_CHILD, 0u, 0u);
+
+    /* Same civil-time helper the debug window's buttons use, restated
+     * rather than shared: this file cannot reach sdl_debug_window.cpp's
+     * static, and the whole point is to check the RESULT independently
+     * rather than to re-run the same code and agree with itself. */
+    auto epoch_at = [](int hour, int minute, int second) {
+        const kf_wall_time now = kf_time_wall();
+        kf_civil civil;
+        kf_civil_from_epoch(now.epoch_seconds, &civil);
+        civil.hour = static_cast<uint8_t>(hour);
+        civil.minute = static_cast<uint8_t>(minute);
+        civil.second = static_cast<uint8_t>(second);
+        return kf_epoch_from_civil(&civil);
+    };
+
+    /* 1. Mid-afternoon: awake. Establishes the baseline, so "asleep at
+     *    night" below cannot pass by the pet simply always being asleep. */
+    kf_pet_session_debug_set_clock(epoch_at(14, 0, 0));
+    check(!kf_pet_session_state()->asleep,
+          "clock jump: awake at 14:00");
+
+    /* 2. Both clocks moved, not just one. This is the assertion that would
+     *    have caught the bug this function was written to avoid: setting
+     *    kf_time_set_wall() alone leaves Core's last_advanced behind, and
+     *    the creature stays awake against a clock that says otherwise. */
+    {
+        const kf_wall_time wall = kf_time_wall();
+        const kf_wall_time core = kf_pet_session_state()->last_advanced;
+        kf_civil wall_civil;
+        kf_civil_from_epoch(wall.epoch_seconds, &wall_civil);
+        check(wall_civil.hour == 14u, "clock jump: HAL wall clock reads 14:00");
+        check(core.valid, "clock jump: Core's last_advanced is valid");
+        /* Within a couple of seconds, not equal: set_clock() applies a
+         * deliberate one-second advance so `asleep` re-evaluates, and the
+         * session may fold in a live tick besides. */
+        const int64_t skew = core.epoch_seconds - wall.epoch_seconds;
+        check(skew >= -2 && skew <= 2,
+              "clock jump: Core's clock tracks the HAL wall clock");
+    }
+
+    /* 3. Ten seconds short of 22:00 -- what the Bedtime button does. Still
+     *    awake, because the window has not opened yet. This is the
+     *    non-vacuity guard for step 4: without it, an implementation that
+     *    slept at ANY jumped time would pass. */
+    kf_pet_session_debug_set_clock(epoch_at(21, 59, 50));
+    check(!kf_pet_session_state()->asleep,
+          "clock jump: still awake ten seconds before 22:00");
+
+    /* 4. Inside the window: asleep. The actual thing Chris asked to see. */
+    kf_pet_session_debug_set_clock(epoch_at(22, 0, 30));
+    check(kf_pet_session_state()->asleep,
+          "clock jump: asleep just after 22:00");
+
+    /* 5. Deep night, and the far side of midnight -- the window wraps
+     *    (kf_clock_seconds_in_daily_window's start_hour > end_hour case), so
+     *    03:00 belongs to the PREVIOUS evening's night. A wrap bug would
+     *    show up precisely here and nowhere above. */
+    kf_pet_session_debug_set_clock(epoch_at(3, 0, 0));
+    check(kf_pet_session_state()->asleep, "clock jump: asleep at 03:00");
+
+    /* 6. Ten seconds short of 07:00 -- the Morning button. Still asleep. */
+    kf_pet_session_debug_set_clock(epoch_at(6, 59, 50));
+    check(kf_pet_session_state()->asleep,
+          "clock jump: still asleep ten seconds before 07:00");
+
+    /* 7. Past the end of the window: awake again, on the creature's own
+     *    doing (waking is never the player's -- ADR 0048). */
+    kf_pet_session_debug_set_clock(epoch_at(7, 0, 30));
+    check(!kf_pet_session_state()->asleep,
+          "clock jump: awake just after 07:00");
+
+    /* 8. The jump does not age the creature. "Pretend it was always this
+     *    time", not "fast-forward through it" -- a Bedtime press that
+     *    starved the pet on the way would make the thing under test
+     *    unreadable. Needs should be within a hair of where they were. */
+    {
+        const kf_pet_state *pet = kf_pet_session_state();
+        check(pet->hunger_mp > (KF_PET_MILLIPERCENT_MAX * 9u) / 10u,
+              "clock jump: seven jumps across a whole day barely dent hunger");
+        check(!pet->dead, "clock jump: the creature is not dead");
+    }
+
+    kf_pet_session_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    if (ok) {
+        KF_LOGI(TAG, "PASS");
+    }
+    return ok ? 0 : 1;
+}
+
 int run_attention_signal_check() {
     bool ok = true;
     auto check = [&ok](bool cond, const char *what) {
@@ -8691,6 +8821,7 @@ int main(int argc, char *argv[]) {
     bool verify_sleep = false;
     bool verify_sleep_screen = false;
     bool verify_attention_signal = false;
+    bool verify_clock_jump = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -8815,6 +8946,8 @@ int main(int argc, char *argv[]) {
             verify_sleep_screen = true;
         } else if (std::strcmp(argv[i], "--verify-attention-signal") == 0) {
             verify_attention_signal = true;
+        } else if (std::strcmp(argv[i], "--verify-clock-jump") == 0) {
+            verify_clock_jump = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -8868,6 +9001,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-screen-isolation\n"
                         "kamiframe-headless --verify-sleep\n"
                         "kamiframe-headless --verify-sleep-screen\n"
+                        "kamiframe-headless --verify-clock-jump\n"
                         "kamiframe-headless --verify-attention-signal\n");
             return 0;
         }
@@ -9092,6 +9226,9 @@ int main(int argc, char *argv[]) {
         return run_sleep_screen_check();
     }
 
+    if (verify_clock_jump) {
+        return run_clock_jump_check();
+    }
     if (verify_attention_signal) {
         return run_attention_signal_check();
     }

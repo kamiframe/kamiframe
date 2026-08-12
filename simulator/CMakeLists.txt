@@ -529,6 +529,19 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_sleep_check
              COMMAND kamiframe-headless --verify-sleep)
 
+    # The wiring behind the debug window's Drowsy/Bedtime/Morning buttons:
+    # kf_pet_session_debug_set_clock() has to move the HAL wall clock AND
+    # Core's last_advanced together, because they are separate clocks that
+    # nothing else keeps in step (wall time enters Core only at load; after
+    # that the session ticks from the MONOTONIC clock). Moving only one
+    # leaves Lua showing 22:00 while Core believes it is mid-afternoon, and
+    # the creature stays awake -- indistinguishable from a broken night
+    # window. pet_sleep_check already covers Core's own night arithmetic;
+    # this covers the wiring, which is the part that can silently do
+    # nothing. See headless_main.cpp's run_clock_jump_check().
+    add_test(NAME clock_jump_check
+             COMMAND kamiframe-headless --verify-clock-jump)
+
     # Proves the care-variation preference table (docs/superpowers/plans/
     # 2026-08-09-care-variations.md) is exhaustively well-shaped: all six
     # traits x four actions x three variations, every trait has exactly one
