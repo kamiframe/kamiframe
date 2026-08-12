@@ -216,13 +216,29 @@ def kfdbg_reset(transport):
 
 
 def kfdbg_clock(transport, target):
-    """Same `KFDBG CLOCK <target>` command as kf_debug.py's cmd_clock --
-    jumps the world clock to a named point in the sleep cycle. `target` is
-    already the wire word (DROWSY/BEDTIME/MORNING) -- this panel only ever
-    offers the three named-point buttons below, never an arbitrary epoch
-    (that's kf_debug.py's `clock <epoch>`, for fixing a drifted date; not
-    a control this window needs)."""
-    payload = expect_frame(transport, f"KFDBG CLOCK {target}", "ack")
+    """Same `KFDBG CLOCK ...` command as kf_debug.py's cmd_clock.
+
+    TWO WIRE FORMS, and conflating them is what broke the Sync Clock
+    button on its first outing:
+
+        KFDBG CLOCK DROWSY|BEDTIME|MORNING   a named point
+        KFDBG CLOCK EPOCH <seconds>          an explicit time
+
+    `target` here is either the wire word or a decimal epoch. The epoch
+    form MUST carry the literal EPOCH keyword -- the firmware's parser
+    (ports/esp32/main/kf_dbg_bridge.cpp) does not accept a bare number, so
+    sending `KFDBG CLOCK 1786536230` is rejected and the clock does not
+    move. This function used to send exactly that, because it was written
+    when the panel only had the three named-point buttons and its docstring
+    said so; adding Sync Clock made that comment false without making the
+    code follow.
+    """
+    text = str(target).strip()
+    if text.lstrip("-").isdigit():
+        command = f"KFDBG CLOCK EPOCH {text}"
+    else:
+        command = f"KFDBG CLOCK {text}"
+    payload = expect_frame(transport, command, "ack")
     return payload.decode("utf-8", "replace")
 
 
@@ -1362,11 +1378,17 @@ if tk is not None:
             if not self.connected:
                 self.status_var.set("Not connected -- command ignored.")
                 return
-            now = int(time.time())
+            # kfd.local_epoch_now(), NOT time.time(). Kamiframe has no
+            # timezone anywhere (kf/clock.h): the epoch it is handed IS
+            # local time, while time.time() reports UTC. Sending UTC set a
+            # UTC-4 board four hours fast -- the same trap that was in the
+            # simulator's boot clock and in `clock $(date +%s)`.
+            now = kfd.local_epoch_now()
+            stamp = time.strftime("%H:%M:%S", time.localtime())
             self.cmd_queue.put({
                 "type": "clock",
                 "target": str(now),
-                "label": "%s (%s)" % (CLOCK_SYNC_LABEL, now),
+                "label": "%s -> %s" % (CLOCK_SYNC_LABEL, stamp),
             })
 
         def _request_state_refresh(self):

@@ -17,8 +17,11 @@
 
 #include "host_time.h"
 
+#include "kf/clock.h"
+
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <thread>
 
 namespace {
@@ -42,9 +45,18 @@ kf_result kf_time_init(void) {
     g_started = true;
 
     if (!g_wall_pinned) {
-        const auto sys = std::chrono::system_clock::now().time_since_epoch();
-        g_wall_at_boot =
-            std::chrono::duration_cast<std::chrono::seconds>(sys).count();
+        /* The host's LOCAL time, via the same helper the Sync Clock button
+         * uses -- one source of truth, deliberately.
+         *
+         * This used to read std::chrono::system_clock directly, i.e. UTC,
+         * which meant a simulator launched anywhere but the prime meridian
+         * booted showing the wrong time. It was invisible for a long while
+         * because nothing displayed the clock and nothing compared it to
+         * anything; it surfaced the moment a Sync Clock button existed to
+         * disagree with it. Seeding from anything other than
+         * kf_host_time_system_now() reintroduces exactly that disagreement,
+         * so do not "simplify" this back to a chrono call. */
+        g_wall_at_boot = kf_host_time_system_now();
         g_wall_valid = true;
     }
     return KF_OK;
@@ -105,9 +117,50 @@ void kf_host_time_set_wall_fixed(int64_t epoch_seconds) {
 void kf_host_time_set_wall_unset(void) { g_wall_valid = false; }
 
 int64_t kf_host_time_system_now(void) {
-    /* std::chrono::system_clock, not this file's own g_wall_* state -- see
-     * the header comment. Every other reader in this backend deliberately
-     * goes through the simulated clock; this one deliberately does not. */
-    const auto sys = std::chrono::system_clock::now().time_since_epoch();
-    return std::chrono::duration_cast<std::chrono::seconds>(sys).count();
+    /* The host's LOCAL wall clock, expressed the way this system expresses
+     * every other time: as an unlabelled epoch that IS local time.
+     *
+     * NOT std::chrono::system_clock's raw value, which is UTC. That was the
+     * first version of this function and it was wrong -- Chris, 2026-08-12:
+     * "it's syncing the time to 4pm, instead of 12pm. It is currently 12pm
+     * in my local time." He is UTC-4, so the sync was handing the simulator
+     * a number four hours ahead of the clock on his wall. kf/clock.h is
+     * explicit that there is no timezone anywhere in this system and the
+     * epoch it is given IS local time; a UTC value silently violates that
+     * for everyone not sitting on the prime meridian, which is why it read
+     * as correct in code review and wrong on screen.
+     *
+     * Done by asking libc for the host's broken-down LOCAL time and feeding
+     * those civil fields straight into kf_epoch_from_civil() -- the
+     * project's own conversion, which by design attaches no timezone
+     * meaning to anything. No offset arithmetic, and no DST guesswork:
+     * localtime() already resolves DST correctly for a specific instant,
+     * which is the part hand-rolled offset maths gets wrong twice a year.
+     *
+     * localtime_r is POSIX; MSVC has localtime_s with the arguments the
+     * other way round. Same split host_storage.cpp already makes. */
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    if (localtime_s(&local, &now) != 0) {
+        return 0;
+    }
+#else
+    if (localtime_r(&now, &local) == nullptr) {
+        return 0;
+    }
+#endif
+
+    kf_civil civil{};
+    civil.year = static_cast<int32_t>(local.tm_year + 1900);
+    civil.month = static_cast<uint8_t>(local.tm_mon + 1);
+    civil.day = static_cast<uint8_t>(local.tm_mday);
+    civil.hour = static_cast<uint8_t>(local.tm_hour);
+    civil.minute = static_cast<uint8_t>(local.tm_min);
+    /* tm_sec can be 60 on a leap second; kf_civil has no such concept, and
+     * clamping is friendlier than handing the clock module a value it does
+     * not model. */
+    civil.second = static_cast<uint8_t>(local.tm_sec > 59 ? 59 : local.tm_sec);
+
+    return kf_epoch_from_civil(&civil);
 }

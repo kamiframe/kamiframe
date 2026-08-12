@@ -37,6 +37,7 @@ import contextlib
 import io
 import json
 import struct
+import time
 import sys
 import zlib
 from pathlib import Path
@@ -376,6 +377,32 @@ def test_clock_command_building():
     kfd.cmd_clock(link, _clock_args("1737936000"))
     check("clock 1737936000 (explicit epoch) -> KFDBG CLOCK EPOCH 1737936000",
           link.sent[-1] == "KFDBG CLOCK EPOCH 1737936000")
+
+    # `sync` is the named target meaning "this machine's clock, now". Two
+    # things worth pinning, both of which were shipped wrong once:
+    #
+    #   1. It must go out in the EPOCH wire form. The panel's own Sync
+    #      Clock button sent a bare `KFDBG CLOCK <number>`, which the
+    #      firmware parser rejects, so the button did nothing at all.
+    #   2. It must be LOCAL time, not UTC. `clock $(date +%s)` set a
+    #      UTC-4 board four hours fast for exactly this reason.
+    link = FakeLink()
+    kfd.cmd_clock(link, _clock_args("sync"))
+    sent = link.sent[-1]
+    check("clock sync -> the EPOCH wire form, not a bare number",
+          sent.startswith("KFDBG CLOCK EPOCH "))
+
+    sync_epoch = int(sent.rsplit(" ", 1)[1])
+    # Decoding the epoch AS IF UTC must give back this machine's LOCAL
+    # civil time -- that is precisely what "the epoch IS local time" means.
+    # Comparing against time.localtime() rather than a constant, because
+    # the correct answer depends on where the test is being run.
+    decoded = time.gmtime(sync_epoch)
+    local = time.localtime()
+    check("clock sync sends LOCAL time, not UTC "
+          f"(sent {time.strftime('%H:%M', decoded)}, "
+          f"local {time.strftime('%H:%M', local)})",
+          decoded.tm_hour == local.tm_hour and decoded.tm_min == local.tm_min)
 
     try:
         kfd.cmd_clock(FakeLink(), _clock_args("nonsense"))

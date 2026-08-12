@@ -77,6 +77,7 @@ See tools/README.md for a plain-language walkthrough.
 import argparse
 import base64
 import binascii
+import calendar
 import json
 import os
 import re
@@ -148,6 +149,33 @@ TEEN_FORM_DUST = 4
 # two can never drift apart the way an earlier version of the desktop
 # buttons once did against their own test.
 CLOCK_POINTS = ("drowsy", "bedtime", "morning")
+
+
+def local_epoch_now():
+    """This machine's LOCAL wall clock, as the unlabelled epoch Kamiframe
+    uses everywhere.
+
+    NOT time.time(), and the difference is the entire point. Kamiframe has
+    no timezone anywhere by design -- hakoniwaos/include/kf/clock.h is
+    explicit that the epoch it is handed IS local time -- while
+    time.time(), `date +%s` and datetime.timestamp() all report UTC.
+    Handing the device a UTC value sets its clock wrong for everybody not
+    sitting on the prime meridian.
+
+    Not hypothetical: `kf_debug.py clock $(date +%s)` was offered as the
+    way to fix a drifted board and set it four hours fast, because the
+    person running it is on UTC-4. The same mistake was in the simulator's
+    own boot clock and in the panel's Sync Clock button. All of them now
+    route through a local-time helper.
+
+    calendar.timegm() interprets a time tuple as UTC, so feeding it the
+    LOCAL broken-down time yields exactly "local civil time expressed as an
+    epoch" -- the same trick simulator/src/host/host_time.cpp's
+    kf_host_time_system_now() uses, for the same reason. time.localtime()
+    resolves DST correctly for a given instant, which hand-rolled offset
+    arithmetic gets wrong twice a year.
+    """
+    return calendar.timegm(time.localtime())
 
 
 def resolve_shot_path(out):
@@ -746,6 +774,16 @@ def cmd_clock(link, args):
     """
     text = args.target.strip()
     point = text.lower()
+    if point == "sync":
+        # The named target that means "this machine's clock, right now".
+        # Exists so nobody has to reach for `clock $(date +%s)`, which is
+        # UTC and therefore wrong -- see local_epoch_now().
+        epoch = local_epoch_now()
+        payload = _expect(link, f"KFDBG CLOCK EPOCH {epoch}", "ack")
+        print(f"clock -- {payload.decode('utf-8', 'replace')}")
+        print("  synced to this machine's local time: "
+              + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        return
     if point in CLOCK_POINTS:
         command = f"KFDBG CLOCK {point.upper()}"
         payload = _expect(link, command, "ack")
@@ -1111,7 +1149,7 @@ def build_parser():
                             help="jump the world clock to a point in the "
                                  "sleep cycle, or to an explicit epoch")
     clock.add_argument("target",
-                        help="drowsy|bedtime|morning, or a decimal epoch "
+                        help="sync|drowsy|bedtime|morning, or a decimal epoch "
                              "(seconds since 1970)")
 
     rtc = sub.add_parser("rtc", parents=[common],
