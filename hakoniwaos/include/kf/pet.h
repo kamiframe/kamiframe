@@ -463,6 +463,57 @@ typedef struct {
      * against. */
     bool tucked_in;
 
+    /* The 2026-08-11 OVERNIGHT-FLOOR extension (docs/architecture/
+     * adr-0053-overnight-floors-poop-suppression.md): Chris, after testing
+     * sleep and tuck-in on the board, ruled that needs decaying to zero (and
+     * poop still piling up) while a pet slept defeated the whole point of
+     * sleep existing. Rolled ONCE, at the awake -> asleep transition
+     * (apply_stage_segment(), kf_pet.cpp), one independent kf_rng_below()
+     * draw per need -- NOT the same value copied into all three, which is
+     * exactly what "independent" is checked for. The band the roll is drawn
+     * from depends on two things read AT THAT INSTANT: state->tucked_in (was
+     * the player there to tuck it in, or did it put itself to bed?) and
+     * whether the creature counts as "unwell" right then (sick, or any of
+     * the three needs already below the unwell threshold) -- see pet.cpp's
+     * kOvernightFloor* constants for the four bands' exact ranges.
+     *
+     * Applied every time the creature is observed asleep (continuously
+     * during live play, and at the closed-form-detected wake instant for an
+     * offline jump that carries a segment past morning) as `max(decayed,
+     * floor)` -- a SET-POINT, not a rate change: a pet already below its
+     * band when it fell asleep is pulled UP into the band by morning, not
+     * merely stopped from falling further. That is a deliberate reading of
+     * Chris's own "would be a random value between 20 and 30%" phrasing, and
+     * it is a real design choice with a real consequence (sleep partially
+     * rescues a neglected pet) -- see the ADR for the one-line reversal to a
+     * pure floor if that turns out to be wrong.
+     *
+     * Cleared (set to 0) the moment the creature wakes -- 0 is never a real
+     * floor (every band's minimum is >= 20000), so it doubles as "no floor
+     * currently active" without a separate flag: apply_stage_segment() only
+     * ever CONSULTS these fields while `asleep` is true (or was, earlier in
+     * the same segment), never while genuinely awake.
+     *
+     * Saved (kSaveVersion 10->11, ADR 0053) for the identical reason
+     * tucked_in is: the whole scenario that matters is the device switched
+     * off overnight, and a floor that evaporates on reload would protect a
+     * live session but not the common case. */
+    kf_pet_millipercent hunger_floor_mp;
+    kf_pet_millipercent happiness_floor_mp;
+    kf_pet_millipercent energy_floor_mp;
+
+    /* The overnight dirtiness CAP -- same rolling instant and same
+     * tucked-in/unwell classification as the three floors above, but a
+     * ceiling (`min(value, cap)`) rather than a floor, because dirtiness
+     * RISES rather than falls and the three floors above do nothing for it.
+     * Not randomised (a single value per band, not a range) -- see the ADR
+     * for why a fixed value was judged sufficient here where the needs got a
+     * rolled range. A separate stored field from the three floors above
+     * because it is a different axis with a different direction, cleared
+     * the same way (0 means "no cap active"; every real band value is
+     * >= 25000, so 0 cannot be mistaken for one). */
+    kf_pet_millipercent dirtiness_cap_mp;
+
     /* How the creature took the last care action, and which action it was.
      * Saved, so a creature reloaded mid-sulk is still sulking. This is the
      * feedback channel the spec's section 6 puts first: the reaction leads
@@ -881,9 +932,20 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * A save from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
- * code, an explicit, accepted cost. */
+ * code, an explicit, accepted cost.
+ *
+ * Bumped again to version 11 with the 2026-08-11 overnight-floor extension
+ * (ADR 0053, docs/architecture/adr-0053-overnight-floors-poop-suppression.md):
+ * `hunger_floor_mp`, `happiness_floor_mp`, `energy_floor_mp` and
+ * `dirtiness_cap_mp` were added -- a version-10 save has no notion of a
+ * floor rolled but not yet paid out, so it is refused rather than defaulted
+ * to 0 (which would happen to be correct for a creature that was awake at
+ * save time, and silently wrong -- a missing floor for the rest of that
+ * night -- for one saved mid-sleep). Chris was not re-asked about migration
+ * for this bump; the identical "no migration during development" answer
+ * from the version-10 bump is treated as still standing. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 93u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 109u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

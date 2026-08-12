@@ -605,10 +605,28 @@ int run_pet_check() {
             check(kf_power_deep_sleep_until(wake_at) == KF_OK,
                   "deep sleep across the span");
 
+            /* ADR 0053: this span's aggressive hunger rate (empties in one
+             * hour) reliably crosses kUnwellNeedThresholdMp before night
+             * falls, so both branches below roll an overnight floor via
+             * kf_rng_below() -- a real, intentional source of randomness,
+             * but one drawn from the SAME process-global stream every
+             * kf_pet_advance() call shares (kf/rng.h). `loaded` and
+             * `expected` are two SEPARATE advance sequences meant to prove
+             * byte-identical equivalence, and without reseeding between
+             * them the second sequence would draw whatever the first left
+             * the stream at, not the matching roll -- indistinguishable from
+             * the mechanism actually disagreeing with itself. Reseeding to
+             * the identical value right before each is exactly "results are
+             * identical across two runs with the same seed" (this task's own
+             * required non-vacuity case), applied to two sequences within
+             * one test rather than two separate process runs. */
+            constexpr uint32_t kOfflineEquivalenceSeed = 0x0FF11E5Eu;
+            kf_rng_seed(kOfflineEquivalenceSeed);
             kf_pet_state loaded{};
             check(kf_pet_load_and_advance(&loaded, &night_config) == KF_OK,
                   "load_and_advance after sleeping across the span");
 
+            kf_rng_seed(kOfflineEquivalenceSeed);
             kf_pet_state expected = pre_sleep;
             kf_pet_advance(&expected, &night_config,
                             static_cast<uint32_t>(sp.elapsed_seconds));
@@ -645,6 +663,159 @@ int run_pet_check() {
                         no_clock.neglect_seconds);
                 ok = false;
             }
+        }
+    }
+
+    /* 8. ADR 0053 (the 2026-08-11 overnight-floor extension), through the
+     * REAL offline path (save, kf_power_deep_sleep_until(), kf_pet_load_
+     * and_advance()) rather than a direct kf_pet_advance() call -- "a rule
+     * that only works in live play is a bug, not a partial success," and
+     * the device being switched off overnight is explicitly the case that
+     * matters most for this feature. Four scenarios, per the task's own
+     * requirement: a tucked-in night, an untucked night, an unwell night,
+     * and a night where poop was present at bedtime. */
+    {
+        auto make_pre_bed = [&](bool tuck, bool sick,
+                                 kf_pet_millipercent start_mp,
+                                 uint8_t poop_count) {
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_CHILD;
+            pet.hunger_mp = start_mp;
+            pet.happiness_mp = start_mp;
+            pet.energy_mp = start_mp;
+            pet.sick = sick;
+            pet.poop_count = poop_count;
+            pet.last_advanced.valid = true;
+            const kf_civil at_2155 = {2026, 8, 12, 21, 55, 0};
+            pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&at_2155);
+            if (tuck) {
+                kf_pet_tuck_in(&pet);
+            }
+            return pet;
+        };
+
+        /* Found the next morning, an hour past wake -- real enough to
+         * exercise the wake-instant split (ADR 0053's phase-split
+         * comment), not landed exactly on the boundary. */
+        const kf_civil found_at = {2026, 8, 13, 8, 0, 0};
+        const int64_t found_epoch = kf_epoch_from_civil(&found_at);
+
+        /* Found ONE MINUTE past wake, for scenario (c) specifically: sick
+         * DOUBLES the decay rate (sick_decay_multiplier_percent), so an
+         * unwell+not-tucked-in floor (20-30%) is entirely erased by a
+         * further hour of completely unattended, unprotected daytime decay
+         * at that doubled rate -- correctly so, per Chris's own framing:
+         * the floor promises "not zero BY MORNING WAKE-UP TIME", never "not
+         * zero no matter how much longer the pet is then left alone." An
+         * hour of neglect AFTER waking is a new, ordinary daytime problem,
+         * not a sleep-mechanism failure -- observing close to the wake
+         * instant itself is what actually tests the floor. */
+        const kf_civil found_at_wake = {2026, 8, 13, 7, 1, 0};
+        const int64_t found_at_wake_epoch = kf_epoch_from_civil(&found_at_wake);
+
+        auto run_offline_night = [&](const kf_pet_state &pre_bed,
+                                      const kf_pet_config &cfg,
+                                      int64_t found_at_epoch) {
+            const std::filesystem::path scenario_dir =
+                std::filesystem::temp_directory_path() /
+                ("kamiframe-headless-pet-overnight-" +
+                 std::to_string(KF_GETPID()) + "-" +
+                 std::to_string(pre_bed.tucked_in ? 1 : 0) + "-" +
+                 std::to_string(pre_bed.sick ? 1 : 0));
+            std::error_code scenario_rm_ec;
+            std::filesystem::remove_all(scenario_dir, scenario_rm_ec);
+            kf_host_storage_set_dir(scenario_dir.string().c_str());
+            check(kf_store_init() == KF_OK, "kf_store_init (overnight scenario)");
+            check(kf_time_set_wall(pre_bed.last_advanced.epoch_seconds) ==
+                      KF_OK,
+                  "pin the wall clock to this scenario's pre-bedtime instant");
+            check(kf_pet_save(&pre_bed) == KF_OK,
+                  "save the pre-bedtime state");
+
+            kf_wall_time wake_at{};
+            wake_at.valid = true;
+            wake_at.epoch_seconds = found_at_epoch;
+            check(kf_power_deep_sleep_until(wake_at) == KF_OK,
+                  "deep sleep across the night (real offline path)");
+
+            kf_pet_state loaded{};
+            check(kf_pet_load_and_advance(&loaded, &cfg) == KF_OK,
+                  "load_and_advance the next morning");
+
+            kf_store_shutdown();
+            std::filesystem::remove_all(scenario_dir, scenario_rm_ec);
+            return loaded;
+        };
+
+        /* (a) Tucked-in night: floor in the well+tucked-in band (60-70%),
+         * tucked_in cleared, and the tuck-in bonus paid on top -- both
+         * mechanisms visible through the real offline path at once. */
+        {
+            const kf_pet_state pre_bed = make_pre_bed(
+                /*tuck=*/true, /*sick=*/false, /*start_mp=*/90000u, 0u);
+            check(pre_bed.tucked_in, "sanity: really tucked in before sleep");
+            const kf_pet_state loaded =
+                run_offline_night(pre_bed, config, found_epoch);
+            check(!loaded.tucked_in,
+                  "tucked-in night, offline path: the flag cleared once the "
+                  "bonus paid");
+            check(loaded.hunger_mp > 0u && loaded.happiness_mp > 0u &&
+                      loaded.energy_mp > 0u,
+                  "tucked-in night, offline path: every need is above zero "
+                  "the next morning");
+        }
+
+        /* (b) Untucked (self-slept) night: never tucked in, still never
+         * reaches zero -- the floor protects regardless of tucking in. */
+        {
+            const kf_pet_state pre_bed = make_pre_bed(
+                /*tuck=*/false, /*sick=*/false, /*start_mp=*/90000u, 0u);
+            check(!pre_bed.tucked_in, "sanity: never tucked in");
+            const kf_pet_state loaded =
+                run_offline_night(pre_bed, config, found_epoch);
+            check(!loaded.tucked_in,
+                  "untucked night, offline path: still untucked -- there was "
+                  "never a bonus to pay");
+            check(loaded.hunger_mp > 0u && loaded.happiness_mp > 0u &&
+                      loaded.energy_mp > 0u,
+                  "untucked night, offline path: every need is still above "
+                  "zero the next morning, from the floor alone");
+        }
+
+        /* (c) Unwell night: sick AND starting already critical (all needs
+         * at 0 at bedtime), self-slept -- the worst combination this
+         * feature exists for. Still never zero the next morning. */
+        {
+            const kf_pet_state pre_bed =
+                make_pre_bed(/*tuck=*/false, /*sick=*/true, /*start_mp=*/0u, 0u);
+            const kf_pet_state loaded =
+                run_offline_night(pre_bed, config, found_at_wake_epoch);
+            check(loaded.hunger_mp > 0u && loaded.happiness_mp > 0u &&
+                      loaded.energy_mp > 0u,
+                  "unwell night, offline path: a sick pet that fell asleep "
+                  "at absolute zero still wakes with every need above zero");
+        }
+
+        /* (d) Poop present at bedtime: waiting poop survives the night
+         * completely unchanged -- no new poops generated while asleep,
+         * through the real offline path. poop_interval_seconds widened
+         * well past the roughly 3900s of AWAKE time this scenario's whole
+         * span contains (300s before bedtime, 3600s after 07:00) so the
+         * expected count is an exact, not a bounded, assertion. */
+        {
+            kf_pet_config slow_poop_config = config;
+            slow_poop_config.poop_interval_seconds = 10000u;
+
+            const kf_pet_state pre_bed = make_pre_bed(
+                /*tuck=*/false, /*sick=*/false, /*start_mp=*/90000u, 5u);
+            check(pre_bed.poop_count == 5u, "sanity: five poops at bedtime");
+            const kf_pet_state loaded =
+                run_offline_night(pre_bed, slow_poop_config, found_epoch);
+            check(loaded.poop_count == 5u,
+                  "poop present at bedtime, offline path: EXACTLY the same "
+                  "five poops the next morning -- none vanished, and none "
+                  "were dumped by the paused interval suddenly resuming");
         }
     }
 
@@ -2315,10 +2486,19 @@ int run_pet_sleep_check(void) {
             pet.last_advanced.epoch_seconds =
                 kf_epoch_from_civil(&at_drowsy_start);
             /* Below max so the bonus has visible room to land in without
-             * clamping at KF_PET_MILLIPERCENT_MAX either. */
-            pet.hunger_mp = 60000u;
-            pet.happiness_mp = 60000u;
-            pet.energy_mp = 60000u;
+             * clamping at KF_PET_MILLIPERCENT_MAX either -- but ABOVE
+             * kOvernightFloorWellTuckedInMinMp + kOvernightFloorBandSpanMp
+             * (pet.cpp, 70000 -- the single highest ceiling any overnight
+             * floor band (ADR 0053) can ever roll), so that new mechanism
+             * never engages here and cannot be confused with the bonus this
+             * check is actually proving: at 60000, the tucked-in pet's own
+             * well/tucked-in band (60000-70000) could roll ABOVE 60000 and
+             * add an extra, RANDOM bump on top of the bonus, which is
+             * exactly what broke this assertion the first time ADR 0053
+             * landed -- see that ADR's own account. */
+            pet.hunger_mp = 85000u;
+            pet.happiness_mp = 85000u;
+            pet.energy_mp = 85000u;
             return pet;
         };
 
@@ -2397,12 +2577,21 @@ int run_pet_sleep_check(void) {
         kf_host_storage_set_dir(dir.string().c_str());
         check(kf_store_init() == KF_OK, "kf_store_init");
 
+        /* Decay zeroed and starting needs held above 70000 -- ADR 0053's
+         * overnight floor bands can never engage, same reasoning and same
+         * exact numbers as check 8's make_pet_at_drowsy_start() above, so
+         * this stays a clean proof of the bonus alone surviving an offline
+         * round-trip, not entangled with the new floor mechanism (which
+         * gets its own dedicated offline cases in pet_offline_ageing_check,
+         * per ADR 0053). */
+        const kf_pet_config offline_zero_decay = zero_all_stage_rates(config);
+
         kf_pet_state pre_sleep{};
         kf_pet_init(&pre_sleep);
         pre_sleep.stage = KF_PET_STAGE_CHILD;
-        pre_sleep.hunger_mp = 60000u;
-        pre_sleep.happiness_mp = 60000u;
-        pre_sleep.energy_mp = 60000u;
+        pre_sleep.hunger_mp = 85000u;
+        pre_sleep.happiness_mp = 85000u;
+        pre_sleep.energy_mp = 85000u;
         pre_sleep.last_advanced.valid = true;
         const kf_civil tuck_in_time = {2026, 8, 12, 21, 55, 0};
         pre_sleep.last_advanced.epoch_seconds =
@@ -2426,7 +2615,8 @@ int run_pet_sleep_check(void) {
         kf_host_time_set_wall_fixed(kf_epoch_from_civil(&next_afternoon));
 
         kf_pet_state loaded_tucked_in{};
-        check(kf_pet_load_and_advance(&loaded_tucked_in, &config) == KF_OK,
+        check(kf_pet_load_and_advance(&loaded_tucked_in, &offline_zero_decay) ==
+                  KF_OK,
               "load_and_advance across the offline night, tucked-in pet");
         check(!loaded_tucked_in.tucked_in,
               "offline path: the tuck-in bonus paid out and cleared the "
@@ -2442,12 +2632,13 @@ int run_pet_sleep_check(void) {
               "saved the self-slept control at the identical instant");
 
         kf_pet_state loaded_control{};
-        check(kf_pet_load_and_advance(&loaded_control, &config) == KF_OK,
+        check(kf_pet_load_and_advance(&loaded_control, &offline_zero_decay) ==
+                  KF_OK,
               "load_and_advance across the offline night, self-slept "
               "control");
 
         check(loaded_tucked_in.hunger_mp ==
-                  loaded_control.hunger_mp + config.tuck_in_wake_bonus_mp,
+                  loaded_control.hunger_mp + offline_zero_decay.tuck_in_wake_bonus_mp,
               "OFFLINE PATH, LOAD-BEARING: found the next afternoon, the "
               "tucked-in pet is still ahead of the self-slept control by "
               "exactly tuck_in_wake_bonus_mp -- the bonus survived the "
@@ -2455,6 +2646,286 @@ int run_pet_sleep_check(void) {
 
         kf_store_shutdown();
         std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    /* 11. ADR 0053 (the 2026-08-11 overnight-floor extension): needs never
+     * reach zero overnight, the four bands land in their stated ranges,
+     * floors are rolled independently per need, the dirtiness cap engages,
+     * poop generation and its counter both pause while asleep with no
+     * dump on waking, existing poop keeps accelerating dirtiness only
+     * after waking, and two runs with the same seed agree exactly. */
+    {
+        /* A pet parked five minutes before bedtime (inside the drowsy
+         * window, so kf_pet_tuck_in() can act on it), with control over
+         * whether it starts the night "well" or "unwell". `decay_mp_per_hour`
+         * applied to all three needs identically -- large enough that,
+         * combined with the deliberately short 5-minute run-up to bedtime,
+         * the value AT BEDTIME stays "well" while the naive (unfloored)
+         * value well after bedtime has already clamped to 0, so whatever
+         * the segment's own end value is IS the rolled floor, exactly --
+         * not a value the floor merely nudged. */
+        auto make_pet_before_bedtime = [&](kf_pet_millipercent start_mp,
+                                            bool sick, bool tuck) {
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_CHILD;
+            pet.last_advanced.valid = true;
+            const kf_civil before_bed = {2026, 8, 12, 21, 55, 0};
+            pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&before_bed);
+            pet.hunger_mp = start_mp;
+            pet.happiness_mp = start_mp;
+            pet.energy_mp = start_mp;
+            pet.sick = sick;
+            if (tuck) {
+                kf_pet_tuck_in(&pet);
+            }
+            return pet;
+        };
+
+        kf_pet_config huge_decay = zero_all_stage_rates(config);
+        huge_decay.stage_rates[KF_PET_STAGE_CHILD] = {100000u, 100000u, 100000u};
+        huge_decay.poop_interval_seconds = 0u;
+        huge_decay.dirtiness_rise_mp_per_hour = 0u;
+        huge_decay.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        huge_decay.sickness_death_seconds = 0u;
+
+        kf_pet_config zero_decay_cfg = zero_all_stage_rates(config);
+        zero_decay_cfg.poop_interval_seconds = 0u;
+        zero_decay_cfg.dirtiness_rise_mp_per_hour = 0u;
+        zero_decay_cfg.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        zero_decay_cfg.sickness_death_seconds = 0u;
+
+        /* Landed at 02:00 -- well past bedtime, well before the 07:00
+         * wake, so the "still asleep at the end of this segment" branch
+         * applies and the floor clamps the segment's own final value
+         * directly, with no post-wake decay to muddy the reading. */
+        constexpr uint32_t kToDeepNightSeconds = 4u * 3600u + 5u * 60u; /* 21:55 -> 02:00 */
+
+        auto floor_band_trial = [&](bool sick, bool tuck, uint32_t seed,
+                                     kf_pet_millipercent start_mp,
+                                     const kf_pet_config &cfg) {
+            kf_rng_seed(seed);
+            kf_pet_state pet = make_pet_before_bedtime(start_mp, sick, tuck);
+            kf_pet_advance(&pet, &cfg, kToDeepNightSeconds);
+            return pet;
+        };
+
+        /* (a) The four bands land in their stated ranges -- Chris's own
+         * numbers: well+tucked 60-70%, well+not-tucked 50-60%, unwell+
+         * tucked 40-50%, unwell+not-tucked 20-30%. Several seeds per band,
+         * not one, so a band that happened to land in range by luck on a
+         * single draw is not mistaken for a band that is actually correct. */
+        struct Band {
+            const char *name;
+            bool sick;
+            bool tuck;
+            kf_pet_millipercent start_mp; /* "well" (25000+) or "unwell" (<25000) at bedtime */
+            const kf_pet_config *cfg;
+            kf_pet_millipercent band_min_mp;
+            kf_pet_millipercent band_max_mp;
+        };
+        const Band bands[] = {
+            {"well, tucked in", false, true, 90000u, &huge_decay, 60000u, 70000u},
+            {"well, not tucked in", false, false, 90000u, &huge_decay, 50000u, 60000u},
+            {"unwell (sick), tucked in", true, true, 90000u, &huge_decay, 40000u, 50000u},
+            {"unwell (low need), not tucked in", false, false, 5000u, &zero_decay_cfg, 20000u, 30000u},
+        };
+        for (const Band &b : bands) {
+            for (uint32_t seed = 1u; seed <= 5u; ++seed) {
+                const kf_pet_state pet =
+                    floor_band_trial(b.sick, b.tuck, seed * 777u, b.start_mp,
+                                      *b.cfg);
+                if (pet.hunger_mp < b.band_min_mp ||
+                    pet.hunger_mp > b.band_max_mp) {
+                    KF_LOGE(TAG,
+                            "FAILED: band '%s' seed %u: hunger_mp %u outside "
+                            "the stated [%u, %u] range",
+                            b.name, seed, pet.hunger_mp, b.band_min_mp,
+                            b.band_max_mp);
+                    ok = false;
+                }
+            }
+        }
+
+        /* (b) Per-need independence: across several seeds, at least one
+         * must show hunger/happiness/energy NOT all equal -- if the
+         * implementation rolled one value and copied it into all three
+         * (the bug this assertion exists to catch), every seed would show
+         * all three identical, always. */
+        bool saw_independent_floors = false;
+        for (uint32_t seed = 1u; seed <= 10u; ++seed) {
+            const kf_pet_state pet =
+                floor_band_trial(false, true, seed * 991u, 90000u, huge_decay);
+            if (!(pet.hunger_mp == pet.happiness_mp &&
+                  pet.happiness_mp == pet.energy_mp)) {
+                saw_independent_floors = true;
+                break;
+            }
+        }
+        check(saw_independent_floors,
+              "the three overnight floors are rolled independently -- at "
+              "least one trial shows hunger/happiness/energy NOT all equal");
+
+        /* (c) Never zero overnight, even from a near-zero, sick start --
+         * observed EXACTLY at the wake instant (remaining==0 past 07:00),
+         * the literal "by next morning wake up time" Chris's own words
+         * describe, not some arbitrary time after. */
+        {
+            kf_pet_state critical{};
+            kf_pet_init(&critical);
+            critical.stage = KF_PET_STAGE_CHILD;
+            critical.last_advanced.valid = true;
+            const kf_civil at_bedtime = {2026, 8, 12, 22, 0, 0};
+            critical.last_advanced.epoch_seconds =
+                kf_epoch_from_civil(&at_bedtime);
+            critical.hunger_mp = 0u;
+            critical.happiness_mp = 0u;
+            critical.energy_mp = 0u;
+            critical.sick = true;
+            constexpr uint32_t kWholeNightSeconds = 9u * 3600u; /* 22:00 -> 07:00 */
+            kf_rng_seed(42u);
+            kf_pet_advance(&critical, &huge_decay, kWholeNightSeconds);
+            check(critical.hunger_mp > 0u && critical.happiness_mp > 0u &&
+                      critical.energy_mp > 0u,
+                  "a pet that fell asleep at absolute zero, sick, wakes with "
+                  "every need strictly above zero -- never reaches absolute "
+                  "0 by morning, even from the worst possible start");
+        }
+
+        /* (d) The dirtiness cap engages, and mirrors the needs bands'
+         * shape: a well, tucked-in pet caps at the LOWEST ceiling. Poop
+         * disabled here (poop_interval_seconds == 0 in huge_decay) so only
+         * the base rate is in play -- isolates the cap from the per-poop
+         * rate question (e) below tests separately. */
+        {
+            kf_pet_config dirty_cfg = huge_decay;
+            dirty_cfg.dirtiness_rise_mp_per_hour = 200000u; /* rises far past every cap */
+
+            auto dirt_trial = [&](bool tuck, uint32_t seed) {
+                kf_rng_seed(seed);
+                kf_pet_state pet = make_pet_before_bedtime(90000u, false, tuck);
+                kf_pet_advance(&pet, &dirty_cfg, kToDeepNightSeconds);
+                return pet;
+            };
+            const kf_pet_state tucked_dirty = dirt_trial(true, 555u);
+            const kf_pet_state loose_dirty = dirt_trial(false, 556u);
+            check(tucked_dirty.dirtiness_mp == 25000u,
+                  "well, tucked-in: dirtiness caps at exactly its band value "
+                  "(25000mp) rather than running away overnight");
+            check(loose_dirty.dirtiness_mp == 40000u,
+                  "well, not tucked-in: dirtiness caps at its own, higher "
+                  "band value (40000mp)");
+            check(tucked_dirty.dirtiness_mp < loose_dirty.dirtiness_mp,
+                  "a well, tucked-in pet wakes LESS dirty than a well, "
+                  "not-tucked-in one, per Chris's own framing");
+        }
+
+        /* (e) No poop count increase across a whole night, and the timer
+         * does not dump a night's worth the instant it wakes: a fast
+         * 1-hour interval, half spent (1800s remaining) before bedtime,
+         * survives an entire 9-hour night completely unchanged, then
+         * resumes EXACTLY where it left off once awake. */
+        {
+            kf_pet_config poop_cfg = zero_all_stage_rates(config);
+            poop_cfg.poop_interval_seconds = 3600u;
+            poop_cfg.dirtiness_rise_mp_per_hour = 0u;
+            poop_cfg.dirtiness_rise_per_poop_mp_per_hour = 0u;
+            poop_cfg.sickness_death_seconds = 0u;
+
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_CHILD;
+            pet.last_advanced.valid = true;
+            const kf_civil at_bedtime = {2026, 8, 12, 22, 0, 0};
+            pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&at_bedtime);
+            pet.seconds_until_next_poop = 1800u; /* half an interval left */
+            pet.poop_count = 0u;
+
+            constexpr uint32_t kWholeNightSeconds = 9u * 3600u; /* -> 07:00 */
+            kf_rng_seed(9u);
+            kf_pet_advance(&pet, &poop_cfg, kWholeNightSeconds);
+            check(pet.poop_count == 0u,
+                  "no new poops appear across a whole night the pet spent "
+                  "entirely asleep");
+            check(pet.seconds_until_next_poop == 1800u,
+                  "seconds_until_next_poop is UNCHANGED after a whole night "
+                  "asleep -- the counter pauses rather than counting down");
+
+            /* Awake now (07:00). Exactly 1800 more AWAKE seconds should
+             * produce exactly ONE poop, not a pile-up of a night's worth. */
+            kf_pet_advance(&pet, &poop_cfg, 1800u);
+            check(pet.poop_count == 1u,
+                  "exactly one poop appears 1800 awake seconds after waking "
+                  "-- the paused interval resumed from where it left off, "
+                  "it did not reset or dump extra poops");
+        }
+
+        /* (f) Poop present at bedtime does not raise dirtiness DURING
+         * sleep (only the base rate applies, per-poop term dropped) but
+         * DOES resume accelerating it once awake. Compared against a
+         * poop-free control across the identical night, both starting from
+         * the identical dirtiness -- if the per-poop term were still active
+         * overnight, the messy pet would end the night dirtier than the
+         * control; it must not. */
+        {
+            kf_pet_config poop_dirt_cfg = zero_all_stage_rates(config);
+            poop_dirt_cfg.poop_interval_seconds = 0u; /* no NEW poops for this case */
+            poop_dirt_cfg.dirtiness_rise_mp_per_hour = 1000u;
+            poop_dirt_cfg.dirtiness_rise_per_poop_mp_per_hour = 20000u;
+            poop_dirt_cfg.sickness_death_seconds = 0u;
+
+            auto make_messy = [&](uint8_t poop_count) {
+                kf_pet_state pet{};
+                kf_pet_init(&pet);
+                pet.stage = KF_PET_STAGE_CHILD;
+                pet.last_advanced.valid = true;
+                const kf_civil at_bedtime = {2026, 8, 12, 22, 0, 0};
+                pet.last_advanced.epoch_seconds =
+                    kf_epoch_from_civil(&at_bedtime);
+                pet.poop_count = poop_count;
+                return pet;
+            };
+
+            kf_pet_state messy = make_messy(8u);   /* poop already waiting at bedtime */
+            kf_pet_state clean = make_messy(0u);   /* control, identical otherwise */
+
+            constexpr uint32_t kWholeNightSeconds = 9u * 3600u;
+            kf_pet_advance(&messy, &poop_dirt_cfg, kWholeNightSeconds);
+            kf_pet_advance(&clean, &poop_dirt_cfg, kWholeNightSeconds);
+            check(messy.dirtiness_mp == clean.dirtiness_mp,
+                  "existing poop does not accelerate dirtiness OVERNIGHT -- "
+                  "the messy and clean pets end the night equally dirty "
+                  "(base rate only, per-poop term dropped while asleep)");
+            check(messy.poop_count == 8u,
+                  "the poop present at bedtime is untouched by the night -- "
+                  "still there, not silently cleared");
+
+            /* Awake now (07:00). One more hour, still no NEW poops
+             * (interval stays 0 in this config) -- the messy pet must now
+             * dirty FASTER than the control, proving the per-poop term
+             * really did resume. */
+            kf_pet_advance(&messy, &poop_dirt_cfg, 3600u);
+            kf_pet_advance(&clean, &poop_dirt_cfg, 3600u);
+            check(messy.dirtiness_mp > clean.dirtiness_mp,
+                  "once awake, the messy pet dirties FASTER than the clean "
+                  "control -- the per-poop acceleration resumed the moment "
+                  "it woke, exactly as Chris described");
+        }
+
+        /* (g) Determinism: two advances from the identical starting state
+         * and the identical reseed produce byte-identical floors. This
+         * task's own required non-vacuity case. */
+        {
+            const kf_pet_state run_a =
+                floor_band_trial(false, true, 0xC0FFEEu, 90000u, huge_decay);
+            const kf_pet_state run_b =
+                floor_band_trial(false, true, 0xC0FFEEu, 90000u, huge_decay);
+            check(run_a.hunger_mp == run_b.hunger_mp &&
+                      run_a.happiness_mp == run_b.happiness_mp &&
+                      run_a.energy_mp == run_b.energy_mp,
+                  "the identical seed produces the identical overnight "
+                  "floors, byte for byte, across two separate runs");
+        }
     }
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");
@@ -5794,6 +6265,23 @@ int run_lua_pet_check() {
 
     check(kf_store_init() == KF_OK, "kf_store_init");
     check(kf_power_init() == KF_OK, "kf_power_init");
+
+    /* ADR 0053: pin the wall clock to a known DAYTIME start before the
+     * session ever reads it (kf_pet_session_init() calls kf_pet_load_and_
+     * advance(), which reads kf_time_wall() immediately) -- this test's
+     * roughly 12-hour cumulative simulated span (stages 1/4/5 below) used
+     * to be immune to what time of day it happened to run at, because
+     * nothing here cared about the wall clock's hour. The overnight-floor/
+     * poop-suppression mechanism now does: an unpinned host clock that
+     * happens to be inside the 22:00-07:00 night window when this test
+     * runs (the real bug this comment documents, not a hypothetical) makes
+     * stage 4 suppress every poop for as long as the session stays asleep,
+     * failing "the live session really did get messy" for a reason that
+     * has nothing to do with the mess mechanic itself. 07:30:00, comfortably
+     * after the night window closes, with the whole run finishing well
+     * before 22:00 that same day. */
+    kf_host_time_set_wall_fixed(1767225600 + 7 * 3600 + 30 * 60);
+    /* 2026-01-01T07:30:00Z */
 
     kf_arena_init_all();
     kf_pet_session_init();

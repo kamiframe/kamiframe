@@ -76,11 +76,14 @@ constexpr const char *TAG = "pet";
  * variations.md): `last_reaction` and `last_care_action` were added. And to
  * 9 with sleep (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
  * Task 6, ADR 0048): `asleep` was added. And to 10 with the 2026-08-11
- * bedtime-behaviour extension (ADR 0052): `tucked_in` was added.
+ * bedtime-behaviour extension (ADR 0052): `tucked_in` was added. And to 11
+ * with the 2026-08-11 overnight-floor extension (ADR 0053):
+ * `hunger_floor_mp`, `happiness_floor_mp`, `energy_floor_mp` and
+ * `dirtiness_cap_mp` were added.
  * kf_pet_deserialize() refuses to load anything written by a different
  * version rather than guessing at a layout that changed, see unpack()
  * below. */
-constexpr uint8_t kSaveVersion = 10;
+constexpr uint8_t kSaveVersion = 11;
 
 /* Sleep, per docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
  * "Sleep, settled". Night is a FIXED clock-time window, not config -- the
@@ -118,6 +121,120 @@ constexpr uint32_t kWakingFractionDenominator = 24u;
  * down this file, so it is a plain compile-time constant rather than a
  * kf_pet_config field, the same treatment the night window's own hours get. */
 constexpr uint32_t kDrowsyWindowSeconds = 10u * 60u;
+
+/* ADR 0053 (the 2026-08-11 overnight-floor extension): Chris, after testing
+ * sleep and tuck-in, ruled that a pet's needs decaying to zero -- and poop
+ * still piling up -- while it slept defeated the entire point of sleep
+ * existing. "The pet's needs can never drop to absolute 0 while it's
+ * asleep, not even when it's sick."
+ *
+ * Four bands, selected by two booleans (tucked in, unwell), each a random
+ * value drawn independently per need from a fixed-width range -- Chris's own
+ * words give the width for every band as the same 10 percentage points
+ * ("a range of 10% of 70%... anywhere between 60% and 70%"), so the width is
+ * ONE shared constant and each band supplies only its minimum.
+ *
+ * COMPILE-TIME CONSTANTS, NOT kf_pet_config, unlike most of this file's
+ * other "feel" numbers (care_boost_liked_mp, tuck_in_wake_bonus_mp, etc.) --
+ * a deliberate call, flagged here rather than silently made: these four
+ * bands are closer in kind to kNightStartHour/kDrowsyWindowSeconds just
+ * above (a fixed GLOBAL rule about what a night does) than to a per-pet care
+ * number a cartridge author tunes. If Chris wants per-pet tuning later, this
+ * is a small, mechanical move into kf_pet_config, not a redesign. */
+constexpr kf_pet_millipercent kOvernightFloorBandSpanMp = 10000u; /* 10% */
+constexpr kf_pet_millipercent kOvernightFloorWellTuckedInMinMp = 60000u;    /* 60-70% */
+constexpr kf_pet_millipercent kOvernightFloorWellNotTuckedInMinMp = 50000u; /* 50-60% */
+constexpr kf_pet_millipercent kOvernightFloorUnwellTuckedInMinMp = 40000u;  /* 40-50% */
+constexpr kf_pet_millipercent kOvernightFloorUnwellNotTuckedInMinMp = 20000u; /* 20-30% */
+
+/* "Unwell" is Chris's word, undefined by him beyond the two examples ("sick
+ * or not doing well") -- this is this task's own inference, a starting
+ * definition explicitly open to tuning, not a spec quote: sick, OR any of
+ * the three needs already below this threshold, AT THE MOMENT the creature
+ * falls asleep. 25% matches the same "starting to get hungry" neighbourhood
+ * kf/pet.h's KF_PET_WANT_*_ON_MP constants already use for an unrelated
+ * signal (the attention want) -- a separate named constant here rather than
+ * reusing theirs, because the two concepts (what the player is nagged
+ * about while awake, and what makes a night's sleep protection more
+ * generous) are free to diverge later even though they happen to agree on
+ * the day this was written. */
+constexpr kf_pet_millipercent kUnwellNeedThresholdMp = 25000u; /* 25% */
+
+/* The overnight dirtiness CAP -- ADR 0053's second, explicitly-flagged
+ * inference: Chris named hunger/happiness/energy, not dirtiness, but left
+ * alone a pet can wake filthy enough to be pushed toward sickness, directly
+ * undercutting the point of this whole change. Mirrors the needs bands'
+ * shape (same two booleans, well/tucked-in wakes least dirty) but a CEILING
+ * or a random RANGE: a fixed value per band was judged sufficient for one
+ * visible bar that only ever rises, where the three needs got a rolled
+ * range each. Numbers picked, not derived -- see the ADR. */
+constexpr kf_pet_millipercent kOvernightDirtinessCapWellTuckedInMp = 25000u;    /* 25% */
+constexpr kf_pet_millipercent kOvernightDirtinessCapWellNotTuckedInMp = 40000u; /* 40% */
+constexpr kf_pet_millipercent kOvernightDirtinessCapUnwellTuckedInMp = 45000u;  /* 45% */
+constexpr kf_pet_millipercent kOvernightDirtinessCapUnwellNotTuckedInMp = 60000u; /* 60% */
+
+/* One independent kf_rng_below() draw -- called three separate times, once
+ * per need, so hunger/happiness/energy each get their OWN random floor
+ * rather than one roll copied into all three. kf_rng_below(), not the
+ * entropy HAL directly, for the identical reason kf_pet_init()'s base_trait
+ * roll already gives (kf/rng.h): the game-visible, save/replay-deterministic
+ * RNG this codebase already uses everywhere else a pet observes randomness,
+ * so a pinned seed reproduces the exact same night twice. */
+kf_pet_millipercent roll_overnight_floor_mp(bool tucked_in, bool unwell) {
+    kf_pet_millipercent band_min;
+    if (unwell) {
+        band_min = tucked_in ? kOvernightFloorUnwellTuckedInMinMp
+                              : kOvernightFloorUnwellNotTuckedInMinMp;
+    } else {
+        band_min = tucked_in ? kOvernightFloorWellTuckedInMinMp
+                              : kOvernightFloorWellNotTuckedInMinMp;
+    }
+    return static_cast<kf_pet_millipercent>(
+        band_min + kf_rng_below(kOvernightFloorBandSpanMp + 1u));
+}
+
+/* Not randomised -- see kOvernightDirtinessCap*'s own comment above. */
+kf_pet_millipercent overnight_dirtiness_cap_mp(bool tucked_in, bool unwell) {
+    if (unwell) {
+        return tucked_in ? kOvernightDirtinessCapUnwellTuckedInMp
+                          : kOvernightDirtinessCapUnwellNotTuckedInMp;
+    }
+    return tucked_in ? kOvernightDirtinessCapWellTuckedInMp
+                      : kOvernightDirtinessCapWellNotTuckedInMp;
+}
+
+/* The next epoch, at or after `from`, whose civil time is exactly
+ * `hour`:00:00 -- shared, closed-form building block for both the bedtime
+ * and the wake crossing tests below (ADR 0053 generalises the "find the
+ * next kNightEndHour:00:00" closed-form test ADR 0052 already built for the
+ * tuck-in bonus to a second hour, kNightStartHour, rather than duplicating
+ * the civil-time arithmetic a second time). */
+int64_t next_epoch_at_hour(int64_t from, uint8_t hour) {
+    kf_civil c;
+    kf_civil_from_epoch(from, &c);
+    c.hour = hour;
+    c.minute = 0u;
+    c.second = 0u;
+    int64_t epoch = kf_epoch_from_civil(&c);
+    /* Strictly LESS than, not <=: if `from` itself already sits exactly on
+     * the target hour, that IS the crossing this call is asking about --
+     * ADR 0053's own overnight-floor roll needs this exact instant
+     * recognised (a segment that starts precisely at kNightStartHour:00:00
+     * with the creature still awake must roll its floor for THIS bedtime,
+     * not push a whole day out to the next one and silently skip it for
+     * the entire night in between). Every caller that reaches this
+     * boundary via genuine continuous simulation never actually lands
+     * exactly on it (the SEGMENT that reaches the boundary already updates
+     * `state->asleep` for that same instant, so the next segment's own
+     * start reads the already-updated flag rather than needing this
+     * function's help) -- this only matters for a state built by hand
+     * (a test, or a save edited/constructed directly) that starts already
+     * sitting exactly on the hour. */
+    if (epoch < from) {
+        epoch += 24 * 60 * 60;
+    }
+    return epoch;
+}
 
 kf_pet_millipercent clamp_add(kf_pet_millipercent value,
                                kf_pet_millipercent add) {
@@ -550,7 +667,32 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
     const uint64_t hunger_before_mp = state->hunger_mp;
     const uint64_t happiness_before_mp = state->happiness_mp;
     const uint64_t energy_before_mp = state->energy_mp;
+    const uint64_t dirtiness_before_mp = state->dirtiness_mp;
     const bool neglected_before = is_neglected(state, config);
+
+    /* ADR 0053: how many of this segment's seconds fall inside the night
+     * window, closed-form over the WHOLE [segment_start, segment_start +
+     * segment) span regardless of how many nights it spans -- the same
+     * kf_clock_seconds_in_daily_window() building block the neglect-pause
+     * above already relies on for the identical "correct for a fortnight,
+     * not just one night" property. Drives two things below: no NEW poops
+     * generate during asleep seconds (seconds_until_next_poop simply does
+     * not count them), and dirtiness rises at the reduced, no-per-poop-term
+     * rate for exactly those seconds. Zero without a clock, so both of
+     * those stay completely inert for it -- the same "inert without a
+     * clock" rule every sleep-derived computation in this function
+     * follows. */
+    uint32_t asleep_seconds_in_segment = 0u;
+    if (have_clock) {
+        const int64_t range_end =
+            segment_start_epoch + static_cast<int64_t>(segment);
+        const int64_t overlap = kf_clock_seconds_in_daily_window(
+            segment_start_epoch, range_end, kNightStartHour, kNightEndHour);
+        asleep_seconds_in_segment =
+            overlap > 0 ? static_cast<uint32_t>(overlap) : 0u;
+    }
+    const uint32_t awake_seconds_in_segment =
+        segment - asleep_seconds_in_segment;
 
     /* Where in this segment the needs run out, computed from the rates
      * actually applied below (sickness included) and from the values as
@@ -609,7 +751,21 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
      * cannot hang the way a "subtract the interval every iteration" loop
      * would: that case is handled directly below by simply not counting any
      * poops, not by a guard bolted on in front of a loop that could
-     * otherwise spin forever. */
+     * otherwise spin forever.
+     *
+     * ADR 0053: "the pet WILL NOT poop while it's asleep" -- and, just as
+     * important, waking must not dump a whole night's worth of suppressed
+     * interval at once. Both fall out of one substitution: every use of
+     * `segment` below becomes `awake_seconds_in_segment`, so the counter
+     * counts down (and the interval math resolves) as if the asleep seconds
+     * simply were never on the clock at all -- the identical "pause, do not
+     * reduce" treatment neglect_seconds already gets in the block below.
+     * Because a plain countdown only cares how many awake seconds elapsed,
+     * not WHEN within the segment they fell, this is exact, not an
+     * approximation, and it is correct for a segment spanning any number of
+     * nights, not just one -- unlike the tuck-in bonus and the overnight
+     * floor/cap below, which only resolve the FIRST night-crossing exactly
+     * (see this function's own "Sleep:" comment). */
     if (state->seconds_until_next_poop == 0u) {
         state->seconds_until_next_poop = config->poop_interval_seconds;
     }
@@ -618,8 +774,9 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
          * an infinite loop. kf_pet_default_config() never produces this,
          * but a corrupted or hand-built config must still degrade safely. */
         state->seconds_until_next_poop = 0u;
-    } else if (segment >= state->seconds_until_next_poop) {
-        const uint32_t after_first = segment - state->seconds_until_next_poop;
+    } else if (awake_seconds_in_segment >= state->seconds_until_next_poop) {
+        const uint32_t after_first =
+            awake_seconds_in_segment - state->seconds_until_next_poop;
         const uint64_t extra_poops =
             static_cast<uint64_t>(after_first) / config->poop_interval_seconds;
         const uint64_t total_poops = 1ull + extra_poops;
@@ -632,19 +789,38 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
             config->poop_interval_seconds -
             static_cast<uint32_t>(after_first % config->poop_interval_seconds);
     } else {
-        state->seconds_until_next_poop -= segment;
+        state->seconds_until_next_poop -= awake_seconds_in_segment;
     }
 
     /* Dirtiness rises with time, faster the more mess is waiting -- reads
      * state->poop_count AFTER the block above, so this segment's own new
      * poops (if any) already count towards this segment's dirtying.
-     * Saturates at full rather than wrapping. */
-    const uint64_t dirtiness_rise_per_hour =
+     * Saturates at full rather than wrapping.
+     *
+     * ADR 0053: "existing poop has no effect while asleep... it would just
+     * make dirtiness decay faster until cleaned up after it wakes." Two
+     * rates rather than one: the per-poop term is dropped for exactly the
+     * asleep seconds (weighted by kf_clock_seconds_in_daily_window()'s
+     * overlap, the same closed-form, any-number-of-nights technique the
+     * neglect pause below already uses -- a genuine rate reduction, correct
+     * regardless of how many nights this segment spans, unlike the
+     * set-point cap applied below it). The base rate (dirtiness_rise_mp_
+     * per_hour) is UNCHANGED while asleep -- only the per-poop multiplier is
+     * suppressed, so a pet with poop waiting at bedtime still dirties, just
+     * without the acceleration, exactly as Chris described. */
+    const uint64_t dirtiness_rise_per_hour_awake =
         static_cast<uint64_t>(config->dirtiness_rise_mp_per_hour) +
         (static_cast<uint64_t>(config->dirtiness_rise_per_poop_mp_per_hour) *
          state->poop_count);
+    const uint64_t dirtiness_rise_per_hour_asleep =
+        static_cast<uint64_t>(config->dirtiness_rise_mp_per_hour);
     const uint64_t dirtiness_rise =
-        (dirtiness_rise_per_hour * segment) / 3600u;
+        (dirtiness_rise_per_hour_awake *
+         static_cast<uint64_t>(awake_seconds_in_segment)) /
+            3600u +
+        (dirtiness_rise_per_hour_asleep *
+         static_cast<uint64_t>(asleep_seconds_in_segment)) /
+            3600u;
     if (dirtiness_rise >= KF_PET_MILLIPERCENT_MAX - state->dirtiness_mp) {
         state->dirtiness_mp = KF_PET_MILLIPERCENT_MAX;
     } else {
@@ -668,43 +844,208 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
     if (have_clock) {
         const int64_t now_epoch =
             segment_start_epoch + static_cast<int64_t>(segment);
+        const bool was_asleep_at_start = state->asleep;
         state->asleep = kf_clock_seconds_in_daily_window(
                              now_epoch, now_epoch + 1, kNightStartHour,
                              kNightEndHour) > 0;
 
+        /* ADR 0052/0053: two closed-form crossing tests, both built on the
+         * same next_epoch_at_hour() helper -- "did THIS segment contain the
+         * instant the night begins" and "...the instant it ends". Neither is
+         * "was state->asleep true before this call and false/true after":
+         * that before/after comparison only catches a transition landing
+         * exactly at a segment's own boundary, but kf_pet_advance()'s
+         * segments are bounded by STAGE transitions, not night-window
+         * crossings, so a single call can span an entire night start to
+         * finish -- exactly what a real offline fast-forward does (see this
+         * file's header comment, kf/pet.h's kf_pet_advance() comment, and
+         * ADR 0052's own account of the bug this caught for the tuck-in
+         * bonus). Both tests are correct for exactly the FIRST such crossing
+         * inside the segment; a segment spanning several nights at once (a
+         * pet away for a week) only resolves the first one precisely --
+         * documented, not hidden, in ADR 0053. */
+        const int64_t bedtime_epoch =
+            next_epoch_at_hour(segment_start_epoch, kNightStartHour);
+        const int64_t morning_epoch =
+            next_epoch_at_hour(segment_start_epoch, kNightEndHour);
+        const uint32_t seconds_to_bedtime =
+            static_cast<uint32_t>(bedtime_epoch - segment_start_epoch);
+        const uint32_t seconds_to_wake =
+            static_cast<uint32_t>(morning_epoch - segment_start_epoch);
+
+        const bool falls_asleep_this_segment =
+            !was_asleep_at_start && bedtime_epoch <= now_epoch;
+        const bool sleeping_this_segment =
+            was_asleep_at_start || falls_asleep_this_segment;
+        const bool wakes_this_segment =
+            sleeping_this_segment && morning_epoch <= now_epoch;
+
+        /* ADR 0053: roll fresh overnight floors/cap exactly once, at THIS
+         * segment's own bedtime crossing -- one independent kf_rng_below()
+         * draw per need (never one value copied into all three), judged
+         * from the needs AS OF THE BEDTIME INSTANT specifically (not the
+         * segment's start, which for an offline gap can be hours before
+         * bedtime, and not its end, which has already decayed past it). A
+         * creature already asleep at this segment's start
+         * (was_asleep_at_start) reuses whatever was rolled at ITS bedtime,
+         * in an earlier call -- these four fields are saved specifically so
+         * that reuse survives a reload (the device being switched off
+         * overnight is the whole case that matters). */
+        if (falls_asleep_this_segment) {
+            const kf_pet_millipercent hunger_at_bedtime = apply_decay(
+                static_cast<kf_pet_millipercent>(hunger_before_mp),
+                effective_rate[0], seconds_to_bedtime);
+            const kf_pet_millipercent happiness_at_bedtime = apply_decay(
+                static_cast<kf_pet_millipercent>(happiness_before_mp),
+                effective_rate[1], seconds_to_bedtime);
+            const kf_pet_millipercent energy_at_bedtime = apply_decay(
+                static_cast<kf_pet_millipercent>(energy_before_mp),
+                effective_rate[2], seconds_to_bedtime);
+            /* "Unwell": sick, or any need already below kUnwellNeedThresholdMp,
+             * AT BEDTIME -- see that constant's own comment for why this
+             * predicate's exact shape is this task's inference, not a spec
+             * quote. state->sick here is deliberately the value carried INTO
+             * this call: this segment's own neglect/sickness verdict is not
+             * decided until the block below, and bedtime already happened
+             * earlier in THIS same segment for an offline jump that starts
+             * the evening before and falls asleep partway through. */
+            const bool unwell = state->sick ||
+                                 hunger_at_bedtime < kUnwellNeedThresholdMp ||
+                                 happiness_at_bedtime < kUnwellNeedThresholdMp ||
+                                 energy_at_bedtime < kUnwellNeedThresholdMp;
+            const bool tucked = state->tucked_in;
+
+            state->hunger_floor_mp = roll_overnight_floor_mp(tucked, unwell);
+            state->happiness_floor_mp = roll_overnight_floor_mp(tucked, unwell);
+            state->energy_floor_mp = roll_overnight_floor_mp(tucked, unwell);
+            state->dirtiness_cap_mp = overnight_dirtiness_cap_mp(tucked, unwell);
+        }
+
+        if (sleeping_this_segment) {
+            if (wakes_this_segment) {
+                /* This segment carries the creature past kNightEndHour:00 --
+                 * compute what each need/dirtiness would be EXACTLY AT the
+                 * wake instant, apply the floor/cap there (a SET-POINT:
+                 * max(decayed, floor) for the needs, min(risen, cap) for
+                 * dirtiness -- see kf_pet_state::hunger_floor_mp's own
+                 * comment on why this is a set-point and not a pure floor),
+                 * then let ordinary, UNPROTECTED decay continue for whatever
+                 * of the segment remains after waking. Clamping the
+                 * segment's FINAL value instead (skipping this split) would
+                 * incorrectly protect hours of ordinary DAYTIME decay that
+                 * happened after the creature woke -- the identical reason
+                 * ADR 0052 could not use a before/after comparison for the
+                 * tuck-in bonus either. */
+                const uint32_t remaining = segment - seconds_to_wake;
+
+                const kf_pet_millipercent hunger_at_wake = apply_decay(
+                    static_cast<kf_pet_millipercent>(hunger_before_mp),
+                    effective_rate[0], seconds_to_wake);
+                const kf_pet_millipercent happiness_at_wake = apply_decay(
+                    static_cast<kf_pet_millipercent>(happiness_before_mp),
+                    effective_rate[1], seconds_to_wake);
+                const kf_pet_millipercent energy_at_wake = apply_decay(
+                    static_cast<kf_pet_millipercent>(energy_before_mp),
+                    effective_rate[2], seconds_to_wake);
+
+                const kf_pet_millipercent hunger_floored =
+                    hunger_at_wake > state->hunger_floor_mp
+                        ? hunger_at_wake
+                        : state->hunger_floor_mp;
+                const kf_pet_millipercent happiness_floored =
+                    happiness_at_wake > state->happiness_floor_mp
+                        ? happiness_at_wake
+                        : state->happiness_floor_mp;
+                const kf_pet_millipercent energy_floored =
+                    energy_at_wake > state->energy_floor_mp
+                        ? energy_at_wake
+                        : state->energy_floor_mp;
+
+                state->hunger_mp =
+                    apply_decay(hunger_floored, effective_rate[0], remaining);
+                state->happiness_mp = apply_decay(
+                    happiness_floored, effective_rate[1], remaining);
+                state->energy_mp =
+                    apply_decay(energy_floored, effective_rate[2], remaining);
+
+                /* Dirtiness at the wake instant needs its own two-rate split
+                 * over [segment_start, wake): the asleep portion of THAT
+                 * sub-range runs from bedtime (or the segment's own start,
+                 * if it began already asleep) up to wake. */
+                const uint32_t sub_asleep_seconds =
+                    falls_asleep_this_segment
+                        ? seconds_to_wake - seconds_to_bedtime
+                        : seconds_to_wake;
+                const uint32_t sub_awake_seconds =
+                    seconds_to_wake - sub_asleep_seconds;
+                const uint64_t dirtiness_rise_to_wake =
+                    (dirtiness_rise_per_hour_awake *
+                     static_cast<uint64_t>(sub_awake_seconds)) /
+                        3600u +
+                    (dirtiness_rise_per_hour_asleep *
+                     static_cast<uint64_t>(sub_asleep_seconds)) /
+                        3600u;
+                const kf_pet_millipercent dirtiness_at_wake = clamp_add(
+                    static_cast<kf_pet_millipercent>(dirtiness_before_mp),
+                    static_cast<kf_pet_millipercent>(dirtiness_rise_to_wake));
+                const kf_pet_millipercent dirtiness_capped_at_wake =
+                    dirtiness_at_wake < state->dirtiness_cap_mp
+                        ? dirtiness_at_wake
+                        : state->dirtiness_cap_mp;
+                /* Awake rate resumes for the remainder -- poop generation
+                 * and the per-poop dirtiness term are both back in play the
+                 * moment the creature wakes (state->poop_count already
+                 * reflects the whole segment's awake-only generation, see
+                 * the mess block above). */
+                const uint64_t dirtiness_rise_after_wake =
+                    (dirtiness_rise_per_hour_awake *
+                     static_cast<uint64_t>(remaining)) /
+                    3600u;
+                state->dirtiness_mp = clamp_add(
+                    dirtiness_capped_at_wake,
+                    static_cast<kf_pet_millipercent>(
+                        dirtiness_rise_after_wake));
+
+                /* Clear on waking (kf_pet_state::hunger_floor_mp's own
+                 * comment): 0 is never a real floor/cap, so this doubles as
+                 * "no floor currently active" without a separate flag. */
+                state->hunger_floor_mp = 0u;
+                state->happiness_floor_mp = 0u;
+                state->energy_floor_mp = 0u;
+                state->dirtiness_cap_mp = 0u;
+            } else {
+                /* Still asleep at the end of this segment: the naive
+                 * whole-segment decay/rise already computed above IS the
+                 * value as of "now" (this segment's own end, with no wake
+                 * instant inside it to split around) -- the floor/cap simply
+                 * clamps it in place. */
+                state->hunger_mp = state->hunger_mp > state->hunger_floor_mp
+                                        ? state->hunger_mp
+                                        : state->hunger_floor_mp;
+                state->happiness_mp =
+                    state->happiness_mp > state->happiness_floor_mp
+                        ? state->happiness_mp
+                        : state->happiness_floor_mp;
+                state->energy_mp = state->energy_mp > state->energy_floor_mp
+                                        ? state->energy_mp
+                                        : state->energy_floor_mp;
+                state->dirtiness_mp =
+                    state->dirtiness_mp < state->dirtiness_cap_mp
+                        ? state->dirtiness_mp
+                        : state->dirtiness_cap_mp;
+            }
+        }
+
         /* ADR 0052: pay the tuck-in bonus if THIS SEGMENT contains the
-         * asleep -> awake transition -- the instant each day's night window
-         * closes, civil time kNightEndHour:00:00.
-         *
-         * Deliberately NOT "was state->asleep true before this call and
-         * false after" -- that only catches a transition that happens to
-         * land exactly at a segment's own boundary, which is true of the
-         * hour-at-a-time segments run_pet_sleep_check's own case 1 uses,
-         * but NOT true in general: kf_pet_advance()'s segments are bounded
-         * by STAGE transitions, not by night-window crossings (see this
-         * file's header comment and kf/pet.h's own comment on kf_pet_
-         * advance()), so a single call can easily span an entire night
-         * start to finish -- exactly what a real offline fast-forward
-         * (kf_pet_load_and_advance(), "found the next afternoon") does. A
-         * segment like that starts awake and ends awake with a whole night
-         * in between; "was awake before, still awake after" would look
-         * identical to a segment that was never asleep at all, and the
-         * transition -- and the bonus -- would be silently missed. This was
-         * caught by trying it: an earlier version of this function used
-         * exactly that was-before/is-after comparison, and the offline test
-         * below (a single ~17-hour jump from evening to the next
-         * afternoon) failed to pay the bonus at all.
-         *
-         * The fix: find the NEXT kNightEndHour:00:00 at or after this
-         * segment's own start, and check whether it falls at or before this
-         * segment's own end -- a direct, closed-form "did a morning happen
-         * inside this segment" test, independent of what `state->asleep`
-         * happens to read at the very end. Correct for exactly one morning
-         * inside the segment (the common case) and for many (a long-away
-         * offline gap): only the FIRST one matters, since apply_tuck_in_
-         * bonus_if_due() clears `tucked_in` the moment it pays, so a second
-         * or third morning inside the same giant segment is simply a no-op
-         * by the time this is evaluated again next call.
+         * asleep -> awake transition -- reuses wakes_this_segment computed
+         * above rather than a second, separate epoch calculation. AFTER the
+         * floor/cap block above, deliberately: the bonus is an ADDITIONAL
+         * reward on top of whatever the floor already restored, not a
+         * replacement for it -- a tucked-in creature gets BOTH the more
+         * generous tucked-in floor band AND this bonus, which is exactly
+         * Chris's "needs less care in the morning if you tucked it in"
+         * stacking with the floor's own "never zero" guarantee for every
+         * creature regardless of tucked-in status.
          *
          * Deliberate direction, matching kf_pet_tuck_in()'s own promise:
          * ONLY the asleep -> awake edge pays, never awake -> asleep. A
@@ -713,16 +1054,7 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
          * function's own header comment for why a creature woken early
          * keeps its tucked_in flag until whichever night it actually sees
          * this transition, rather than being paid immediately. */
-        kf_civil next_morning_civil;
-        kf_civil_from_epoch(segment_start_epoch, &next_morning_civil);
-        next_morning_civil.hour = kNightEndHour;
-        next_morning_civil.minute = 0u;
-        next_morning_civil.second = 0u;
-        int64_t next_morning_epoch = kf_epoch_from_civil(&next_morning_civil);
-        if (next_morning_epoch <= segment_start_epoch) {
-            next_morning_epoch += 24 * 60 * 60;
-        }
-        if (next_morning_epoch <= now_epoch) {
+        if (wakes_this_segment) {
             apply_tuck_in_bonus_if_due(state, config);
         }
     }
@@ -945,6 +1277,10 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u8(out, off, state->last_care_action);
     put_u8(out, off, state->asleep ? 1u : 0u);
     put_u8(out, off, state->tucked_in ? 1u : 0u);
+    put_u32(out, off, state->hunger_floor_mp);
+    put_u32(out, off, state->happiness_floor_mp);
+    put_u32(out, off, state->energy_floor_mp);
+    put_u32(out, off, state->dirtiness_cap_mp);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -1031,6 +1367,10 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     state->last_care_action = last_care_action_byte;
     state->asleep = get_u8(in, off) != 0u;
     state->tucked_in = get_u8(in, off) != 0u;
+    state->hunger_floor_mp = get_u32(in, off);
+    state->happiness_floor_mp = get_u32(in, off);
+    state->energy_floor_mp = get_u32(in, off);
+    state->dirtiness_cap_mp = get_u32(in, off);
     return true;
 }
 
@@ -1195,6 +1535,10 @@ void kf_pet_init(kf_pet_state *state) {
     state->dead = false;
     state->asleep = false;
     state->tucked_in = false;
+    state->hunger_floor_mp = 0u;
+    state->happiness_floor_mp = 0u;
+    state->energy_floor_mp = 0u;
+    state->dirtiness_cap_mp = 0u;
     state->last_reaction = KF_PET_REACTION_NEUTRAL;
     state->last_care_action = KF_PET_CARE_FEED;
     state->last_advanced.valid = false;

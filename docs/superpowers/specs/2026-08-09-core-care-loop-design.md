@@ -445,6 +445,16 @@ creature sleeps, so nobody is punished for it sleeping. Hunger and the rest
 keep decaying normally, so you wake up to a creature that wants something.
 There is something to do in the morning, and it still cannot kill you overnight.
 
+> **2026-08-11 addendum (ADR 0053):** decay itself is still exactly as
+> described above — unchanged. What changed, after testing this on the
+> board, is that decay is no longer the only thing determining where a need
+> lands by morning: three independently-rolled overnight floors (one per
+> need, banded by tucked-in/unwell status) now clamp the wake-time value up
+> if plain decay would have taken it below the band, and poop generation
+> (not mentioned in this section at all) now pauses while asleep too. See
+> ADR 0053 for the full mechanism and the two decisions it flags as this
+> task's own inference rather than a spec quote.
+
 **Consequence, and Chris's answer to it.** Because nights do not accrue
 neglect, sickness and death arrive on roughly fifteen hours a day rather than
 twenty-four. Chris's decision: **compress it, so a waking day still costs a

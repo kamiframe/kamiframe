@@ -103,6 +103,28 @@ assertions inside `run_pet_sleep_check`/`clock_jump_check`/
 the mechanism and a real bug it caught in its own first draft (the offline
 transition detection).
 
+**Updated again, 2026-08-11, after further testing (ADR 0053) — overnight
+floors and poop suppression.** Everything above and below saying "the needs
+keep decaying" while asleep (this STATUS block's own Task 6 entry above, and
+Task 6's checkboxes further down: "`neglect_seconds` does not advance while
+asleep; the needs keep decaying" and the Hokorimaru reasoning that follows
+it) is still LITERALLY true — decay itself is unchanged — but it is no
+longer the WHOLE picture and a reader could previously infer more from it
+than is true: Chris ruled that needs reaching zero (and poop piling up)
+while asleep defeated the point of sleep existing. `kf_pet_state` gained
+three independently-rolled overnight floors (`hunger_floor_mp`,
+`happiness_floor_mp`, `energy_floor_mp`) and a dirtiness cap
+(`dirtiness_cap_mp`), all cleared on waking; poop generation and its
+countdown both pause while asleep (no dump on waking); existing poop's
+per-poop dirtiness acceleration also pauses, resuming on waking.
+`kSaveVersion` bumped again, 10→11 (`KF_PET_SAVE_BYTES` 93→109) — a
+version-10 save is refused, same policy as every bump before it. See ADR
+0053 for the full mechanism, the two decisions it flags for Chris (the
+floor is a SET-POINT not a pure floor; the dirtiness cap and the "unwell"
+threshold are both inferences, not spec quotes), and the two real bugs its
+own non-vacuity pass found (a shared-RNG-stream test collision, and a
+host-wall-clock-dependent test that happened to run at night).
+
 Written 2026-08-13 as NOT STARTED. Since then: Task 1 (`kf.screen()` groups,
 Info declared in Lua — `d3354cf`, `83c140e`), Task 2 (`KF_ENABLE_LVGL`
 default OFF, Info's LVGL screen deleted — `f3ddbc8`, `27a6649`), and further
@@ -1301,7 +1323,10 @@ fast-forward, which is the feature the whole product rests on.
       decaying.** Two different things, and the distinction is the point.
       **Landed** as an overlap subtraction against the existing neglected
       range, not a rewrite — see the STATUS block above and ADR 0048 section
-      5.
+      5. **STILL TRUE, but not the whole picture as of ADR 0053** (2026-08-11):
+      the needs still decay exactly like this describes, but they now also
+      have an overnight floor on top (a later, separate mechanism) — see
+      this file's own STATUS block addendum and ADR 0053.
 - [x] **The compression goes in the thresholds, not the accrual.** Cut
       `sickness_onset_seconds` and `sickness_death_seconds` by the waking
       fraction; do **not** scale the rate `neglect_seconds` climbs. The spec
