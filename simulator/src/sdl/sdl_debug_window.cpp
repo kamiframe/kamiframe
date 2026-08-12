@@ -119,12 +119,15 @@ enum class DebugAction {
      * in kf_pet_session.h before touching these. Moving only one of the two
      * produces a creature that looks broken and is not.
      *
-     * Deliberately NOT all aligned on the boundary. Drowsy lands exactly on
-     * 21:00:00 because that whole hour is the tuck-in window and there is
-     * nothing to watch cross. Bedtime and Morning land ten seconds SHORT of
-     * their transition, so falling asleep and waking are things you watch
-     * happen rather than things that already happened before the window
-     * redrew -- long enough to see, short enough not to be a wait. */
+     * Every target lands five seconds INSIDE the state it names, so a press
+     * changes the screen immediately. The times themselves live in
+     * kf_pet_session_debug_clock_target(), NOT here -- read its header
+     * comment before changing any of this. The first version of this row
+     * named the times locally and aimed ten seconds SHORT of each
+     * transition, meaning to make the change watchable; it instead made the
+     * buttons look broken, because the session only re-evaluates the pet
+     * every KF_PET_SESSION_FLUSH_SECONDS (30) of pet time and a ten-second
+     * lead is invisible against that. */
     kClockDrowsy,
     kClockBedtime,
     kClockMorning,
@@ -440,50 +443,24 @@ kf_pet_stage jump_stage_for(DebugAction action) {
     }
 }
 
-/* The next time today's clock reads hh:mm:ss, as an epoch second. If that
- * moment has already passed today, tomorrow's -- so "Bedtime" pressed at
- * 23:00 means tomorrow's 21:59:50, never a jump backwards. Backwards would
- * be worse than useless here: Core's night accounting is written against a
- * forward-moving clock, and kf_pet_advance() is not defined for negative
- * elapsed time.
- *
- * Uses kf/clock.h's civil conversions rather than libc's, for the reason
- * that header gives: there is NO timezone anywhere in this system, the
- * epoch IS local time, and localtime() would drag TZ and locale state into
- * a calculation that must not depend on either. */
-int64_t next_local_time_of_day(uint8_t hour, uint8_t minute, uint8_t second) {
-    const kf_wall_time now = kf_time_wall();
-    kf_civil civil;
-    kf_civil_from_epoch(now.epoch_seconds, &civil);
-    civil.hour = hour;
-    civil.minute = minute;
-    civil.second = second;
-
-    int64_t target = kf_epoch_from_civil(&civil);
-    if (target <= now.epoch_seconds) {
-        target += 24 * 60 * 60;
-    }
-    return target;
-}
-
 void perform(DebugAction action) {
     switch (action) {
+    /* All three go through kf_pet_session_debug_clock_target() rather than
+     * naming times here, so the headless clock_jump_check asserts against
+     * the times these buttons ACTUALLY jump to. The first version of this
+     * row did name them here, aimed ten seconds SHORT of each transition,
+     * and appeared to do nothing -- see that function's header comment. */
     case DebugAction::kClockDrowsy:
-        /* On the hour, not short of it: the whole 21:00 hour is the tuck-in
-         * window (creature.lua's kDrowsyHour), so there is no edge to
-         * watch cross -- landing inside it is the point. */
-        kf_pet_session_debug_set_clock(next_local_time_of_day(21u, 0u, 0u));
+        kf_pet_session_debug_set_clock(
+            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_DROWSY));
         break;
     case DebugAction::kClockBedtime:
-        /* Ten seconds before 22:00 (kNightStartHour, pet.cpp) so falling
-         * asleep is watched, not arrived-at. */
-        kf_pet_session_debug_set_clock(next_local_time_of_day(21u, 59u, 50u));
+        kf_pet_session_debug_set_clock(
+            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_BEDTIME));
         break;
     case DebugAction::kClockMorning:
-        /* Ten seconds before 07:00 (kNightEndHour, pet.cpp), the other end
-         * of the same window -- waking is the creature's own doing, so this
-         * is the only way to see it happen on demand. */
-        kf_pet_session_debug_set_clock(next_local_time_of_day(6u, 59u, 50u));
+        kf_pet_session_debug_set_clock(
+            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_MORNING));
         break;
     case DebugAction::kSkipHour:
         kf_pet_session_debug_advance(3600u);

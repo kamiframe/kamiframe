@@ -8330,18 +8330,26 @@ int run_clock_jump_check() {
               "clock jump: Core's clock tracks the HAL wall clock");
     }
 
-    /* 3. Ten seconds short of 22:00 -- what the Bedtime button does. Still
-     *    awake, because the window has not opened yet. This is the
-     *    non-vacuity guard for step 4: without it, an implementation that
-     *    slept at ANY jumped time would pass. */
+    /* 3. Ten seconds short of 22:00. Still awake, because the window has
+     *    not opened yet. Non-vacuity guard for step 4: without it, an
+     *    implementation that slept at ANY jumped time would pass. Note this
+     *    is a hand-picked time, NOT what the Bedtime button does -- see
+     *    step 4. */
     kf_pet_session_debug_set_clock(epoch_at(21, 59, 50));
     check(!kf_pet_session_state()->asleep,
           "clock jump: still awake ten seconds before 22:00");
 
-    /* 4. Inside the window: asleep. The actual thing Chris asked to see. */
-    kf_pet_session_debug_set_clock(epoch_at(22, 0, 30));
+    /* 4. THE BEDTIME BUTTON'S OWN TARGET, not a time this check chose.
+     *    That distinction is the whole reason kf_pet_session_debug_clock_
+     *    target() exists: the first version of this check asserted against
+     *    22:00:30 while the button jumped to 21:59:50, so every assertion
+     *    passed and the button still did nothing visible. Asserting against
+     *    the button's real target is what makes this check about the
+     *    button. */
+    kf_pet_session_debug_set_clock(
+        kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_BEDTIME));
     check(kf_pet_session_state()->asleep,
-          "clock jump: asleep just after 22:00");
+          "clock jump: the Bedtime button's own target lands asleep");
 
     /* 5. Deep night, and the far side of midnight -- the window wraps
      *    (kf_clock_seconds_in_daily_window's start_hour > end_hour case), so
@@ -8350,18 +8358,29 @@ int run_clock_jump_check() {
     kf_pet_session_debug_set_clock(epoch_at(3, 0, 0));
     check(kf_pet_session_state()->asleep, "clock jump: asleep at 03:00");
 
-    /* 6. Ten seconds short of 07:00 -- the Morning button. Still asleep. */
+    /* 6. Ten seconds short of 07:00: still asleep. The non-vacuity guard
+     *    for step 7, same shape as step 3. Hand-picked, not a button. */
     kf_pet_session_debug_set_clock(epoch_at(6, 59, 50));
     check(kf_pet_session_state()->asleep,
           "clock jump: still asleep ten seconds before 07:00");
 
-    /* 7. Past the end of the window: awake again, on the creature's own
-     *    doing (waking is never the player's -- ADR 0048). */
-    kf_pet_session_debug_set_clock(epoch_at(7, 0, 30));
+    /* 7. THE MORNING BUTTON'S OWN TARGET: awake again, on the creature's
+     *    own doing (waking is never the player's -- ADR 0048). */
+    kf_pet_session_debug_set_clock(
+        kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_MORNING));
     check(!kf_pet_session_state()->asleep,
-          "clock jump: awake just after 07:00");
+          "clock jump: the Morning button's own target lands awake");
 
-    /* 8. The jump does not age the creature. "Pretend it was always this
+    /* 8. THE DROWSY BUTTON'S OWN TARGET: awake (21:00 is the hour BEFORE
+     *    the night window -- the tuck-in cue, not sleep itself). A Drowsy
+     *    button that put the creature to sleep would be wrong in a way
+     *    nothing else here would notice. */
+    kf_pet_session_debug_set_clock(
+        kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_DROWSY));
+    check(!kf_pet_session_state()->asleep,
+          "clock jump: the Drowsy button's own target lands awake");
+
+    /* 9. The jump does not age the creature. "Pretend it was always this
      *    time", not "fast-forward through it" -- a Bedtime press that
      *    starved the pet on the way would make the thing under test
      *    unreadable. Needs should be within a hair of where they were. */

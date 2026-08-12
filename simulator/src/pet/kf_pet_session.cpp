@@ -4,6 +4,7 @@
 
 #include "kf_pet_session.h"
 
+#include "kf/clock.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
 
@@ -336,6 +337,44 @@ void kf_pet_session_debug_advance(uint32_t seconds) {
                         "kf_pet_session_init");
     kf_pet_advance(&g.state, &g.config, seconds);
     debug_snapshot_push();
+}
+
+int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point) {
+    /* Five seconds INSIDE each state, not short of it -- see this
+     * function's header comment in kf_pet_session.h for why aiming short
+     * produces a button that appears to do nothing. The hours themselves
+     * mirror kNightStartHour/kNightEndHour (hakoniwaos/src/pet.cpp) and
+     * creature.lua's kDrowsyHour; they are duplicated here rather than
+     * exported because Core deliberately keeps them private, and a debug
+     * affordance is not reason enough to widen that surface. If the night
+     * window ever moves, clock_jump_check fails loudly, which is the
+     * intended tripwire. */
+    int hour = 22;
+    switch (point) {
+    case KF_PET_DEBUG_CLOCK_DROWSY:
+        hour = 21;
+        break;
+    case KF_PET_DEBUG_CLOCK_MORNING:
+        hour = 7;
+        break;
+    case KF_PET_DEBUG_CLOCK_BEDTIME:
+    default:
+        hour = 22;
+        break;
+    }
+
+    const kf_wall_time now = kf_time_wall();
+    kf_civil civil;
+    kf_civil_from_epoch(now.epoch_seconds, &civil);
+    civil.hour = static_cast<uint8_t>(hour);
+    civil.minute = 0u;
+    civil.second = 5u;
+
+    int64_t target = kf_epoch_from_civil(&civil);
+    if (target <= now.epoch_seconds) {
+        target += 24 * 60 * 60;
+    }
+    return target;
 }
 
 void kf_pet_session_debug_set_clock(int64_t epoch_seconds) {

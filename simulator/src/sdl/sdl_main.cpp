@@ -238,6 +238,42 @@ int main(int argc, char *argv[]) {
          * stays real-time exactly the way LVGL's own tick and Lua's frame
          * delta already do (see this function's header comment on why the
          * multiplier applies only to the pet session). */
+        /* The wall clock is dragged along with the multiplier too, and this
+         * is NOT the same thing as the pet delta above.
+         *
+         * Core evaluates the 22:00-07:00 night window against
+         * kf_pet_state::last_advanced, which kf_pet_advance() carries
+         * forward by the MULTIPLIED delta on the line below. Lua's
+         * kf.hour() -- the Settings clock, the drowsy cue, the on-screen
+         * clock -- reads kf_time_wall() instead. Left alone, the wall clock
+         * ticks at 1x while Core's races at up to 256x, so within seconds
+         * the creature is asleep against a displayed clock that still says
+         * mid-afternoon. Chris hit exactly this on 2026-08-11 ("I was also
+         * using the time speed multiplier, which I guess doesn't
+         * necessarily affect the actual clock time that runs the sleep
+         * schedule?" -- correct, and it does now).
+         *
+         * This deliberately does NOT make the multiplier affect animation:
+         * kf_screen_nav_frame() and kf_lua_port_frame() below still get
+         * real time, and neither reads the wall clock for timing. Only what
+         * kf_time_wall() REPORTS changes.
+         *
+         * Whole seconds only, with the remainder carried -- kf_time_set_
+         * wall() takes seconds, so accumulating the sub-second part here is
+         * what stops 33ms frames at 2x from rounding away to nothing. */
+        if (multiplier > 1u) {
+            static uint64_t extra_ms_carry = 0u;
+            extra_ms_carry +=
+                static_cast<uint64_t>(real_dt_ms) * (multiplier - 1u);
+            const uint64_t whole_seconds = extra_ms_carry / 1000ull;
+            if (whole_seconds > 0u) {
+                extra_ms_carry -= whole_seconds * 1000ull;
+                const kf_wall_time wall = kf_time_wall();
+                kf_time_set_wall(wall.epoch_seconds +
+                                  static_cast<int64_t>(whole_seconds));
+            }
+        }
+
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_sdl_debug_window_frame();
         kf_screen_nav_frame(real_dt_ms);

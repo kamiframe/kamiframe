@@ -205,6 +205,41 @@ void kf_pet_session_shutdown(void);
  * header comment. Reachable on ESP32 via KFDBG ADVANCE (ADR 0030). */
 void kf_pet_session_debug_advance(uint32_t seconds);
 
+/* The three points in the sleep cycle the desktop debug window's
+ * Drowsy/Bedtime/Morning buttons jump to.
+ *
+ * DEFINED HERE, NOT IN THE DEBUG WINDOW, because the headless check has to
+ * assert against the times the buttons ACTUALLY use. The first version of
+ * these buttons got this wrong in a way worth recording: the buttons aimed
+ * ten seconds SHORT of each transition (21:59:50, 06:59:50) so the change
+ * could be watched happening, while clock_jump_check tested times ten
+ * seconds PAST them (22:00:30, 07:00:30). Every assertion passed and the
+ * buttons still did nothing visible, because the check was testing the
+ * function rather than the buttons. One definition, both callers. */
+typedef enum {
+    KF_PET_DEBUG_CLOCK_DROWSY = 0,  /* 21:00:05 -- inside the tuck-in hour */
+    KF_PET_DEBUG_CLOCK_BEDTIME,     /* 22:00:05 -- inside the night window */
+    KF_PET_DEBUG_CLOCK_MORNING,     /* 07:00:05 -- past the end of it */
+} kf_pet_debug_clock_point;
+
+/* The next epoch second at which the local clock reads `point`'s time of
+ * day. If that moment has already passed today, tomorrow's -- never a jump
+ * backwards, which Core's night accounting is not written for and
+ * kf_pet_advance() is not defined for.
+ *
+ * EVERY POINT LANDS INSIDE THE STATE IT NAMES, five seconds past the
+ * boundary rather than short of it, so pressing a button changes what is on
+ * screen immediately. Aiming short does not work here and the reason is not
+ * obvious: kf_pet_session_frame() only re-evaluates the pet every
+ * KF_PET_SESSION_FLUSH_SECONDS (30) of pet time, so a target ten seconds
+ * before a transition leaves up to thirty more seconds of apparently
+ * nothing happening -- which reads as a broken button. Landing inside the
+ * window instead means kf_pet_session_debug_set_clock()'s own one-second
+ * advance settles the new state on the press itself.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_CONTROLS. */
+int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point);
+
 /* Moves the WHOLE WORLD's clock to `epoch_seconds` without ageing the pet
  * by the distance travelled. Built for testing the night window (ADR 0048):
  * "jump to just before bedtime and watch it fall asleep" is otherwise a
