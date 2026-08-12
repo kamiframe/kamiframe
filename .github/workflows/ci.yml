@@ -51,6 +51,9 @@ jobs:
       - name: Core is heap-free
         run: python3 tools/check_no_heap.py .
 
+      - name: Core is float-free
+        run: python3 tools/check_no_float.py .
+
       # Stdlib-only (see that file's own header comment), so it runs on
       # every platform this workflow builds on -- unlike
       # tools/kf_panel_layout_check.py, which needs tkinter and a real
