@@ -867,6 +867,46 @@ void kf_sdl_debug_window_frame(void) {
     constexpr float kLineHeight = 18.0f;
     SDL_SetRenderDrawColor(g.renderer, 220, 220, 225, 255);
 
+    /* The wall clock, and how far it has drifted from the host's.
+     *
+     * Added 2026-08-12 because Chris reported "the sync clock button
+     * appears to be doing nothing" -- and it wasn't broken, it had nothing
+     * to show. kf_time_init() seeds the simulated clock from
+     * std::chrono::system_clock and kf_host_time_system_now() reads the
+     * same source, so on a freshly launched simulator a sync is a genuine
+     * no-op. Every OTHER control in the sleep row moves this clock, and
+     * until now this window displayed none of it: the only clock on screen
+     * was the small one in the pet window. A control whose effect is
+     * invisible is indistinguishable from a broken one, which is exactly
+     * how this got reported.
+     *
+     * The drift figure is the useful half -- it is what makes "Sync Clock
+     * did something" legible (it goes to +0s) and what shows at a glance
+     * how far a testing session has wandered. */
+    {
+        const kf_wall_time wall = kf_time_wall();
+        if (!wall.valid) {
+            std::snprintf(line, sizeof(line), "clock: never set");
+        } else {
+            kf_civil civil;
+            kf_civil_from_epoch(wall.epoch_seconds, &civil);
+            const long long drift =
+                static_cast<long long>(wall.epoch_seconds -
+                                        kf_host_time_system_now());
+            std::snprintf(line, sizeof(line),
+                          "clock: %04u-%02u-%02u %02u:%02u:%02u  (host %+lldm)",
+                          static_cast<unsigned>(civil.year),
+                          static_cast<unsigned>(civil.month),
+                          static_cast<unsigned>(civil.day),
+                          static_cast<unsigned>(civil.hour),
+                          static_cast<unsigned>(civil.minute),
+                          static_cast<unsigned>(civil.second),
+                          drift / 60);
+        }
+        SDL_RenderDebugText(g.renderer, 16, y, line);
+        y += kLineHeight;
+    }
+
     std::snprintf(line, sizeof(line), "age: %llus / %llus (drag the timeline)",
                   static_cast<unsigned long long>(current_age),
                   static_cast<unsigned long long>(axis_max));

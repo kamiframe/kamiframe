@@ -9699,6 +9699,50 @@ int run_clock_jump_check() {
               "merely move the clocks");
     }
 
+    /* 11. THE SYNC CLOCK BUTTON. Chris, 2026-08-12: "the sync clock button
+     *     appears to be doing nothing."
+     *
+     *     It was doing exactly the right thing, and the reason it looked
+     *     dead is worth pinning down in a test rather than a comment
+     *     somebody has to find: kf_time_init() seeds the simulated clock
+     *     from std::chrono::system_clock, and kf_host_time_system_now()
+     *     reads THE SAME SOURCE. So on a freshly launched simulator the two
+     *     are already identical and a sync is a genuine no-op. It only has
+     *     visible work to do once something has moved the clock away --
+     *     which is exactly what this case sets up before syncing.
+     *
+     *     Asserted against kf_host_time_system_now() rather than a literal,
+     *     because the whole point of the button is "whatever the host says
+     *     right now", and a pinned constant would test a different feature. */
+    {
+        kf_pet_session_debug_set_clock(
+            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_BEDTIME));
+        const int64_t host_now = kf_host_time_system_now();
+        const int64_t before = kf_time_wall().epoch_seconds;
+
+        /* The setup has to actually displace the clock, or everything below
+         * passes by accident on a simulator that never drifted. An hour is
+         * far beyond any plausible test-runtime skew. */
+        check(before < host_now - 3600 || before > host_now + 3600,
+              "sync: LOAD-BEARING SETUP -- a bedtime jump really did move "
+              "the clock away from host time, so the sync below has work "
+              "to do");
+
+        kf_pet_session_debug_set_clock(kf_host_time_system_now());
+
+        const int64_t after = kf_time_wall().epoch_seconds;
+        const int64_t skew = after - kf_host_time_system_now();
+        check(skew >= -2 && skew <= 2,
+              "sync: the wall clock lands on host time, within seconds");
+
+        const int64_t core_skew =
+            kf_pet_session_state()->last_advanced.epoch_seconds -
+            kf_time_wall().epoch_seconds;
+        check(core_skew >= -2 && core_skew <= 2,
+              "sync: Core's last_advanced came with it -- syncing one clock "
+              "and not the other is the bug this whole family keeps having");
+    }
+
     kf_pet_session_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
 
