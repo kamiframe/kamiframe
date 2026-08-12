@@ -757,6 +757,13 @@ if tk is not None:
         ("Morning", "MORNING"),
     ]
 
+    # "Sync Clock" is deliberately NOT in the list above. The three named
+    # points send a wire WORD and let the device decide the time; this one
+    # sends an EPOCH computed on this machine, because the whole point is
+    # to hand the board THIS computer's clock. Same button, same row, two
+    # genuinely different wire forms -- see _on_clock_sync_click().
+    CLOCK_SYNC_LABEL = "Sync Clock"
+
 
     class PanelApp:
         def __init__(self, root, target, baud, state_interval, verbose):
@@ -1156,6 +1163,19 @@ if tk is not None:
                 btn.pack(side="left", padx=(0, 6))
                 self.time_control_buttons.append(btn)
 
+            # The way back from all of the above. Every other control in
+            # this row (and Skip/multiplier above it) drags the board's
+            # clock away from real time on purpose, and it does not drift
+            # back -- KFDBG CLOCK writes through to the DS3231, and a
+            # BEDTIME press whose target has already passed jumps a whole
+            # day FORWARD rather than backwards. A test session can leave
+            # the board days out. This puts it back, date included.
+            sync_btn = ttk.Button(
+                clock_row, text=CLOCK_SYNC_LABEL,
+                command=self._on_clock_sync_click)
+            sync_btn.pack(side="left", padx=(0, 6))
+            self.time_control_buttons.append(sync_btn)
+
             # The label gets its own line, and the nine multiplier buttons
             # split across two rows rather than one -- nine buttons plus a
             # label on one row doesn't fit at the window's minimum width
@@ -1327,6 +1347,27 @@ if tk is not None:
                 self.status_var.set("Not connected -- command ignored.")
                 return
             self.cmd_queue.put({"type": "clock", "target": target, "label": label})
+
+        def _on_clock_sync_click(self):
+            """Hand the device THIS machine's current time.
+
+            Computes the epoch here rather than sending a wire word,
+            because "now" is a fact only this computer knows -- the board
+            is precisely the thing whose clock is not to be trusted. Goes
+            out as the same CLOCK verb, just with an epoch argument, which
+            device-side lands in kf_pet_session_debug_set_clock() and so
+            moves the DS3231, the RAM clock and Core's last_advanced
+            together. Sets the DATE as well as the time, which none of the
+            three named points do."""
+            if not self.connected:
+                self.status_var.set("Not connected -- command ignored.")
+                return
+            now = int(time.time())
+            self.cmd_queue.put({
+                "type": "clock",
+                "target": str(now),
+                "label": "%s (%s)" % (CLOCK_SYNC_LABEL, now),
+            })
 
         def _request_state_refresh(self):
             """Ask for one state poll right away rather than waiting for

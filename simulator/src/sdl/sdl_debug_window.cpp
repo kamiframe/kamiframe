@@ -6,6 +6,7 @@
 
 #include "sdl_shared.h"
 
+#include "../host/host_time.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
 
@@ -131,6 +132,17 @@ enum class DebugAction {
     kClockDrowsy,
     kClockBedtime,
     kClockMorning,
+
+    /* Put every clock back to the HOST MACHINE's real time (Chris,
+     * 2026-08-12: "a button to reset/sync the hardware clock and in game
+     * software clock back to my computer's current time"). The three
+     * buttons above, the skip buttons and the speed multiplier all drag the
+     * simulated clock away from reality on purpose -- and a testing session
+     * drifts it a long way, since each Bedtime press that lands on an
+     * already-passed target jumps a whole day forward rather than
+     * backwards. This is the way back, and it sets the DATE as well as the
+     * time, which nothing else on this window does. */
+    kClockSyncHost,
 };
 
 struct DebugButton {
@@ -225,6 +237,7 @@ constexpr DebugButton kButtons[] = {
     {{16, 336, 84, 32}, "Drowsy", DebugAction::kClockDrowsy},
     {{108, 336, 84, 32}, "Bedtime", DebugAction::kClockBedtime},
     {{200, 336, 84, 32}, "Morning", DebugAction::kClockMorning},
+    {{292, 336, 92, 32}, "Sync Clock", DebugAction::kClockSyncHost},
 };
 
 /* Duplicated from sdl_main.cpp's identical helper and kf_pet_screen.cpp's
@@ -461,6 +474,15 @@ void perform(DebugAction action) {
     case DebugAction::kClockMorning:
         kf_pet_session_debug_set_clock(
             kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_MORNING));
+        break;
+    case DebugAction::kClockSyncHost:
+        /* kf_host_time_system_now(), NOT kf_time_wall() -- the latter
+         * reports the simulated clock this button exists to correct, so
+         * using it would make the button a no-op that looks like it worked.
+         * Goes through _debug_set_clock() like the three above, so Core's
+         * last_advanced is dragged along with the HAL clock rather than
+         * left a day behind. */
+        kf_pet_session_debug_set_clock(kf_host_time_system_now());
         break;
     case DebugAction::kSkipHour:
         kf_pet_session_debug_advance(3600u);

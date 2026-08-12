@@ -43,4 +43,19 @@ void kf_host_time_set_wall_fixed(int64_t epoch_seconds);
  * need a valid clock again afterwards call kf_host_time_set_wall_fixed(). */
 void kf_host_time_set_wall_unset(void);
 
+/* The HOST MACHINE's real clock, in epoch seconds -- deliberately bypassing
+ * every simulated offset this backend maintains.
+ *
+ * kf_time_wall() cannot answer this. Its whole job is to report the
+ * SIMULATED clock, which by design drifts away from the real one as soon as
+ * anything jumps it (the debug window's Drowsy/Bedtime/Morning, the skip
+ * buttons, the speed multiplier). That drift is the feature; this function
+ * is the escape hatch back to reality, for the debug window's "Sync Clock"
+ * button -- Chris, 2026-08-12: "a button to reset/sync the hardware clock
+ * and in game software clock back to my computer's current time".
+ *
+ * Reads the system clock every call rather than caching a boot value, since
+ * the point is what time it is NOW, not what time this process started. */
+int64_t kf_host_time_system_now(void);
+
 #endif /* KF_HOST_TIME_H */

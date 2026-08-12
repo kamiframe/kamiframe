@@ -103,3 +103,11 @@ void kf_host_time_set_wall_fixed(int64_t epoch_seconds) {
 }
 
 void kf_host_time_set_wall_unset(void) { g_wall_valid = false; }
+
+int64_t kf_host_time_system_now(void) {
+    /* std::chrono::system_clock, not this file's own g_wall_* state -- see
+     * the header comment. Every other reader in this backend deliberately
+     * goes through the simulated clock; this one deliberately does not. */
+    const auto sys = std::chrono::system_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::seconds>(sys).count();
+}
