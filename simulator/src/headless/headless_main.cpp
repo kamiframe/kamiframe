@@ -89,6 +89,7 @@
 #include "headless_probe.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -6988,6 +6989,40 @@ uint64_t fnv1a_step(uint64_t running, const kf_color *framebuffer) {
     return running;
 }
 
+/* Owner follow-up after Task 8 (2026-08-11): creature.lua now draws a small
+ * always-on clock at (2,2)-(50,10), Home's upper-left corner, that
+ * kf_creature_screen.cpp (the frozen cpp reference, ADR 0043's "parity
+ * reference/fallback, not an actively maintained second implementation")
+ * has no notion of at all -- the identical situation this file's own
+ * apply_screen_parity_event() comment already documents for the attention
+ * signal and ADR 0049's futon, except the clock paints on EVERY frame
+ * rather than starting at some later one, so leaving it in the hash would
+ * make the two screens diverge at frame 0 and this check could never again
+ * catch a real divergence anywhere else on the screen. Masked out of both
+ * halves' hash instead, so the rest of the screen keeps exactly the byte-
+ * parity guarantee it had before the clock existed, and the frame-150
+ * attention-signal divergence point below is unaffected. Operates on a
+ * scratch copy, never the live framebuffer scene.cpp is diffing against. */
+constexpr int16_t kScreenParityClockMaskX0 = 2;
+constexpr int16_t kScreenParityClockMaskY0 = 2;
+constexpr int16_t kScreenParityClockMaskX1 = 50; /* 8 chars * 6px, exclusive */
+constexpr int16_t kScreenParityClockMaskY1 = 10; /* KF_FONT_CELL_H, exclusive */
+
+uint64_t fnv1a_step_masking_clock(uint64_t running,
+                                   const kf_color *framebuffer,
+                                   kf_color *scratch) {
+    std::memcpy(scratch, framebuffer, KF_FRAMEBUFFER_BYTES);
+    for (int16_t y = kScreenParityClockMaskY0; y < kScreenParityClockMaskY1;
+         ++y) {
+        for (int16_t x = kScreenParityClockMaskX0; x < kScreenParityClockMaskX1;
+             ++x) {
+            scratch[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                    static_cast<size_t>(x)] = KF_BLACK;
+        }
+    }
+    return fnv1a_step(running, scratch);
+}
+
 /* One shared timeline both screen implementations are driven through,
  * identically -- see this function's own comment above for what each
  * phase exercises. Called once per frame, BEFORE that frame's screen
@@ -7122,6 +7157,9 @@ std::vector<uint64_t> run_screen_parity_timeline(bool use_lua, bool *ok) {
     }
 
     uint64_t rolling = 1469598103934665603ull; /* FNV-1a 64 offset basis */
+    std::vector<kf_color> clock_mask_scratch(
+        static_cast<size_t>(KF_DISPLAY_WIDTH) *
+        static_cast<size_t>(KF_DISPLAY_HEIGHT));
     for (long i = 0; i < kScreenParityFrameCount; ++i) {
         apply_screen_parity_event(i, kf_pet_session_state());
         if (use_lua) {
@@ -7129,7 +7167,8 @@ std::vector<uint64_t> run_screen_parity_timeline(bool use_lua, bool *ok) {
         } else {
             kf_creature_screen_frame(kScreenParityFrameDtMs);
         }
-        rolling = fnv1a_step(rolling, kf_fb_pixels());
+        rolling = fnv1a_step_masking_clock(rolling, kf_fb_pixels(),
+                                            clock_mask_scratch.data());
         hashes.push_back(rolling);
     }
 
@@ -7434,7 +7473,7 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 46; /* +1: Task 8's want_bang */
+constexpr int kSettingsCheckExpectedObjectCount = 47; /* +1: the Home clock */
 
 /* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -7967,7 +8006,19 @@ end
      * through kf_screen_nav_frame()/kf_lua_port_frame(0) exactly the way
      * the real main loop does (screen_isolation_check's own drive_frame()
      * pattern) -- so every assertion below is exercising the actual demo
-     * script third-party developers will read, not a synthetic fixture. ---- */
+     * script third-party developers will read, not a synthetic fixture.
+     *
+     * Mounts the real creature demo pack (KF_CREATURE_DEMO_PACK_PATH),
+     * unlike this check's own original C1-C8 above (written before the
+     * real futon art landed, against the placeholder-box fallback -- see
+     * ADR 0049's "Not verified"). Section D below needs actual per-frame
+     * art: it tells the 7 futon designs apart by their own pixels, which
+     * a fixed-colour placeholder cannot do (every "frame" of a missing
+     * sprite draws identically). C1-C8's own assertions only ever checked
+     * "differs from background" / "equals background", never a specific
+     * colour, so they stay valid unchanged now that real art is mounted. ---- */
+    kf_host_assets_set_pack_path(KF_CREATURE_DEMO_PACK_PATH);
+    check(kf_assets_init() == KF_OK, "the creature demo pack mounts");
     kf_fb_init();
     kf_pet_session_init();
     kf_screen_nav_init();
@@ -8232,10 +8283,209 @@ end
           "vacated, which only happens if tucked_in actually reset and "
           "the futon moved to a fresh spot");
 
+    /* C8 above leaves the creature RE-tucked in (tucked_in == true,
+     * pet2->asleep left false, per that check's own final B press).
+     * Section D needs a genuinely clean starting state -- not "still
+     * decoratively tucked in from the previous section" -- so drive one
+     * more real sleep/wake cycle first and let creature.lua's own
+     * `was_asleep and not asleep` edge clear tucked_in, exactly the
+     * mechanism C8 itself already proved works. Skipping this step was
+     * caught directly: without it, D1's "fresh night" sample silently
+     * read C8's stale, already-fixed bed position instead of a real new
+     * transition, since bed_shown was already true (from the leftover
+     * tucked_in) before D1 ever touched pet2->asleep. */
+    pet2->asleep = true;
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    pet2->asleep = false;
+    for (int i = 0; i < 20; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+
+    /* ---- D: owner follow-up after this task landed (Chris, 2026-08-11,
+     * after testing on the board): "the futon art doesn't show when its
+     * asleep, just the zzz." The futon is now the sleep visual whenever
+     * pet.asleep() is true, not only after a tuck-in (creature.lua's
+     * `bed_shown = tucked_in or asleep`), and each night rotates through
+     * the pack's 7 alternative futon designs with a counter, not
+     * math.random() -- see this check's own D3 assertion below for why
+     * that is provable at all, and the report on this change for why it
+     * is a deliberate choice, not a sandbox limitation (`math` IS
+     * available to creature.lua). C1-C8 above are unchanged and still
+     * cover the tuck-in path; this section covers what is actually new:
+     * sleep with no tuck-in, and the rotation itself. ---- */
+
+    /* A small interior sample grid, well clear of the sprite's own
+     * transparent margin (tools/character_manifest.toml's [stages.futon]:
+     * "generous transparent margin", 912 of 2304 pixels fully transparent)
+     * -- comparing only opaque, design-bearing pixels means this does not
+     * need to control for whatever else Home happens to have painted
+     * underneath the sprite's transparent edges at two different bed
+     * positions on two different nights. */
+    constexpr int16_t kFutonSampleOffsets[5] = {12, 18, 24, 30, 36};
+    auto futon_signature = [&](int16_t bx, int16_t by) {
+        std::array<kf_color, 25> sig{};
+        size_t k = 0;
+        for (int16_t dy : kFutonSampleOffsets) {
+            for (int16_t dx : kFutonSampleOffsets) {
+                sig[k++] = pixel_at(static_cast<int16_t>(bx + dx),
+                                     static_cast<int16_t>(by + dy));
+            }
+        }
+        return sig;
+    };
+
+    pet2->poop_count = 0u; /* keep the sample grid clear of the poop band */
+
+    /* D1: falling asleep with NO tuck-in still shows the futon (not the
+     * creature's own body) at the position it fell asleep at -- the exact
+     * gap the owner reported. Reuses C5's "something shows, not home_bg"
+     * technique, against a fresh night nobody tucked in for. */
+    for (int i = 0; i < 30; ++i) {
+        drive_frame(kFixedDtMs); /* wander clear of section C's own state */
+    }
+    std::array<int16_t, 8> night_bed_x{};
+    std::array<int16_t, 8> night_bed_y{};
+    std::array<std::array<kf_color, 25>, 8> night_sig{};
+    pet2->asleep = true;
+    drive_frame(kFixedDtMs); /* the fall-asleep transition frame itself */
+    night_bed_x[0] = kf_creature_presenter_x();
+    night_bed_y[0] = kf_creature_presenter_y();
+    night_sig[0] = futon_signature(night_bed_x[0], night_bed_y[0]);
+    check(pixel_at(static_cast<int16_t>(night_bed_x[0] + 24),
+                    static_cast<int16_t>(night_bed_y[0] + 24)) != home_bg,
+          "no tuck-in: falling asleep on its own still shows something "
+          "(the futon) at the position it fell asleep at, not a blank "
+          "background where the creature's own body used to be drawn");
+
+    /* D1b: and what shows there is specifically the futon, not the
+     * creature's own resolved sleeping sprite -- caught directly while
+     * writing this check: "not background" alone (D1a above) is exactly
+     * the vacuous-check trap ADR 0049 already caught once for a similar
+     * pixel assertion -- a body drawn in its own *_sleeping_* pose is
+     * ALSO non-background, and D1a stayed green with `bed_shown` reduced
+     * to `tucked_in or false` (dropping the natural-asleep case
+     * entirely). Closed by rendering the creature's own resolved sleeping
+     * sprite as a direct reference, at whichever field corner is farther
+     * from the live bed position (never the same corner, so the
+     * reference can never accidentally overlap what it is being compared
+     * against), and requiring the live sample NOT match it. */
+    {
+        auto boxes_overlap = [](int16_t ax, int16_t ay, int16_t bx,
+                                 int16_t by) {
+            return ax < bx + 48 && ax + 48 > bx && ay < by + 48 &&
+                   ay + 48 > by;
+        };
+        int16_t ref_x = 192, ref_y = 0; /* top-right field corner */
+        if (boxes_overlap(night_bed_x[0], night_bed_y[0], ref_x, ref_y)) {
+            ref_x = 0;
+            ref_y = 212; /* bottom-left field corner, the diagonal one */
+        }
+        const kf_scene_id body_ref_id =
+            kf_scene_add_sprite(kf_creature_presenter_sprite_name());
+        kf_scene_set_pos(body_ref_id, ref_x, ref_y);
+        kf_scene_commit();
+        const auto body_ref_sig = futon_signature(ref_x, ref_y);
+        kf_scene_remove(body_ref_id);
+        kf_scene_commit();
+        check(body_ref_sig != night_sig[0],
+              "no tuck-in: what's shown at the bed position is NOT the "
+              "creature's own resolved sleeping sprite -- confirming it "
+              "is genuinely the futon, not merely something non-"
+              "background that happens not to be the futon either");
+    }
+
+    /* D2: that design does not change frame to frame within the same
+     * night -- sampled a few frames later, still the same sleep. */
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs);
+    }
+    check(futon_signature(night_bed_x[0], night_bed_y[0]) == night_sig[0],
+          "the same night's futon design does not change frame to frame");
+
+    /* D3: seven more asleep/awake cycles -- eight nights total, enough to
+     * observe the full rotation AND its wraparound. Proves "counter % 7",
+     * not merely "different from last time": a real math.random() pick
+     * would also usually differ night to night, but would not reliably
+     * repeat EXACTLY at night 8 the way a modulo rotation guarantees. */
+    for (size_t night = 1; night < night_sig.size(); ++night) {
+        pet2->asleep = false;
+        for (int i = 0; i < 20; ++i) {
+            drive_frame(kFixedDtMs); /* wander clear before re-sleeping */
+        }
+        pet2->asleep = true;
+        drive_frame(kFixedDtMs);
+        night_bed_x[night] = kf_creature_presenter_x();
+        night_bed_y[night] = kf_creature_presenter_y();
+        night_sig[night] = futon_signature(night_bed_x[night], night_bed_y[night]);
+    }
+    bool any_two_consecutive_nights_equal = false;
+    for (size_t night = 1; night < night_sig.size(); ++night) {
+        if (night_sig[night] == night_sig[night - 1]) {
+            any_two_consecutive_nights_equal = true;
+        }
+    }
+    check(!any_two_consecutive_nights_equal,
+          "consecutive nights use different futon designs");
+    check(night_sig[7] == night_sig[0],
+          "the 8th night's design is pixel-identical to the 1st -- exactly "
+          "the repeat a `counter % 7` rotation guarantees after seven "
+          "steps, and a genuine PRNG would not reliably reproduce");
+
+    /* D4: the worst-case dirty-rect count the task's own brief asks to be
+     * measured, specifically -- "with the clock ticking and the pet
+     * asleep". C2b/C7 above already measured the asleep/tucked-in cases,
+     * but with a PINNED wall clock (kf_host_time_set_wall_fixed() does
+     * not advance on its own), so the clock text never actually changed
+     * during either of those loops -- this is genuinely a third shape:
+     * three independently-moving things (clock text, ZZZ blink, futon
+     * wiggle) instead of two, which is exactly why the task asked for it
+     * by name rather than assuming C7's own figure still covers it. The
+     * wall clock is advanced by a whole minute every 30 frames (roughly
+     * once a simulated second), far more often than a real device's clock
+     * would tick, specifically to raise the odds of catching a frame
+     * where the clock change coincides with a wiggle step or a ZZZ blink
+     * edge -- the actual worst case, not just a likely one. */
+    {
+        pet2->asleep = true;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs); /* absorb the transition's own dirty */
+        }
+        int64_t clock_epoch = 1767268800; /* 2026-01-01T12:00:00Z */
+        size_t worst_rects_with_clock = 0;
+        for (int i = 0; i < 300; ++i) {
+            if (i % 30 == 0) {
+                clock_epoch += 60;
+                kf_host_time_set_wall_fixed(clock_epoch);
+            }
+            kf_fb_clear_dirty();
+            drive_frame(kFixedDtMs);
+            const size_t count =
+                static_cast<size_t>(kf_fb_dirty_rects().count);
+            if (count > worst_rects_with_clock) {
+                worst_rects_with_clock = count;
+            }
+        }
+        KF_LOGI(TAG,
+                "sleep-screen: worst-case dirty rects while asleep WITH "
+                "the clock ticking = %zu (KF_MAX_DIRTY_RECTS = %d)",
+                worst_rects_with_clock, KF_MAX_DIRTY_RECTS);
+        check(worst_rects_with_clock <= KF_MAX_DIRTY_RECTS,
+              "asleep Home with the clock ticking stays within the "
+              "dirty-rect budget");
+    }
+
+    pet2->asleep = false;
+    for (int i = 0; i < 5; ++i) {
+        drive_frame(kFixedDtMs); /* let the morning settle before shutdown */
+    }
+
 #ifdef KF_HOME_SCREEN_LUA
     kf_lua_port_shutdown();
 #endif
     kf_pet_session_shutdown();
+    kf_assets_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
@@ -8785,6 +9035,205 @@ end
     return ok ? 0 : 1;
 }
 
+/* Owner follow-up after Task 4/8 landed (Chris, 2026-08-11, after testing
+ * on the board): "put up a little digital wall clock in the upper left
+ * corner of the play room ... it's hard to tell what's happening when I
+ * hit each of the debug buttons." creature.lua's Home now declares a
+ * `clock` text object at (2,2), showing kf.time() verbatim -- sdk/lua/
+ * kf_lua_port.cpp's own kf.time() already does all the formatting, this
+ * only displays it (see this task's own report for why that is "nearly
+ * free" and should stay that way). run_settings_screen_check() already
+ * proves kf.time()'s OWN string content against a throwaway probe script
+ * (its steps 1-2); this check is the one that proves the REAL demo
+ * script's clock object shows exactly that string, repaints when it
+ * changes, and does not dirty a rectangle on a frame where it did not. */
+int run_home_clock_check(void) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-home-clock-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_pet_session_init();
+    kf_screen_nav_init();
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+    /* creature.lua's own Home bg literal (kf.color(232, 240, 216)) and the
+     * clock's own colours (kf.BLACK on that bg) -- kf.color()/kf.BLACK are
+     * both plain KF_RGB() wrappers (sdk/lua/kf_lua_scene.cpp's lua_kf_
+     * color()), so these C literals produce the identical kf_color values
+     * Lua's own calls do. */
+    constexpr kf_color kHomeBg = KF_RGB(232, 240, 216);
+    /* creature.lua's own clock position/size: home:text(...):move(2, 2),
+     * 8 characters ("--:-- --" / "H:MM AM") at KF_FONT_CELL_W (6px) each,
+     * KF_FONT_CELL_H (8px) tall. */
+    constexpr int16_t kClockX = 2;
+    constexpr int16_t kClockY = 2;
+    constexpr int16_t kClockW = 8 * KF_FONT_CELL_W;
+    constexpr int16_t kClockH = KF_FONT_CELL_H;
+
+    kf_host_time_set_wall_unset();
+#ifdef KF_HOME_SCREEN_LUA
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+    auto drive_frame = [&](uint32_t dt_ms) {
+        kf_screen_nav_frame(dt_ms);
+        kf_lua_port_frame(0);
+        kf_scene_commit();
+    };
+    auto pixel_at = [&](int16_t x, int16_t y) -> kf_color {
+        return kf_fb_pixels()[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                               static_cast<size_t>(x)];
+    };
+
+    /* Renders `text` through the SAME retained-scene text path
+     * (kf_scene_add_text/kf_scene_set_colors), directly from C rather than
+     * through creature.lua, at a scratch position clear of everything else
+     * Home draws -- then samples the clock-sized rect there, byte for
+     * byte, so the caller can compare it against whatever the real clock
+     * object actually painted at (2,2). Removes the scratch object and
+     * re-commits before returning, so it never lingers as a 48th live
+     * scene object for the rest of this check. */
+    constexpr int16_t kScratchX = 150;
+    /* y=290: the gap between the need bars (end at y=288, 262 + 2*9 + 8)
+     * and the care-guide row (starts at y=300) -- the ONE band nothing in
+     * Home ever draws into. y=300 was tried first and was wrong: it
+     * collides with the real "4:BATH"/"5:FLUSH" guide labels, and this
+     * check's own first run caught it directly -- the reference render's
+     * un-covered trailing column (beyond its own shorter text) showed
+     * those labels' real black glyph pixels bleeding through instead of
+     * background. Also clear of the wander field ({0,0,240,260}), so the
+     * creature itself can never overlap it either. */
+    constexpr int16_t kScratchY = 290;
+    auto render_reference = [&](const char *text) {
+        std::vector<kf_color> pixels(static_cast<size_t>(kClockW) *
+                                      static_cast<size_t>(kClockH));
+        const kf_scene_id id = kf_scene_add_text(text);
+        kf_scene_set_pos(id, kScratchX, kScratchY);
+        kf_scene_set_colors(id, KF_BLACK, kHomeBg);
+        kf_scene_commit();
+        size_t k = 0;
+        for (int16_t y = 0; y < kClockH; ++y) {
+            for (int16_t x = 0; x < kClockW; ++x) {
+                pixels[k++] = pixel_at(static_cast<int16_t>(kScratchX + x),
+                                        static_cast<int16_t>(kScratchY + y));
+            }
+        }
+        kf_scene_remove(id);
+        kf_scene_commit();
+        return pixels;
+    };
+    auto sample_clock_rect = [&]() {
+        std::vector<kf_color> pixels(static_cast<size_t>(kClockW) *
+                                      static_cast<size_t>(kClockH));
+        size_t k = 0;
+        for (int16_t y = 0; y < kClockH; ++y) {
+            for (int16_t x = 0; x < kClockW; ++x) {
+                pixels[k++] = pixel_at(static_cast<int16_t>(kClockX + x),
+                                        static_cast<int16_t>(kClockY + y));
+            }
+        }
+        return pixels;
+    };
+    /* Whether any of KF_MAX_DIRTY_RECTS's worth of dirty rectangles this
+     * frame overlaps the clock's own rect -- used below to prove the
+     * "only :set() when the string actually changed" behaviour is
+     * observable at the framebuffer level, not just in the script's own
+     * source. */
+    auto clock_rect_is_dirty = [&]() {
+        const kf_dirty_rects rects = kf_fb_dirty_rects();
+        for (int i = 0; i < rects.count; ++i) {
+            const kf_rect &r = rects.rects[i];
+            const bool disjoint =
+                r.x1 <= kClockX || r.y1 <= kClockY ||
+                r.x0 >= static_cast<int16_t>(kClockX + kClockW) ||
+                r.y0 >= static_cast<int16_t>(kClockY + kClockH);
+            if (!disjoint) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs); /* let the script's top-level code settle */
+    }
+
+    /* 1: the clock's own unset-clock string, "--:-- --" -- proven against
+     * a reference render of the exact same string, not merely "differs
+     * from background" the way sleep_screen_check's bed-position checks
+     * do (a clock has 64 possible 8-character strings; "something is
+     * there" would not catch it showing the WRONG one of them). */
+    check(sample_clock_rect() == render_reference("--:-- --"),
+          "the clock shows \"--:-- --\" on a device whose clock has never "
+          "been set, pixel-identical to a direct render of that string");
+
+    /* 2: setting the clock changes what it shows, matching kf.time()'s own
+     * documented format exactly (run_settings_screen_check() already
+     * proves kf.time() itself returns "9:05 AM" for this instant; this
+     * proves creature.lua's clock OBJECT actually displays it). */
+    kf_host_time_set_wall_fixed(1767258300); /* 2026-01-01T09:05:00Z */
+    for (int i = 0; i < 3; ++i) {
+        drive_frame(kFixedDtMs); /* kf.time() is read once per frame */
+    }
+    check(sample_clock_rect() == render_reference("9:05 AM"),
+          "once the clock is set, the Home clock shows \"9:05 AM\", "
+          "pixel-identical to a direct render of that string");
+
+    /* 3: a frame where kf.time() returns the SAME string dirties nothing
+     * in the clock's own rectangle -- proving the "only update when the
+     * string actually changes" behaviour at the framebuffer level. Time
+     * is pinned (kf_host_time_set_wall_fixed does not advance on its own),
+     * so every frame in this loop reads the identical "9:05 AM". */
+    kf_fb_clear_dirty();
+    drive_frame(kFixedDtMs);
+    check(!clock_rect_is_dirty(),
+          "a frame where the clock string does not change dirties nothing "
+          "in the clock's own rectangle");
+
+    /* 4: the next minute DOES dirty the clock's rectangle -- the positive
+     * control for check 3 above, so "nothing dirtied" up there is known to
+     * mean "correctly detected no change", not "this check cannot detect "
+     * "a dirty rect at all". */
+    kf_host_time_set_wall_fixed(1767258360); /* 09:06:00Z -- one minute on */
+    kf_fb_clear_dirty();
+    drive_frame(kFixedDtMs);
+    check(clock_rect_is_dirty(),
+          "a frame where the clock string DOES change dirties the clock's "
+          "own rectangle");
+    check(sample_clock_rect() == render_reference("9:06 AM"),
+          "and the new string is exactly \"9:06 AM\", not stuck on the "
+          "previous minute");
+
+#ifdef KF_HOME_SCREEN_LUA
+    kf_lua_port_shutdown();
+#endif
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -8841,6 +9290,7 @@ int main(int argc, char *argv[]) {
     bool verify_sleep_screen = false;
     bool verify_attention_signal = false;
     bool verify_clock_jump = false;
+    bool verify_home_clock = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -8967,6 +9417,8 @@ int main(int argc, char *argv[]) {
             verify_attention_signal = true;
         } else if (std::strcmp(argv[i], "--verify-clock-jump") == 0) {
             verify_clock_jump = true;
+        } else if (std::strcmp(argv[i], "--verify-home-clock") == 0) {
+            verify_home_clock = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -9250,6 +9702,9 @@ int main(int argc, char *argv[]) {
     }
     if (verify_attention_signal) {
         return run_attention_signal_check();
+    }
+    if (verify_home_clock) {
+        return run_home_clock_check();
     }
 
     kf_app_init(mode);

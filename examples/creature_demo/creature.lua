@@ -110,6 +110,19 @@ if kf.home_screen_active() then
     local bg = kf.color(232, 240, 216)
     home:background(bg)
 
+    -- Chris, 2026-08-11, after testing: a small always-on digital clock in
+    -- the play room's upper-left corner, so the wall clock stays visible
+    -- while poking the debug buttons. kf.time() already returns a ready-
+    -- formatted 12-hour string ("9:05 AM", or "--:-- --" unset) -- shown
+    -- as-is, no reformatting here. Layer 2 keeps it readable even if the
+    -- creature happens to wander underneath it (body is layer 1).
+    local clock = home:text("--:-- --")
+    clock:move(2, 2)
+    clock:color(kf.BLACK, bg)
+    clock:layer(2)
+    local last_clock_text = nil -- only :set() when the string actually
+                                 -- changes; see on_home_frame() below
+
     -- on_home_frame() below sets the real sprite/position every frame,
     -- including its first -- this placeholder is never painted.
     local body = home:sprite("")
@@ -297,6 +310,18 @@ if kf.home_screen_active() then
     local was_asleep = false -- notices the wake edge, to put the bedding away
     local bed_x, bed_y = 0, 0
 
+    -- Chris, 2026-08-11, after testing: "the futon art doesn't show when
+    -- its asleep, just the zzz" -- the futon is now the sleep visual,
+    -- always, not only after a tuck-in. `was_bed_shown` notices the edge
+    -- a fresh night starts (early, via tuck-in, or on Core's own asleep
+    -- edge if nobody tucked in). `futon_night_index` rotates through the
+    -- pack's 7 alternative futon designs, one per night, incremented on
+    -- that same edge -- a counter, not math.random(): this codebase's
+    -- determinism checks hash the framebuffer and compare runs, and a
+    -- real PRNG would make that non-reproducible.
+    local was_bed_shown = false
+    local futon_night_index = 0
+
     -- Task 8: 1 Hz blink timing for want_bang. Visible half the cycle,
     -- hidden the other half -- a plain on/off blink, unlike ZZZ's slower
     -- "mostly on, brief pause" cadence above, because this is meant to read
@@ -309,6 +334,12 @@ if kf.home_screen_active() then
     local was_wanting = false
 
     function on_home_frame(dt_ms)
+        local clock_str = kf.time()
+        if clock_str ~= last_clock_text then
+            clock:set(clock_str)
+            last_clock_text = clock_str
+        end
+
         fill[1]:size(pet.hunger() * 190 // 100000, 8)
         fill[2]:size(pet.happiness() * 190 // 100000, 8)
         fill[3]:size(pet.energy() * 190 // 100000, 8)
@@ -352,20 +383,37 @@ if kf.home_screen_active() then
             -- still awake and not already tucked in. Purely decorative --
             -- Core has no "settle early" mechanism (ADR 0048 removed it
             -- from the design entirely), so pressing B here never changes
-            -- WHEN the creature actually falls asleep, only what it looks
-            -- like doing it.
+            -- WHEN the creature actually falls asleep -- only makes the
+            -- futon appear EARLY, while still awake.
             local drowsy = kf.clock_set() and kf.hour() == kDrowsyHour and
                 not asleep and not tucked_in
             if drowsy and kf.button("b") then
                 tucked_in = true
-                bed_x, bed_y = creature.x(), creature.y()
-                futon_elapsed_ms = 0
             end
 
-            if tucked_in then
+            -- The futon is the sleep visual now, whenever Core says
+            -- asleep, not only after a tuck-in -- tuck-in just makes it
+            -- appear earlier. Falling asleep afterwards simply continues
+            -- showing the same futon rather than swapping to a new one.
+            local bed_shown = tucked_in or asleep
+
+            if bed_shown and not was_bed_shown then
+                -- A fresh night begins: pick a bed position and a bedding
+                -- design once, and hold both for the whole night. See
+                -- was_bed_shown's own declaration above for why this is a
+                -- rotation, not math.random().
+                bed_x, bed_y = creature.x(), creature.y()
+                futon:frame(futon_night_index % 7)
+                futon_night_index = futon_night_index + 1
+                futon_elapsed_ms = 0
+            end
+            was_bed_shown = bed_shown
+
+            if bed_shown then
                 -- The futon's own art already shows a sleeping shape, so
                 -- the creature's own body sprite is hidden rather than
-                -- drawn underneath it.
+                -- drawn underneath it -- true for every stage, including
+                -- adult, which has no *_sleeping_* art of its own at all.
                 body:hide()
                 futon_elapsed_ms = futon_elapsed_ms + dt_ms
                 futon:show()
@@ -379,16 +427,17 @@ if kf.home_screen_active() then
                 end
                 zzz:move(bed_x + 30, math.max(0, bed_y - 10))
 
-                -- Nothing to want while settling in for the night --
-                -- pet.wants() would already read nil the instant Core's own
-                -- asleep actually flips true, but tucked_in is decorative
-                -- and can be true a little earlier than that (the drowsy
-                -- hour, still technically awake), so this is cleared
-                -- explicitly rather than left to coincide.
+                -- Nothing to want while the bedding is out -- pet.wants()
+                -- already reads nil the instant Core's own asleep actually
+                -- flips true, but tucked_in can show the futon a little
+                -- earlier than that (the drowsy hour, still technically
+                -- awake), so this is cleared explicitly rather than left
+                -- to coincide.
                 want_bang:hide()
                 was_wanting = false
                 paint_guide(nil)
             else
+                futon:hide()
                 local want = pet.wants()
                 if want then
                     -- Task 8: the attention signal. The creature stops
@@ -396,7 +445,6 @@ if kf.home_screen_active() then
                     -- holds the "objecting" pose -- art that already exists
                     -- for every stage but egg (which never reaches this
                     -- branch in practice; see want_stage_token() above).
-                    futon:hide()
                     body:show()
                     body:sprite(want_stage_token() .. "_objecting_s")
                     body:flip(false)
@@ -422,12 +470,9 @@ if kf.home_screen_active() then
                     want_bang:hide()
                     paint_guide(nil)
 
-                    -- Whether wide awake or asleep on its own
-                    -- (kf_creature_presenter.cpp freezes the wander the
-                    -- instant pet.asleep() is true, so it is drawn "settled
-                    -- where it stands"), creature.sprite() already resolves
-                    -- the right pose either way (kf_creature_pose_for()).
-                    futon:hide()
+                    -- Wide awake, not wanting anything -- creature.sprite()
+                    -- already resolves the right pose (kf_creature_pose_
+                    -- for()); bed_shown above has already handled asleep.
                     body:show()
                     body:sprite(creature.sprite())
                     body:flip(creature.mirrored())
@@ -436,7 +481,7 @@ if kf.home_screen_active() then
 
                     -- The drowsy cue: signals tucking in is available. A
                     -- nicety, not a duty -- static, not blinking (blinking
-                    -- is reserved for "already tucked in", above).
+                    -- is reserved for "the bedding is already out", above).
                     if drowsy then
                         zzz:show()
                         zzz:move(creature.x() + 30,

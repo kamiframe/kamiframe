@@ -64,6 +64,18 @@ sleep has run on hardware, and the drowsy hour, wiggle amplitude and ZZZ
 blink cadence are all feel questions this task built specific, named,
 reportable values for without being able to judge them itself.
 
+**Updated 2026-08-11, same day, after testing:** the tuck-in/futon split
+described above was wrong once seen — *"the futon art doesn't show when
+its asleep, just the zzz."* Fixed same-day; the futon is now sleep's one
+visual whenever `pet.asleep()` is true, tuck-in only makes it appear
+early. See Task 7's own requirements list below (now annotated) and ADR
+0051. This also added a small always-on Home clock, unrelated to sleep
+but landed in the same pass. Suite grew from 50/50 (this work's own
+confirmed starting baseline — later work between Task 8 and this pass had
+already taken it from 48 to 50) to **51/51**: one new registered check
+(`home_clock_check`) plus several new assertions added directly to the
+existing `sleep_screen_check`.
+
 **Task 8 has not started** — it needs Chris to judge feel on the board,
 per the "Who has to be at the bench" table below, and is not blocked on
 anything but Task 7, which is now done. Task 8's own requirement that "no
@@ -555,7 +567,7 @@ if it is on the desk.**
 | 2 | **The night window is computed against a clock Core does not advance.** `last_advanced` moves only at load (finding 2). | Task 6, step 1, before any sleep logic exists. | Sleep works after a reload and never during a session, or vice versa — and the symptom looks like a sleep bug, not a clock bug. |
 | 3 | **Offline sleep needs analytic arithmetic, not a loop.** The spec says so: a fortnight offline cannot be stepped second by second, so the seconds falling inside a daily 22:00–07:00 window have to be solved as whole days plus two partials. | Task 3 builds and tests the window arithmetic **with no pet in the picture**, against hand-computed cases including DST-free month and year boundaries. Task 6 then only has to call it. | Silently corrupted offline ageing — the feature the entire product rests on, per the spec's own words. |
 | 4 | **A power-cut test that passes for the wrong reason.** The RAM clock and the RTC agree in the good case, so a green result proves nothing unless the bad case was also run. | Task 5's negative run with the coin cell removed. | Shipping a device that forgets the time the first night a customer's cell is flat, having "verified" that it does not. |
-| 5 | **The 64-object scene ceiling.** Three screens share one table. | **Retired by Task 4, re-measured by Task 7.** `run_settings_screen_check()` (`simulator/src/headless/headless_main.cpp`, `--verify-settings-screen`) brings up the real Home + Info + Settings together (not `run_screen_group_check()`'s synthetic two-screen fixture) and asserts `kf_scene_live_object_count()` against a named constant. **Measured, not the 47 estimated here**: as of Task 4, Home was 25 (24 declared in `creature.lua` + 1 error banner), Info 8, Settings 10 — 43 of 64. **Task 7 added 2 objects to Home** (the `futon_idle_s` sprite and the shared "ZZZ" text object, both declared once at script load and toggled visible/hidden per frame, never recreated) — Home is now 27, and the checked constant (`kSettingsCheckExpectedObjectCount`) is **45 of 64**, still well under the ceiling. | Retired: the check above fails loudly and by name (not just "the scene is full") if this ever regresses. |
+| 5 | **The 64-object scene ceiling.** Three screens share one table. | **Retired by Task 4, re-measured by Task 7, Task 8, and again by the 2026-08-11 clock follow-up (ADR 0051) — stale here twice already, fixed again now per this plan's own rule.** `run_settings_screen_check()` (`simulator/src/headless/headless_main.cpp`, `--verify-settings-screen`) brings up the real Home + Info + Settings together (not `run_screen_group_check()`'s synthetic two-screen fixture) and asserts `kf_scene_live_object_count()` against a named constant. **Measured, not the 47 estimated here**: as of Task 4, Home was 25 (24 declared in `creature.lua` + 1 error banner), Info 8, Settings 10 — 43 of 64. Task 7 added 2 objects to Home (`futon_idle_s`, the shared "ZZZ" text object) — 45 of 64. Task 8 added 1 (`want_bang`) — 46 of 64. The clock follow-up added 1 more (the Home HUD clock text object) — the checked constant (`kSettingsCheckExpectedObjectCount`) is now **47 of 64**, still well under the ceiling. | Retired: the check above fails loudly and by name (not just "the scene is full") if this ever regresses. |
 | 6 | **A Lua script can still hang the frame loop.** No `lua_sethook`, no deadline. Named in ADR 0014 and ADR 0028; Task 9 of the Lua plan. | **Nothing in this plan.** | A frozen device needing a power cycle. Acceptable while Chris is the only author; not acceptable before third parties ship. It gets worse with every screen Lua owns, and this plan hands it two more. |
 
 ---
@@ -1336,6 +1348,26 @@ each line marked against what actually landed, per this plan's own rule
 that a stale line gets fixed in the commit that discovers it, not silently
 reworded away.
 
+**A SECOND requirement below was superseded after this task closed, by
+Chris testing the board and finding the result wrong — not a plan defect,
+a design gap this task's own last unchecked box named and left open.** His
+report, verbatim: *"a core problem, the futon art doesn't show when its
+asleep, just the zzz."* This task's own design (below, and ADR 0049) was
+correct as written — the futon was always meant as the OPTIONAL tuck-in's
+bedding, not sleep's own visual — but seeing it on the board is what
+showed that split reads wrong. Fixed the same day: the futon is now
+sleep's one visual, shown whenever `pet.asleep()` is true, not only after
+a tuck-in; tuck-in itself shrinks to "makes the futon appear early, while
+still awake" rather than being the only way to see bedding at all. This
+also closes, for every stage at once, the gap the very next requirement
+below names for adults specifically (no `*_sleeping_*` art, previously a
+visible placeholder box while sleeping — now simply unreached, since the
+futon replaces the body sprite before that missing name is ever drawn).
+Full account, including the dirty-rect re-measurement and the non-vacuity
+proof for every new assertion: **ADR 0051**. The requirement list below is
+again left as originally written, each line marked against what is true
+now, per this plan's own rule.
+
 **Requirements:**
 
 - [x] `creature.lua` shows the sleeping pose, the creature settled where it
@@ -1345,6 +1377,13 @@ reworded away.
       `creature.lua` itself — the wander has lived in C++ since ADR 0043 and
       this task did not move it), and `run_sleep_screen_check()`'s own
       wander-freeze assertion is the check this line asked for by name.
+      **Superseded 2026-08-11, ADR 0051**: Core still resolves and freezes
+      the sleeping pose exactly as landed here, but `creature.lua` no
+      longer DRAWS it — the futon replaces the body sprite the instant
+      `pet.asleep()` is true, for every stage. The freeze itself, and
+      `kf_creature_presenter_sprite_name()` still resolving `*_sleeping_*`
+      underneath, are both unchanged and still directly asserted by
+      `sleep_screen_check`'s own C1/C2.
 - [x] **The drowsy cue** is the signal that tucking in is available. It is a
       nicety, not a duty; skipping it costs nothing beyond the spec's
       next-day deficit. **Landed, not skipped**: a static "ZZZ" text cue
@@ -1373,10 +1412,22 @@ reworded away.
       frames of generation. Not decided by this task — measured worst-case
       dirty rects for the static case is **0** (see ADR 0049), so there is no
       performance argument either way; it is purely an art-budget call.
-- [ ] Chris judges bedtime feel on the board before this closes. **Not yet
-      done** — this task built and verified everything up to that judgement
-      (drowsy hour, tuck-in button, wiggle amplitude, ZZZ cadence, all named
-      as specific values in ADR 0049) but nothing has run on hardware.
+      **Re-measured 2026-08-11, ADR 0051**: no longer 0. The plain "asleep,
+      not tucked in" case now also shows the futon's own wiggle/ZZZ blink
+      (the sleeping sprite itself is still a static single frame — this is
+      about what's now drawn INSTEAD of it), measured at **1** dirty rect,
+      matching what tucked-in already cost. Both stay far under the budget
+      of 8; the art-budget framing above still holds, it is simply a
+      different number now.
+- [x] Chris judges bedtime feel on the board before this closes. **Judged,
+      and found wrong once, closing the loop this task's own last box left
+      open**: *"the futon art doesn't show when its asleep, just the
+      zzz."* Fixed the same day — the futon-always change above IS that
+      judgement acted on, not a still-open item. What remains genuinely
+      unjudged: the drowsy hour, tuck-in button feel, wiggle amplitude and
+      ZZZ cadence are all still exactly the named, reportable values ADR
+      0049 built them as, and none of them changed here — only WHEN the
+      futon appears changed, not how it moves once it is showing.
 
 ---
 

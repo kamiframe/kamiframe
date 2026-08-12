@@ -1041,6 +1041,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # headless_main.cpp's run_attention_signal_check().
     add_test(NAME attention_signal_check
              COMMAND kamiframe-headless --verify-attention-signal)
+
+    # Owner follow-up after Task 4/8 landed (Chris, 2026-08-11, after
+    # testing): a small always-on digital clock in Home's upper-left
+    # corner, showing kf.time() verbatim. Proves the REAL clock text
+    # object shows exactly the string kf.time() returns (pixel-identical
+    # to a direct reference render, not merely "something is there"),
+    # repaints when that string changes, and does not dirty a rectangle
+    # on a frame where it did not. See headless_main.cpp's
+    # run_home_clock_check().
+    add_test(NAME home_clock_check
+             COMMAND kamiframe-headless --verify-home-clock)
 endif()
 
 # ---------------------------------------------------------------------------
