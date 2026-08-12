@@ -44,9 +44,9 @@
 set(KAMIFRAME_LVGL_PORT_SRC_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../../../simulator/src/lvgl")
 
-## ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
-## sleep.md): kf_pet_info_screen.cpp is deleted (Info moved to a
-## kf.screen() group over the retained scene) and kf_screen_nav.cpp/
+## ADR 0045 (Task 2 of the screens/clock/sleep plan):
+## kf_pet_info_screen.cpp is deleted (Info moved to a kf.screen() group
+## over the retained scene) and kf_screen_nav.cpp/
 ## kf_lua_home_screen.cpp/kf_error_banner.cpp moved OUT of this component
 ## entirely, into ../main/CMakeLists.txt's own SRCS (compiled straight from
 ## simulator/src/pet/, the same one-canonical-copy-by-relative-path pattern

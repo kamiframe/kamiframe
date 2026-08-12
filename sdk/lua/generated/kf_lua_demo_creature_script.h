@@ -25,16 +25,15 @@ inline constexpr const char *kKfLuaDemoCreatureScriptSource = R"lua(
 -- short: embedded verbatim into flash by tools/kf_embed_lua.py and parsed
 -- by the Lua VM at every boot.
 --
--- Also declares the whole home screen now (Task 5, docs/superpowers/plans/
--- 2026-08-12-lua-game-layer.md; grouped via kf.screen() since ADR 0044),
--- gated by kf.home_screen_active() so this one file runs under either
--- KF_HOME_SCREEN build. Layout numbers match kf_creature_screen.cpp's own
--- constants -- see that file for the why.
+-- Also declares the whole home screen now (Task 5, the Lua game-layer plan;
+-- grouped via kf.screen() since ADR 0044), gated by kf.home_screen_active()
+-- so this one file runs under either KF_HOME_SCREEN build. Layout numbers
+-- match kf_creature_screen.cpp's own constants -- see that file for the why.
 --
--- The info screen (Task 2 of docs/superpowers/plans/2026-08-13-screens-
--- clock-sleep.md, ADR 0045) is declared below unconditionally -- unlike
--- Home, Info does not care which build owns the creature's own screen, so
--- it is not gated behind kf.home_screen_active().
+-- The info screen (Task 2 of the screens/clock/sleep plan, ADR 0045) is
+-- declared below unconditionally -- unlike Home, Info does not care which
+-- build owns the creature's own screen, so it is not gated behind
+-- kf.home_screen_active().
 --
 -- The settings screen (Task 4 of that same plan, ADR 0047) is declared
 -- below unconditionally too, for the identical reason -- the global system
@@ -147,7 +146,7 @@ if kf.home_screen_active() then
     local shrine = home:sprite("shrine_idle_s")
     shrine:move(96, 106) -- centred, 48x48
 
-    -- Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+    -- Task 7 (the screens/clock/sleep plan):
     -- the tuck-in interaction's bedding. A real sprite, "futon_idle_s" --
     -- one generic 48x48 entry for EVERY stage, no per-stage/per-direction
     -- variants -- scenery, looked up by literal name exactly like
@@ -160,7 +159,7 @@ if kf.home_screen_active() then
     zzz:color(kf.BLACK, bg)
     zzz:hide()
 
-    -- Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+    -- Task 8 (the screens/clock/sleep plan):
     -- the attention signal's pulsing indicator. One text object, shown/
     -- hidden at 1 Hz by on_home_frame() below while pet.wants() is
     -- non-nil -- see that function for the blink timing.
@@ -687,7 +686,7 @@ function on_info_frame(dt_ms)
     end
 end
 
--- Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+-- Task 4 of the screens/clock/sleep plan: the
 -- global system clock -- read, edited and saved with the seven hardware
 -- buttons, registered third so MENU cycles HOME -> INFO -> SETTINGS ->
 -- HOME. The cursor logic (which field is selected, hold-to-repeat) lives

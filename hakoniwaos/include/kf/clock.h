@@ -1,18 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
- *
  * Civil time, in Core, integers only.
- *
  * This module turns a wall-clock second count into "what hour is it" and
  * back, plus one analytic query: how many seconds of a span fall inside a
  * daily clock-time window such as 22:00-07:00. It exists because two
- * different places need that same answer and must never disagree about it --
- * the Settings screen's 12-hour clock display (Task 4 of docs/superpowers/
- * plans/2026-08-13-screens-clock-sleep.md) and sleep's night-window
- * accounting (that plan's Task 6). Putting the arithmetic here once, in
- * Core, is what keeps the clock on screen and the hour the pet falls asleep
- * from drifting apart from each other.
- *
+ * different places need that same answer and must never disagree about it
+ * -- the Settings screen's 12-hour clock display (Task 4 of the
+ * screens/clock/sleep plan) and sleep's night-window accounting (that
+ * plan's Task 6). Putting the arithmetic here once, in Core, is what keeps
+ * the clock on screen and the hour the pet falls asleep from drifting apart
+ * from each other.
  * NO TIMEZONE, NO UTC OFFSET, ON PURPOSE -- settled by Chris, recorded in the
  * plan under "Timezone: settled by Chris". The device has no timezone
  * database, no network, and no location, so "local time" can only honestly
@@ -27,7 +24,6 @@
  * of this header with a stored UTC-offset accessor; it was replaced before
  * being implemented, once this decision landed, rather than shipped and
  * removed later.
- *
  * This module is consequently completely STATELESS -- no file-static
  * variable, nothing to initialise, nothing to persist. Every function is a
  * pure conversion over its arguments. That statelessness is also what keeps
@@ -40,30 +36,26 @@
  * second, or that it never moves backward or jumps forward: it already can,
  * from the Settings screen alone, and a sync will make it more common, not
  * less.
- *
  * WHY NOT libc's localtime(). It ships on both the host and ESP-IDF, would
  * compile cleanly on both, and would look correct. It is still wrong for
  * this job, for three reasons that all bite later rather than immediately:
- *
- *   - Core's rule (CLAUDE.md) is that it talks to the HAL and nothing else.
- *     localtime() reaches around that into libc's own global state.
- *   - It depends on the process-global `TZ` variable, which neither the
- *     desktop build nor the device sets, so the same input could legally
- *     produce two different answers depending on what else in the process
- *     touched TZ first -- exactly the kind of nondeterminism this project's
- *     headless checks exist to rule out. (Moot for timezone conversion once
- *     there is no timezone to convert, but the TZ-dependence and the locale
- *     machinery below are reasons enough on their own.)
- *   - It drags in locale machinery on a build that is budgeted in kilobytes
- *     (kf/budget.h) and must stay heap-free (enforced by
- *     tools/check_no_heap.py) and float-free (a design rule that script
- *     does not check -- see kf/scene.h's own comment on this for the one
- *     place it slipped).
- *
+ * - Core's rule (CLAUDE.md) is that it talks to the HAL and nothing else.
+ * localtime() reaches around that into libc's own global state.
+ * - It depends on the process-global `TZ` variable, which neither the
+ * desktop build nor the device sets, so the same input could legally
+ * produce two different answers depending on what else in the process
+ * touched TZ first -- exactly the kind of nondeterminism this project's
+ * headless checks exist to rule out. (Moot for timezone conversion once
+ * there is no timezone to convert, but the TZ-dependence and the locale
+ * machinery below are reasons enough on their own.)
+ * - It drags in locale machinery on a build that is budgeted in kilobytes
+ * (kf/budget.h) and must stay heap-free (enforced by
+ * tools/check_no_heap.py) and float-free (a design rule that script
+ * does not check -- see kf/scene.h's own comment on this for the one
+ * place it slipped).
  * The integer form used here -- days-since-epoch to a civil (year, month,
  * day) triple and back -- is about twenty lines, is well-documented (cited
  * in clock.cpp), and needs none of the above.
- *
  * Kept TOTAL AND HONEST on purpose: this module never claims to know
  * anything about timezones, it only ever converts the wall clock's own
  * epoch second to and from a calendar date. That is precisely what makes a
@@ -72,7 +64,6 @@
  * value, exactly like the Settings screen already does. It never has to
  * reinterpret what an already-stored timestamp meant, because this module
  * never attached timezone meaning to one in the first place.
- *
  * Valid C.
  */
 

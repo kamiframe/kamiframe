@@ -90,7 +90,7 @@ typedef enum {
 
 /* Tree shape, per the character bible (14-character-bible-v1.md, sections
  * 6/7) as resolved in
- * docs/superpowers/specs/2026-08-09-core-care-loop-design.md: 4 verb
+ * the core care-loop design spec: 4 verb
  * families, each branching to an UNEVEN number of adult forms. Compile-time
  * constants, not config -- unlike stage durations and decay rates, the
  * SHAPE of the evolution tree is a structural decision (how many branch
@@ -219,7 +219,7 @@ uint8_t kf_pet_reaction_to(uint8_t base_trait, kf_pet_care_action action,
  * game: a baby that needs attention every half hour and an adult you check
  * on a few times a day are the same creature at different points, and a
  * single rate cannot express both. See
- * docs/superpowers/specs/2026-08-09-core-care-loop-design.md section 2. */
+ * the core care-loop design spec section 2. */
 typedef struct {
     uint32_t hunger_mp_per_hour;
     uint32_t happiness_mp_per_hour;
@@ -327,13 +327,13 @@ typedef struct {
      * average rather than "was it ever touched". */
     kf_pet_millipercent dust_care_average_mp;
 
-    /* What waking a sleeping creature deliberately costs it, in happiness --
-     * kf_pet_wake(), Task 7 of docs/superpowers/plans/2026-08-13-screens-
-     * clock-sleep.md. The spec's own words: "kept small" -- this is a
-     * config field, not a hardcoded constant, for the identical reason
-     * every other care number in this struct is: a dev writes a pet by
-     * configuring and skinning this, and there is no reason waking should
-     * be the one number that cannot be tuned. */
+    /* What waking a sleeping creature deliberately costs it, in happiness
+     * -- kf_pet_wake(), Task 7 of the screens/clock/sleep plan. The spec's
+     * own words: "kept small" -- this is a config field, not a hardcoded
+     * constant, for the identical reason every other care number in this
+     * struct is: a dev writes a pet by configuring and skinning this, and
+     * there is no reason waking should be the one number that cannot be
+     * tuned. */
     kf_pet_millipercent wake_happiness_cost_mp;
 
     /* The tuck-in payoff (2026-08-11 bedtime-behaviour extension, ADR 0052,
@@ -419,22 +419,20 @@ typedef struct {
      * but real and worth knowing about before assuming dead is one-way. */
     bool dead;
 
-    /* Whether the creature is currently asleep -- docs/superpowers/specs/
-     * 2026-08-09-core-care-loop-design.md's "Sleep, settled": night is
-     * 22:00-07:00 local (kf/clock.h's kf_clock_seconds_in_daily_window(),
-     * Core does not re-derive the window), and falling asleep is entirely
-     * automatic and entirely a function of the wall clock. Recomputed
-     * inside apply_stage_segment() (kf_pet.cpp) every time the wall clock
-     * is known, from the epoch that segment ends at; stays false for the
-     * whole of EGG (apply_stage_segment() returns before ever reaching
-     * the sleep computation for an egg -- eggs do not sleep, a deliberate
-     * choice recorded there and in ADR 0048, not an oversight) and stays
-     * false whenever last_advanced has never been valid (no clock, no
-     * sleep -- the same "inert without a clock" rule the night-window
-     * accounting itself follows). Saved, so a reload shows the pose the
-     * creature actually ended the session in rather than guessing from
-     * nothing.
-     *
+    /* Whether the creature is currently asleep -- the core care-loop design
+     * spec's "Sleep, settled": night is 22:00-07:00 local (kf/clock.h's
+     * kf_clock_seconds_in_daily_window(), Core does not re-derive the
+     * window), and falling asleep is entirely automatic and entirely a
+     * function of the wall clock. Recomputed inside apply_stage_segment()
+     * (kf_pet.cpp) every time the wall clock is known, from the epoch that
+     * segment ends at; stays false for the whole of EGG
+     * (apply_stage_segment() returns before ever reaching the sleep
+     * computation for an egg -- eggs do not sleep, a deliberate choice
+     * recorded there and in ADR 0048, not an oversight) and stays false
+     * whenever last_advanced has never been valid (no clock, no sleep --
+     * the same "inert without a clock" rule the night-window accounting
+     * itself follows). Saved, so a reload shows the pose the creature
+     * actually ended the session in rather than guessing from nothing.
      * UPDATED by the 2026-08-11 bedtime-behaviour extension (ADR 0052):
      * "drowsy" (the ten minutes immediately before this flips true) is
      * still not a separate SAVED sub-state -- kf_pet_drowsy() below is a
@@ -476,7 +474,6 @@ typedef struct {
      * whether the creature counts as "unwell" right then (sick, or any of
      * the three needs already below the unwell threshold) -- see pet.cpp's
      * kOvernightFloor* constants for the four bands' exact ranges.
-     *
      * Applied EXACTLY ONCE, at the wake instant -- live play (continuously,
      * every apply_stage_segment() call, right up until the segment where
      * `asleep` flips back to false) and offline (at the closed-form-detected
@@ -489,24 +486,21 @@ typedef struct {
      * value), and it is a real design choice with a real consequence (sleep
      * partially rescues a neglected pet) -- see the ADR for the one-line
      * reversal to a pure floor if that turns out to be wrong.
-     *
      * NOT re-applied on every segment that ends still asleep -- that was a
      * real defect (docs/architecture/adr-0053-overnight-floors-poop-
-     * suppression.md's amendment, docs/reviews/2026-08-12-sleep-stack-
-     * audit.md finding 1), fixed 2026-08-12: a live session flushes every
-     * KF_PET_SESSION_FLUSH_SECONDS (30s), so re-clamping on every one of
-     * those segments turned a wake-instant set-point into a value held all
-     * night, feeding an inflated pre-sleep number into
-     * care_integral_mp_seconds on every flush. The needs (and dirtiness)
-     * are left to decay/rise UNPROTECTED for the rest of the night once the
-     * floor is rolled; only the wake instant clamps.
-     *
+     * suppression.md's amendment, the sleep-stack audit finding 1), fixed
+     * 2026-08-12: a live session flushes every KF_PET_SESSION_FLUSH_SECONDS
+     * (30s), so re-clamping on every one of those segments turned a
+     * wake-instant set-point into a value held all night, feeding an
+     * inflated pre-sleep number into care_integral_mp_seconds on every
+     * flush. The needs (and dirtiness) are left to decay/rise UNPROTECTED
+     * for the rest of the night once the floor is rolled; only the wake
+     * instant clamps.
      * Cleared (set to 0) the moment the creature wakes -- 0 is never a real
      * floor (every band's minimum is >= 20000), so it doubles as "no floor
      * currently active" without a separate flag: apply_stage_segment() only
      * ever CONSULTS these fields while `asleep` is true (or was, earlier in
      * the same segment), never while genuinely awake.
-     *
      * Saved (kSaveVersion 10->11, ADR 0053) for the identical reason
      * tucked_in is: the whole scenario that matters is the device switched
      * off overnight, and a floor that evaporates on reload would protect a
@@ -540,22 +534,20 @@ typedef struct {
      * exactly how long the device was off and fast-forward by that much
      * -- see kf_pet_load_and_advance(). Invalid (kf_wall_time.valid ==
      * false) until the first successful advance.
-     *
-     * kf_pet_advance() ALSO carries this forward now (docs/superpowers/
-     * specs/2026-08-09-core-care-loop-design.md's "Sleep, settled"), by
-     * exactly the elapsed_seconds it was just handed, whenever it is
-     * already valid -- so a long-running live session (many small
-     * kf_pet_advance() calls, one per frame-batch flush) keeps this
-     * tracking real time exactly as an offline jump does, without
-     * kf_pet_advance() ever calling into the HAL itself. That is what
-     * lets sleep's night-window test (kf/clock.h's
+     * kf_pet_advance() ALSO carries this forward now (the core care-loop
+     * design spec's "Sleep, settled"), by exactly the elapsed_seconds it
+     * was just handed, whenever it is already valid -- so a long-running
+     * live session (many small kf_pet_advance() calls, one per frame-batch
+     * flush) keeps this tracking real time exactly as an offline jump does,
+     * without kf_pet_advance() ever calling into the HAL itself. That is
+     * what lets sleep's night-window test (kf/clock.h's
      * kf_clock_seconds_in_daily_window()) run identically whether the
      * elapsed time came from one offline gap or a thousand live frames.
-     * Still left untouched (stays invalid) when it starts invalid --
-     * every check in this codebase that pokes a fresh kf_pet_state
-     * directly and never goes through kf_pet_load_and_advance() relies on
-     * that, and it is also the honest answer: with no clock reading ever
-     * established, there is no baseline epoch to carry forward. */
+     * Still left untouched (stays invalid) when it starts invalid -- every
+     * check in this codebase that pokes a fresh kf_pet_state directly and
+     * never goes through kf_pet_load_and_advance() relies on that, and it
+     * is also the honest answer: with no clock reading ever established,
+     * there is no baseline epoch to carry forward. */
     kf_wall_time last_advanced;
 
     kf_pet_stage stage;
@@ -664,7 +656,6 @@ void kf_pet_init(kf_pet_state *state);
  * one stage boundary, each stage's own branch (if it has one) is decided
  * from the care actually accumulated during exactly that stage's real
  * duration, not blurred across stages.
- *
  * Clamps every need to [0, KF_PET_MILLIPERCENT_MAX]. Still never reads a
  * clock -- no HAL call anywhere in this function, matching this file's own
  * header comment -- but it DOES now carry `state->last_advanced` forward by
@@ -673,12 +664,11 @@ void kf_pet_init(kf_pet_state *state);
  * arithmetic update on a value already sitting in `state`, not a clock
  * read: the caller (kf_pet_load_and_advance() below, establishing the very
  * first baseline from a real wall-clock reading, or a live frame-loop
- * caller passing a per-frame-batch delta) is still the only place an
- * actual HAL time reading ever enters this file. This is what lets
- * sleep's night-window accounting (kf/clock.h) evaluate correctly during
- * LIVE play, not only immediately after a reload -- see docs/superpowers/
- * specs/2026-08-09-core-care-loop-design.md's "Sleep, settled" and this
- * file's own apply_stage_segment(). */
+ * caller passing a per-frame-batch delta) is still the only place an actual
+ * HAL time reading ever enters this file. This is what lets sleep's
+ * night-window accounting (kf/clock.h) evaluate correctly during LIVE play,
+ * not only immediately after a reload -- see the core care-loop design
+ * spec's "Sleep, settled" and this file's own apply_stage_segment(). */
 void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
                      uint32_t elapsed_seconds);
 
@@ -733,15 +723,14 @@ void kf_pet_bath(kf_pet_state *state, const kf_pet_config *config,
  * two actions that both live under "keep it clean". */
 void kf_pet_flush(kf_pet_state *state);
 
-/* Wakes a sleeping creature deliberately -- Task 7 of docs/superpowers/
- * plans/2026-08-13-screens-clock-sleep.md, the care-loop spec's own words:
- * "Waking it deliberately is allowed and costs happiness. The original
- * punished you for leaving the light on; this is the same idea, kept
- * small." A no-op if the creature is already awake, or dead: there is
- * nothing to wake either way, and a dead creature's happiness is not this
- * function's business (kf_pet_feed()/etc. all take the identical
- * `if (state->dead) return;` guard for the same reason).
- *
+/* Wakes a sleeping creature deliberately -- Task 7 of the
+ * screens/clock/sleep plan, the care-loop spec's own words: "Waking it
+ * deliberately is allowed and costs happiness. The original punished you
+ * for leaving the light on; this is the same idea, kept small." A no-op if
+ * the creature is already awake, or dead: there is nothing to wake either
+ * way, and a dead creature's happiness is not this function's business
+ * (kf_pet_feed()/etc. all take the identical `if (state->dead) return;`
+ * guard for the same reason).
  * Sets `state->asleep = false` directly -- Core does not need to know WHY
  * the creature is awake, only that it is (ADR 0048's own reasoning for why
  * `asleep` has no richer sub-state). The next segment
@@ -785,14 +774,12 @@ bool kf_pet_drowsy(const kf_pet_state *state);
  * next time this pet's save is loaded. */
 void kf_pet_tuck_in(kf_pet_state *state);
 
-/* The attention signal -- Task 8 of docs/superpowers/plans/2026-08-13-
- * screens-clock-sleep.md. What the creature wants right now, if anything,
- * from the FIVE things a player can actually do to it: feed, play, rest,
- * bath, flush. There is deliberately no MEDICINE -- nothing in this file
- * cures sickness directly, so there is no action for a creature to want
- * that would do that. NONE is 0, the same "falsy default" convention every
- * other enum in this file uses.
- *
+/* The attention signal -- Task 8 of the screens/clock/sleep plan. What the
+ * creature wants right now, if anything, from the FIVE things a player can
+ * actually do to it: feed, play, rest, bath, flush. There is deliberately
+ * no MEDICINE -- nothing in this file cures sickness directly, so there is
+ * no action for a creature to want that would do that. NONE is 0, the same
+ * "falsy default" convention every other enum in this file uses.
  * Order matches kf_pet_wants()'s own priority order, purely for
  * readability -- nothing reads these as a magnitude. */
 typedef enum {
@@ -905,34 +892,32 @@ kf_pet_want kf_pet_wants(const kf_pet_state *state, kf_pet_want previous);
  * boring default rather than an unspecified one. See ADR 0023. */
 uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
 
-/* Fixed-size, versioned on-disk format. See kf_pet.cpp for exactly why
- * this is hand-packed byte by byte rather than a raw struct written
- * through kf_store_write(&state, sizeof(state)) -- struct layout is not a
- * promise two different compilers (this project builds with both GCC and
- * MSVC) are obliged to keep identically. Bumped to version 2 with ADR
- * 0021 (life stages/evolution), to version 3 with ADR 0023 (personality
- * traits), to version 4 with the evolution-tree reconciliation
- * (docs/superpowers/plans/2026-08-09-evolution-tree-reconciliation.md):
- * `care_actions_taken` was added and the valid range of `teen_form` grew to
- * include KF_PET_TEEN_FORM_DUST, so an older save's `teen_form` would be
- * misread rather than merely missing a field, and to version 5 with mess
- * (docs/superpowers/plans/2026-08-09-mess.md): `poop_count`,
+/* Fixed-size, versioned on-disk format. See kf_pet.cpp for exactly why this
+ * is hand-packed byte by byte rather than a raw struct written through
+ * kf_store_write(&state, sizeof(state)) -- struct layout is not a promise
+ * two different compilers (this project builds with both GCC and MSVC) are
+ * obliged to keep identically. Bumped to version 2 with ADR 0021 (life
+ * stages/evolution), to version 3 with ADR 0023 (personality traits), to
+ * version 4 with the evolution-tree reconciliation (the evolution-tree
+ * reconciliation plan): `care_actions_taken` was added and the valid range
+ * of `teen_form` grew to include KF_PET_TEEN_FORM_DUST, so an older save's
+ * `teen_form` would be misread rather than merely missing a field, and to
+ * version 5 with mess (the mess plan): `poop_count`,
  * `seconds_until_next_poop` and `dirtiness_mp` were added, to version 6
- * with sickness (docs/superpowers/plans/2026-08-09-sickness-and-death.md):
- * `neglect_seconds` and `sick` were added -- a version-5 save has no
- * accumulated neglect to fall back to that would not silently un-sicken a
- * creature that was ill at save time, so it is refused rather than guessed
- * at -- and to version 7, in the same plan, with death: `dead` was added.
- * Bumped to version 8 with care variations (docs/superpowers/plans/
- * 2026-08-09-care-variations.md): `last_reaction` and `last_care_action`
- * were added, so a creature reloaded mid-sulk is still sulking rather than
- * silently forgetting how the last care action went. Bumped to version 9
- * with sleep (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
- * Task 6, ADR 0048): `asleep` was added -- a version-8 save has no notion
- * of whether the creature was asleep, and defaulting it to false on load
- * would be no more honest than guessing, so it is refused rather than
- * silently trusted, the same accepted cost every version bump before this
- * one already took. And bumped again to version 10 with the 2026-08-11
+ * with sickness (the sickness-and-death plan): `neglect_seconds` and `sick`
+ * were added -- a version-5 save has no accumulated neglect to fall back to
+ * that would not silently un-sicken a creature that was ill at save time,
+ * so it is refused rather than guessed at -- and to version 7, in the same
+ * plan, with death: `dead` was added. Bumped to version 8 with care
+ * variations (the care-variations plan): `last_reaction` and
+ * `last_care_action` were added, so a creature reloaded mid-sulk is still
+ * sulking rather than silently forgetting how the last care action went.
+ * Bumped to version 9 with sleep (the screens/clock/sleep plan's Task 6,
+ * ADR 0048): `asleep` was added -- a version-8 save has no notion of
+ * whether the creature was asleep, and defaulting it to false on load would
+ * be no more honest than guessing, so it is refused rather than silently
+ * trusted, the same accepted cost every version bump before this one
+ * already took. And bumped again to version 10 with the 2026-08-11
  * bedtime-behaviour extension (ADR 0052): `tucked_in` was added -- a
  * version-9 save has no notion of whether a tuck-in bonus is still owed, so
  * a version-9 save is refused, not defaulted to false (which would happen
@@ -941,12 +926,11 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * -- for one that was). Chris was asked directly about a migration path and
  * said no: "no save migration needed now during development. I'll let you
  * know if I need it at some point." So there is none here either, matching
- * the identical policy every earlier bump in this file already took.
- * A save from an earlier version is refused by kf_pet_load_and_advance()'s
+ * the identical policy every earlier bump in this file already took. A save
+ * from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
  * code, an explicit, accepted cost.
- *
  * Bumped again to version 11 with the 2026-08-11 overnight-floor extension
  * (ADR 0053, docs/architecture/adr-0053-overnight-floors-poop-suppression.md):
  * `hunger_floor_mp`, `happiness_floor_mp`, `energy_floor_mp` and

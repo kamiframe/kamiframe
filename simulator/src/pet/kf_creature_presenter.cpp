@@ -122,7 +122,7 @@ void kf_creature_presenter_advance(const kf_pet_state *pet, uint32_t dt_ms) {
         g_egg_bob_elapsed_ms += dt_ms;
         kf_creature_tick_anim(&g_creature, dt_ms);
     } else if (pet->asleep) {
-        /* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md):
+        /* Task 7 (the screens/clock/sleep plan):
          * "the creature settled where it stands, and the wander stopped."
          * kf_creature_update() is what owns c->x/y/target_x/target_y
          * (hakoniwaos/src/creature.cpp) -- calling it here regardless of

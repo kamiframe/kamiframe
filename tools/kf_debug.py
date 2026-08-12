@@ -809,7 +809,7 @@ def cmd_rtc(link, args):
     physical chip haven't drifted apart, and the only way to observe the
     chip's OSF (oscillator-stopped) flag remotely -- see
     ports/esp32/main/kf_dbg_bridge.cpp's handle_rtc() and Task 5 of
-    docs/superpowers/plans/2026-08-13-screens-clock-sleep.md, whose
+    the screens/clock/sleep plan, whose
     coin-cell-removed negative case has no other way to be checked without
     standing at the bench reading a boot log.
 

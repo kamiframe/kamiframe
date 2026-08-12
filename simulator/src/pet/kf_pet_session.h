@@ -109,8 +109,8 @@ void kf_pet_session_flush(void);
 
 /* Wakes the active pet deliberately, if it is currently asleep -- see kf/
  * pet.h's kf_pet_wake(). A no-op otherwise (already awake, or dead), same
- * as every other care action against a dead pet. Task 7 of docs/
- * superpowers/plans/2026-08-13-screens-clock-sleep.md. */
+ * as every other care action against a dead pet. Task 7 of the
+ * screens/clock/sleep plan. */
 void kf_pet_session_wake(void);
 
 /* Tucks the active pet in, if it is currently drowsy -- see kf/pet.h's
@@ -120,16 +120,16 @@ void kf_pet_session_wake(void);
  * has. ADR 0052, the 2026-08-11 bedtime-behaviour extension. */
 void kf_pet_session_tuck_in(void);
 
-/* The attention signal (Task 8, docs/superpowers/plans/2026-08-13-screens-
- * clock-sleep.md): wraps kf/pet.h's pure kf_pet_wants() with the one piece
- * of memory hysteresis needs -- what this session reported last time --
- * held here rather than in kf_pet_state, so it never touches the save
- * format (see kf_pet_wants()'s own header comment on why). Reset to
- * KF_PET_WANT_NONE by kf_pet_session_init() and by the two DEBUG-gated
- * functions below that fabricate a fresh state (_debug_reset(),
- * _debug_jump_to_stage()) -- a fresh session or a fabricated jump has no
- * real "was already asking" history to carry forward, the same reasoning
- * those two already apply to the debug snapshot ring. */
+/* The attention signal (Task 8, the screens/clock/sleep plan): wraps
+ * kf/pet.h's pure kf_pet_wants() with the one piece of memory hysteresis
+ * needs -- what this session reported last time -- held here rather than in
+ * kf_pet_state, so it never touches the save format (see kf_pet_wants()'s
+ * own header comment on why). Reset to KF_PET_WANT_NONE by
+ * kf_pet_session_init() and by the two DEBUG-gated functions below that
+ * fabricate a fresh state (_debug_reset(), _debug_jump_to_stage()) -- a
+ * fresh session or a fabricated jump has no real "was already asking"
+ * history to carry forward, the same reasoning those two already apply to
+ * the debug snapshot ring. */
 kf_pet_want kf_pet_session_wants(void);
 
 /* Persists the active pet's state now, via kf_pet_save(). Called

@@ -4,7 +4,7 @@
  * Home, redrawn as a creature you can watch rather than a bars-and-buttons
  * LVGL screen (Task 4 of the pet-screen plan; see kf_screen_nav.cpp for the
  * routing that puts this here). Since Task 4 of the Lua game-layer plan
- * (docs/superpowers/plans/2026-08-12-lua-game-layer.md), this file does not
+ * (the Lua game-layer plan), this file does not
  * draw at all: it DECLARES the creature, the mess, the shrine and the stats
  * band to kf/scene.h's retained scene -- kf_scene_set_pos(), kf_scene_set_
  * sprite(), kf_scene_set_size() and friends -- once per frame, and
@@ -179,7 +179,7 @@ kf_rect kf_creature_screen_debug_bounds(void);
  * anim's accumulator arithmetic in the test. */
 uint16_t kf_creature_screen_debug_anim_frame(void);
 
-/* Task 9 (docs/superpowers/plans/2026-08-11-hardware-bringup.md): the stats
+/* Task 9 (the hardware bring-up plan): the stats
  * band's three need bars, hunger/happiness/energy in that order -- index 0,
  * 1, 2 respectively, kf_pet_state's own field order (kf/pet.h) -- which this
  * header exposes ONLY as much as the corresponding creature/egg/shrine

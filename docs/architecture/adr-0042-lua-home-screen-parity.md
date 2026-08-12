@@ -2,9 +2,9 @@
 
 ## Context
 
-Task 5 of the Lua game-layer plan (`docs/superpowers/plans/2026-08-12-lua-
-game-layer.md`) makes `examples/creature_demo/creature.lua` declare the
-whole home screen — background, creature with pose and facing, mess, three
+Task 5 of the Lua game-layer plan makes
+`examples/creature_demo/creature.lua` declare the whole home screen —
+background, creature with pose and facing, mess, three
 stat bars, the care guide — behind a build flag, `KF_HOME_SCREEN=cpp|lua`,
 defaulting to `cpp`. The point of the task is not the flag; it is
 `run_lua_vs_cpp_screen_check()`, which drives a fresh pet through an

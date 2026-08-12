@@ -15,7 +15,7 @@ third-party bitmap data to license.
 
 Character set is deliberately small: space, 0-9, A-Z (uppercase only), and
 the punctuation the constraint HUD needs (. , : - / % + ( )), plus "!" added
-for Task 8 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
+for Task 8 of the screens/clock/sleep plan's
 attention signal. That is 47 glyphs. Lowercase and the rest of ASCII
 punctuation are a later, mechanical addition to GLYPHS below, not a
 redesign -- see docs/architecture/adr-0010.
@@ -81,11 +81,11 @@ GLYPHS = {
 # Punctuation, defined separately so the alphabet block above stays a clean
 # reference table.
 #
-# "!" -- added for Task 8 of docs/superpowers/plans/2026-08-13-screens-
-# clock-sleep.md (the attention signal): a 5-row bar over a single dot,
-# the same shape as GLYPHS["."]'s own dot on the last row, so the two read
-# as a consistent family. Was all-zero (blank) before this -- see that
-# task's own note on why nothing drew it against the old font.
+# "!" -- added for Task 8 of the screens/clock/sleep plan (the attention
+# signal): a 5-row bar over a single dot, the same shape as GLYPHS["."]'s
+# own dot on the last row, so the two read as a consistent family. Was
+# all-zero (blank) before this -- see that task's own note on why nothing
+# drew it against the old font.
 GLYPHS["!"] = [".....", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."]
 GLYPHS["."] = [".....", ".....", ".....", ".....", ".....", ".....", "..#.."]
 GLYPHS[","] = [".....", ".....", ".....", ".....", ".....", "..#..", ".#..."]

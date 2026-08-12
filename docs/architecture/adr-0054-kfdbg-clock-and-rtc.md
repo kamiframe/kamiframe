@@ -42,7 +42,7 @@ Drowsy/Bedtime/Morning buttons had no hardware equivalent, and
 them, or show whether a real pet was asleep at all.
 
 `KFDBG RTC` specifically closes a second, older gap: Task 5 of
-`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md` specified this
+the screens/clock/sleep plan specified this
 exact command and never built it, instead reading the DS3231's state off a
 boot log line during its one bench run (see that plan's own STATUS block).
 That proved the coin cell holds time across a real power cut, but left no
@@ -247,7 +247,7 @@ commands.
 
 ## Consequences
 
-- `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s Task 5
+- the screens/clock/sleep plan's Task 5
   STATUS block, which said `KFDBG RTC` was never built, is updated to
   reflect this task -- see that file directly rather than duplicating its
   text here (CLAUDE.md's own instruction: update the plan, don't append a

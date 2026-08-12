@@ -60,32 +60,30 @@ constexpr const char *TAG = "pet";
 
 /* Save format version. Bumped to 2 with ADR 0021 (life stages/evolution),
  * to 3 with ADR 0023 (personality traits), to 4 with the evolution-tree
- * reconciliation (care_actions_taken added; see kf/pet.h's KF_PET_SAVE_BYTES
- * comment), to 5 with mess (poop_count, seconds_until_next_poop and
- * dirtiness_mp added), to 6 with sickness (neglect_seconds and sick
- * added) -- a version-5 save has no notion of accumulated neglect at all,
- * so there is no honest default to fill in for it (zero would silently
- * un-sicken a creature that was ill the moment it was saved); refusing the
- * load and falling back to a fresh pet is the same accepted cost the
- * version-4/5 bumps already took, not a new one -- and to 7 with death
- * (dead added). A second bump in the same branch is correct and cheap: a
- * save written between the sickness and death work is a real file on a
- * real developer's disk with a genuinely different layout, and versions
- * exist precisely so that is refused rather than misread. Bumped again to
- * 8 with care variations (docs/superpowers/plans/2026-08-09-care-
- * variations.md): `last_reaction` and `last_care_action` were added. And to
- * 9 with sleep (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
- * Task 6, ADR 0048): `asleep` was added. And to 10 with the 2026-08-11
- * bedtime-behaviour extension (ADR 0052): `tucked_in` was added. And to 11
- * with the 2026-08-11 overnight-floor extension (ADR 0053):
- * `hunger_floor_mp`, `happiness_floor_mp`, `energy_floor_mp` and
- * `dirtiness_cap_mp` were added.
- * kf_pet_deserialize() refuses to load anything written by a different
- * version rather than guessing at a layout that changed, see unpack()
- * below. */
+ * reconciliation (care_actions_taken added; see kf/pet.h's
+ * KF_PET_SAVE_BYTES comment), to 5 with mess (poop_count,
+ * seconds_until_next_poop and dirtiness_mp added), to 6 with sickness
+ * (neglect_seconds and sick added) -- a version-5 save has no notion of
+ * accumulated neglect at all, so there is no honest default to fill in for
+ * it (zero would silently un-sicken a creature that was ill the moment it
+ * was saved); refusing the load and falling back to a fresh pet is the same
+ * accepted cost the version-4/5 bumps already took, not a new one -- and to
+ * 7 with death (dead added). A second bump in the same branch is correct
+ * and cheap: a save written between the sickness and death work is a real
+ * file on a real developer's disk with a genuinely different layout, and
+ * versions exist precisely so that is refused rather than misread. Bumped
+ * again to 8 with care variations (the care-variations plan):
+ * `last_reaction` and `last_care_action` were added. And to 9 with sleep
+ * (the screens/clock/sleep plan's Task 6, ADR 0048): `asleep` was added.
+ * And to 10 with the 2026-08-11 bedtime-behaviour extension (ADR 0052):
+ * `tucked_in` was added. And to 11 with the 2026-08-11 overnight-floor
+ * extension (ADR 0053): `hunger_floor_mp`, `happiness_floor_mp`,
+ * `energy_floor_mp` and `dirtiness_cap_mp` were added. kf_pet_deserialize()
+ * refuses to load anything written by a different version rather than
+ * guessing at a layout that changed, see unpack() below. */
 constexpr uint8_t kSaveVersion = 11;
 
-/* Sleep, per docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
+/* Sleep, per the core care-loop design spec's
  * "Sleep, settled". Night is a FIXED clock-time window, not config -- the
  * spec is explicit that Core does not re-derive kf_clock_seconds_in_daily_
  * window()'s own arithmetic, and a per-pet bedtime is not something either
@@ -100,15 +98,13 @@ constexpr uint8_t kNightEndHour = 7u;
  * value, for the same reason every other rate in this file is computed in
  * integer arithmetic with a uint64_t intermediate (see the file header
  * comment): no float anywhere in hakoniwaos/.
- *
  * WHAT this is used for -- ADR 0048 records the reasoning at length; the
- * short version is docs/superpowers/specs/2026-08-09-core-care-loop-
- * design.md's own: "because nights do not accrue neglect, sickness and
- * death arrive on roughly fifteen hours a day rather than twenty-four...
- * compress it, so a waking day still costs a full day's worth." Applied to
- * the THRESHOLDS (sickness_onset_seconds, sickness_death_seconds), never to
- * the rate neglect_seconds climbs at -- see apply_stage_segment() below for
- * why. */
+ * short version is the core care-loop design spec's own: "because nights do
+ * not accrue neglect, sickness and death arrive on roughly fifteen hours a
+ * day rather than twenty-four... compress it, so a waking day still costs a
+ * full day's worth." Applied to the THRESHOLDS (sickness_onset_seconds,
+ * sickness_death_seconds), never to the rate neglect_seconds climbs at --
+ * see apply_stage_segment() below for why. */
 constexpr uint32_t kWakingFractionNumerator = 15u;
 constexpr uint32_t kWakingFractionDenominator = 24u;
 
@@ -608,22 +604,21 @@ void apply_tuck_in_bonus_if_due(kf_pet_state *state,
  * seconds, all still within the SAME stage -- kf_pet_advance()'s loop
  * never lets a segment cross a stage boundary, so this never needs to know
  * about stages other than the current one.
- *
  * `have_clock`/`segment_start_epoch`: the wall-clock instant this segment
  * begins at, IF the wall clock is known -- see kf_pet_advance()'s own
  * comment for where `segment_start_epoch` comes from (a cursor mirroring
  * `state->last_advanced`) and kf_pet_state::last_advanced's comment for why
  * "known" means `last_advanced.valid`. When `have_clock` is false,
  * `segment_start_epoch` is meaningless and every sleep-related computation
- * below is skipped entirely -- state->asleep stays whatever it already
- * was (false, for any state that has never gone through kf_pet_load_and_
+ * below is skipped entirely -- state->asleep stays whatever it already was
+ * (false, for any state that has never gone through kf_pet_load_and_
  * advance() or apply_stage_segment_for_test()'s deliberately clock-less
  * call), neglect accrual is untouched, and the sickness/death thresholds
  * are the raw config values. This is what keeps every pre-sleep check in
- * this codebase (hokorimaru_check among them -- see docs/superpowers/
- * plans/2026-08-13-screens-clock-sleep.md's Task 6 requirement 7) exactly
- * as it was: none of them ever establish a wall clock, so sleep is
- * completely inert for them, not approximately inert. */
+ * this codebase (hokorimaru_check among them -- see the screens/clock/sleep
+ * plan's Task 6 requirement 7) exactly as it was: none of them ever
+ * establish a wall clock, so sleep is completely inert for them, not
+ * approximately inert. */
 void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
                           uint32_t segment, bool have_clock,
                           int64_t segment_start_epoch) {
@@ -641,15 +636,14 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
          * does not accumulate here either, for the same reason
          * care_integral_mp_seconds does not: nothing has been cared for
          * yet, so there is nothing meaningful to weight by.
-         *
-         * EGGS DO NOT SLEEP (docs/superpowers/plans/2026-08-13-screens-
-         * clock-sleep.md's Task 6 requirement 9, decided in ADR 0048):
-         * there is no egg_sleeping art in the shipped pack, and an egg has
-         * nothing to be tired from in the first place -- it is "no care
-         * needed as an egg" taken to its logical end. Returning here
-         * before ever reaching the sleep computation below is what makes
-         * that true: state->asleep simply never gets set for an egg, so it
-         * stays at whatever kf_pet_init() left it (false). */
+         * EGGS DO NOT SLEEP (the screens/clock/sleep plan's Task 6
+         * requirement 9, decided in ADR 0048): there is no egg_sleeping art
+         * in the shipped pack, and an egg has nothing to be tired from in
+         * the first place -- it is "no care needed as an egg" taken to its
+         * logical end. Returning here before ever reaching the sleep
+         * computation below is what makes that true: state->asleep simply
+         * never gets set for an egg, so it stays at whatever kf_pet_init()
+         * left it (false). */
         return;
     }
 
@@ -836,11 +830,11 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
      * against kf_clock_seconds_in_daily_window() (a one-second probe
      * starting at the instant in question) rather than a second, separately
      * written "is this hour a night hour" check: Core does not re-derive
-     * the window (docs/superpowers/specs/2026-08-09-core-care-loop-
-     * design.md's "Sleep, settled"), including for a yes/no membership
-     * test, not just the seconds-accounting below. Skipped (state->asleep
-     * left at whatever it already was) without a clock -- see this
-     * function's own header comment. */
+     * the window (the core care-loop design spec's "Sleep, settled"),
+     * including for a yes/no membership test, not just the
+     * seconds-accounting below. Skipped (state->asleep left at whatever it
+     * already was) without a clock -- see this function's own header
+     * comment. */
     if (have_clock) {
         const int64_t now_epoch =
             segment_start_epoch + static_cast<int64_t>(segment);
@@ -1016,16 +1010,16 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
             } else {
                 /* Still asleep at the end of this segment: DELIBERATELY NO
                  * CLAMP HERE -- this is the fix for the defect ADR 0053
-                 * itself now documents (docs/reviews/2026-08-12-sleep-
-                 * stack-audit.md finding 1). The floor/cap is a WAKE-INSTANT
-                 * set-point ("what the creature wakes up with"), not a
-                 * level held continuously through the night, and clamping
-                 * it here every segment applied it as the latter by
-                 * accident. `kf_pet_session_frame()` flushes live play
-                 * every KF_PET_SESSION_FLUSH_SECONDS (30s), so a real
-                 * overnight session used to hit this branch roughly 1,080
-                 * times a night -- re-clamping state->hunger_mp etc. up to
-                 * the floor on EVERY one of those segments, not just once.
+                 * itself now documents (the sleep-stack audit finding 1).
+                 * The floor/cap is a WAKE-INSTANT set-point ("what the
+                 * creature wakes up with"), not a level held continuously
+                 * through the night, and clamping it here every segment
+                 * applied it as the latter by accident.
+                 * `kf_pet_session_frame()` flushes live play every
+                 * KF_PET_SESSION_FLUSH_SECONDS (30s), so a real overnight
+                 * session used to hit this branch roughly 1,080 times a
+                 * night -- re-clamping state->hunger_mp etc. up to the
+                 * floor on EVERY one of those segments, not just once.
                  * Because care_integral_mp_seconds (above) accumulates each
                  * segment's *start-of-segment* value, every one of those
                  * re-clamps fed a floor-level number into the CHILD-stage
@@ -1105,7 +1099,7 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
      * See kf_pet_advance()'s teen-branch selection for where the dust form
      * went instead.
      *
-     * SLEEP, per docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
+     * SLEEP, per the core care-loop design spec's
      * "Sleep, settled": "the neglect clock pauses while asleep, but the
      * needs do not." The needs already decayed above, unconditionally --
      * that half needed no change at all. This half is the accrual pause:
@@ -1411,7 +1405,7 @@ uint8_t kf_pet_reaction_to(uint8_t base_trait, kf_pet_care_action action,
 kf_pet_config kf_pet_default_config(void) {
     kf_pet_config c{};
     /* Per-stage demand. Derived in
-     * docs/superpowers/plans/2026-08-09-demand-curve.md: "needs attention"
+     * the demand-curve plan: "needs attention"
      * is dropping to 70%, "critical" is reaching zero, and the three needs
      * keep the 1 : 0.67 : 0.5 ratio the old flat defaults used, so hunger
      * bites first and energy last.
@@ -1477,7 +1471,7 @@ kf_pet_config kf_pet_default_config(void) {
      * care outweighs it. */
     c.personality_recency_half_life_seconds = 86400u; /* 24 hours */
 
-    /* Care variations (docs/superpowers/plans/2026-08-09-care-variations.md):
+    /* Care variations (the care-variations plan):
      * what a care action restores, by how the creature took it. Illustrative,
      * same status as every other number in this function -- liked more than
      * triples disliked, which is the discovery signal: the gap has to be big
@@ -1585,19 +1579,19 @@ void kf_pet_advance(kf_pet_state *state, const kf_pet_config *config,
         return;
     }
 
-    /* Requirement 1 of docs/superpowers/plans/2026-08-13-screens-clock-
-     * sleep.md's Task 6, landed and checked before any sleep logic exists
-     * (see run_pet_check()'s new "last_advanced tracks live play" case):
-     * `cursor` mirrors state->last_advanced.epoch_seconds and is what lets
-     * every apply_stage_segment() call below know the wall-clock instant
-     * ITS OWN segment starts at, without this function ever calling into
-     * the HAL -- see kf_pet_state::last_advanced's own comment for the
-     * full reasoning. `have_clock` is snapshotted once, here, rather than
-     * re-read as `state->last_advanced.valid` after each segment: nothing
-     * below ever sets last_advanced.valid true from false or the reverse,
-     * only advances epoch_seconds when it was already valid, so the value
-     * cannot change mid-call and re-reading it would just be the same
-     * flag, spelled out repeatedly. */
+    /* Requirement 1 of the screens/clock/sleep plan's Task 6, landed and
+     * checked before any sleep logic exists (see run_pet_check()'s new
+     * "last_advanced tracks live play" case): `cursor` mirrors
+     * state->last_advanced.epoch_seconds and is what lets every
+     * apply_stage_segment() call below know the wall-clock instant ITS OWN
+     * segment starts at, without this function ever calling into the HAL --
+     * see kf_pet_state::last_advanced's own comment for the full reasoning.
+     * `have_clock` is snapshotted once, here, rather than re-read as
+     * `state->last_advanced.valid` after each segment: nothing below ever
+     * sets last_advanced.valid true from false or the reverse, only
+     * advances epoch_seconds when it was already valid, so the value cannot
+     * change mid-call and re-reading it would just be the same flag,
+     * spelled out repeatedly. */
     const bool have_clock = state->last_advanced.valid;
     int64_t cursor = state->last_advanced.epoch_seconds;
 
@@ -1879,7 +1873,7 @@ void kf_pet_tuck_in(kf_pet_state *state) {
     state->tucked_in = true;
 }
 
-/* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): see
+/* Task 8 (the screens/clock/sleep plan): see
  * kf/pet.h's own long comment on kf_pet_wants() for why `previous` exists
  * at all and what each threshold means -- not repeated here. */
 kf_pet_want kf_pet_wants(const kf_pet_state *state, kf_pet_want previous) {

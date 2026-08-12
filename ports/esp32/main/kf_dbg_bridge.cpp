@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
- *
  * See kf_dbg_bridge.h for the shape of this (two low-priority FreeRTOS
  * tasks + two queues, command execution on the main frame-loop thread) and
  * why. This file is the ESP-IDF-specific wiring: the UART itself, the
@@ -9,7 +8,6 @@
  * time-control quartet ADVANCE/RESET/MULT/CLOCK (see "Time control"
  * below), the five care actions FEED/PLAY/REST/BATH/FLUSH, and JUMP (see
  * "Care actions and stage jump" below).
- *
  * SCANLINE: samples the ILI9341's Get_Scanline register (command 0x45) 64
  * times in a row over SPI and reports the pattern, so a human can judge
  * whether beam-racing -- delaying a write until the panel's own scan-out has
@@ -36,14 +34,12 @@
  * of this diagnostic's first cut. dummy_bytes_assumed in the JSON reply
  * always describes the unprefixed fields' framing, so it changed from 1 to
  * 0 along with the swap.
- *
  * VSYNC: the feature this diagnostic exists to justify. `KFDBG VSYNC <0|1>`
  * toggles esp_display.cpp's push_rect() waiting for the scan to clear a
  * rectangle before writing it -- see that file's own header comment on the
  * feature (above push_rect()) for the read-at-40MHz reasoning and the wait
  * itself, and kf_esp_display_vsync.h for the on/off and stats contract this
  * file's handle_vsync() and handle_state() are the two ends of.
- *
  * Time control: an egg on this codebase's default config lasts 1 hour and
  * does not decay at all, and post-hatch decay is hours-to-days per need
  * (hunger empties in 4 real days, the slowest of the three) -- fine for a
@@ -63,20 +59,18 @@
  * a real board fixable over this bridge (see handle_clock_epoch(), and
  * ports/esp32/README.md's former "no way to set the date from the device"
  * open question -- this closes it).
- *
- * RTC: KFDBG RTC reads the DS3231 real-time-clock chip's registers
- * DIRECTLY over I2C, not kf_time_wall() (see kf_esp_time_debug.h's own
- * comment on why that distinction is the entire point) -- an observe-tier
- * command, gated by KF_DBG_BRIDGE_ENABLE alone like PING/SHOT/STATE/
- * SCANLINE/VSYNC, never by KF_DBG_MUTATE_ENABLE, because reading a chip's
- * registers changes nothing. Built for Task 5 of docs/superpowers/plans/
- * 2026-08-13-screens-clock-sleep.md's bench procedure: comparing this
- * against KFDBG STATE's implicit reliance on the RAM clock is what proves
- * (or disproves) that the two haven't drifted apart, and is the only way to
- * observe the chip's OSF (oscillator-stopped) flag from off-device at all --
- * the coin-cell-removed negative case that plan explicitly calls "not
- * optional" has no other way to be checked remotely.
- *
+ * RTC: KFDBG RTC reads the DS3231 real-time-clock chip's registers DIRECTLY
+ * over I2C, not kf_time_wall() (see kf_esp_time_debug.h's own comment on
+ * why that distinction is the entire point) -- an observe-tier command,
+ * gated by KF_DBG_BRIDGE_ENABLE alone like PING/SHOT/STATE/ SCANLINE/VSYNC,
+ * never by KF_DBG_MUTATE_ENABLE, because reading a chip's registers changes
+ * nothing. Built for Task 5 of the screens/clock/sleep plan's bench
+ * procedure: comparing this against KFDBG STATE's implicit reliance on the
+ * RAM clock is what proves (or disproves) that the two haven't drifted
+ * apart, and is the only way to observe the chip's OSF (oscillator-stopped)
+ * flag from off-device at all -- the coin-cell-removed negative case that
+ * plan explicitly calls "not optional" has no other way to be checked
+ * remotely.
  * Care actions and stage jump: the desktop simulator reaches all five care
  * actions (feed/play/rest/bath/flush) off number keys 1-5 (sdl_input.cpp)
  * and a life-stage jump off sdl_debug_window.cpp's own buttons -- neither
@@ -91,7 +85,6 @@
  * cycling state; sidestepping Core's debounce, which a one-shot BTN
  * injection cannot reliably clear -- see tools/kf_debug.py's `press`
  * --hold-ms comment for that specific, already-found bug).
- *
  * FEED/PLAY/REST/BATH/FLUSH/JUMP/ADVANCE/RESET/MULT/CLOCK/BTN/BTNHOLD --
  * every command that changes the pet or the simulation, TWELVE in all
  * since CLOCK joined the set -- are gated behind KF_DBG_MUTATE_ENABLE (see
@@ -114,7 +107,6 @@
  * VSYNC/RTC stay gated by KF_DBG_BRIDGE_ENABLE alone, same as always: none
  * of them changes anything. Turning off KF_DBG_BRIDGE_ENABLE entirely
  * still removes all of it, same as everything else in this file.
- *
  * Wire format, confirmed against tools/kf_debug.py and tools/
  * kf_debug_selftest.py (the host side, already written and tested):
  * EVERY reply type is base64 inside the KFDBG-BEGIN/END frame, not just
@@ -124,7 +116,6 @@
  * which is the one function that implements this and is shared by every
  * command handler, so there is exactly one place this rule could be
  * wrong instead of five.
- *
  * Almost the entire file lives inside `#if KF_DBG_BRIDGE_ENABLE`, down to
  * the closing `#else` near the bottom that supplies the four empty
  * function bodies instead. That is deliberate, not just tidy: the first

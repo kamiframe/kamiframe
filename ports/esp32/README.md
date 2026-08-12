@@ -458,8 +458,8 @@ These are already true and need to stay true:
   **Not run against real hardware.** See
   `docs/architecture/adr-0054-kfdbg-clock-and-rtc.md`'s "Not verified"
   section for the bench checklist this leaves open, including the
-  coin-cell-removed OSF path Task 5 (`docs/superpowers/plans/
-  2026-08-13-screens-clock-sleep.md`) already called "not optional."
+  coin-cell-removed OSF path Task 5 (the screens/clock/sleep plan) already
+  called "not optional."
 
 ## What still has to be written
 

@@ -35,25 +35,22 @@ typedef enum {
 } kf_creature_pose;
 
 /* Pick the pose for the pet as it stands right now.
- *
  * reaction_hold_ms is how long the most recent care reaction should still be
  * showing on the creature's body, counted down by the caller. It exists
  * because kf_pet_state::last_reaction is sticky -- it keeps the last reaction
  * forever -- so reading it directly would leave a creature grinning for the
  * rest of its life after one liked feed. Zero means the reaction has finished
  * being expressed.
- *
  * Precedence, strongest first: dead, sick, ASLEEP, then the held reaction,
- * then neutral. As of docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md's Task 6 (ADR 0048), Core CAN say the creature is asleep --
- * kf_pet_state::asleep, computed by kf_pet_advance()/apply_stage_segment()
- * (hakoniwaos/src/pet.cpp) from the wall clock and the night window -- so
- * this function reads it directly rather than reasoning about time itself.
- * (An earlier version of this comment said sleeping was never returned,
- * because nothing in Core could say the creature was asleep yet; that
- * stopped being true the moment the field above landed, which is why it
- * is being corrected here rather than left to go stale a second time.)
- *
+ * then neutral. As of the screens/clock/sleep plan's Task 6 (ADR 0048),
+ * Core CAN say the creature is asleep -- kf_pet_state::asleep, computed by
+ * kf_pet_advance()/apply_stage_segment() (hakoniwaos/src/pet.cpp) from the
+ * wall clock and the night window -- so this function reads it directly
+ * rather than reasoning about time itself. (An earlier version of this
+ * comment said sleeping was never returned, because nothing in Core could
+ * say the creature was asleep yet; that stopped being true the moment the
+ * field above landed, which is why it is being corrected here rather than
+ * left to go stale a second time.)
  * Sleeping sits ABOVE the held reaction, deliberately: a creature that is
  * asleep should look asleep even if `last_reaction`/`reaction_hold_ms` are
  * still coasting on the last thing that happened before it dropped off,

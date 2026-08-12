@@ -6,8 +6,7 @@
 
 ## Context
 
-Task 7 of the screens/clock/sleep plan
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`) is the game's
+Task 7 of the screens/clock/sleep plan is the game's
 half of sleep. Task 6 (ADR 0048) landed `kf_pet_state::asleep`,
 `kf_creature_pose_for()` returning `KF_CREATURE_POSE_SLEEPING`, and the
 save-format bump — entirely Core-side, nothing exposed to Lua. This task

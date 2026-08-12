@@ -5,8 +5,7 @@
 
 ## Context
 
-Task 5 of the Lua game-layer plan
-(`docs/superpowers/plans/2026-08-12-lua-game-layer.md`) proved
+Task 5 of the Lua game-layer plan proved
 `examples/creature_demo/creature.lua` draws Home byte-identically to
 `kf_creature_screen.cpp` across 250 frames (`run_lua_vs_cpp_screen_check()`,
 ADR 0042), but left one gap open rather than patching it: `screen_nav_check`

@@ -3,7 +3,7 @@
 # Copyright the Kamiframe contributors.
 """Embed a .lua file into a C++ header as a raw string literal.
 
-Task 1 of docs/superpowers/plans/2026-08-12-lua-game-layer.md makes the
+Task 1 of the Lua game-layer plan makes the
 demo pet's script a real file on disk (examples/creature_demo/creature.lua)
 instead of a C++ raw string literal a developer had to edit and recompile.
 This tool is the other half of that: it turns a .lua file back into the

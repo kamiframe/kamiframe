@@ -452,9 +452,8 @@ def iter_sprites(raw: dict) -> Iterator[SpriteSpec]:
 class EntrySpec:
     """One .kfpack entry: every frame of one entity's one state in one
     direction, in frame order. Frames live contiguously in a single entry
-    (ADR 0033's format, extended -- see docs/superpowers/plans/2026-08-10-
-    animated-indexed-sprites.md) so a player addresses frame k
-    arithmetically instead of by name."""
+    (ADR 0033's format, extended -- see the animated-indexed-sprites plan) so
+    a player addresses frame k arithmetically instead of by name."""
     entry_name: str
     frames: tuple[SpriteSpec, ...]
 

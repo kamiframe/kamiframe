@@ -5,7 +5,7 @@
 
 ## Context
 
-Task 2 of `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md` — the
+Task 2 of the screens/clock/sleep plan — the
 owner's number one, stated plainly when deciding what to build next:
 *"first up then is doing the info screen in LUA to see if it can be done."*
 If it comes out clean, LVGL's last real reason to exist in a running build

@@ -99,7 +99,7 @@ void kf_lua_port_frame(uint32_t synthetic_frame_delta_ms);
  * active. */
 void kf_lua_port_home_frame(uint32_t synthetic_frame_delta_ms);
 
-/* Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md (ADR
+/* Task 2 of the screens/clock/sleep plan (ADR
  * 0045): calls the script's global on_info_frame(dt_ms) function, if it
  * defined one -- the exact same shape as kf_lua_port_home_frame() above,
  * deliberately a SEPARATE entry point rather than a second call to
@@ -121,7 +121,7 @@ void kf_lua_port_home_frame(uint32_t synthetic_frame_delta_ms);
  * replaced. */
 void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms);
 
-/* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: calls
+/* Task 4 of the screens/clock/sleep plan: calls
  * the script's global on_settings_frame(dt_ms, field, hour, minute, ampm,
  * saved) -- the Settings screen's own dedicated entry point, the same
  * reasoning as kf_lua_port_info_frame() above applied to a third screen: a
@@ -176,17 +176,16 @@ int64_t kf_lua_port_last_report();
 uint32_t kf_lua_port_frame_count();
 
 /* ---------------------------------------------------------------------
- * Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-
- * lua-game-layer.md): the same creature.lua file has to behave differently
- * depending on whether IT is the one drawing Home this build (KF_HOME_
- * SCREEN=lua) or the C++ screen is (KF_HOME_SCREEN=cpp, narration only) --
- * see kf.home_screen_active() in kf_lua_port.cpp for the Lua-facing half of
- * this and examples/creature_demo/creature.lua for how the script uses it.
- * A RUNTIME flag, not a second compiled copy of the script: kf_lua_port_
- * init() seeds it from the build's KF_HOME_SCREEN_LUA compile define, but
- * kamiframe-headless's parity check overrides it explicitly so ONE binary,
- * built with ONE KF_HOME_SCREEN default, can still drive both halves of
- * the comparison.
+ * Task 5 of the Lua game-layer plan: the same creature.lua file has to
+ * behave differently depending on whether IT is the one drawing Home this
+ * build (KF_HOME_ SCREEN=lua) or the C++ screen is (KF_HOME_SCREEN=cpp,
+ * narration only) -- see kf.home_screen_active() in kf_lua_port.cpp for the
+ * Lua-facing half of this and examples/creature_demo/creature.lua for how
+ * the script uses it. A RUNTIME flag, not a second compiled copy of the
+ * script: kf_lua_port_ init() seeds it from the build's KF_HOME_SCREEN_LUA
+ * compile define, but kamiframe-headless's parity check overrides it
+ * explicitly so ONE binary, built with ONE KF_HOME_SCREEN default, can
+ * still drive both halves of the comparison.
  * --------------------------------------------------------------------- */
 void kf_lua_port_set_home_screen_active(bool active);
 bool kf_lua_port_home_screen_active(void);

@@ -10,7 +10,7 @@
 #   - 14-character-bible-v1.md                                    (the
 #     roster, art direction, and the derivation rule -- referred to below as
 #     "the bible")
-#   - docs/superpowers/specs/2026-08-09-core-care-loop-design.md  (the five
+# - the core care-loop design spec (the five
 #     code life-stages, the care states, and the 48x48 sprite size -- referred
 #     to below as "the care-loop spec"; see its addendum for how the bible's
 #     three stages map onto the code's five)
@@ -45,7 +45,7 @@
 [meta]
 schema_version = 1
 bible_source = "14-character-bible-v1.md"
-care_loop_source = "docs/superpowers/specs/2026-08-09-core-care-loop-design.md"
+care_loop_source = "the core care-loop design spec"
 pack_format_source = "docs/architecture/adr-0033-asset-pipeline.md"
 names_unverified = true
 
@@ -78,7 +78,7 @@ states = ["happy", "neutral", "objecting", "sick", "sleeping"]
 
 # Shared juvenile ("teen") grammar, bible section 6, printed once here
 # instead of copied into each of the four teens below -- the same "config
-# lives in one place" instinct docs/superpowers/specs/2026-08-09-core-care-loop-design.md
+# lives in one place" instinct the core care-loop design spec
 # applies to its own demand-curve table.
 juvenile_shared_grammar = "Perfectly symmetrical, one unbroken clean line, no marks anywhere, and one oversized feature that is exactly the thing that will wear down later. It over-performs its verb, because it has never done the job before."
 
@@ -189,7 +189,7 @@ states = ["idle"]
 directions = ["s"]  # scenery has no facings -- see the comment above
 has_design_brief = true
 object = "none -- this is scenery, not a creature derived from a source object the way the bible's derivation rule works for every other entity"
-read = "A small roadside shrine, docs/superpowers/specs/2026-08-09-core-care-loop-design.md's own phrase: weathered wood and stone, a simple peaked roof over a modest base, one small offering (a cup, a flower, a coin) resting in front of it. Reads as remembrance and continuity, not a Western headstone or plot marker -- gentle, not somber."
+read = "A small roadside shrine, the core care-loop design spec's own phrase: weathered wood and stone, a simple peaked roof over a modest base, one small offering (a cup, a flower, a coin) resting in front of it. Reads as remembrance and continuity, not a Western headstone or plot marker -- gentle, not somber."
 quirk = "Sits still. There is nothing to react to -- it is the one sprite in the roster with no care-loop states at all."
 note = "Chris, 2026-08-09 (via the core-care-loop spec): \"Shrine, not a gravestone ... it gives the eventual 'start a new egg' action somewhere natural to live -- you leave an offering rather than dig.\" Added in the second art-generation pass alongside marumaru (child) and hamaru (teen0) specifically because the screen code was already falling back to a placeholder rectangle without it."
 render_note = "Same 48x48 canvas as every other creature sprite, centred, generous transparent margin -- kf_creature_screen.cpp centres whatever size this sprite actually is, so exact framing is a style choice, not a hard requirement, but 48x48 keeps it consistent with the rest of the roster and with the placeholder it replaces."

@@ -3,7 +3,7 @@
  *
  * One debug-only accessor into esp_time.cpp's DS3231 driver, for
  * ports/esp32/main/kf_dbg_bridge.cpp's `KFDBG RTC` command (Task 5 of
- * docs/superpowers/plans/2026-08-13-screens-clock-sleep.md, finally built).
+ * the screens/clock/sleep plan, finally built).
  *
  * Deliberately not a duplicate of the register map. esp_time.cpp already
  * owns the DS3231's registers, the BCD<->epoch conversion, and the

@@ -6,7 +6,7 @@
 ## Context
 
 Task 1 of the Lua game layer plan
-(`docs/superpowers/plans/2026-08-12-lua-game-layer.md`) gave the demo pet a
+(the Lua game-layer plan) gave the demo pet a
 real `.lua` file. That script still cannot draw a single pixel: nothing in
 `sdk/lua/kf_lua_port.cpp` exposes `kf_fill_rect`, `kf_blit_frame`,
 `kf_text_draw`, or the framebuffer to Lua at all. This task is the piece that

@@ -195,7 +195,7 @@ runtime rather than from compile-time macros (this needed care around
 
 ### Superseded in part
 
-`docs/superpowers/plans/2026-08-10-animated-indexed-sprites.md`'s Task 1
+the animated-indexed-sprites plan's Task 1
 added a third `kf_asset_type`, `ASSET_TYPE_SPRITE_INDEXED` (2), so the claim
 above that `ASSET_TYPE_SPRITE` (0) is "the only type anything loads today" is
 no longer true — `hakoniwaos/src/assets.cpp` decodes both, and
@@ -212,7 +212,7 @@ layout, one decode branch, no format-version bump.
 
 **"Not verified"'s claim that `esp_partition_mmap()` has never returned
 readable pixel data on real silicon** is also superseded:
-`docs/superpowers/plans/2026-08-11-hardware-bringup.md` confirmed it on the
+the hardware bring-up plan confirmed it on the
 bench, first against the small `hello_sprite` pack (1,156 bytes, the
 indexed format above) and only later against the full 556,488-byte
 `creature_demo` pack — the board booted, mapped the partition, and rendered

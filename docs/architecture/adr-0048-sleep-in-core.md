@@ -6,10 +6,9 @@
 
 ## Context
 
-Task 6 of the screens/clock/sleep plan
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`) implements sleep
+Task 6 of the screens/clock/sleep plan implements sleep
 as the care-loop spec settles it
-(`docs/superpowers/specs/2026-08-09-core-care-loop-design.md`'s "Sleep,
+(the core care-loop design spec's "Sleep,
 settled"). The design was already decided before this task started — Chris's
 answer that the creature falls asleep entirely by itself, live and offline
 following the same rule, is what makes an otherwise-hard offline problem
@@ -67,7 +66,7 @@ is simply never applied to anything again.
 The spec's "whatever the drowsy state needs" turned out to be nothing beyond
 the one boolean. **There is no persisted "drowsy" sub-state in Core.**
 Settling the creature into bed is the game layer's decoration
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s Task 7,
+(the screens/clock/sleep plan's Task 7,
 declared in `creature.lua`), not a mechanism Core depends on — the spec is
 explicit that removing the drowsy/settle interaction from the *mechanism*
 (rather than solving its offline-meaninglessness problem) is what unblocked

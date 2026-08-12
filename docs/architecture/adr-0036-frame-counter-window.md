@@ -5,7 +5,7 @@
 
 ## Context
 
-`docs/superpowers/plans/2026-08-11-hardware-bringup.md` (Task 1) exists
+the hardware bring-up plan (Task 1) exists
 because the hardware bring-up plan's own risk audit found that the number
 the plan's later, on-device budget task is supposed to read was, at the
 time of writing, **provably zero, structurally** -- not a measurement that

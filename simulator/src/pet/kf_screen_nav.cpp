@@ -97,15 +97,14 @@ void show(size_t index) {
 #endif
     } else if (g_settings_index != kSettingsIndexUnset &&
                index == static_cast<size_t>(g_settings_index)) {
-        /* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-
-         * sleep.md: Settings is special beyond the scene-group bookkeeping
-         * above too, the same way Home is -- resetting its four-field
-         * editor from whatever the wall clock currently says, every time
-         * the screen is entered, so a cancelled edit never resurfaces the
-         * next time the owner opens it. kf_lua_scene_activate_screen()
-         * above already repainted the screen's pixels; this only resets
-         * the C++-side edit state kf_lua_settings_screen_frame() reads and
-         * writes from here on. */
+        /* Task 4 of the screens/clock/sleep plan: Settings is special
+         * beyond the scene-group bookkeeping above too, the same way Home
+         * is -- resetting its four-field editor from whatever the wall
+         * clock currently says, every time the screen is entered, so a
+         * cancelled edit never resurfaces the next time the owner opens it.
+         * kf_lua_scene_activate_screen() above already repainted the
+         * screen's pixels; this only resets the C++-side edit state
+         * kf_lua_settings_screen_frame() reads and writes from here on. */
         kf_lua_settings_screen_enter();
     }
 }

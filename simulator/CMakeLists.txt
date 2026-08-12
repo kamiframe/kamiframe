@@ -112,22 +112,21 @@ target_link_libraries(kamiframe_pet_port
 # ---------------------------------------------------------------------------
 # LVGL port glue -- menus and stat displays, see ADR 0013.
 #
-# ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
-# sleep.md): built only when KF_ENABLE_LVGL is ON (default OFF). Info -- the
-# screen that used to be this library's own kf_pet_info_screen.cpp -- moved
-# to a kf.screen() group over the retained scene (kf/scene.h), the same
-# mechanism Home already used, so a default build no longer links LVGL or
-# carves its 256 KB PSRAM arena. kf_screen_nav.cpp, kf_lua_home_screen.cpp
-# and kf_error_banner.cpp moved OUT of this library that same task, into
-# kamiframe_screen_port below: none of the three ever had an LVGL
-# dependency of its own -- they only lived here because kf_screen_nav.cpp
-# used to #include <lvgl.h> for Info's lv_screen_load()/lv_obj_invalidate()
-# calls. What remains here (kf_pet_screen.cpp, kf_lvgl_proof_screen.cpp and
-# the kf_lvgl_*.cpp port glue itself) is real LVGL code, kept building and
-# passing its own two golden-checksum tests under -DKF_ENABLE_LVGL=ON so
-# CLAUDE.md's "LVGL vs a custom sprite engine" evaluation stays available
-# whenever Chris wants it -- see docs/architecture/adr-0045-info-screen-in-
-# lua.md.
+# ADR 0045 (Task 2 of the screens/clock/sleep plan): built only when
+# KF_ENABLE_LVGL is ON (default OFF). Info -- the screen that used to be this
+# library's own kf_pet_info_screen.cpp -- moved to a kf.screen() group over
+# the retained scene (kf/scene.h), the same mechanism Home already used, so a
+# default build no longer links LVGL or carves its 256 KB PSRAM arena.
+# kf_screen_nav.cpp, kf_lua_home_screen.cpp and kf_error_banner.cpp moved OUT
+# of this library that same task, into kamiframe_screen_port below: none of
+# the three ever had an LVGL dependency of its own -- they only lived here
+# because kf_screen_nav.cpp used to #include <lvgl.h> for Info's
+# lv_screen_load()/lv_obj_invalidate() calls. What remains here
+# (kf_pet_screen.cpp, kf_lvgl_proof_screen.cpp and the kf_lvgl_*.cpp port
+# glue itself) is real LVGL code, kept building and passing its own two
+# golden-checksum tests under -DKF_ENABLE_LVGL=ON so CLAUDE.md's "LVGL vs a
+# custom sprite engine" evaluation stays available whenever Chris wants it --
+# see docs/architecture/adr-0045-info-screen-in- lua.md.
 # ---------------------------------------------------------------------------
 if(KF_ENABLE_LVGL)
     include(fetch_lvgl)
@@ -209,20 +208,19 @@ target_link_libraries(kamiframe_screen_port
     PUBLIC hakoniwaos kamiframe_pet_port kamiframe_lua_port kamiframe_options)
 
 # ---------------------------------------------------------------------------
-# KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/plans/
-# 2026-08-12-lua-game-layer.md): which Home implementation a build's
-# interactive app wires up -- examples/creature_demo/creature.lua declaring
-# it directly through kf/scene.h's retained scene ("lua", the default since
-# Task 6 -- ADR 0043) or kf_creature_screen.cpp ("cpp", unchanged since
-# Task 4, kept as the parity reference and fallback for one release, per
-# the plan). Both are ALWAYS compiled, regardless of this setting: the
-# headless parity check (kamiframe-headless --verify-screen-parity) drives
-# both halves of the comparison from ONE binary, at runtime, independent of
-# which one this flag wires up for the INTERACTIVE app. Same CACHE STRING +
-# configure-time FATAL_ERROR pattern as ports/esp32/main/CMakeLists.txt's
-# own KF_PANEL, for the identical reason: a typo here should read as a
-# command-line mistake, not a mysterious preprocessor failure three files
-# away.
+# KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, the Lua game-layer
+# plan): which Home implementation a build's interactive app wires up --
+# examples/creature_demo/creature.lua declaring it directly through
+# kf/scene.h's retained scene ("lua", the default since Task 6 -- ADR 0043)
+# or kf_creature_screen.cpp ("cpp", unchanged since Task 4, kept as the
+# parity reference and fallback for one release, per the plan). Both are
+# ALWAYS compiled, regardless of this setting: the headless parity check
+# (kamiframe-headless --verify-screen-parity) drives both halves of the
+# comparison from ONE binary, at runtime, independent of which one this flag
+# wires up for the INTERACTIVE app. Same CACHE STRING + configure-time
+# FATAL_ERROR pattern as ports/esp32/main/CMakeLists.txt's own KF_PANEL, for
+# the identical reason: a typo here should read as a command-line mistake,
+# not a mysterious preprocessor failure three files away.
 #
 # kamiframe_screen_port needs KF_HOME_SCREEN_LUA, not kamiframe_lvgl_port
 # (which ADR 0045 moved this choice out of entirely): kf_screen_nav.cpp,
@@ -298,7 +296,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # flag already uses. Every other test keeps mounting the untouched
     # default. Originally run_creature_screen_sprite_check()'s alone;
     # run_scene_check() (Task 2) and run_lua_draw_check() (Task 3 of
-    # docs/superpowers/plans/2026-08-12-lua-game-layer.md) both read it too
+    # the Lua game-layer plan) both read it too
     # now, for egg_idle_s specifically.
     target_compile_definitions(kamiframe-headless PRIVATE
         KF_CREATURE_DEMO_PACK_PATH="${CMAKE_SOURCE_DIR}/examples/creature_demo/assets.kfpack"
@@ -453,7 +451,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # Proves the evolution tree's SHAPE directly: four verb families, with
     # an uneven adult count per family (Cut 2, Hold 3, Mark 3, Go 1), per the
     # character bible's sections 6/7 and
-    # docs/superpowers/plans/2026-08-09-evolution-tree-reconciliation.md.
+    # the evolution-tree reconciliation plan.
     # Asserted against the bible's numbers rather than trusted as a passing
     # constant, so a future roster change (the bible's section 11 says Go and
     # Cut are still short) fails this test first. See headless_main.cpp's
@@ -517,15 +515,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_death_check
              COMMAND kamiframe-headless --verify-pet-death)
 
-    # Proves sleep (docs/superpowers/specs/2026-08-09-core-care-loop-
-    # design.md's "Sleep, settled", docs/superpowers/plans/2026-08-13-
-    # screens-clock-sleep.md's Task 6, ADR 0048): state->asleep tracks the
-    # 22:00-07:00 night window live as the clock crosses it, an egg never
-    # sleeps, the neglect clock pauses while asleep but the needs keep
-    # decaying, the waking-fraction (15/24) threshold compression pinned to
-    # its exact value, and the v9 save format including refusing a v8 save.
-    # pet_offline_ageing_check (--verify-pet) separately proves requirement
-    # 1 (last_advanced tracks live play) and requirement 8 (offline
+    # Proves sleep (the core care-loop design spec's "Sleep, settled", the
+    # screens/clock/sleep plan's Task 6, ADR 0048): state->asleep tracks
+    # the 22:00-07:00 night window live as the clock crosses it, an egg
+    # never sleeps, the neglect clock pauses while asleep but the needs
+    # keep decaying, the waking-fraction (15/24) threshold compression
+    # pinned to its exact value, and the v9 save format including refusing
+    # a v8 save. pet_offline_ageing_check (--verify-pet) separately proves
+    # requirement 1 (last_advanced tracks live play) and requirement 8
+    # (offline
     # analytic fast-forward across a night); hokorimaru_check proves
     # requirement 7 unchanged. See headless_main.cpp's run_pet_sleep_check().
     add_test(NAME pet_sleep_check
@@ -544,13 +542,12 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME clock_jump_check
              COMMAND kamiframe-headless --verify-clock-jump)
 
-    # Proves the care-variation preference table (docs/superpowers/plans/
-    # 2026-08-09-care-variations.md) is exhaustively well-shaped: all six
-    # traits x four actions x three variations, every trait has exactly one
-    # liked/neutral/disliked variation of every action, no two traits agree
-    # on everything, and out-of-range input degrades to neutral rather than
-    # reading past the table. See headless_main.cpp's
-    # run_pet_preferences_check().
+    # Proves the care-variation preference table (the care-variations plan)
+    # is exhaustively well-shaped: all six traits x four actions x three
+    # variations, every trait has exactly one liked/neutral/disliked
+    # variation of every action, no two traits agree on everything, and
+    # out-of-range input degrades to neutral rather than reading past the
+    # table. See headless_main.cpp's run_pet_preferences_check().
     add_test(NAME pet_preferences_check
              COMMAND kamiframe-headless --verify-pet-preferences)
 
@@ -729,12 +726,12 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless --verify-creature-screen-egg)
 
     # The death scene (spec: "Death without a player holds on the last
-    # creature's scene" -- docs/superpowers/specs/2026-08-09-core-care-loop-
-    # design.md): once pet->dead, the screen special-cases a single shrine
-    # sprite (or its placeholder) centred in the field, and stops drawing
-    # anything else -- no wander, no per-frame redraw once painted. This
-    # test mounts no pack override, so it runs against the checked-in
-    # default (examples/hello_sprite/assets.kfpack), which does not carry
+    # creature's scene" -- the core care-loop design spec): once
+    # pet->dead, the screen special-cases a single shrine sprite (or its
+    # placeholder) centred in the field, and stops drawing anything else
+    # -- no wander, no per-frame redraw once painted. This test mounts no
+    # pack override, so it runs against the checked-in default
+    # (examples/hello_sprite/assets.kfpack), which does not carry
     # shrine_idle_s -- the placeholder branch is genuinely what this test
     # exercises, not a stand-in for art that does not exist yet: the art
     # pipeline has shipped shrine_idle_s since, it just lives in examples/
@@ -775,7 +772,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # Proves decay is per-stage, not uniform (the demand-curve plan): a baby
     # empties far faster than an adult over the same elapsed time. See
     # headless_main.cpp's run_pet_demand_curve_check() and
-    # docs/superpowers/plans/2026-08-09-demand-curve.md.
+    # the demand-curve plan.
     add_test(NAME pet_demand_curve_check
              COMMAND kamiframe-headless --verify-demand-curve)
 
@@ -809,9 +806,9 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # identical run to run, the same fixed-default-seed determinism every
     # other kf_rng consumer in a headless-bypass path already relies on.
     #
-    # Updated again with ADR 0045 (Task 2 of docs/superpowers/plans/
-    # 2026-08-13-screens-clock-sleep.md): Info is now the same blitter that
-    # draws the creature, not LVGL -- different font, different pixel
+    # Updated again with ADR 0045 (Task 2 of the screens/clock/sleep
+    # plan): Info is now the same blitter that draws the creature,
+    # not LVGL -- different font, different pixel
     # layout, uppercase text throughout (the bitmap font has no lowercase;
     # LVGL's did). Both a before-and-after PNG and the reasoning for every
     # re-baselined golden constant this project has ever moved live in
@@ -936,42 +933,40 @@ if(KAMIFRAME_BUILD_HEADLESS)
              COMMAND kamiframe-headless
                      --verify-creature-screen-budget-combo)
 
-    # Task 2 of the Lua game layer plan (docs/superpowers/plans/
-    # 2026-08-12-lua-game-layer.md): the retained scene differ (kf/scene.h),
-    # proved on its own with no Lua involved -- see headless_main.cpp's
-    # run_scene_check() for the four things it checks, in order.
+    # Task 2 of the Lua game layer plan (the Lua game-layer plan): the
+    # retained scene differ (kf/scene.h), proved on its own with no Lua
+    # involved -- see headless_main.cpp's run_scene_check() for the
+    # four things it checks, in order.
     add_test(NAME scene_check
              COMMAND kamiframe-headless --verify-scene)
 
-    # Task 3 of the Lua game layer plan (docs/superpowers/plans/
-    # 2026-08-12-lua-game-layer.md): the Lua binding over kf/scene.h --
-    # proved by diffing a scene DECLARED FROM LUA against the same picture
-    # drawn by hand with kf_fill_rect()/kf_blit_frame() directly, exactly
-    # scene_check's own proof but with a script in the loop, plus two anti-
-    # vacuity checks (the 65th object, a removed object) and the minimal-
-    # pet example run verbatim from disk. See headless_main.cpp's
-    # run_lua_draw_check() for the seven things it checks, in order.
+    # Task 3 of the Lua game layer plan (the Lua game-layer plan): the Lua
+    # binding over kf/scene.h -- proved by diffing a scene DECLARED FROM
+    # LUA against the same picture drawn by hand with
+    # kf_fill_rect()/kf_blit_frame() directly, exactly scene_check's own
+    # proof but with a script in the loop, plus two anti- vacuity checks
+    # (the 65th object, a removed object) and the minimal- pet example run
+    # verbatim from disk. See headless_main.cpp's run_lua_draw_check() for
+    # the seven things it checks, in order.
     add_test(NAME lua_draw_check
              COMMAND kamiframe-headless --verify-lua-draw)
 
-    # Task 5 of the Lua game layer plan (docs/superpowers/plans/2026-08-12-
-    # lua-game-layer.md): THE correctness argument for the whole plan. Drives
-    # a fresh pet through an identical 250-frame timeline -- egg bob, wander,
-    # mess appearing and being flushed, a button-triggered care reaction,
-    # death and the shrine, revival clearing it -- once through kf_creature_
-    # screen.cpp (unchanged since Task 4) and once through examples/
-    # creature_demo/creature.lua (this task's own home-screen declarations),
-    # and asserts the two painted byte-identical framebuffers on every one of
-    # those 250 frames, not just the last. See headless_main.cpp's
-    # run_lua_vs_cpp_screen_check() for the FNV-1a rolling hash and the exact
-    # event timeline. This build's own KF_HOME_SCREEN setting is irrelevant
-    # here: both implementations are always compiled in, and this check
-    # drives each directly at runtime.
+    # Task 5 of the Lua game layer plan (the Lua game-layer plan): THE
+    # correctness argument for the whole plan. Drives a fresh pet through an
+    # identical 250-frame timeline -- egg bob, wander, mess appearing and
+    # being flushed, a button-triggered care reaction, death and the shrine,
+    # revival clearing it -- once through kf_creature_ screen.cpp (unchanged
+    # since Task 4) and once through examples/ creature_demo/creature.lua
+    # (this task's own home-screen declarations), and asserts the two painted
+    # byte-identical framebuffers on every one of those 250 frames, not just
+    # the last. See headless_main.cpp's run_lua_vs_cpp_screen_check() for the
+    # FNV-1a rolling hash and the exact event timeline. This build's own
+    # KF_HOME_SCREEN setting is irrelevant here: both implementations are
+    # always compiled in, and this check drives each directly at runtime.
     add_test(NAME screen_parity_check
              COMMAND kamiframe-headless --verify-screen-parity)
 
-    # Task 1 of the screens/clock/sleep plan (docs/superpowers/plans/
-    # 2026-08-13-screens-clock-sleep.md), ADR 0044: kf.screen() -- named
+    # Task 1 of the screens/clock/sleep plan, ADR 0044: kf.screen() -- named
     # groups of scene objects over the one shared retained scene, and the
     # register-by-name navigation table that replaced the old fixed
     # two-entry array. Declares two screens from an inline script, switches
@@ -983,8 +978,7 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME screen_group_check
              COMMAND kamiframe-headless --verify-screen-groups)
 
-    # Task 3 of the screens/clock/sleep plan (docs/superpowers/plans/
-    # 2026-08-13-screens-clock-sleep.md): kf/clock.h, integer-only civil
+    # Task 3 of the screens/clock/sleep plan: kf/clock.h, integer-only civil
     # time in Core, proved on its own with nothing else in the picture --
     # no pet, no Lua, no Settings screen. See headless_main.cpp's
     # run_clock_check() for the round trip, the hand-computed civil values,
@@ -1068,17 +1062,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
 endif()
 
 # ---------------------------------------------------------------------------
-# lua_embed_check -- Task 1 of docs/superpowers/plans/2026-08-12-lua-game-
-# layer.md. Every script embedded into a header by tools/kf_embed_lua.py
-# (today: examples/creature_demo/creature.lua ->
+# lua_embed_check -- Task 1 of the Lua game-layer plan. Every script embedded
+# into a header by tools/kf_embed_lua.py (today:
+# examples/creature_demo/creature.lua ->
 # sdk/lua/generated/kf_lua_demo_creature_script.h) is CHECKED IN rather than
 # generated at configure time, so a build stays self-contained and offline
-# and a reviewer can see the exact bytes that ship (see the plan's
-# "Decisions already taken"). This test is what keeps that checked-in copy
-# honest: it regenerates every mapped header into a temp directory and
-# diffs, failing with the fix command if the .lua source and its header have
-# drifted apart -- e.g. someone edited creature.lua and forgot to
-# regenerate, or hand-edited the generated header directly.
+# and a reviewer can see the exact bytes that ship (see the plan's "Decisions
+# already taken"). This test is what keeps that checked-in copy honest: it
+# regenerates every mapped header into a temp directory and diffs, failing
+# with the fix command if the .lua source and its header have drifted apart
+# -- e.g. someone edited creature.lua and forgot to regenerate, or
+# hand-edited the generated header directly.
 #
 # No kamiframe-headless build dependency -- this is pure Python, run
 # directly against the checked-out source tree, so it is registered

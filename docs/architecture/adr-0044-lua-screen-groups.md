@@ -5,7 +5,7 @@
 
 ## Context
 
-Task 1 of `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md` is the
+Task 1 of the screens/clock/sleep plan is the
 groundwork for a Lua-drawn Info screen and a new Settings screen (Tasks 2 and
 4): it changes no pixels on its own, and every later task depends on the
 mechanism it introduces. Two things this plan established shape the design:

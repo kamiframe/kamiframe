@@ -256,7 +256,7 @@ here because they caught real bugs, not just hypothetical regressions:
 
 ## Consequences
 
-- `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s Task 6 "the
+- the screens/clock/sleep plan's Task 6 "the
   neglect clock pauses while asleep, but the needs do not" language, and
   ADR 0048's identical framing, describe the *neglect accumulator*
   specifically and remain true unchanged -- but a reader could previously
@@ -284,7 +284,7 @@ here because they caught real bugs, not just hypothetical regressions:
 
 ## Amendment (2026-08-12): the per-segment reclamp defect
 
-`docs/reviews/2026-08-12-sleep-stack-audit.md`'s finding 1 caught, and Chris
+the sleep-stack audit's finding 1 caught, and Chris
 confirmed, that section 4's "still asleep" branch above was applying the
 floor/cap on **every segment** a live session's needs ended asleep in, not
 once at the wake instant the rest of this ADR describes. Section 4 above
@@ -308,18 +308,18 @@ across in a single `kf_pet_advance()` call. The wake-instant clamp in the
 `wakes_this_segment` branch (the first half of section 4 above) was, and
 remains, correct and untouched.
 
-**Measured consequence (before the fix, `docs/reviews/2026-08-12-sleep-
-stack-audit.md`'s own numbers, independently reproduced during this fix):**
-an identical, completely unattended CHILD-stage pet (same seed, same
-never-touched neglect pattern, `dust_care_average_mp` = 20000mp/20%) scored
-**13.7%** on the care average with a wall clock established (the bug active)
-versus **4.8%** with no wall clock at all (the mechanism entirely inert) --
-a **~2.85x** inflation purely from whether a wall clock happened to exist,
-with nothing to do with how the pet was actually treated. Because that
-average selects the Hokorimaru ("dust") branch at the CHILD -> TEEN
-transition, **leaving the device powered on overnight changed which adult
-family the pet could reach**, silently working against the specific,
-named "neglect made visible" story beat the dust form exists for.
+**Measured consequence (before the fix, the sleep-stack audit's own numbers,
+independently reproduced during this fix):** an identical, completely
+unattended CHILD-stage pet (same seed, same never-touched neglect pattern,
+`dust_care_average_mp` = 20000mp/20%) scored **13.7%** on the care average
+with a wall clock established (the bug active) versus **4.8%** with no wall
+clock at all (the mechanism entirely inert) -- a **~2.85x** inflation purely
+from whether a wall clock happened to exist, with nothing to do with how the
+pet was actually treated. Because that average selects the Hokorimaru
+("dust") branch at the CHILD -> TEEN transition, **leaving the device
+powered on overnight changed which adult family the pet could reach**,
+silently working against the specific, named "neglect made visible" story
+beat the dust form exists for.
 
 **Chris's decision:** "the overnight floor, yes 100% make it clamp at wake" --
 confirming the reading this ADR's own section 1 already commits to ("SET-
