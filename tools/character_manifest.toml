@@ -227,6 +227,26 @@ kind = "scenery"
 name_verified = false
 states = ["idle"]
 directions = ["s"]  # scenery has no facings -- see [stages.shrine]'s comment
+# SEVEN FRAMES, AND NOT AN ANIMATION. This is the one entity in the manifest
+# whose frames are ALTERNATIVES rather than an animation cursor: seven
+# different futon designs, one picked per night (creature.lua), so the
+# bedding varies instead of being the same quilt forever. Chris, 2026-08-11:
+# "just take all the best ones and have a random one represent the sleeping
+# pet every night. The futon designs are too cool to not use a bunch of
+# them."
+#
+# Nothing in the pipeline needs to know the difference -- frames are frames
+# to kf_ingest_sprites.py and to kf/scene.h alike, and one entry with seven
+# frames costs one scene object where seven entries would cost seven
+# (KF_SCENE_MAX_OBJECTS is 64 and the home screen already uses 46). What
+# DOES need to know is anything that would try to PLAY them: do not attach
+# an animation cursor to this entry. creature.lua sets a fixed frame with
+# :frame(n) and leaves it there for the night.
+#
+# Frame order, all from the second generation batch: 1 cream plain,
+# 2 red polka dot, 3 navy moons-and-stars, 4 pale blue speckle, 5 pink
+# sakura, 6 green floral, 7 red-and-white check.
+frames = 7
 has_design_brief = true
 object = "none -- this is scenery, not a creature derived from a source object the way the bible's derivation rule works for every other entity"
 read = "A Japanese futon laid directly on the floor -- no bed frame, no legs, no headboard, no raised base. A thin flat mattress pad with a plump puffy quilt over it and a small flat pillow at the head end. A small round creature sleeps underneath, and only the top of its head pokes out above the quilt: a smooth, near-featureless pale dome, so it reads as ANY creature in the roster rather than one of them. Cozy and inviting, not clinical."
