@@ -248,6 +248,7 @@ if(KAMIFRAME_BUILD_SIMULATOR)
     include(fetch_sdl)
 
     add_executable(kamiframe-sim
+        src/sdl/sdl_audio.cpp
         src/sdl/sdl_debug_window.cpp
         src/sdl/sdl_display.cpp
         src/sdl/sdl_input.cpp
@@ -269,6 +270,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(KAMIFRAME_BUILD_HEADLESS)
     add_executable(kamiframe-headless
+        src/headless/headless_audio.cpp
         src/headless/headless_display.cpp
         src/headless/headless_input.cpp
         src/headless/headless_main.cpp
@@ -1052,6 +1054,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_home_clock_check().
     add_test(NAME home_clock_check
              COMMAND kamiframe-headless --verify-home-clock)
+
+    # Sound foundation task: kf/hal/audio.h's contract against the headless
+    # recording backend (invalid hz/ms rejected and recorded as nothing,
+    # valid calls recorded exactly), the kf.tone()/kf.beep() Lua binding
+    # (right arguments reach the HAL, in the right order, invalid ones
+    # report false rather than raising), and creature.lua's attention-signal
+    # chirp driven through the real Home screen -- exactly one chirp per
+    # want streak, a fresh chirp for a fresh streak, and no chirp while
+    # asleep. See headless_main.cpp's run_audio_check().
+    add_test(NAME audio_check
+             COMMAND kamiframe-headless --verify-audio)
 endif()
 
 # ---------------------------------------------------------------------------

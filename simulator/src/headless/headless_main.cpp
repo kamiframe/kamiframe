@@ -44,6 +44,7 @@
  *     kamiframe-headless --verify-lua-draw
  *     kamiframe-headless --verify-screen-groups
  *     kamiframe-headless --verify-clock
+ *     kamiframe-headless --verify-audio
  *
  * Exit codes:
  *     0  everything asserted held
@@ -60,6 +61,7 @@
 #include "kf/font.h"
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
+#include "kf/hal/audio.h"
 #include "kf/hal/power.h"
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
@@ -9943,6 +9945,291 @@ end
     return ok ? 0 : 1;
 }
 
+/* Sound foundation task: kf/hal/audio.h, its headless recording backend
+ * (headless_audio.cpp), the kf.tone()/kf.beep() Lua binding, and the
+ * attention-signal chirp creature.lua now fires. "did it make the right
+ * sound at the right moment" is a real assertion here, not a hope, because
+ * headless_audio.cpp records exactly what kf_audio_tone()/kf_audio_stop()
+ * were asked to do and makes no sound at all -- see that file's own header
+ * comment.
+ *
+ * NOTE on what this check does NOT independently prove: creature.lua's
+ * chirp is guarded twice -- `if want then` (want is nil whenever the
+ * creature is dead or asleep, unconditionally, INSIDE kf_pet_wants() itself
+ * -- ADR 0050, already covered by run_attention_signal_check()'s own Part
+ * A7) and, only reachable once that first gate has already passed, an
+ * explicit `if not pet.asleep() then`. Because the first gate is
+ * unconditional and checked first, the second one is currently dead code
+ * in every real play session -- there is no way to reach it with `want`
+ * non-nil and the creature actually asleep at the same time. Section C
+ * below still asserts "no chirp while asleep, hunger critical" end to end,
+ * because that is the property that actually matters and a future
+ * reordering of creature.lua's branches could reintroduce a real bug here
+ * -- but that specific assertion is guaranteed by construction (Core's own
+ * already-tested gate), not something this task broke and watched fail
+ * on its own: doing that would mean weakening kf_pet_wants()'s dead/asleep
+ * check in hakoniwaos/src/pet.cpp, which is explicitly other agents'
+ * territory tonight, not this task's to touch. Sections A, B and D below
+ * ARE each independently broken and restored -- see this task's own report
+ * for the exact messages. */
+int run_audio_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    kf_arena_init_all();
+
+    /* ---- A. kf_audio_tone()/kf_audio_stop() directly against the headless
+     * recording backend: valid calls are recorded accurately, invalid ones
+     * are rejected and record nothing, silence is the default before
+     * anything is called at all. ---- */
+    {
+        check(kf_audio_init() == KF_OK, "kf_audio_init");
+        check(kf_headless_audio_tone_count() == 0,
+              "sanity: silence is the default -- nothing recorded before "
+              "the first kf_audio_tone() call");
+
+        check(kf_audio_tone(880u, 150u) == KF_OK,
+              "an in-range kf_audio_tone() call succeeds");
+        check(kf_headless_audio_tone_count() == 1 &&
+                  kf_headless_audio_last_hz() == 880u &&
+                  kf_headless_audio_last_ms() == 150u,
+              "the headless backend recorded exactly the hz/ms it was "
+              "asked to play (880, 150)");
+
+        check(kf_audio_tone(KF_AUDIO_MIN_HZ - 1u, 150u) == KF_ERR_INVALID,
+              "hz below KF_AUDIO_MIN_HZ is rejected");
+        check(kf_audio_tone(KF_AUDIO_MAX_HZ + 1u, 150u) == KF_ERR_INVALID,
+              "hz above KF_AUDIO_MAX_HZ is rejected");
+        check(kf_audio_tone(880u, 0u) == KF_ERR_INVALID,
+              "ms == 0 is rejected -- silence is \"don't call this\", not a "
+              "valid duration");
+        check(kf_audio_tone(880u, KF_AUDIO_MAX_MS + 1u) == KF_ERR_INVALID,
+              "ms above KF_AUDIO_MAX_MS is rejected");
+        check(kf_headless_audio_tone_count() == 1 &&
+                  kf_headless_audio_last_hz() == 880u &&
+                  kf_headless_audio_last_ms() == 150u,
+              "none of the four rejected calls above changed what was "
+              "recorded -- an invalid call makes no sound, not a "
+              "different one");
+
+        check(kf_headless_audio_stop_count() == 0,
+              "sanity: kf_audio_stop() has not been called yet");
+        kf_audio_stop();
+        check(kf_headless_audio_stop_count() == 1,
+              "kf_audio_stop() is recorded");
+        kf_audio_shutdown();
+    }
+
+    /* ---- B. kf.tone()/kf.beep() -- the Lua binding actually reaches the
+     * HAL with the arguments a script passed, in the right order, and
+     * reports success/failure back to the script as a plain boolean. ---- */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-audio-lua-" + std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (part B)");
+        check(kf_power_init() == KF_OK, "kf_power_init (part B)");
+        check(kf_audio_init() == KF_OK, "kf_audio_init (part B)");
+        kf_headless_audio_reset(); /* Part A left its own recordings behind
+                                     * -- see kf_headless_audio_reset()'s own
+                                     * header comment for why this is needed
+                                     * between sections of ONE process. */
+        kf_pet_session_init();
+
+        constexpr const char *kToneProbeScript = R"lua(
+function on_frame(dt_ms)
+    kf.report(kf.tone(523, 200) and 1 or 0)
+end
+)lua";
+        check(kf_lua_port_init(kToneProbeScript, "=tone_probe"),
+              "the kf.tone probe script loads");
+        kf_lua_port_frame(0);
+        check(kf_lua_port_last_report() == 1,
+              "kf.tone(523, 200) reports true (reported as 1)");
+        check(kf_headless_audio_tone_count() == 1 &&
+                  kf_headless_audio_last_hz() == 523u &&
+                  kf_headless_audio_last_ms() == 200u,
+              "kf.tone(523, 200) reached the HAL with hz and ms the right "
+              "way round, not swapped");
+        kf_lua_port_shutdown();
+
+        constexpr const char *kBeepProbeScript = R"lua(
+function on_frame(dt_ms)
+    kf.report(kf.beep() and 1 or 0)
+end
+)lua";
+        check(kf_lua_port_init(kBeepProbeScript, "=beep_probe"),
+              "the kf.beep probe script loads");
+        kf_lua_port_frame(0);
+        check(kf_lua_port_last_report() == 1, "kf.beep() reports true");
+        check(kf_headless_audio_tone_count() == 2 &&
+                  kf_headless_audio_last_hz() == 880u &&
+                  kf_headless_audio_last_ms() == 80u,
+              "kf.beep() plays its own fixed default (880 Hz, 80 ms), "
+              "distinct from whatever kf.tone() was last called with");
+        kf_lua_port_shutdown();
+
+        constexpr const char *kInvalidToneProbeScript = R"lua(
+function on_frame(dt_ms)
+    kf.report(kf.tone(0, 150) and 1 or 0)
+end
+)lua";
+        check(kf_lua_port_init(kInvalidToneProbeScript, "=invalid_tone_probe"),
+              "the invalid-tone probe script loads");
+        kf_lua_port_frame(0);
+        check(kf_lua_port_last_report() == 0,
+              "kf.tone(0, 150) reports false rather than raising -- an "
+              "out-of-range value is treated as data, not a script bug");
+        check(kf_headless_audio_tone_count() == 2,
+              "the rejected kf.tone(0, 150) call recorded nothing new");
+        kf_lua_port_shutdown();
+
+        kf_pet_session_shutdown();
+        kf_audio_shutdown();
+        kf_power_shutdown();
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    /* ---- C. The real interactive app: Home, the real creature.lua --
+     * exactly run_attention_signal_check()'s own Part C pattern, so this
+     * exercises the actual demo script and its actual chirp constants
+     * (kWantChirpHz/kWantChirpMs, 880/150), not a stand-in. ---- */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-audio-screen-" + std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (part C)");
+        check(kf_power_init() == KF_OK, "kf_power_init (part C)");
+        check(kf_audio_init() == KF_OK, "kf_audio_init (part C)");
+        kf_headless_audio_reset(); /* Part B's own recordings must not leak
+                                     * into Part C/D's counts -- see
+                                     * kf_headless_audio_reset()'s own
+                                     * header comment. */
+
+        constexpr uint32_t kFixedDtMs =
+            static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+        kf_fb_init();
+        kf_pet_session_init();
+        kf_screen_nav_init();
+        kf_host_time_set_wall_fixed(1767268800); /* noon, 2026-01-01 --
+                                                    * matches run_attention_
+                                                    * signal_check()'s Part
+                                                    * C, well outside the
+                                                    * night window */
+
+#ifdef KF_HOME_SCREEN_LUA
+        check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                                kKfLuaDemoCreatureScriptChunkName),
+              "the demo creature script loads under KF_HOME_SCREEN=lua");
+#endif
+
+        kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
+        pet->stage = KF_PET_STAGE_CHILD;
+
+        auto drive_frame = [&](uint32_t dt_ms) {
+            kf_screen_nav_frame(dt_ms);
+            kf_lua_port_frame(0);
+            kf_scene_commit();
+        };
+
+        for (int i = 0; i < 20; ++i) {
+            drive_frame(kFixedDtMs); /* wander a while, nothing wanted yet */
+        }
+        check(kf_headless_audio_tone_count() == 0,
+              "sanity: no chirp while nothing is wanted");
+
+        /* C1: hunger drops below threshold -- FOOD becomes the want, and
+         * the chirp fires exactly once, at the transition. */
+        pet->hunger_mp = 5000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_tone_count() == 1 &&
+                  kf_headless_audio_last_hz() == 880u &&
+                  kf_headless_audio_last_ms() == 150u,
+              "wanting FOOD: exactly one chirp fired, at creature.lua's own "
+              "880 Hz / 150 ms (kWantChirpHz/kWantChirpMs)");
+
+        /* C2: the want streak continues for many more frames -- still
+         * exactly one chirp, not one per frame. This is the assertion this
+         * task broke and watched fail: moving creature.lua's kf.tone() call
+         * outside its `if not was_wanting then` guard made this fail with
+         * tone_count == 301 instead of 1 (see this task's own report for
+         * the exact message), confirming the guard is load-bearing rather
+         * than vacuously true. */
+        for (int i = 0; i < 300; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_tone_count() == 1,
+              "wanting FOOD continuously for 300 more frames: still exactly "
+              "one chirp -- tasteful and rare, not spam");
+
+        /* C3: feeding clears the want; a fresh hunger drop later fires a
+         * SECOND, independent chirp -- proving the chirp fires again for a
+         * new want streak, not merely once ever for the whole process. */
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        for (int i = 0; i < 5; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        pet->hunger_mp = 5000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_tone_count() == 2,
+              "a fresh want streak (fed to full, then hungry again) fires "
+              "its own chirp -- the second recorded tone, not a stale first "
+              "one");
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        for (int i = 0; i < 5; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+
+        /* ---- D. Asleep, hunger critical: no chirp. Guaranteed by
+         * construction (see this function's own header comment) -- Core's
+         * kf_pet_wants() (hakoniwaos/src/pet.cpp) gates dead/asleep before
+         * `want` can ever be non-nil, unconditionally, and that gate is
+         * already independently broken-and-restored by run_attention_
+         * signal_check()'s own Part A7. What this section adds is the
+         * end-to-end proof that the SOUND path specifically never fires
+         * downstream of that gate, using the real demo script. ---- */
+        pet->asleep = true;
+        pet->hunger_mp = 0u;
+        for (int i = 0; i < 20; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_tone_count() == 2,
+              "asleep with hunger critical: no chirp -- the tone count "
+              "recorded above is unchanged");
+        pet->asleep = false;
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+
+#ifdef KF_HOME_SCREEN_LUA
+        kf_lua_port_shutdown();
+#endif
+        kf_pet_session_shutdown();
+        kf_audio_shutdown();
+        kf_power_shutdown();
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Owner follow-up after Task 4/8 landed (Chris, 2026-08-11, after testing
  * on the board): "put up a little digital wall clock in the upper left
  * corner of the play room ... it's hard to tell what's happening when I
@@ -10199,6 +10486,7 @@ int main(int argc, char *argv[]) {
     bool verify_attention_signal = false;
     bool verify_clock_jump = false;
     bool verify_home_clock = false;
+    bool verify_audio = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -10327,6 +10615,8 @@ int main(int argc, char *argv[]) {
             verify_clock_jump = true;
         } else if (std::strcmp(argv[i], "--verify-home-clock") == 0) {
             verify_home_clock = true;
+        } else if (std::strcmp(argv[i], "--verify-audio") == 0) {
+            verify_audio = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -10381,7 +10671,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-sleep\n"
                         "kamiframe-headless --verify-sleep-screen\n"
                         "kamiframe-headless --verify-clock-jump\n"
-                        "kamiframe-headless --verify-attention-signal\n");
+                        "kamiframe-headless --verify-attention-signal\n"
+                        "kamiframe-headless --verify-audio\n");
             return 0;
         }
     }
@@ -10613,6 +10904,9 @@ int main(int argc, char *argv[]) {
     }
     if (verify_home_clock) {
         return run_home_clock_check();
+    }
+    if (verify_audio) {
+        return run_audio_check();
     }
 
     kf_app_init(mode);

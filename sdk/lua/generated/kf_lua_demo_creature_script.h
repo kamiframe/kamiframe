@@ -368,6 +368,20 @@ if kf.home_screen_active() then
     local want_elapsed_ms = 0
     local was_wanting = false
 
+    -- Sound foundation task: the attention signal's voice. A single short
+    -- chirp, fired once at the SAME false->true edge want_elapsed_ms's own
+    -- reset already detects -- ADR 0050's own "Not verified" section named
+    -- this exact call site as the hook for whenever sound arrived. Chris's
+    -- own numbers to tune on the board: 880Hz reads as a plain, attention-
+    -- getting beep (not a specific note -- CLAUDE.md bars inventing
+    -- flavour text/meaning for numbers like this), 150ms is long enough to
+    -- notice across a room, short enough that it reads as one chirp, not a
+    -- tone. Kept tasteful and rare on purpose (this task's own brief, in
+    -- those words) -- once per want streak, not once per frame; see the
+    -- `if not was_wanting then` guard below, the only place this fires.
+    local kWantChirpHz = 880
+    local kWantChirpMs = 150
+
     function on_home_frame(dt_ms)
         local clock_str = kf.time()
         if clock_str ~= last_clock_text then
@@ -496,6 +510,22 @@ if kf.home_screen_active() then
 
                     if not was_wanting then
                         want_elapsed_ms = 0
+
+                        -- The chirp: fires exactly here, the frame `want`
+                        -- first goes from nil to something, and nowhere
+                        -- else -- see kWantChirpHz/kWantChirpMs's own
+                        -- comment above. Guarded by pet.asleep() as an
+                        -- explicit second line of defence even though
+                        -- `want` above is only ever non-nil while awake
+                        -- already (kf_pet_wants()'s own dead/asleep gate,
+                        -- ADR 0050 -- and the bed_shown branch above never
+                        -- reaches this one at all while tucked in): a
+                        -- future change to either guard should not have to
+                        -- rediscover this rule to avoid reintroducing a pet
+                        -- that beeps in its sleep.
+                        if not pet.asleep() then
+                            kf.tone(kWantChirpHz, kWantChirpMs)
+                        end
                     end
                     was_wanting = true
                     want_elapsed_ms = want_elapsed_ms + dt_ms

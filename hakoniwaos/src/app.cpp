@@ -15,6 +15,7 @@
 #include "kf/budget.h"
 #include "kf/font.h"
 #include "kf/framebuffer.h"
+#include "kf/hal/audio.h"
 #include "kf/hal/display.h"
 #include "kf/hal/entropy.h"
 #include "kf/hal/input.h"
@@ -315,6 +316,11 @@ void kf_app_init(kf_demo_mode mode) {
     KF_ASSERT(kf_input_init() == KF_OK, "input HAL failed to start");
     KF_ASSERT(kf_store_init() == KF_OK, "storage HAL failed to start");
     KF_ASSERT(kf_power_init() == KF_OK, "power HAL failed to start");
+    /* Always KF_OK, same as kf_time_init() with no RTC wired -- a backend
+     * with no speaker, buzzer or amp still starts cleanly; it is
+     * kf_audio_tone() that reports KF_ERR_UNAVAILABLE later, per call, not
+     * this init. See kf/hal/audio.h's own header comment. */
+    KF_ASSERT(kf_audio_init() == KF_OK, "audio HAL failed to start");
     /* Before kf_demo_init() below: the demo looks up sprites by name via
      * kf_assets_get(), so the pack must already be mounted and parsed. */
     KF_ASSERT(kf_assets_init() == KF_OK, "assets HAL failed to start");
@@ -503,6 +509,7 @@ void kf_app_shutdown(void) {
     kf_display_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();
+    kf_audio_shutdown();
     g.initialised = false;
     g.running = false;
 }

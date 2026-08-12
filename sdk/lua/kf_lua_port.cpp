@@ -12,6 +12,7 @@
 
 #include "kf/app.h"
 #include "kf/clock.h"
+#include "kf/hal/audio.h"
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
@@ -276,6 +277,67 @@ int lua_kf_button(lua_State *L) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------
+ * kf.tone()/kf.beep() -- the sound foundation. kf/hal/audio.h's own header
+ * comment explains why this HAL is a square-wave tone and nothing richer
+ * (no sampled playback yet -- there is no asset pipeline to author a clip
+ * with). Two functions, not one generic dispatch, per docs/sdk-style-
+ * guide.md's own rule: kf.tone(hz, ms) is the primitive a script that knows
+ * what pitch it wants reaches for; kf.beep() is the zero-argument
+ * convenience for a script that just wants "make a sound", the same
+ * "the obvious call needs no arguments" shape kf.time() already gives.
+ * --------------------------------------------------------------------- */
+
+/* A5, a plain, unremarkable pitch with nothing musical implied by the
+ * choice -- CLAUDE.md's naming rules bar inventing flavour text for this
+ * project, and picking a "meaningful" note would be exactly that. Short
+ * enough (80ms) to read as a click, not a drone. */
+constexpr int kBeepDefaultHz = 880;
+constexpr int kBeepDefaultMs = 80;
+
+/* kf.tone(hz, ms) -- a square-wave tone at `hz` Hz for `ms` milliseconds,
+ * starting now. Non-blocking: this call returns immediately and the HAL
+ * plays the tone in the background (kf/hal/audio.h's own contract) -- a
+ * script can call this every frame the way it reads pet.hunger() without
+ * ever stalling the frame loop.
+ *
+ * Returns true if the tone actually started, false otherwise -- never
+ * raises. An out-of-range hz/ms (kf_audio_tone()'s KF_ERR_INVALID) is
+ * treated as DATA, not a script bug worth crashing over, the same choice
+ * lua_pet_reaction_to()'s own out-of-range handling makes elsewhere in this
+ * file (docs/sdk-style-guide.md's line between "a literal a script author
+ * typed by hand" -- kf.button()'s unknown-name case, which DOES raise -- and
+ * a computed value, which does not): a pitch is far more likely to come
+ * from arithmetic (procedural chiptune-style effects, say) than a button
+ * name ever is. KF_ERR_UNAVAILABLE (no speaker, buzzer or amp wired) reads
+ * identically to a script -- both are "nothing happened", matching kf/hal/
+ * audio.h's own "silence is the safe default" contract at this layer too.
+ * A script that genuinely needs to tell the two apart has no way to today;
+ * nothing in this SDK has needed that distinction yet. */
+int lua_kf_tone(lua_State *L) {
+    const lua_Integer hz = luaL_checkinteger(L, 1);
+    const lua_Integer ms = luaL_checkinteger(L, 2);
+    const bool ok = hz > 0 && ms > 0 &&
+                     kf_audio_tone(static_cast<uint32_t>(hz),
+                                   static_cast<uint32_t>(ms)) == KF_OK;
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+/* kf.beep() -- kf.tone(kBeepDefaultHz, kBeepDefaultMs), spelled out as its
+ * own function rather than left for a script to remember the numbers --
+ * the same reasoning kf.time() exists at all rather than requiring every
+ * script to call kf.hour()/kf.minute() and format the string itself. */
+int lua_kf_beep(lua_State *L) {
+    lua_pushboolean(L,
+                     kf_audio_tone(static_cast<uint32_t>(kBeepDefaultHz),
+                                   static_cast<uint32_t>(kBeepDefaultMs)) ==
+                             KF_OK
+                         ? 1
+                         : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
@@ -286,6 +348,8 @@ const luaL_Reg kKfFuncs[] = {
     {"clock_set", lua_kf_clock_set},
     {"set_clock", lua_kf_set_clock},
     {"button", lua_kf_button},
+    {"tone", lua_kf_tone},
+    {"beep", lua_kf_beep},
     {nullptr, nullptr},
 };
 

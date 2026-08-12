@@ -110,6 +110,7 @@ set(KF_MAIN_REQUIRES
     esp_driver_gpio
     esp_driver_spi
     esp_driver_i2c
+    esp_driver_i2s
     esp_driver_uart
     esp_lcd
     esp_timer
@@ -154,6 +155,7 @@ idf_component_register(
         ../hal/esp_storage.cpp
         ../hal/esp_power.cpp
         ../hal/esp_assets.cpp
+        ../hal/esp_audio.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
         ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../simulator/src/pet/kf_creature_presenter.cpp
