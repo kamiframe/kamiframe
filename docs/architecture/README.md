@@ -60,6 +60,7 @@ future us in month eight asking the same question with less patience.
 | [0052](adr-0052-drowsy-window-and-tuck-in-bonus.md) | The drowsy window becomes ten minutes, and tuck-in gets a real payoff | Accepted |
 | [0053](adr-0053-overnight-floors-poop-suppression.md) | Overnight floors, a dirtiness cap, and no poop while asleep | Accepted |
 | [0054](adr-0054-kfdbg-clock-and-rtc.md) | `KFDBG CLOCK`, `KFDBG RTC`, and sleep-state STATE parity | Accepted |
+| [0055](adr-0055-audio-hal-and-attention-chirp.md) | An audio HAL of one tone, three backends, and the attention chirp | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 
@@ -97,3 +98,13 @@ held files through ADR 0054, seven ADRs missing (0048-0054). Whoever next
 lands an ADR: add its row here in the same commit, not "later" — a broken
 index is worse than a slightly oversized diff to fix it, and this is now
 the third time that lesson needed relearning.
+
+**And a fourth, within the hour — which is the point.** ADR 0055 landed the
+same night and its row was missed too. The difference is that a machine
+caught it rather than a human noticing months later:
+`tools/check_doc_links.py` now fails the build when an `adr-NNNN-*.md`
+exists with no row in the table above. Four occurrences was enough evidence
+that asking people to remember does not work; the note above is kept
+because it explains the history, not because it is the mechanism. Run
+`python3 tools/check_doc_links.py` — it is wired into CI alongside
+`check_no_heap.py` and `check_no_float.py`.
