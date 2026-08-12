@@ -157,6 +157,27 @@ bonus could not use a before/after comparison either. When a segment ends
 **still asleep**, no split is needed: the naive whole-segment value already
 *is* "now," so the floor/cap clamps it in place directly.
 
+> **AMENDED 2026-08-12 -- the previous paragraph's last sentence described a
+> real defect, not a design choice.** "The floor/cap clamps it in place
+> directly" turned out to mean re-applying `max(decayed, floor)` on **every
+> single segment** that ends still asleep, not once. In live play,
+> `kf_pet_session_frame()` flushes roughly every `KF_PET_SESSION_FLUSH_
+> SECONDS` (30s), so a real overnight session hit this branch on the order of
+> 1,080 times a night -- and because `care_integral_mp_seconds` accumulates
+> each segment's *start-of-segment* value (section on the care integral,
+> `pet.cpp` line ~739), every one of those re-clamps fed a floor-level number
+> into the very next segment's own contribution. The floor became a level
+> held continuously through the night rather than the wake-instant set-point
+> this ADR itself already describes it as ("a pet that falls asleep at 10%
+> hunger *wakes* somewhere in its band" -- a MORNING value, per Chris's own
+> "would be a random value... by next morning"). See "Amendment: the
+> per-segment reclamp defect" below for the fix, the measured consequence,
+> and the fix's own new test coverage. Do not read the sentence above as
+> still describing current behaviour for the "still asleep" case -- it only
+> ever should have applied at the wake instant, which is the one case this
+> paragraph's FIRST half (the `wakes_this_segment` split) already covers
+> correctly and unchanged.
+
 **Only the FIRST night-crossing inside a segment is resolved this precisely**
 -- the same accepted limitation ADR 0052 already documents for the tuck-in
 bonus, for the identical reason (a segment spanning several nights at once,
@@ -260,3 +281,109 @@ here because they caught real bugs, not just hypothetical regressions:
   assertion non-deterministically. Case 10 was also switched from real decay
   to a zeroed-decay config, for the identical reason -- isolating the bonus
   proof from this new mechanism rather than conflating the two.
+
+## Amendment (2026-08-12): the per-segment reclamp defect
+
+`docs/reviews/2026-08-12-sleep-stack-audit.md`'s finding 1 caught, and Chris
+confirmed, that section 4's "still asleep" branch above was applying the
+floor/cap on **every segment** a live session's needs ended asleep in, not
+once at the wake instant the rest of this ADR describes. Section 4 above
+carries an inline annotation pointing here rather than being silently
+rewritten, per `CLAUDE.md`'s own rule; this section is the fix's full record.
+
+**The bug.** `apply_stage_segment()`'s "still asleep at the end of this
+segment" branch (`pet.cpp`, was around lines 1016-1036) read `state->hunger_mp
+= max(state->hunger_mp, state->hunger_floor_mp)` (and the equivalent for
+happiness, energy, and `dirtiness_cap_mp`) unconditionally, every call. A live
+session (`kf_pet_session_frame()`) flushes every `KF_PET_SESSION_FLUSH_
+SECONDS` (30s), so an unattended, powered-on overnight session hit this
+branch roughly 1,080 times a night, re-clamping the needs up to the floor on
+every single one. `care_integral_mp_seconds` (this file's own header comment;
+`pet.cpp` line ~739) accumulates each segment's **start-of-segment** value --
+so every one of those re-clamps fed an artificially high, floor-level number
+into the CHILD-stage care average on the very next segment. Offline (the
+device switched off overnight, one segment, one low pre-sleep value) was
+never affected -- there is no interior segment boundary for the bug to repeat
+across in a single `kf_pet_advance()` call. The wake-instant clamp in the
+`wakes_this_segment` branch (the first half of section 4 above) was, and
+remains, correct and untouched.
+
+**Measured consequence (before the fix, `docs/reviews/2026-08-12-sleep-
+stack-audit.md`'s own numbers, independently reproduced during this fix):**
+an identical, completely unattended CHILD-stage pet (same seed, same
+never-touched neglect pattern, `dust_care_average_mp` = 20000mp/20%) scored
+**13.7%** on the care average with a wall clock established (the bug active)
+versus **4.8%** with no wall clock at all (the mechanism entirely inert) --
+a **~2.85x** inflation purely from whether a wall clock happened to exist,
+with nothing to do with how the pet was actually treated. Because that
+average selects the Hokorimaru ("dust") branch at the CHILD -> TEEN
+transition, **leaving the device powered on overnight changed which adult
+family the pet could reach**, silently working against the specific,
+named "neglect made visible" story beat the dust form exists for.
+
+**Chris's decision:** "the overnight floor, yes 100% make it clamp at wake" --
+confirming the reading this ADR's own section 1 already commits to ("SET-
+POINT, NOT A PURE FLOOR... the stated goal is most directly satisfied by a
+set-point... it wakes somewhere in its band"), and rejecting the alternative
+this ADR flagged (a floor held continuously). The fix is a deletion: the
+"still asleep" branch's clamp is removed outright, for the three needs AND
+`dirtiness_cap_mp` (no principled reason found to treat the cap differently
+from the floors here -- Chris did not distinguish them, and the cap is the
+identical mechanism on a different axis). The needs and dirtiness now decay/
+rise completely **unprotected** for the whole night once the floor/cap is
+rolled at bedtime; the ONLY clamp left is the pre-existing, correct
+wake-instant one.
+
+**Re-measured after the fix, same scenario, same seed:** **4.996%** with a
+wall clock versus **4.811%** without -- roughly **+3.9%**, not **+185%**.
+Both numbers stay well under the 20% dust threshold in this particular
+extreme-neglect scenario, matching the audit's own observation, but the
+*bias* the bug introduced is now small and explainable (a few hours of
+floor-protected time right at the very end of the stage, not an entire
+night's worth of artificially-elevated segments) rather than large and
+systematic.
+
+**A real, visible consequence, not hidden:** with the per-segment clamp
+gone, the needs bars now **visibly drain during the night** on a device left
+running and displaying its home screen, then **jump back up** to the rolled
+floor/cap only at the moment the creature wakes (07:00 by default). Verified
+directly against `pet.cpp` (not assumed): a pet asleep from 21:55 with
+default CHILD decay rates reaches 0% hunger by roughly 00:00, stays at 0%
+for the rest of the night, then jumps to its rolled floor (56.1% in the
+probe run) in the single 30-second segment that crosses 07:00:00. Chris had
+already noticed bars draining overnight before this fix and suspected a bug
+-- this IS the intended behaviour now: the floor is what the creature wakes
+up with, not a level it is held at throughout the night.
+
+**Non-vacuity.** `pet_offline_ageing_check` (`run_pet_check()`'s new case 9,
+`headless_main.cpp`) compares many `KF_PET_SESSION_FLUSH_SECONDS`-sized
+`kf_pet_advance()` calls across an 11-hour night against one direct advance
+of the identical total elapsed time, using deliberately slow, flat decay
+rates so a coarse single-sample "large advance" (this file's own documented
+left-Riemann-sum approximation) stays a fair reference rather than diverging
+from segmentation granularity alone. With the fix: diff ~1.7% (well inside a
+5% tolerance chosen to sit comfortably above both the accepted live-path
+truncation loss and the left-Riemann approximation, but far below the bug's
+own ~185% scale). With the old clamp temporarily restored: `FAILED: many
+small (1320 x 30s) advances across a night produced care_integral_mp_
+seconds=2116720800, vs 1504800000 for one single 39600s advance of the
+identical elapsed time -- diff 611920800 exceeds the 75240000 (5%)
+tolerance` -- a diff of ~40.7%, unambiguously outside tolerance. Reverted
+immediately after.
+
+**Evaluated, not implemented (Chris's call):** `neglect_seconds` already
+pauses while the creature is asleep (ADR 0048) -- the principled complement
+would be for `care_integral_mp_seconds` to pause too, since sleep is not
+care time. Measured what a naive version of that (weighting each segment's
+contribution by `awake_seconds_in_segment` instead of `segment`, keeping the
+existing `stage_elapsed_seconds` divisor unchanged) would do to the 11-hour
+slow-decay scenario above: the reported CHILD care average dropped from
+37.3% to 6.9%, a ~5.4x reduction -- because dividing by the FULL elapsed
+time (including every asleep hour) while only accumulating the AWAKE hours'
+contribution systematically understates the average for every pet that
+sleeps normally, not just a neglected one. A dimensionally correct version
+would need a second, new accumulator (awake-only elapsed seconds) to divide
+by instead of `stage_elapsed_seconds` -- exactly the "more invasive; touches
+an accumulator untouched by every sleep task so far" cost the audit's own
+Option B already flagged. Not implemented here; the numbers above are for
+Chris's decision.

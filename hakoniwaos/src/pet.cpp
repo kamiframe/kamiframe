@@ -1014,25 +1014,33 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
                 state->energy_floor_mp = 0u;
                 state->dirtiness_cap_mp = 0u;
             } else {
-                /* Still asleep at the end of this segment: the naive
-                 * whole-segment decay/rise already computed above IS the
-                 * value as of "now" (this segment's own end, with no wake
-                 * instant inside it to split around) -- the floor/cap simply
-                 * clamps it in place. */
-                state->hunger_mp = state->hunger_mp > state->hunger_floor_mp
-                                        ? state->hunger_mp
-                                        : state->hunger_floor_mp;
-                state->happiness_mp =
-                    state->happiness_mp > state->happiness_floor_mp
-                        ? state->happiness_mp
-                        : state->happiness_floor_mp;
-                state->energy_mp = state->energy_mp > state->energy_floor_mp
-                                        ? state->energy_mp
-                                        : state->energy_floor_mp;
-                state->dirtiness_mp =
-                    state->dirtiness_mp < state->dirtiness_cap_mp
-                        ? state->dirtiness_mp
-                        : state->dirtiness_cap_mp;
+                /* Still asleep at the end of this segment: DELIBERATELY NO
+                 * CLAMP HERE -- this is the fix for the defect ADR 0053
+                 * itself now documents (docs/reviews/2026-08-12-sleep-
+                 * stack-audit.md finding 1). The floor/cap is a WAKE-INSTANT
+                 * set-point ("what the creature wakes up with"), not a
+                 * level held continuously through the night, and clamping
+                 * it here every segment applied it as the latter by
+                 * accident. `kf_pet_session_frame()` flushes live play
+                 * every KF_PET_SESSION_FLUSH_SECONDS (30s), so a real
+                 * overnight session used to hit this branch roughly 1,080
+                 * times a night -- re-clamping state->hunger_mp etc. up to
+                 * the floor on EVERY one of those segments, not just once.
+                 * Because care_integral_mp_seconds (above) accumulates each
+                 * segment's *start-of-segment* value, every one of those
+                 * re-clamps fed a floor-level number into the CHILD-stage
+                 * care average on the very next segment -- inflating it by
+                 * as much as ~2.85x for an identical, completely unattended
+                 * pet purely depending on whether a wall clock happened to
+                 * be established (the audit's finding 1 numbers). The needs
+                 * (and dirtiness, for symmetry -- Chris did not distinguish
+                 * the cap from the floors here) are simply left to decay/
+                 * rise unprotected for the rest of the night; the ONE
+                 * legitimate clamp is the wake-instant one in the
+                 * `wakes_this_segment` branch above, which is unchanged and
+                 * still correct. A real consequence, not hidden: the bars
+                 * now visibly drain overnight on a device left running, and
+                 * jump back up to the floor/cap only at the wake instant. */
             }
         }
 

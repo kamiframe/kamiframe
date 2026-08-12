@@ -477,16 +477,29 @@ typedef struct {
      * the three needs already below the unwell threshold) -- see pet.cpp's
      * kOvernightFloor* constants for the four bands' exact ranges.
      *
-     * Applied every time the creature is observed asleep (continuously
-     * during live play, and at the closed-form-detected wake instant for an
-     * offline jump that carries a segment past morning) as `max(decayed,
-     * floor)` -- a SET-POINT, not a rate change: a pet already below its
-     * band when it fell asleep is pulled UP into the band by morning, not
-     * merely stopped from falling further. That is a deliberate reading of
-     * Chris's own "would be a random value between 20 and 30%" phrasing, and
-     * it is a real design choice with a real consequence (sleep partially
-     * rescues a neglected pet) -- see the ADR for the one-line reversal to a
-     * pure floor if that turns out to be wrong.
+     * Applied EXACTLY ONCE, at the wake instant -- live play (continuously,
+     * every apply_stage_segment() call, right up until the segment where
+     * `asleep` flips back to false) and offline (at the closed-form-detected
+     * wake instant for a jump that carries a segment past morning) both
+     * resolve to that same single application, as `max(decayed, floor)` --
+     * a SET-POINT, not a rate change: a pet already below its band when it
+     * fell asleep is pulled UP into the band by morning, not merely stopped
+     * from falling further. That is a deliberate reading of Chris's own
+     * "would be a random value between 20 and 30%" phrasing (a MORNING
+     * value), and it is a real design choice with a real consequence (sleep
+     * partially rescues a neglected pet) -- see the ADR for the one-line
+     * reversal to a pure floor if that turns out to be wrong.
+     *
+     * NOT re-applied on every segment that ends still asleep -- that was a
+     * real defect (docs/architecture/adr-0053-overnight-floors-poop-
+     * suppression.md's amendment, docs/reviews/2026-08-12-sleep-stack-
+     * audit.md finding 1), fixed 2026-08-12: a live session flushes every
+     * KF_PET_SESSION_FLUSH_SECONDS (30s), so re-clamping on every one of
+     * those segments turned a wake-instant set-point into a value held all
+     * night, feeding an inflated pre-sleep number into
+     * care_integral_mp_seconds on every flush. The needs (and dirtiness)
+     * are left to decay/rise UNPROTECTED for the rest of the night once the
+     * floor is rolled; only the wake instant clamps.
      *
      * Cleared (set to 0) the moment the creature wakes -- 0 is never a real
      * floor (every band's minimum is >= 20000), so it doubles as "no floor

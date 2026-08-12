@@ -27,6 +27,35 @@ and found correct" below).
 
 ### 1. (Medium-High) The overnight floor (ADR 0053) was never re-verified against the CHILD/TEEN care-average, and `hokorimaru_check` cannot see the interaction
 
+**RESOLVED 2026-08-12.** Chris confirmed this as a real defect, not an
+accepted design trade-off ("the overnight floor, yes 100% make it clamp at
+wake") and it is fixed: the "still asleep" branch's per-segment reclamp
+(`pet.cpp`, was around lines 1016-1036) is removed outright, for the three
+needs and `dirtiness_cap_mp` alike. The floor/cap now applies exactly once,
+at the wake instant, matching the `wakes_this_segment` branch that was
+already correct. Re-measured with the same seed and scenario this finding
+used: **4.996%** WITH a wall clock vs **4.811%** WITHOUT (was 13.7% vs
+4.8%, a ~2.85x inflation) -- the bias is now ~3.9%, not ~185%. New
+regression coverage: `pet_offline_ageing_check`'s new case 9 compares many
+`KF_PET_SESSION_FLUSH_SECONDS`-sized live-style advances against one large
+advance of the identical total elapsed time and fails loudly if the
+per-segment reclamp reappears (confirmed by temporarily restoring the old
+clamp and watching it fail by ~40.7%, well outside its 5% tolerance). Full
+account, including the naive "pause the care integral like neglect_seconds"
+option this finding's own "Suggested fix" section below raised (measured,
+not implemented -- Chris's call): `docs/architecture/adr-0053-overnight-
+floors-poop-suppression.md`'s "Amendment (2026-08-12)" section. A visible,
+honest side effect of the fix: the needs bars now visibly drain overnight on
+a device left running, jumping back up only at wake -- also documented
+there, not hidden.
+
+The "Suggested fix" section below is left as originally written (a decision
+record of the options considered), not rewritten; Option A (accept it,
+annotate) was NOT the path taken -- Chris chose to fix the mechanism itself
+instead, closer in spirit to Option B but structurally simpler (delete the
+per-segment clamp entirely rather than track a separate pre-floor value for
+the integral's own weighting).
+
 **What's wrong.** `apply_stage_segment()`'s care-integral accumulation
 (`hakoniwaos/src/pet.cpp:738-740`, `care_integral_mp_seconds += average_before_mp * segment`)
 runs *before* the sleep/floor block later in the same function, using

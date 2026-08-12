@@ -821,6 +821,136 @@ int run_pet_check() {
         }
     }
 
+    /* 9. The gap the existing offline-equivalence checks above (case 4,
+     * case 7) cannot see: they all compare ONE big kf_pet_advance() call
+     * against another ONE big advance of the identical elapsed time, which
+     * proves save/reload fidelity but says nothing about SEGMENTATION --
+     * and the defect this task fixes (docs/reviews/2026-08-12-sleep-
+     * stack-audit.md finding 1, docs/architecture/adr-0053-overnight-
+     * floors-poop-suppression.md's amendment) was purely a segmentation
+     * bug: a live session flushes every KF_PET_SESSION_FLUSH_SECONDS
+     * (30s) via many small kf_pet_advance() calls, and the removed
+     * per-segment floor clamp used to re-apply on EVERY one of those
+     * calls while still asleep.
+     *
+     * A NOTE ON WHY THIS TEST'S SHAPE IS DELIBERATE, not the more obvious
+     * "same span, one call vs many": care_integral_mp_seconds is this
+     * file's own documented LEFT-RIEMANN-SUM approximation (this file's
+     * header comment) -- weighted by the need average AT THE START of each
+     * segment. For ONE call spanning this whole 11-hour night, that
+     * means the entire night's contribution is EXACTLY `starting_average *
+     * total_elapsed_seconds`, structurally independent of decay rate, the
+     * sleep floor, or this task's bug entirely -- a single segment simply
+     * has no interior segment boundary for the bug to repeat across, so a
+     * literal one-huge-call comparison would pass identically whether the
+     * bug is present or fixed, proving nothing (confirmed by hand before
+     * settling on this shape). What actually needs to be close to a large
+     * advance is the SEGMENTED run itself: deliberately SLOW decay rates
+     * (chosen below) keep the true trajectory nearly flat across the
+     * night, so a single-sample "large advance" taken at the very start
+     * stays a good approximation of the true time-average EXCEPT for
+     * whatever the sleep mechanism itself does -- which is exactly the
+     * thing this task's fix touches. */
+    {
+        kf_pet_config care_cfg = zero_all_stage_rates(config);
+        /* Slow enough that the RAW trajectory barely moves across the
+         * whole night (about 2.2 percentage points of hunger over 11h) --
+         * keeping the single-sample "large advance" below a good
+         * approximation of the true time-average on its own, so this test
+         * isolates the sleep MECHANISM's effect rather than ordinary
+         * Riemann-sum coarseness over a long span. All three needs use the
+         * identical rate so hunger/happiness/energy (and therefore
+         * average_before_mp) stay equal throughout, keeping the numbers
+         * easy to reason about by hand. */
+        care_cfg.stage_rates[KF_PET_STAGE_CHILD] = {200u, 200u, 200u};
+        care_cfg.poop_interval_seconds = 0u;
+        care_cfg.dirtiness_rise_mp_per_hour = 0u;
+        care_cfg.dirtiness_rise_per_poop_mp_per_hour = 0u;
+        care_cfg.sickness_death_seconds = 0u; /* not what this proves */
+        care_cfg.tuck_in_wake_bonus_mp = 0u;  /* isolate the floor alone */
+
+        kf_pet_state seed_state{};
+        kf_pet_init(&seed_state);
+        seed_state.stage = KF_PET_STAGE_CHILD; /* feeds the care integral */
+        seed_state.hunger_mp = 38000u;   /* 38% -- "well" (>= 25%) at */
+        seed_state.happiness_mp = 38000u; /* bedtime, so the rolled floor */
+        seed_state.energy_mp = 38000u;    /* band (50-60%, well+not-tucked) */
+        seed_state.last_advanced.valid = true;
+        /* is ABOVE this starting value: the floor is doing real, visible
+         * work here, not clamping a no-op. */
+        const kf_civil evening_start = {2026, 8, 12, 20, 0, 0};
+        seed_state.last_advanced.epoch_seconds =
+            kf_epoch_from_civil(&evening_start);
+
+        constexpr uint32_t kTotalElapsedSeconds = 11u * 3600u; /* 39600s */
+        static_assert(kTotalElapsedSeconds % KF_PET_SESSION_FLUSH_SECONDS ==
+                          0u,
+                      "span must divide evenly into flush-sized segments "
+                      "so the wake instant lands exactly on a segment "
+                      "boundary, with no leftover remainder segment");
+        constexpr uint32_t kSegmentCount =
+            kTotalElapsedSeconds / KF_PET_SESSION_FLUSH_SECONDS;
+        constexpr uint32_t kSeed = 0xC0FFEE42u;
+
+        kf_rng_seed(kSeed);
+        kf_pet_state segmented = seed_state;
+        for (uint32_t i = 0; i < kSegmentCount; ++i) {
+            kf_pet_advance(&segmented, &care_cfg,
+                            KF_PET_SESSION_FLUSH_SECONDS);
+        }
+
+        kf_rng_seed(kSeed);
+        kf_pet_state single = seed_state;
+        kf_pet_advance(&single, &care_cfg, kTotalElapsedSeconds);
+
+        check(segmented.stage_elapsed_seconds == single.stage_elapsed_seconds,
+              "sanity: both sequences advanced the identical total elapsed "
+              "time");
+        check(single.care_integral_mp_seconds > 0u &&
+                  segmented.care_integral_mp_seconds > 0u,
+              "sanity: both sequences actually accumulated something into "
+              "the care integral (a vacuous 0-vs-0 pass would prove "
+              "nothing)");
+        check(!segmented.tucked_in && segmented.hunger_floor_mp == 0u,
+              "sanity: the segmented run actually woke by the end of this "
+              "span (floor cleared, not stuck mid-night)");
+
+        /* Tolerance: 5% of the single-advance integral. NOT exact
+         * equality -- kf_pet_session.h's own header comment documents that
+         * the live (many-small-calls) path genuinely, always UNDER-decays
+         * relative to one continuous-time advance, by at most one flush
+         * interval's worth of integer-division truncation per flush,
+         * never compounding, and this file's own header comment documents
+         * the left-Riemann-sum approximation as deliberate, not a bug. 5%
+         * is chosen to sit comfortably above both of those (observed
+         * ~0.4% here with the fix in place) while sitting FAR below the
+         * ~185% (2.85x) inflation the actual per-segment-reclamp defect
+         * produced (docs/reviews/2026-08-12-sleep-stack-audit.md's own
+         * measured numbers) -- so this assertion is sensitive to the bug
+         * this task fixes without being sensitive to either pre-existing,
+         * accepted approximation. */
+        const uint64_t single_integral = single.care_integral_mp_seconds;
+        const uint64_t segmented_integral = segmented.care_integral_mp_seconds;
+        const uint64_t diff = segmented_integral > single_integral
+                                   ? segmented_integral - single_integral
+                                   : single_integral - segmented_integral;
+        const uint64_t tolerance = single_integral / 20u; /* 5% */
+        if (diff > tolerance) {
+            KF_LOGE(TAG,
+                    "FAILED: many small (%u x %us) advances across a night "
+                    "produced care_integral_mp_seconds=%llu, vs %llu for "
+                    "one single %us advance of the identical elapsed time "
+                    "-- diff %llu exceeds the %llu (5%%) tolerance",
+                    kSegmentCount, KF_PET_SESSION_FLUSH_SECONDS,
+                    static_cast<unsigned long long>(segmented_integral),
+                    static_cast<unsigned long long>(single_integral),
+                    kTotalElapsedSeconds,
+                    static_cast<unsigned long long>(diff),
+                    static_cast<unsigned long long>(tolerance));
+            ok = false;
+        }
+    }
+
     kf_power_shutdown();
     kf_store_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
@@ -2690,25 +2820,43 @@ int run_pet_sleep_check(void) {
         huge_decay.dirtiness_rise_mp_per_hour = 0u;
         huge_decay.dirtiness_rise_per_poop_mp_per_hour = 0u;
         huge_decay.sickness_death_seconds = 0u;
+        /* The trials below land EXACTLY at the wake instant (see
+         * kToWakeInstantSeconds), which for a tucked-in pet also pays
+         * ADR 0052's tuck-in bonus in the SAME call (apply_tuck_in_bonus_
+         * if_due() fires whenever wakes_this_segment is true, right after
+         * the floor/cap block) -- deliberately stacking, per that ADR's own
+         * "needs less care in the morning if you tucked it in" framing.
+         * Zeroed here so this test observes the FLOOR band in isolation;
+         * the two mechanisms stacking together is run_pet_sleep_check()'s
+         * own dedicated tuck-in-bonus case's job, not this one's. */
+        huge_decay.tuck_in_wake_bonus_mp = 0u;
 
         kf_pet_config zero_decay_cfg = zero_all_stage_rates(config);
         zero_decay_cfg.poop_interval_seconds = 0u;
         zero_decay_cfg.dirtiness_rise_mp_per_hour = 0u;
         zero_decay_cfg.dirtiness_rise_per_poop_mp_per_hour = 0u;
         zero_decay_cfg.sickness_death_seconds = 0u;
+        zero_decay_cfg.tuck_in_wake_bonus_mp = 0u;
 
-        /* Landed at 02:00 -- well past bedtime, well before the 07:00
-         * wake, so the "still asleep at the end of this segment" branch
-         * applies and the floor clamps the segment's own final value
-         * directly, with no post-wake decay to muddy the reading. */
-        constexpr uint32_t kToDeepNightSeconds = 4u * 3600u + 5u * 60u; /* 21:55 -> 02:00 */
+        /* Landed EXACTLY at the 07:00 wake instant (21:55 -> 07:00 next
+         * day, remaining == 0 past wake) -- the floor/cap is now a
+         * WAKE-INSTANT set-point only (the 2026-08-12 fix for the defect
+         * docs/architecture/adr-0053-overnight-floors-poop-suppression.md's
+         * amendment and docs/reviews/2026-08-12-sleep-stack-audit.md
+         * finding 1 both describe), not a value held continuously through
+         * the night, so this is the only instant left where the band is
+         * actually observable. A trial landed mid-night instead (02:00, an
+         * earlier version of this test) would now correctly see the RAW,
+         * unprotected decayed value -- for `huge_decay`, exactly 0 -- since
+         * nothing clamps it until wake. */
+        constexpr uint32_t kToWakeInstantSeconds = 9u * 3600u + 5u * 60u; /* 21:55 -> 07:00 */
 
         auto floor_band_trial = [&](bool sick, bool tuck, uint32_t seed,
                                      kf_pet_millipercent start_mp,
                                      const kf_pet_config &cfg) {
             kf_rng_seed(seed);
             kf_pet_state pet = make_pet_before_bedtime(start_mp, sick, tuck);
-            kf_pet_advance(&pet, &cfg, kToDeepNightSeconds);
+            kf_pet_advance(&pet, &cfg, kToWakeInstantSeconds);
             return pet;
         };
 
@@ -2806,7 +2954,7 @@ int run_pet_sleep_check(void) {
             auto dirt_trial = [&](bool tuck, uint32_t seed) {
                 kf_rng_seed(seed);
                 kf_pet_state pet = make_pet_before_bedtime(90000u, false, tuck);
-                kf_pet_advance(&pet, &dirty_cfg, kToDeepNightSeconds);
+                kf_pet_advance(&pet, &dirty_cfg, kToWakeInstantSeconds);
                 return pet;
             };
             const kf_pet_state tucked_dirty = dirt_trial(true, 555u);
