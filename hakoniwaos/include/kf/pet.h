@@ -335,6 +335,19 @@ typedef struct {
      * configuring and skinning this, and there is no reason waking should
      * be the one number that cannot be tuned. */
     kf_pet_millipercent wake_happiness_cost_mp;
+
+    /* The tuck-in payoff (2026-08-11 bedtime-behaviour extension, ADR 0052,
+     * kf_pet_tuck_in() below): applied once to EACH of hunger/happiness/
+     * energy at the asleep -> awake transition, but only for a creature
+     * that was tucked in first -- see kf_pet_state::tucked_in. Chris's own
+     * requirement: "more fulfilled when it wakes up compared to if it puts
+     * itself to bed automatically", so this has to be big enough to notice
+     * against a night's worth of ordinary decay without being a second way
+     * to fully refill every need for free. FEEL, NOT ENGINEERING, same
+     * status as wake_happiness_cost_mp just above and every other
+     * illustrative figure kf_pet_default_config() sets -- flagged for Chris
+     * to tune on the board. */
+    kf_pet_millipercent tuck_in_wake_bonus_mp;
 } kf_pet_config;
 
 /* A reasonable illustrative default: hunger drains fastest (empty from
@@ -410,13 +423,9 @@ typedef struct {
      * 2026-08-09-core-care-loop-design.md's "Sleep, settled": night is
      * 22:00-07:00 local (kf/clock.h's kf_clock_seconds_in_daily_window(),
      * Core does not re-derive the window), and falling asleep is entirely
-     * automatic and entirely a function of the wall clock -- there is no
-     * separate "drowsy" sub-state in Core to save, because settling the
-     * creature into bed is optional decoration the game layer draws on
-     * top (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
-     * Task 7), not a mechanism this file depends on. Recomputed inside
-     * apply_stage_segment() (kf_pet.cpp) every time the wall clock is
-     * known, from the epoch that segment ends at; stays false for the
+     * automatic and entirely a function of the wall clock. Recomputed
+     * inside apply_stage_segment() (kf_pet.cpp) every time the wall clock
+     * is known, from the epoch that segment ends at; stays false for the
      * whole of EGG (apply_stage_segment() returns before ever reaching
      * the sleep computation for an egg -- eggs do not sleep, a deliberate
      * choice recorded there and in ADR 0048, not an oversight) and stays
@@ -424,8 +433,35 @@ typedef struct {
      * sleep -- the same "inert without a clock" rule the night-window
      * accounting itself follows). Saved, so a reload shows the pose the
      * creature actually ended the session in rather than guessing from
-     * nothing. */
+     * nothing.
+     *
+     * UPDATED by the 2026-08-11 bedtime-behaviour extension (ADR 0052):
+     * "drowsy" (the ten minutes immediately before this flips true) is
+     * still not a separate SAVED sub-state -- kf_pet_drowsy() below is a
+     * pure, on-demand query exactly like kf_pet_wants(), computed fresh
+     * every call from last_advanced, never stored -- but it is no longer
+     * true that nothing in this file depends on it: kf_pet_tuck_in()'s
+     * whole gate is "is kf_pet_drowsy() true right now". */
     bool asleep;
+
+    /* Set by kf_pet_tuck_in() while the creature is drowsy, cleared the
+     * instant the tuck-in bonus is actually paid out at the next asleep ->
+     * awake transition (apply_stage_segment(), kf_pet.cpp) -- see that
+     * function's own header comment and kf_pet_config::tuck_in_wake_bonus_mp
+     * for what the bonus is. A plain bool, not folded into `asleep`, because
+     * it has to survive THROUGH the whole of asleep=true (a creature can be
+     * asleep AND tucked-in at once, for the whole night) and only stops
+     * mattering once asleep flips back to false -- two different lifetimes,
+     * two different fields, the same reasoning `sick` gets its own field
+     * instead of being derived solely from `neglect_seconds` at read time.
+     * Saved (ADR 0052, kSaveVersion 9->10): the whole point is that this
+     * survives the device being switched off overnight, so the bonus still
+     * lands when the offline fast-forward carries the creature through the
+     * night while the device was off (kf_pet_load_and_advance()). Starts
+     * false (kf_pet_init()) and stays false for a creature that never gets
+     * tucked in -- exactly the "self-slept" case the request compares
+     * against. */
+    bool tucked_in;
 
     /* How the creature took the last care action, and which action it was.
      * Saved, so a creature reloaded mid-sulk is still sulking. This is the
@@ -649,6 +685,42 @@ void kf_pet_flush(kf_pet_state *state);
  * the wall clock, same as always; nothing here needs to suppress that. */
 void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config);
 
+/* Whether the creature is drowsy right now -- the 2026-08-11 bedtime-
+ * behaviour extension (ADR 0052), Chris's own request: "extend the
+ * 'drowsy' timeframe to start 10 minutes before actual bedtime". A pure
+ * query, exactly the same shape as kf_pet_wants() just below (reads
+ * `state`, touches nothing, decides nothing, computed fresh every call
+ * from state->last_advanced rather than stored -- see kf_pet_state::asleep
+ * for why there is still no separate SAVED drowsy sub-state). The window
+ * is derived from the SAME night-window constants apply_stage_segment()
+ * evaluates `asleep` against (kNightStartHour, pet.cpp) -- there is no
+ * second, independently-hardcoded bedtime hour anywhere in this file.
+ *
+ * False whenever there is nothing to be drowsy ABOUT: dead, already
+ * asleep, an egg (eggs do not sleep -- ADR 0048 -- so they have no bedtime
+ * to be drowsy before), or the wall clock has never been established
+ * (last_advanced.valid == false, the same "inert without a clock" rule
+ * every other clock-driven query in this file follows). Otherwise true for
+ * exactly the KF_PET_DROWSY_WINDOW_SECONDS immediately before the night
+ * window begins. */
+bool kf_pet_drowsy(const kf_pet_state *state);
+
+/* Tucks the creature in -- the 2026-08-11 bedtime-behaviour extension (ADR
+ * 0052), Chris's own words: "if you notice while it's drowsy and hit the b
+ * button, the command tucks it in for a boost in care needs the next day
+ * when it wakes up". A NO-OP unless kf_pet_drowsy(state) is true right now
+ * -- which already rules out a dead, sleeping, wide-awake, or egg-stage
+ * creature, so this function does not repeat those checks itself, only
+ * defers to kf_pet_drowsy(). Idempotent: tucking in an already-tucked-in
+ * creature just sets the same flag again, harmless, not a double bonus (see
+ * kf_pet_state::tucked_in and apply_stage_segment()'s own comment on where
+ * the bonus is actually paid and the flag cleared, exactly once, at the
+ * asleep -> awake transition). Presentation (the futon appearing early) is
+ * the game layer's decoration, same as ever -- this function only ever
+ * sets the one saved bit the offline path needs to still know about it the
+ * next time this pet's save is loaded. */
+void kf_pet_tuck_in(kf_pet_state *state);
+
 /* The attention signal -- Task 8 of docs/superpowers/plans/2026-08-13-
  * screens-clock-sleep.md. What the creature wants right now, if anything,
  * from the FIVE things a player can actually do to it: feed, play, rest,
@@ -796,13 +868,22 @@ uint8_t kf_pet_dominant_care_trait(const kf_pet_state *state);
  * of whether the creature was asleep, and defaulting it to false on load
  * would be no more honest than guessing, so it is refused rather than
  * silently trusted, the same accepted cost every version bump before this
- * one already took.
+ * one already took. And bumped again to version 10 with the 2026-08-11
+ * bedtime-behaviour extension (ADR 0052): `tucked_in` was added -- a
+ * version-9 save has no notion of whether a tuck-in bonus is still owed, so
+ * a version-9 save is refused, not defaulted to false (which would happen
+ * to be silently correct for a creature that was never tucked in, and
+ * silently wrong -- one lost bonus, no worse than that, but still a guess
+ * -- for one that was). Chris was asked directly about a migration path and
+ * said no: "no save migration needed now during development. I'll let you
+ * know if I need it at some point." So there is none here either, matching
+ * the identical policy every earlier bump in this file already took.
  * A save from an earlier version is refused by kf_pet_load_and_advance()'s
  * unpack() step and falls back to a fresh pet, exactly the behaviour ADR
  * 0015 already established for any unrecognised version -- no migration
  * code, an explicit, accepted cost. */
 #define KF_PET_SAVE_KEY "pet"
-#define KF_PET_SAVE_BYTES 92u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
+#define KF_PET_SAVE_BYTES 93u /* see kf_pet.cpp's pack()/unpack() for the exact layout */
 
 /* Packs `state` and writes it to kf_store (kf/hal/storage.h) under
  * KF_PET_SAVE_KEY. Call after any change worth surviving a power cycle --

@@ -113,6 +113,13 @@ void kf_pet_session_flush(void);
  * superpowers/plans/2026-08-13-screens-clock-sleep.md. */
 void kf_pet_session_wake(void);
 
+/* Tucks the active pet in, if it is currently drowsy -- see kf/pet.h's
+ * kf_pet_tuck_in(). A no-op otherwise (not drowsy: already asleep, dead,
+ * an egg, or simply not within the ten-minute window), same "the Core
+ * function's own gate is the only gate" shape kf_pet_session_wake() already
+ * has. ADR 0052, the 2026-08-11 bedtime-behaviour extension. */
+void kf_pet_session_tuck_in(void);
+
 /* The attention signal (Task 8, docs/superpowers/plans/2026-08-13-screens-
  * clock-sleep.md): wraps kf/pet.h's pure kf_pet_wants() with the one piece
  * of memory hysteresis needs -- what this session reported last time --
@@ -217,7 +224,8 @@ void kf_pet_session_debug_advance(uint32_t seconds);
  * buttons still did nothing visible, because the check was testing the
  * function rather than the buttons. One definition, both callers. */
 typedef enum {
-    KF_PET_DEBUG_CLOCK_DROWSY = 0,  /* 21:00:05 -- inside the tuck-in hour */
+    KF_PET_DEBUG_CLOCK_DROWSY = 0,  /* 21:50:05 -- inside the ten-minute
+                                     * tuck-in window (ADR 0052) */
     KF_PET_DEBUG_CLOCK_BEDTIME,     /* 22:00:05 -- inside the night window */
     KF_PET_DEBUG_CLOCK_MORNING,     /* 07:00:05 -- past the end of it */
 } kf_pet_debug_clock_point;

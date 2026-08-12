@@ -2109,10 +2109,10 @@ int run_pet_sleep_check(void) {
               "uncompressed 24000s threshold and is nowhere near it");
     }
 
-    /* 5. The v9 save format round-trips `asleep`, and a v8 save is
-     * refused outright (kSaveVersion 8->9), matching the "an older save
-     * is refused, not guessed at" policy every earlier version bump in
-     * this file already established. */
+    /* 5. The v10 save format round-trips `asleep` AND `tucked_in`, and a
+     * v9 save is refused outright (kSaveVersion 9->10, ADR 0052), matching
+     * the "an older save is refused, not guessed at" policy every earlier
+     * version bump in this file already established. */
     {
         const std::filesystem::path dir =
             std::filesystem::temp_directory_path() /
@@ -2126,34 +2126,332 @@ int run_pet_sleep_check(void) {
         kf_pet_init(&pet);
         pet.stage = KF_PET_STAGE_CHILD;
         pet.asleep = true;
-        check(kf_pet_save(&pet) == KF_OK, "save a state with asleep=true");
+        pet.tucked_in = true;
+        check(kf_pet_save(&pet) == KF_OK,
+              "save a state with asleep=true, tucked_in=true");
 
         kf_pet_state loaded{};
         check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
               "load it back");
         check(loaded.asleep,
               "asleep round-trips through save/load byte for byte");
+        check(loaded.tucked_in,
+              "tucked_in round-trips through save/load byte for byte too "
+              "(ADR 0052)");
 
-        /* A genuine v8-shaped save: exactly the OLD KF_PET_SAVE_BYTES size
-         * (the new constant minus the one byte `asleep` added), version
-         * byte 8. Refused because it no longer matches the CURRENT
-         * KF_PET_SAVE_BYTES -- the honest reason a real v8 save on a real
+        /* A genuine v9-shaped save: exactly the OLD KF_PET_SAVE_BYTES size
+         * (the new constant minus the one byte `tucked_in` added), version
+         * byte 9. Refused because it no longer matches the CURRENT
+         * KF_PET_SAVE_BYTES -- the honest reason a real v9 save on a real
          * device would be refused after this exact bump, not a synthetic
-         * corruption. */
-        uint8_t v8_buf[KF_PET_SAVE_BYTES - 1] = {};
-        v8_buf[0] = 8u;
-        check(kf_store_write(KF_PET_SAVE_KEY, v8_buf, sizeof(v8_buf)) ==
+         * corruption. No migration: Chris was asked directly and declined
+         * one for now (see kf/pet.h's KF_PET_SAVE_BYTES comment). */
+        uint8_t v9_buf[KF_PET_SAVE_BYTES - 1] = {};
+        v9_buf[0] = 9u;
+        check(kf_store_write(KF_PET_SAVE_KEY, v9_buf, sizeof(v9_buf)) ==
                   KF_OK,
-              "write a synthetic, correctly-sized v8 save directly");
+              "write a synthetic, correctly-sized v9 save directly");
 
-        kf_pet_state after_v8{};
-        check(kf_pet_load_and_advance(&after_v8, &config) == KF_OK,
-              "load_and_advance on a v8 save returns KF_OK, not an error");
-        check(after_v8.stage == KF_PET_STAGE_EGG &&
-                  after_v8.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
-                  !after_v8.asleep,
-              "a rejected v8 save falls back to a fresh pet, exactly like "
+        kf_pet_state after_v9{};
+        check(kf_pet_load_and_advance(&after_v9, &config) == KF_OK,
+              "load_and_advance on a v9 save returns KF_OK, not an error");
+        check(after_v9.stage == KF_PET_STAGE_EGG &&
+                  after_v9.hunger_mp == KF_PET_MILLIPERCENT_MAX &&
+                  !after_v9.asleep && !after_v9.tucked_in,
+              "a rejected v9 save falls back to a fresh pet, exactly like "
               "every earlier version rejection in this file");
+
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    /* 6. kf_pet_drowsy(): true only inside the ten-minute window immediately
+     * before kNightStartHour (21:50:00-21:59:59.999...), false at 21:45 and
+     * at 22:05 -- the two boundary times the task's own brief names by
+     * clock time, plus the exact edges (21:49:59 / 21:50:00 / 21:59:59 /
+     * 22:00:00) a boundary bug would actually show up at. */
+    {
+        auto make_awake = [&](int hour, int minute, int second) {
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_CHILD;
+            pet.last_advanced.valid = true;
+            const kf_civil c = {2026, 8, 12, static_cast<uint8_t>(hour),
+                                 static_cast<uint8_t>(minute),
+                                 static_cast<uint8_t>(second)};
+            pet.last_advanced.epoch_seconds = kf_epoch_from_civil(&c);
+            return pet;
+        };
+
+        {
+            kf_pet_state p = make_awake(21, 45, 0);
+            check(!kf_pet_drowsy(&p), "not drowsy at 21:45");
+        }
+        {
+            kf_pet_state p = make_awake(21, 49, 59);
+            check(!kf_pet_drowsy(&p), "not drowsy one second before 21:50:00");
+        }
+        {
+            kf_pet_state p = make_awake(21, 50, 0);
+            check(kf_pet_drowsy(&p), "drowsy exactly at 21:50:00");
+        }
+        {
+            kf_pet_state p = make_awake(21, 55, 0);
+            check(kf_pet_drowsy(&p), "drowsy in the middle of the window");
+        }
+        {
+            kf_pet_state p = make_awake(21, 59, 59);
+            check(kf_pet_drowsy(&p), "drowsy one second before 22:00:00");
+        }
+        {
+            kf_pet_state p = make_awake(22, 0, 0);
+            check(!kf_pet_drowsy(&p),
+                  "not drowsy exactly at 22:00:00 -- bedtime itself, half-"
+                  "open like the night window's own convention");
+        }
+        {
+            kf_pet_state p = make_awake(22, 5, 0);
+            check(!kf_pet_drowsy(&p), "not drowsy at 22:05");
+        }
+
+        /* Also false while dead, already asleep, an egg, or with no clock
+         * established at all -- the same "nothing to be drowsy about" gate
+         * kf_pet_drowsy()'s own header comment promises. */
+        {
+            kf_pet_state p = make_awake(21, 55, 0);
+            p.dead = true;
+            check(!kf_pet_drowsy(&p), "not drowsy while dead, even inside "
+                                       "the window");
+        }
+        {
+            kf_pet_state p = make_awake(21, 55, 0);
+            p.asleep = true;
+            check(!kf_pet_drowsy(&p), "not drowsy while already asleep, "
+                                       "even inside the window");
+        }
+        {
+            kf_pet_state p = make_awake(21, 55, 0);
+            p.stage = KF_PET_STAGE_EGG;
+            check(!kf_pet_drowsy(&p), "an egg is never drowsy -- it never "
+                                       "sleeps either (ADR 0048)");
+        }
+        {
+            kf_pet_state p = make_awake(21, 55, 0);
+            p.last_advanced.valid = false;
+            check(!kf_pet_drowsy(&p), "not drowsy with no clock established");
+        }
+    }
+
+    /* 7. kf_pet_tuck_in(): a no-op outside the drowsy window, and a real
+     * effect inside it. */
+    {
+        kf_pet_state awake{};
+        kf_pet_init(&awake);
+        awake.stage = KF_PET_STAGE_CHILD;
+        awake.last_advanced.valid = true;
+        const kf_civil noon = {2026, 8, 12, 12, 0, 0};
+        awake.last_advanced.epoch_seconds = kf_epoch_from_civil(&noon);
+        kf_pet_tuck_in(&awake);
+        check(!awake.tucked_in,
+              "tucking in outside the drowsy window does nothing");
+
+        kf_pet_state drowsy{};
+        kf_pet_init(&drowsy);
+        drowsy.stage = KF_PET_STAGE_CHILD;
+        drowsy.last_advanced.valid = true;
+        const kf_civil evening = {2026, 8, 12, 21, 55, 0};
+        drowsy.last_advanced.epoch_seconds = kf_epoch_from_civil(&evening);
+        kf_pet_tuck_in(&drowsy);
+        check(drowsy.tucked_in,
+              "tucking in during the drowsy window sets the flag");
+
+        kf_pet_state dead_drowsy = drowsy;
+        dead_drowsy.tucked_in = false;
+        dead_drowsy.dead = true;
+        kf_pet_tuck_in(&dead_drowsy);
+        check(!dead_drowsy.tucked_in,
+              "tucking in a dead creature does nothing, even inside the "
+              "window");
+
+        kf_pet_state asleep_creature = drowsy;
+        asleep_creature.tucked_in = false;
+        asleep_creature.asleep = true;
+        kf_pet_tuck_in(&asleep_creature);
+        check(!asleep_creature.tucked_in,
+              "tucking in an already-asleep creature does nothing");
+    }
+
+    /* 8. THE LOAD-BEARING ASSERTION: a tucked-in pet wakes measurably
+     * better off than an identical pet that self-slept -- a REAL self-
+     * slept CONTROL, not a constant. Two pets, built identically (same
+     * config, same starting needs, same starting clock, same stage), one
+     * tucked in during the drowsy window and one left alone, then both
+     * advanced across the SAME night by the SAME elapsed_seconds via the
+     * SAME kf_pet_advance() call. If the two ever ended up equal, this
+     * would still pass with the bonus deleted entirely -- so this also
+     * proves they are NOT equal, and that the tucked-in pet is ahead by
+     * exactly tuck_in_wake_bonus_mp on each need, not merely "different". */
+    {
+        /* Decay rates zeroed (the same zero_all_stage_rates() helper case 3
+         * above already uses), so the ONLY thing that can move a need
+         * across either night is the bonus itself -- this isolates the
+         * mechanism being tested from an unrelated floor-clamping artefact:
+         * a starting value low enough, or a stage decay rate high enough,
+         * that ordinary decay alone drives BOTH pets to 0 well inside a
+         * single ten-hour segment (kf_pet_default_config()'s CHILD rates
+         * do exactly this from 60000mp) makes the two pets converge on 0
+         * regardless of the bonus, which very nearly shipped as this
+         * check's own bug: the SECOND-night assertion below failed until
+         * this fix, because both pets had already bottomed out identically
+         * after the first. */
+        const kf_pet_config zero_decay = zero_all_stage_rates(config);
+
+        auto make_pet_at_drowsy_start = [&]() {
+            kf_pet_state pet{};
+            kf_pet_init(&pet);
+            pet.stage = KF_PET_STAGE_CHILD;
+            pet.last_advanced.valid = true;
+            const kf_civil at_drowsy_start = {2026, 8, 12, 21, 50, 0};
+            pet.last_advanced.epoch_seconds =
+                kf_epoch_from_civil(&at_drowsy_start);
+            /* Below max so the bonus has visible room to land in without
+             * clamping at KF_PET_MILLIPERCENT_MAX either. */
+            pet.hunger_mp = 60000u;
+            pet.happiness_mp = 60000u;
+            pet.energy_mp = 60000u;
+            return pet;
+        };
+
+        kf_pet_state tucked_in = make_pet_at_drowsy_start();
+        kf_pet_tuck_in(&tucked_in);
+        check(tucked_in.tucked_in, "sanity: the tucked-in control is really "
+                                    "tucked in before the night begins");
+
+        kf_pet_state self_slept = make_pet_at_drowsy_start();
+        check(!self_slept.tucked_in,
+              "sanity: the self-slept control was never tucked in");
+
+        /* Ten hours: well past the whole 22:00-07:00 night, so both pets
+         * cross the asleep -> awake transition naturally inside this one
+         * kf_pet_advance() call, identically. */
+        constexpr uint32_t kTenHours = 10u * 3600u;
+        kf_pet_advance(&tucked_in, &zero_decay, kTenHours);
+        kf_pet_advance(&self_slept, &zero_decay, kTenHours);
+
+        check(!tucked_in.asleep && !self_slept.asleep,
+              "sanity: both pets are awake again the next morning");
+        check(!tucked_in.tucked_in,
+              "the tucked-in pet's flag cleared once the bonus paid out");
+
+        check(tucked_in.hunger_mp ==
+                  self_slept.hunger_mp + zero_decay.tuck_in_wake_bonus_mp,
+              "LOAD-BEARING: the tucked-in pet's hunger is ahead of the "
+              "self-slept control by EXACTLY tuck_in_wake_bonus_mp, not "
+              "merely different");
+        check(tucked_in.happiness_mp ==
+                  self_slept.happiness_mp + zero_decay.tuck_in_wake_bonus_mp,
+              "LOAD-BEARING: same for happiness");
+        check(tucked_in.energy_mp ==
+                  self_slept.energy_mp + zero_decay.tuck_in_wake_bonus_mp,
+              "LOAD-BEARING: same for energy");
+
+        /* 9. Cannot be claimed twice: advance BOTH pets across a SECOND,
+         * GENUINE night -- 24 hours, not another 10, and that difference
+         * matters: both pets' clocks are currently sitting at 07:50 the
+         * morning after night one, so a second bare 10-hour advance only
+         * reaches 17:50 the SAME day and never crosses another night at
+         * all, making the "not reapplied" assertion pass whether or not
+         * the flag actually clears -- caught only by trying it: disabling
+         * the flag-clear in apply_tuck_in_bonus_if_due() left the second-
+         * night assertion below GREEN with a 10-hour second advance. 24
+         * hours from 07:50 lands at 07:50 the day after, which genuinely
+         * does cross the FOLLOWING night's own morning boundary -- a real
+         * second chance for the bug (bonus reapplying) to actually fire. */
+        constexpr uint32_t kTwentyFourHours = 24u * 3600u;
+        const kf_pet_millipercent tucked_in_hunger_after_night_one =
+            tucked_in.hunger_mp;
+        const kf_pet_millipercent self_slept_hunger_after_night_one =
+            self_slept.hunger_mp;
+        kf_pet_advance(&tucked_in, &zero_decay, kTwentyFourHours);
+        kf_pet_advance(&self_slept, &zero_decay, kTwentyFourHours);
+        check(tucked_in.hunger_mp == tucked_in_hunger_after_night_one &&
+                  self_slept.hunger_mp == self_slept_hunger_after_night_one,
+              "sanity: with decay zeroed, a second night with nothing left "
+              "to pay leaves both pets' hunger completely unchanged");
+        check(tucked_in.hunger_mp ==
+                  self_slept.hunger_mp + zero_decay.tuck_in_wake_bonus_mp,
+              "the bonus is not reapplied on a second night -- the gap "
+              "stays exactly what it was after the first, not doubled");
+    }
+
+    /* 10. The bonus survives an offline night -- a pet tucked in and then
+     * saved, found again the next afternoon via the REAL kf_pet_load_and_
+     * advance() offline path, not a direct kf_pet_advance() call. */
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() /
+            ("kamiframe-headless-sleep-offline-tuckin-" +
+             std::to_string(KF_GETPID()));
+        std::error_code rm_ec;
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init");
+
+        kf_pet_state pre_sleep{};
+        kf_pet_init(&pre_sleep);
+        pre_sleep.stage = KF_PET_STAGE_CHILD;
+        pre_sleep.hunger_mp = 60000u;
+        pre_sleep.happiness_mp = 60000u;
+        pre_sleep.energy_mp = 60000u;
+        pre_sleep.last_advanced.valid = true;
+        const kf_civil tuck_in_time = {2026, 8, 12, 21, 55, 0};
+        pre_sleep.last_advanced.epoch_seconds =
+            kf_epoch_from_civil(&tuck_in_time);
+        kf_pet_tuck_in(&pre_sleep);
+        check(pre_sleep.tucked_in,
+              "tucked in at 21:55, right before the device is switched off");
+        check(kf_pet_save(&pre_sleep) == KF_OK,
+              "saved while tucked in, awake, right before bedtime");
+
+        /* A control that was NEVER tucked in, saved at the identical
+         * instant -- so the comparison below is against a real self-slept
+         * pet, exactly like check 8 above, not a hand-computed constant. */
+        kf_pet_state pre_sleep_control = pre_sleep;
+        pre_sleep_control.tucked_in = false;
+
+        /* "Found the next afternoon": well past the night AND past the
+         * following drowsy window, so there is no ambiguity about which
+         * night's transition this is. */
+        const kf_civil next_afternoon = {2026, 8, 13, 15, 0, 0};
+        kf_host_time_set_wall_fixed(kf_epoch_from_civil(&next_afternoon));
+
+        kf_pet_state loaded_tucked_in{};
+        check(kf_pet_load_and_advance(&loaded_tucked_in, &config) == KF_OK,
+              "load_and_advance across the offline night, tucked-in pet");
+        check(!loaded_tucked_in.tucked_in,
+              "offline path: the tuck-in bonus paid out and cleared the "
+              "flag, exactly like the live path");
+
+        /* Second save/load round-trip, for the control -- kf_pet_save()
+         * only takes one state at a time. */
+        kf_store_shutdown();
+        std::filesystem::remove_all(dir, rm_ec);
+        kf_host_storage_set_dir(dir.string().c_str());
+        check(kf_store_init() == KF_OK, "kf_store_init (control)");
+        check(kf_pet_save(&pre_sleep_control) == KF_OK,
+              "saved the self-slept control at the identical instant");
+
+        kf_pet_state loaded_control{};
+        check(kf_pet_load_and_advance(&loaded_control, &config) == KF_OK,
+              "load_and_advance across the offline night, self-slept "
+              "control");
+
+        check(loaded_tucked_in.hunger_mp ==
+                  loaded_control.hunger_mp + config.tuck_in_wake_bonus_mp,
+              "OFFLINE PATH, LOAD-BEARING: found the next afternoon, the "
+              "tucked-in pet is still ahead of the self-slept control by "
+              "exactly tuck_in_wake_bonus_mp -- the bonus survived the "
+              "device being switched off overnight");
 
         kf_store_shutdown();
         std::filesystem::remove_all(dir, rm_ec);
@@ -8143,16 +8441,76 @@ end
           "once woken, the wander resumes -- the freeze was specific to "
           "being asleep, not a permanent stop");
 
-    /* ---- C5: the tuck-in interaction -- B during the drowsy hour shows
+    /* ---- C5: the tuck-in interaction -- B during the drowsy window shows
      * the futon at the creature's own current position. The background
      * colour is sampled once, fresh, rather than hardcoded, so this
-     * assertion is not coupled to Home's own bg literal. ---- */
+     * assertion is not coupled to Home's own bg literal.
+     *
+     * ADR 0052 (the 2026-08-11 bedtime-behaviour extension): drowsy is now
+     * a Core query (kf_pet_drowsy(), against state->last_advanced), not a
+     * read of the raw HAL wall clock the way the old kf.hour() == 21 cue
+     * was -- so this section needs kf_pet_session_debug_set_clock(), not
+     * kf_host_time_set_wall_fixed() alone. That matters here specifically:
+     * this whole C-section's drive_frame() never calls kf_pet_session_
+     * frame() (C1's own header comment explains why), so pet2->last_
+     * advanced is never otherwise established from a real clock reading at
+     * all -- kf_host_time_set_wall_fixed() alone would move the HAL clock
+     * kf.time()/kf.hour() read while leaving Core's own notion of "now"
+     * exactly where kf_pet_session_init() left it (likely invalid, since
+     * that call ran before this check ever sets the wall clock at all),
+     * and pet.drowsy() would read false forever regardless of what the HAL
+     * clock said. kf_pet_session_debug_set_clock() moves both together and
+     * is built for exactly this. */
     pet2->asleep = false;
-    kf_host_time_set_wall_fixed(1767301200); /* 2026-01-01T21:00:00Z */
+    {
+        const kf_civil drowsy_time = {2026, 1, 1, 21, 55, 0}; /* in-window */
+        kf_pet_session_debug_set_clock(kf_epoch_from_civil(&drowsy_time));
+    }
     for (int i = 0; i < 5; ++i) {
         drive_frame(kFixedDtMs);
     }
+    check(pet2->tucked_in == false,
+          "sanity: not tucked in yet at the moment the clock enters the "
+          "drowsy window");
     const kf_color home_bg = kf_fb_pixels()[0];
+
+    /* ---- C4b: the worst-case dirty-rect count DURING the nodding-off
+     * loop itself, drowsy but NOT yet tucked in -- the shape the task's
+     * own brief asks to be measured by name: "alternates a moving creature
+     * with a ZZZ appearing and disappearing". A full nod cycle is
+     * kNodWanderMs + kNodPoseMs = 14000ms (creature.lua); 900 frames at
+     * ~33ms each is ~29.7 real seconds, over two full cycles, so this
+     * specifically spans multiple wander->pose->wander->pose edges, not
+     * just one phase. Also sums dirty bytes across the whole loop as a
+     * cheap non-vacuity guard on ITS OWN measurement: a loop that silently
+     * froze (e.g. the nod cycle wired up but never actually driven by
+     * dt_ms) would still report a worst-case of 0, well under budget, and
+     * pass this check for the wrong reason. ---- */
+    {
+        size_t worst_rects_drowsy = 0;
+        uint64_t total_dirty_bytes_drowsy = 0u;
+        for (int i = 0; i < 900; ++i) {
+            kf_fb_clear_dirty();
+            drive_frame(kFixedDtMs);
+            const size_t count =
+                static_cast<size_t>(kf_fb_dirty_rects().count);
+            if (count > worst_rects_drowsy) {
+                worst_rects_drowsy = count;
+            }
+            total_dirty_bytes_drowsy += kf_fb_dirty_bytes();
+        }
+        KF_LOGI(TAG,
+                "sleep-screen: worst-case dirty rects during the drowsy "
+                "nodding-off loop = %zu (KF_MAX_DIRTY_RECTS = %d)",
+                worst_rects_drowsy, KF_MAX_DIRTY_RECTS);
+        check(worst_rects_drowsy <= KF_MAX_DIRTY_RECTS,
+              "the drowsy nodding-off loop stays within the dirty-rect "
+              "budget");
+        check(total_dirty_bytes_drowsy > 0u,
+              "the drowsy nodding-off loop is genuinely animating over "
+              "this span (wander + the ZZZ appearing/disappearing), not "
+              "silently frozen");
+    }
 
     kf_app_debug_set_buttons(KF_BTN_B, KF_BTN_B);
     drive_frame(kFixedDtMs); /* the tuck-in frame itself */
@@ -8160,6 +8518,12 @@ end
     const int16_t bed_y = kf_creature_presenter_y();
     kf_app_debug_set_buttons(0, 0);
     drive_frame(kFixedDtMs);
+
+    check(pet2->tucked_in == true,
+          "drowsy + B: the REAL, Core-side, saved kf_pet_state::tucked_in "
+          "flag is set too, through creature.lua's own kf.button(\"b\")/"
+          "pet.tuck_in() call -- not just the script's decorative local "
+          "flag driving the futon's early appearance");
 
     auto pixel_at = [&](int16_t x, int16_t y) -> kf_color {
         return kf_fb_pixels()[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
@@ -8621,14 +8985,23 @@ int run_clock_jump_check() {
     check(!kf_pet_session_state()->asleep,
           "clock jump: the Morning button's own target lands awake");
 
-    /* 8. THE DROWSY BUTTON'S OWN TARGET: awake (21:00 is the hour BEFORE
-     *    the night window -- the tuck-in cue, not sleep itself). A Drowsy
-     *    button that put the creature to sleep would be wrong in a way
-     *    nothing else here would notice. */
+    /* 8. THE DROWSY BUTTON'S OWN TARGET: awake (21:50 is inside the ten-
+     *    minute tuck-in window, ADR 0052 -- before the night window, not
+     *    sleep itself). A Drowsy button that put the creature to sleep
+     *    would be wrong in a way nothing else here would notice. Also
+     *    confirms the creature is genuinely DROWSY there, not merely
+     *    awake -- the ADR 0052 assertion this check grew: the old whole-
+     *    hour window (21:00-22:00) made "awake" alone enough to trust the
+     *    button, but the new ten-minute window means "awake" is true for
+     *    most of the hour regardless of whether the button's own target
+     *    actually landed inside the real window or missed it. */
     kf_pet_session_debug_set_clock(
         kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_DROWSY));
     check(!kf_pet_session_state()->asleep,
           "clock jump: the Drowsy button's own target lands awake");
+    check(kf_pet_drowsy(kf_pet_session_state()),
+          "clock jump: the Drowsy button's own target lands genuinely "
+          "drowsy, inside the real ten-minute window");
 
     /* 9. The jump does not age the creature. "Pretend it was always this
      *    time", not "fast-forward through it" -- a Bedtime press that

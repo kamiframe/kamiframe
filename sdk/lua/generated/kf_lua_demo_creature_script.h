@@ -315,12 +315,31 @@ if kf.home_screen_active() then
     local kZzzVisibleMs = 2000
     local zzz_elapsed_ms = 0
 
-    -- The hour before bedtime -- Core's own night window starts at 22:00
-    -- (kNightStartHour, hakoniwaos/src/pet.cpp, ADR 0048). Duplicated as a
-    -- literal here rather than read from Core: this is display-only, never
-    -- fed back into when the creature actually falls asleep, which stays
-    -- entirely Core's, against the real wall clock.
-    local kDrowsyHour = 21
+    -- 2026-08-11 bedtime-behaviour extension (ADR 0052): "extend the
+    -- 'drowsy' timeframe to start 10 minutes before actual bedtime" --
+    -- pet.drowsy() now answers this directly from Core (kf/pet.h's
+    -- kf_pet_drowsy(), against the SAME kNightStartHour Core's own asleep
+    -- computation uses), replacing the old local `kDrowsyHour = 21` literal
+    -- this file used to duplicate Core's bedtime hour into by hand.
+
+    -- The nodding-off loop, while drowsy: wander a little, stop and hold
+    -- the sleeping pose with a brief ZZZ, then wander again, repeating
+    -- until bedtime -- Chris's own words. Driven by dt_ms (real frame
+    -- time), NOT any pet/game-time clock, so the cycle keeps the same real-
+    -- world pace regardless of the debug speed multiplier -- with that
+    -- multiplier turned up, Core's own ten-minute drowsy window can pass in
+    -- a couple of real seconds, and this cycle will simply show one nod, a
+    -- partial one, or none at all, exactly as an unmultiplied ten-minute
+    -- window would look sped up. 10s wandering / 4s nodding: long enough
+    -- for each phase to read clearly rather than flicker, short enough that
+    -- more than one nod is visible inside a real, unmultiplied ten-minute
+    -- window (about 42 cycles). Feel, like the ZZZ/wiggle timings above,
+    -- not a tuned value.
+    local kNodWanderMs = 10000
+    local kNodPoseMs = 4000
+    local nod_elapsed_ms = 0
+    local nod_posing = false -- which half of the cycle we are in right now
+    local nod_x, nod_y = 0, 0 -- frozen position for the duration of a nod
 
     local tucked_in = false -- decorative only; Core's own sleep timing
     local was_asleep = false -- notices the wake edge, to put the bedding away
@@ -395,16 +414,24 @@ if kf.home_screen_active() then
             end
             was_asleep = asleep
 
-            -- Tuck-in: available only in the hour before bedtime, while
-            -- still awake and not already tucked in. Purely decorative --
-            -- Core has no "settle early" mechanism (ADR 0048 removed it
-            -- from the design entirely), so pressing B here never changes
-            -- WHEN the creature actually falls asleep -- only makes the
-            -- futon appear EARLY, while still awake.
-            local drowsy = kf.clock_set() and kf.hour() == kDrowsyHour and
-                not asleep and not tucked_in
+            -- Tuck-in: available only during Core's own ten-minute drowsy
+            -- window (kf_pet_drowsy(), ADR 0052), while still awake and not
+            -- already tucked in. Pressing B here does TWO things now, where
+            -- it used to do only one: pet.tuck_in() sets the real, SAVED
+            -- Core flag that pays off next morning (kf/pet.h's kf_pet_
+            -- tuck_in(), a no-op if pet.drowsy() is somehow false by the
+            -- time this runs -- it re-checks its own gate independently of
+            -- this script's `drowsy` read the same frame), and the local
+            -- `tucked_in` below stays exactly what it always was: purely
+            -- decorative, making the futon appear EARLY, while still awake.
+            -- Core still has no "settle early" mechanism (ADR 0048), so
+            -- pressing B never changes WHEN the creature actually falls
+            -- asleep, only the wake-up bonus and how early the bedding
+            -- shows.
+            local drowsy = pet.drowsy() and not tucked_in
             if drowsy and kf.button("b") then
                 tucked_in = true
+                pet.tuck_in()
             end
 
             -- The futon is the sleep visual now, whenever Core says
@@ -490,20 +517,61 @@ if kf.home_screen_active() then
                     -- already resolves the right pose (kf_creature_pose_
                     -- for()); bed_shown above has already handled asleep.
                     body:show()
-                    body:sprite(creature.sprite())
-                    body:flip(creature.mirrored())
-                    body:frame(creature.frame())
-                    body:move(creature.x(), creature.y())
 
-                    -- The drowsy cue: signals tucking in is available. A
-                    -- nicety, not a duty -- static, not blinking (blinking
-                    -- is reserved for "the bedding is already out", above).
                     if drowsy then
-                        zzz:show()
-                        zzz:move(creature.x() + 30,
-                                 math.max(0, creature.y() - 10))
+                        -- ADR 0052: the nodding-off loop. Wander a little,
+                        -- stop and hold the sleeping pose with a brief ZZZ,
+                        -- then wander again, repeating until bedtime --
+                        -- Chris's own words. See kNodWanderMs/kNodPoseMs
+                        -- above for the cycle length and why dt_ms drives
+                        -- it. Reuses the SAME *_sleeping_* art the real
+                        -- asleep pose uses (want_stage_token() is the exact
+                        -- helper the attention signal above already builds
+                        -- this token with) -- no new art for this.
+                        nod_elapsed_ms = nod_elapsed_ms + dt_ms
+                        local phase =
+                            nod_elapsed_ms % (kNodWanderMs + kNodPoseMs)
+                        local posing_now = phase >= kNodWanderMs
+                        if posing_now and not nod_posing then
+                            -- Just entered the pose half: freeze the
+                            -- position ONCE, here, rather than every frame
+                            -- of the pose -- that is what makes the
+                            -- creature look like it actually stopped,
+                            -- instead of merely posing while still sliding
+                            -- toward wherever the underlying wander (which
+                            -- keeps running regardless -- see kf_creature_
+                            -- presenter.h's own header comment) has reached
+                            -- by now.
+                            nod_x, nod_y = creature.x(), creature.y()
+                        end
+                        nod_posing = posing_now
+
+                        if nod_posing then
+                            body:sprite(want_stage_token() .. "_sleeping_s")
+                            body:flip(false)
+                            body:frame(0) -- the sleeping art is single-frame
+                            body:move(nod_x, nod_y)
+                            zzz:show()
+                            zzz:move(nod_x + 30, math.max(0, nod_y - 10))
+                        else
+                            body:sprite(creature.sprite())
+                            body:flip(creature.mirrored())
+                            body:frame(creature.frame())
+                            body:move(creature.x(), creature.y())
+                            zzz:hide()
+                        end
                     else
+                        -- Not drowsy: a fresh nodding cycle starts clean
+                        -- the next time it becomes true, rather than
+                        -- resuming mid-pose from whatever the last drowsy
+                        -- window left behind.
+                        nod_elapsed_ms = 0
+                        nod_posing = false
                         zzz:hide()
+                        body:sprite(creature.sprite())
+                        body:flip(creature.mirrored())
+                        body:frame(creature.frame())
+                        body:move(creature.x(), creature.y())
                     end
                 end
             end

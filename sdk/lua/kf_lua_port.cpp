@@ -417,6 +417,29 @@ int lua_pet_asleep(lua_State *L) {
     return 1;
 }
 
+/* pet.drowsy() -- the 2026-08-11 bedtime-behaviour extension (ADR 0052): a
+ * plain boolean, true for the ten minutes immediately before bedtime, same
+ * shape as pet.asleep()/pet.sick()/pet.dead() above. Wraps kf/pet.h's pure
+ * kf_pet_drowsy() directly (unlike pet.wants(), there is no hysteresis
+ * memory to hold here -- kf_pet_drowsy() needs none, see its own header
+ * comment). */
+int lua_pet_drowsy(lua_State *L) {
+    lua_pushboolean(L, kf_pet_drowsy(kf_pet_session_state()) ? 1 : 0);
+    return 1;
+}
+
+/* pet.tuck_in() -- the 2026-08-11 bedtime-behaviour extension (ADR 0052):
+ * tucks the creature in for a next-morning care-needs boost. No argument,
+ * no return value, same shape as pet.wake()/pet.flush() above -- one way to
+ * do it, nothing to configure at the call site, and a silent no-op when
+ * pet.drowsy() is false (kf_pet_tuck_in()'s own gate), so a script never
+ * has to check first. */
+int lua_pet_tuck_in(lua_State *L) {
+    (void)L;
+    kf_pet_session_tuck_in();
+    return 0;
+}
+
 /* pet.wants() -- Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-
  * sleep.md): the attention signal. An UPPERCASE STRING NAME ("FOOD",
  * "REST", "BATH", "FLUSH", "PLAY") or nil, deliberately never the raw
@@ -612,6 +635,8 @@ const luaL_Reg kKfPetFuncs[] = {
     {"sick", lua_pet_sick},
     {"dead", lua_pet_dead},
     {"asleep", lua_pet_asleep},
+    {"drowsy", lua_pet_drowsy},
+    {"tuck_in", lua_pet_tuck_in},
     {"wants", lua_pet_wants},
     {"neglect_seconds", lua_pet_neglect_seconds},
     {"save", lua_pet_save},

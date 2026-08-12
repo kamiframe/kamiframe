@@ -298,6 +298,13 @@ void kf_pet_session_wake(void) {
     debug_snapshot_push();
 }
 
+void kf_pet_session_tuck_in(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_tuck_in called before kf_pet_session_init");
+    kf_pet_tuck_in(&g.state);
+    debug_snapshot_push();
+}
+
 kf_pet_want kf_pet_session_wants(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_wants called before kf_pet_session_init");
@@ -343,16 +350,21 @@ int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point) {
     /* Five seconds INSIDE each state, not short of it -- see this
      * function's header comment in kf_pet_session.h for why aiming short
      * produces a button that appears to do nothing. The hours themselves
-     * mirror kNightStartHour/kNightEndHour (hakoniwaos/src/pet.cpp) and
-     * creature.lua's kDrowsyHour; they are duplicated here rather than
-     * exported because Core deliberately keeps them private, and a debug
-     * affordance is not reason enough to widen that surface. If the night
-     * window ever moves, clock_jump_check fails loudly, which is the
-     * intended tripwire. */
+     * mirror kNightStartHour/kNightEndHour (hakoniwaos/src/pet.cpp); they
+     * are duplicated here rather than exported because Core deliberately
+     * keeps them private, and a debug affordance is not reason enough to
+     * widen that surface. If the night window ever moves, clock_jump_check
+     * fails loudly, which is the intended tripwire. Drowsy's own minute
+     * (ADR 0052, the 2026-08-11 bedtime-behaviour extension) is the
+     * identical duplication for kDrowsyWindowSeconds -- landing at :50
+     * puts this five seconds inside the new ten-minute window rather than
+     * the old whole hour. */
     int hour = 22;
+    int minute = 0;
     switch (point) {
     case KF_PET_DEBUG_CLOCK_DROWSY:
         hour = 21;
+        minute = 50;
         break;
     case KF_PET_DEBUG_CLOCK_MORNING:
         hour = 7;
@@ -367,7 +379,7 @@ int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point) {
     kf_civil civil;
     kf_civil_from_epoch(now.epoch_seconds, &civil);
     civil.hour = static_cast<uint8_t>(hour);
-    civil.minute = 0u;
+    civil.minute = static_cast<uint8_t>(minute);
     civil.second = 5u;
 
     int64_t target = kf_epoch_from_civil(&civil);

@@ -81,6 +81,28 @@ per the "Who has to be at the bench" table below, and is not blocked on
 anything but Task 7, which is now done. Task 8's own requirement that "no
 want fires while asleep" reads `pet.asleep()`, landed by this task.
 
+**Task 8 has since landed too** (`9e1ecfa`) — the attention signal,
+`pet.wants()`, out of scope for this note.
+
+**Updated again, 2026-08-11, after further testing (ADR 0052) — the
+bedtime-behaviour extension.** Everything above describing drowsy as "the
+hour before bedtime (21:00)" is now STALE: Chris asked for the drowsy
+window to shrink to the ten minutes immediately before bedtime (21:50-
+22:00), for a real nodding-off animation during it (wander/pose/wander,
+reusing existing `*_sleeping_*` art, no new art), and for the tuck-in
+button to have a REAL, saved, next-morning payoff instead of being purely
+decorative. That last part moved tuck-in from a `creature.lua`-only
+mechanism into Core: `kf_pet_drowsy()` (a pure query, same shape as
+`kf_pet_wants()`) and `kf_pet_tuck_in()` (a no-op unless drowsy) are new,
+`kf_pet_state` gained a saved `tucked_in` bool, and `kSaveVersion` bumped
+again, 9→10 (`KF_PET_SAVE_BYTES` 92→93) — a version-9 save (this task's own
+version) is now refused, same policy as every bump before it. 51/51 tests
+green (same count as this task left it; the new coverage landed as more
+assertions inside `run_pet_sleep_check`/`clock_jump_check`/
+`sleep_screen_check` rather than new registered checks). See ADR 0052 for
+the mechanism and a real bug it caught in its own first draft (the offline
+transition detection).
+
 Written 2026-08-13 as NOT STARTED. Since then: Task 1 (`kf.screen()` groups,
 Info declared in Lua — `d3354cf`, `83c140e`), Task 2 (`KF_ENABLE_LVGL`
 default OFF, Info's LVGL screen deleted — `f3ddbc8`, `27a6649`), and further
@@ -152,7 +174,7 @@ result. Record what was actually observed in its ADR.
 | `KF_CREATURE_POSE_SLEEPING` is reachable now | `hakoniwaos/include/kf/creature.h:32`, `hakoniwaos/src/creature.cpp`'s `kf_creature_pose_for()` | **Landed by Task 6, ADR 0048.** `kf_creature_pose_for()` returns it when `pet->asleep`, between `sick` and the held reaction. (Was: unreachable, with a header comment saying so, before Task 6 — that comment was corrected in the same commit that made it false.) |
 | Sleeping art in the shipped pack | `find examples/creature_demo/sprites -name '*sleeping*'` | **18 files**, one frame each: `{baby,child,teen0..3}_sleeping_{s,e,n}_01.png`. **No `egg_sleeping`, no adult family at all** |
 | The attention signal | grep for any want/demand/alert query | **Nothing.** `pet.*` exposes the raw needs and the player reads the bars |
-| Save format | `hakoniwaos/src/pet.cpp:79`, `kf/pet.h:617` | `kSaveVersion = 9`, `KF_PET_SAVE_BYTES = 92`, key `"pet"`, against `KF_STORE_MAX_VALUE_BYTES` = 4000. **Bumped by Task 6** (was version 8 / 91 bytes) to add `asleep`; a version-8 save is refused, per ADR 0048 |
+| Save format | `hakoniwaos/src/pet.cpp:82`, `kf/pet.h` | `kSaveVersion = 9`, `KF_PET_SAVE_BYTES = 92` as this task itself left it (was version 8 / 91 bytes, Task 6, to add `asleep`). **STALE since 2026-08-11 (ADR 0052, the bedtime-behaviour extension, outside this task): bumped again to `kSaveVersion = 10`, `KF_PET_SAVE_BYTES = 93`, to add `tucked_in`; a version-9 save is now refused**, same policy as every bump before it |
 | Hold-to-repeat is available | `hakoniwaos/include/kf/app.h:135-136` | Both `kf_app_buttons_held()` and `kf_app_buttons_pressed()` exist |
 | `KFDBG STATE` carries no clock | `handle_state()`'s format string, `kf_dbg_bridge.cpp:238-247` | 28 keys, none of them wall-clock or RTC. The reply buffer is sized by a documented byte computation at `:228` |
 
@@ -1260,6 +1282,11 @@ fast-forward, which is the feature the whole product rests on.
       `:739` — this project does not guess at a layout that changed. **Landed**:
       `KF_PET_SAVE_BYTES` is now 92 (91→92, one byte); "whatever the drowsy
       state needs" turned out to be nothing else, per the STATUS block above.
+      **STALE since 2026-08-11 (ADR 0052, outside this task's own scope)**:
+      "nothing else" stopped being true once tuck-in got a real, saved
+      payoff — `tucked_in` joined `kf_pet_state` too, `kSaveVersion` 9→10,
+      `KF_PET_SAVE_BYTES` 92→93, a version-9 save now refused by the
+      identical policy.
 - [x] Night is **22:00–07:00 local**, via `kf_clock_seconds_in_daily_window()`
       from Task 3. Core does not re-derive it. **Landed** — two private
       constants in `pet.cpp` (`kNightStartHour`/`kNightEndHour`), every
@@ -1389,6 +1416,17 @@ now, per this plan's own rule.
       next-day deficit. **Landed, not skipped**: a static "ZZZ" text cue
       during the hour before bedtime (21:00), reusing the same scene object
       the tucked-in blink uses.
+      **Superseded 2026-08-11 (ADR 0052, outside this task)**: the window
+      shrank to the ten minutes immediately before bedtime (21:50-22:00,
+      `kf_pet_drowsy()`, a real Core query — not a `creature.lua` literal
+      any more), the cue became an actual nodding-off LOOP (wander, pose
+      with ZZZ, repeat — reusing the same `*_sleeping_*` art, no new art),
+      and tucking in stopped being purely decorative: it now sets a real,
+      saved Core flag (`kf_pet_tuck_in()`) paid out as a next-morning care-
+      needs boost. "Skipping it costs nothing beyond the spec's next-day
+      deficit" is also no longer quite true in the same way — skipping it
+      now means the pet self-sleeps with no bonus, a real, measured
+      difference, not a theoretical one.
 - [x] Bedding: put away by the creature itself in the morning, per the spec.
       ~~**There is no bedding art.** Either generate it or draw it as boxes and
       say so~~ — **superseded mid-task**: Chris authorized generating one
@@ -1428,6 +1466,11 @@ now, per this plan's own rule.
       ZZZ cadence are all still exactly the named, reportable values ADR
       0049 built them as, and none of them changed here — only WHEN the
       futon appears changed, not how it moves once it is showing.
+      **The "drowsy hour" item above is STALE since 2026-08-11 (ADR 0052,
+      outside this task)** — it is a ten-minute window now, not an hour,
+      and the nodding-off loop's own cycle timings (10s wander / 4s pose)
+      and the tuck-in bonus size (10%) are the new feel values still
+      genuinely unjudged.
 
 ---
 

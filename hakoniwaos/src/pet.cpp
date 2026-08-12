@@ -75,11 +75,12 @@ constexpr const char *TAG = "pet";
  * 8 with care variations (docs/superpowers/plans/2026-08-09-care-
  * variations.md): `last_reaction` and `last_care_action` were added. And to
  * 9 with sleep (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
- * Task 6, ADR 0048): `asleep` was added.
+ * Task 6, ADR 0048): `asleep` was added. And to 10 with the 2026-08-11
+ * bedtime-behaviour extension (ADR 0052): `tucked_in` was added.
  * kf_pet_deserialize() refuses to load anything written by a different
  * version rather than guessing at a layout that changed, see unpack()
  * below. */
-constexpr uint8_t kSaveVersion = 9;
+constexpr uint8_t kSaveVersion = 10;
 
 /* Sleep, per docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
  * "Sleep, settled". Night is a FIXED clock-time window, not config -- the
@@ -107,6 +108,16 @@ constexpr uint8_t kNightEndHour = 7u;
  * why. */
 constexpr uint32_t kWakingFractionNumerator = 15u;
 constexpr uint32_t kWakingFractionDenominator = 24u;
+
+/* The drowsy window (ADR 0052, the 2026-08-11 bedtime-behaviour extension):
+ * the KF_PET_DROWSY_WINDOW_SECONDS immediately before kNightStartHour --
+ * Chris's own words, "extend the 'drowsy' timeframe to start 10 minutes
+ * before actual bedtime". Derived from kNightStartHour just above, not a
+ * second hardcoded "22" -- see kf_pet_drowsy() below. Ten minutes is the
+ * REQUESTED value, not a tuning guess like the config-table figures further
+ * down this file, so it is a plain compile-time constant rather than a
+ * kf_pet_config field, the same treatment the night window's own hours get. */
+constexpr uint32_t kDrowsyWindowSeconds = 10u * 60u;
 
 kf_pet_millipercent clamp_add(kf_pet_millipercent value,
                                kf_pet_millipercent add) {
@@ -442,6 +453,39 @@ void accumulate_personality(kf_pet_state *state, const kf_pet_config *config,
     state->energy_integral_mp_seconds += energy_before_mp * segment;
 }
 
+/* ADR 0052: pays out the tuck-in bonus, once, if one is owed -- called only
+ * from the exact instant apply_stage_segment() below observes `asleep` flip
+ * from true to false (the asleep -> awake transition kf_pet_tuck_in()'s own
+ * header comment promises the bonus at). A no-op if the creature was never
+ * tucked in (state->tucked_in already false), which is what makes a plain
+ * self-slept creature -- one that fell asleep and woke on its own, nobody
+ * ever pressed B during its drowsy window -- unaffected: this function does
+ * nothing at all for it, not "add zero", so there is no observable
+ * difference in behaviour for the common case.
+ *
+ * Applied to all THREE needs, not just one -- Chris's own words describe a
+ * general "boost in care needs", not a single bar -- via the same clamp_add()
+ * every care action already uses, so a creature that is already near-full on
+ * one need simply cannot bank the bonus past KF_PET_MILLIPERCENT_MAX, same
+ * as feeding a full creature does nothing extra.
+ *
+ * Clears `tucked_in` unconditionally on the way out (even though the early
+ * return above already guarantees it is true whenever this reaches here) --
+ * this is what makes the bonus a one-time payout: the very next asleep ->
+ * awake transition, with the flag now false, is this function's own early
+ * return, not a second bonus. */
+void apply_tuck_in_bonus_if_due(kf_pet_state *state,
+                                 const kf_pet_config *config) {
+    if (!state->tucked_in) {
+        return;
+    }
+    state->hunger_mp = clamp_add(state->hunger_mp, config->tuck_in_wake_bonus_mp);
+    state->happiness_mp =
+        clamp_add(state->happiness_mp, config->tuck_in_wake_bonus_mp);
+    state->energy_mp = clamp_add(state->energy_mp, config->tuck_in_wake_bonus_mp);
+    state->tucked_in = false;
+}
+
 /* Applies decay (and, on the stages where it matters, accumulates the care
  * integral and/or the personality accumulators) for exactly `segment`
  * seconds, all still within the SAME stage -- kf_pet_advance()'s loop
@@ -627,6 +671,60 @@ void apply_stage_segment(kf_pet_state *state, const kf_pet_config *config,
         state->asleep = kf_clock_seconds_in_daily_window(
                              now_epoch, now_epoch + 1, kNightStartHour,
                              kNightEndHour) > 0;
+
+        /* ADR 0052: pay the tuck-in bonus if THIS SEGMENT contains the
+         * asleep -> awake transition -- the instant each day's night window
+         * closes, civil time kNightEndHour:00:00.
+         *
+         * Deliberately NOT "was state->asleep true before this call and
+         * false after" -- that only catches a transition that happens to
+         * land exactly at a segment's own boundary, which is true of the
+         * hour-at-a-time segments run_pet_sleep_check's own case 1 uses,
+         * but NOT true in general: kf_pet_advance()'s segments are bounded
+         * by STAGE transitions, not by night-window crossings (see this
+         * file's header comment and kf/pet.h's own comment on kf_pet_
+         * advance()), so a single call can easily span an entire night
+         * start to finish -- exactly what a real offline fast-forward
+         * (kf_pet_load_and_advance(), "found the next afternoon") does. A
+         * segment like that starts awake and ends awake with a whole night
+         * in between; "was awake before, still awake after" would look
+         * identical to a segment that was never asleep at all, and the
+         * transition -- and the bonus -- would be silently missed. This was
+         * caught by trying it: an earlier version of this function used
+         * exactly that was-before/is-after comparison, and the offline test
+         * below (a single ~17-hour jump from evening to the next
+         * afternoon) failed to pay the bonus at all.
+         *
+         * The fix: find the NEXT kNightEndHour:00:00 at or after this
+         * segment's own start, and check whether it falls at or before this
+         * segment's own end -- a direct, closed-form "did a morning happen
+         * inside this segment" test, independent of what `state->asleep`
+         * happens to read at the very end. Correct for exactly one morning
+         * inside the segment (the common case) and for many (a long-away
+         * offline gap): only the FIRST one matters, since apply_tuck_in_
+         * bonus_if_due() clears `tucked_in` the moment it pays, so a second
+         * or third morning inside the same giant segment is simply a no-op
+         * by the time this is evaluated again next call.
+         *
+         * Deliberate direction, matching kf_pet_tuck_in()'s own promise:
+         * ONLY the asleep -> awake edge pays, never awake -> asleep. A
+         * deliberate early wake (kf_pet_wake()) sets state->asleep = false
+         * directly and does not come through here at all -- see that
+         * function's own header comment for why a creature woken early
+         * keeps its tucked_in flag until whichever night it actually sees
+         * this transition, rather than being paid immediately. */
+        kf_civil next_morning_civil;
+        kf_civil_from_epoch(segment_start_epoch, &next_morning_civil);
+        next_morning_civil.hour = kNightEndHour;
+        next_morning_civil.minute = 0u;
+        next_morning_civil.second = 0u;
+        int64_t next_morning_epoch = kf_epoch_from_civil(&next_morning_civil);
+        if (next_morning_epoch <= segment_start_epoch) {
+            next_morning_epoch += 24 * 60 * 60;
+        }
+        if (next_morning_epoch <= now_epoch) {
+            apply_tuck_in_bonus_if_due(state, config);
+        }
     }
 
     /* Neglect, and the illness it turns into. Evaluated LAST in the
@@ -846,6 +944,7 @@ void pack(const kf_pet_state *state, uint8_t out[KF_PET_SAVE_BYTES]) {
     put_u8(out, off, state->last_reaction);
     put_u8(out, off, state->last_care_action);
     put_u8(out, off, state->asleep ? 1u : 0u);
+    put_u8(out, off, state->tucked_in ? 1u : 0u);
     KF_ASSERT(off == KF_PET_SAVE_BYTES,
               "kf_pet: pack() wrote %zu bytes, KF_PET_SAVE_BYTES says %u -- "
               "the two drifted apart, fix kf/pet.h",
@@ -931,6 +1030,7 @@ bool unpack(const uint8_t *in, size_t in_bytes, kf_pet_state *state) {
     }
     state->last_care_action = last_care_action_byte;
     state->asleep = get_u8(in, off) != 0u;
+    state->tucked_in = get_u8(in, off) != 0u;
     return true;
 }
 
@@ -1068,6 +1168,18 @@ kf_pet_config kf_pet_default_config(void) {
      * (care_boost_disliked_mp vs care_boost_liked_mp above), illustrative
      * like every other figure in this function, not a tuned value. */
     c.wake_happiness_cost_mp = 5000u;
+
+    /* Tucking in while drowsy is worth 10% on EACH of hunger/happiness/
+     * energy at next wake -- ADR 0052, 2026-08-11 bedtime-behaviour
+     * extension. Sized against wake_happiness_cost_mp just above rather
+     * than picked in isolation: this is double that cost, on three needs
+     * instead of one, so the bonus reads as clearly worth the one extra
+     * button press without coming close to a free top-up (a full night's
+     * ordinary decay, e.g. an adult's ~4000-8000 mp/hour rates over nine
+     * hours, still dwarfs it). FEEL, NOT ENGINEERING, exactly like every
+     * other figure in this function -- flagged for Chris to tune on the
+     * board. */
+    c.tuck_in_wake_bonus_mp = 10000u;
     return c;
 }
 
@@ -1082,6 +1194,7 @@ void kf_pet_init(kf_pet_state *state) {
     state->sick = false;
     state->dead = false;
     state->asleep = false;
+    state->tucked_in = false;
     state->last_reaction = KF_PET_REACTION_NEUTRAL;
     state->last_care_action = KF_PET_CARE_FEED;
     state->last_advanced.valid = false;
@@ -1334,6 +1447,84 @@ void kf_pet_wake(kf_pet_state *state, const kf_pet_config *config) {
     state->happiness_mp =
         (cost >= state->happiness_mp) ? 0u : state->happiness_mp - cost;
     state->asleep = false;
+
+    /* ADR 0052: deliberately does NOT pay a due tuck-in bonus here, even
+     * though this also crosses asleep=true -> asleep=false. Paying it on
+     * every deliberate early wake would let a tucked-in creature be woken
+     * again within the same minute for a net-positive trade (a small
+     * happiness cost against a bonus on three needs) -- the bonus is
+     * specifically the reward for waiting out the WHOLE night, per Chris's
+     * "wakes up" framing, so it stays gated to apply_stage_segment()'s own
+     * natural transition. The flag itself is untouched here: a creature
+     * woken early keeps tucked_in set and is simply paid whenever the clock
+     * genuinely does carry it past the night window next -- see apply_
+     * stage_segment()'s own comment on this split. */
+}
+
+/* ADR 0052: see kf/pet.h's own header comment on this function for what it
+ * returns and why. `kNightStartHour`/`kDrowsyWindowSeconds` above are the
+ * only two constants consulted -- no second, independently-hardcoded
+ * bedtime hour anywhere in this function. */
+bool kf_pet_drowsy(const kf_pet_state *state) {
+    if (state->dead || state->asleep) {
+        return false;
+    }
+    if (state->stage == KF_PET_STAGE_EGG) {
+        /* Eggs never sleep (ADR 0048) -- and cannot even naturally reach
+         * this point via a real asleep=true->false edge, since apply_stage_
+         * segment() returns before ever touching `asleep` for one -- so an
+         * egg has no bedtime to be drowsy before either. Checked explicitly
+         * here (rather than relying on that unreachability) so kf_pet_tuck_
+         * in() cannot be tricked into setting `tucked_in` on an egg by a
+         * caller that hand-builds a state with last_advanced sitting inside
+         * the window: the bonus this flag pays out is only ever meant to
+         * be claimed at a real asleep -> awake transition, which an egg
+         * will never generate. */
+        return false;
+    }
+    if (!state->last_advanced.valid) {
+        return false; /* no clock, no notion of "right now" to test */
+    }
+
+    kf_civil now;
+    kf_civil_from_epoch(state->last_advanced.epoch_seconds, &now);
+    const uint32_t seconds_since_midnight =
+        static_cast<uint32_t>(now.hour) * 3600u +
+        static_cast<uint32_t>(now.minute) * 60u +
+        static_cast<uint32_t>(now.second);
+    const uint32_t night_start_seconds =
+        static_cast<uint32_t>(kNightStartHour) * 3600u;
+
+    /* [window_start, night_start_seconds), where window_start is
+     * kDrowsyWindowSeconds before night_start_seconds -- wrapping across
+     * midnight with plain modular arithmetic rather than assuming
+     * kDrowsyWindowSeconds < night_start_seconds, the same "handle the wrap
+     * generally, do not special-case the values that happen not to need it"
+     * discipline kf_clock_seconds_in_daily_window() itself follows for the
+     * (much larger) night window. With kNightStartHour == 22 and a 10-minute
+     * window this never actually wraps -- but the arithmetic below is
+     * correct either way, so a future change to either constant cannot
+     * silently break it. */
+    constexpr uint32_t kSecondsPerDay = 24u * 3600u;
+    const uint32_t window_start =
+        (night_start_seconds + kSecondsPerDay - kDrowsyWindowSeconds) %
+        kSecondsPerDay;
+    if (window_start < night_start_seconds) {
+        return seconds_since_midnight >= window_start &&
+               seconds_since_midnight < night_start_seconds;
+    }
+    /* Wraps midnight (only reachable if kDrowsyWindowSeconds >
+     * night_start_seconds, e.g. a bedtime inside the first ten minutes of
+     * the day). */
+    return seconds_since_midnight >= window_start ||
+           seconds_since_midnight < night_start_seconds;
+}
+
+void kf_pet_tuck_in(kf_pet_state *state) {
+    if (!kf_pet_drowsy(state)) {
+        return;
+    }
+    state->tucked_in = true;
 }
 
 /* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): see

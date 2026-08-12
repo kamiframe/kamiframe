@@ -219,7 +219,7 @@ constexpr DebugButton kButtons[] = {
      * was asked for, because the cycle has three moments worth seeing and
      * the other two were free once the clock-setting plumbing existed:
      * Drowsy is when tuck-in becomes available and is therefore the ONLY
-     * way to see the futon without waiting for 21:00 to come round;
+     * way to see the futon without waiting for 21:50 to come round;
      * Morning is the other end of the same window. See the enum above for
      * why two of the three land ten seconds early. */
     {{16, 336, 84, 32}, "Drowsy", DebugAction::kClockDrowsy},
