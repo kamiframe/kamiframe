@@ -176,7 +176,7 @@ in a hypothetical regression:
 - Every place that used to say "the drowsy hour" or "21:00" for this
   feature now says "the ten-minute drowsy window" or "21:50" —
   `kf_pet_session.h`/`.cpp`, `sdl_debug_window.cpp`, `headless_main.cpp`'s
-  comments, and `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`.
+  comments, and the screens/clock/sleep plan.
 - A version-9 save on a developer's machine resets to a fresh pet the next
   time this build runs — the same accepted cost every prior version bump
   already took.

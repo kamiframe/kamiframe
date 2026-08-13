@@ -16,7 +16,7 @@ per-creature parts ... vary; the style block is constant."
 
 WHAT'S SYNTHESIZED HERE, NOT QUOTED FROM THE BIBLE: the bible defines the
 five care-loop states (happy/neutral/objecting/sick/sleeping) only by name
--- docs/superpowers/specs/2026-08-09-core-care-loop-design.md, not the
+-- the core care-loop design spec, not the
 bible itself, is even where four of those five names come from. Neither
 document says what body pose each state should be. STATE_GUIDANCE below is
 this tool's own minimal, generic reading of "expression is carried by the

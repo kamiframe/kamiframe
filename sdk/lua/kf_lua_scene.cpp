@@ -119,7 +119,7 @@ int8_t clamp_i8(lua_Integer v) {
  * Text: uppercase, and warn once per distinct unsupported character.
  *
  * kf/font.h's glyph set is space, 0-9, A-Z, ". , : - / % + ( )", and "!"
- * (Task 8, docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) --
+ * (Task 8, the screens/clock/sleep plan) --
  * uppercase only (see that header's own comment on why lowercase was left
  * out). A script that never learns this would see its own text render as a
  * row of blank cells, which is exactly the silent failure the audience
@@ -271,7 +271,7 @@ LuaSceneObject *check_live_obj(lua_State *L, int idx) {
 
 /* ---------------------------------------------------------------------
  * Object methods. No-arg reads, args write -- see this project's own
- * jQuery framing (docs/superpowers/plans/2026-08-12-lua-game-layer.md,
+ * jQuery framing (the Lua game-layer plan,
  * "The jQuery accessor convention") for why this is one rule rather than
  * get_ / set_ prefixed pairs.
  * --------------------------------------------------------------------- */

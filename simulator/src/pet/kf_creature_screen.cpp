@@ -18,20 +18,20 @@
 namespace {
 
 /* Task 4 of the Lua game-layer plan rebuilt this file on kf/scene.h -- the
- * retained differ Task 2 of that plan added -- and Task 5 (docs/superpowers/
- * plans/2026-08-12-lua-game-layer.md) split the wander/pose/animation
- * orchestration and the hardware care buttons out of this file entirely,
- * into kf_creature_presenter.h and kf_home_screen_input.h respectively:
+ * retained differ Task 2 of that plan added -- and Task 5 (the Lua
+ * game-layer plan) split the wander/pose/animation orchestration and the
+ * hardware care buttons out of this file entirely, into
+ * kf_creature_presenter.h and kf_home_screen_input.h respectively:
  * KF_HOME_SCREEN=lua needs the exact same wander result and the exact same
  * buttons working, and this file is no longer the only thing that reads
  * either. What is LEFT here is purely this SCREEN's own layout (where the
  * poops/stat bars/guide sit) and the sequence of scene declarations that
- * turns "the presenter's current answer" and "the pet's current needs"
- * into what this screen shows -- see kf_creature_presenter.h's own header
+ * turns "the presenter's current answer" and "the pet's current needs" into
+ * what this screen shows -- see kf_creature_presenter.h's own header
  * comment for the wander/pose reasoning this file used to carry directly. */
 
 /* The bottom 60 rows are the reserved stats band (Task 9 of the hardware
- * bring-up plan, docs/superpowers/plans/2026-08-11-hardware-bringup.md) --
+ * bring-up plan, the hardware bring-up plan) --
  * the creature/mess/shrine drawing this file declares only ever occupies
  * y=[0,260): kField is where the creature walks and where mess collects.
  * The stat bars and the care-button guide live below it, in the band
@@ -75,10 +75,9 @@ kf_rect poop_rect(int index) {
     return kf_rect{x0, kPoopY0, static_cast<int16_t>(x0 + kPoopSize), kPoopY1};
 }
 
-/* The death scene (spec: docs/superpowers/specs/2026-08-09-core-care-loop-
- * design.md, "Death without a player holds on the last creature's scene"):
- * a small roadside shrine, centred in the field, for as long as pet->dead
- * stays true. */
+/* The death scene (spec: the core care-loop design spec, "Death without a
+ * player holds on the last creature's scene"): a small roadside shrine,
+ * centred in the field, for as long as pet->dead stays true. */
 constexpr const char *kShrineSpriteName = "shrine_idle_s";
 constexpr int16_t kShrineSize = 48;
 
@@ -94,7 +93,7 @@ kf_rect centered_in_field(int16_t width, int16_t height) {
 bool g_up = false;
 
 /* ------------------------------------------------------------------------
- * Stats band (Task 9, docs/superpowers/plans/2026-08-11-hardware-bringup.md)
+ * Stats band (Task 9, the hardware bring-up plan)
  * -- unchanged by Task 5, see kf_creature_presenter.h/kf_home_screen_
  * input.h for what DID move out of this file.
  * ------------------------------------------------------------------------ */

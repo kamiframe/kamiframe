@@ -39,7 +39,7 @@ void kf_host_time_set_wall_fixed(int64_t epoch_seconds);
  * own comment), so nothing before this call can reach "clock never set" on
  * desktop -- this hook exists purely so a headless check can reach that
  * state on demand, for kf.time()'s documented "--:-- --" behaviour (Task 4,
- * docs/superpowers/plans/2026-08-13-screens-clock-sleep.md). Callers that
+ * the screens/clock/sleep plan). Callers that
  * need a valid clock again afterwards call kf_host_time_set_wall_fixed(). */
 void kf_host_time_set_wall_unset(void);
 

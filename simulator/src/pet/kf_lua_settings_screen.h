@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+ * Task 4 of the screens/clock/sleep plan: the
  * Settings screen -- a global, device-wide system clock the owner can read,
  * edit and save, with a four-field cursor (HOUR -> MINUTE -> AM/PM -> SAVE)
  * over the seven hardware buttons. See kf_lua_settings_screen.cpp's own

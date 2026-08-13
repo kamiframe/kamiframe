@@ -5,8 +5,7 @@
 
 ## Context
 
-Task 8 of the screens/clock/sleep plan
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`) is the plan's
+Task 8 of the screens/clock/sleep plan is the plan's
 last task. The plan's own requirements section carried a note explaining
 that its original text — "as specified in the answer to question 5" —
 pointed at a question that exists nowhere in this repository, and had been
@@ -295,7 +294,7 @@ breakage runs were performed.
 
 ## What changed in the plan
 
-`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s Task 8
+the screens/clock/sleep plan's Task 8
 section is updated to record what landed (this ADR, the actual thresholds
 chosen, the `MEDICINE` contradiction between its own "five questions"
 section and its Task 8 requirements list, and the `kf_lua_scene.cpp`

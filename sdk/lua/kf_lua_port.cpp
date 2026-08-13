@@ -134,14 +134,14 @@ int lua_kf_home_screen_active(lua_State *L) {
 }
 
 /* ---------------------------------------------------------------------
- * kf.time()/hour()/minute()/clock_set()/set_clock() -- Task 4 of docs/
- * superpowers/plans/2026-08-13-screens-clock-sleep.md, "the answer to
- * question 2": four reads and one write, no epoch ever crosses into Lua.
- * Every one of these goes through kf/clock.h's stateless civil-time
- * conversion (ADR 0046) rather than reimplementing hour/minute arithmetic
- * here, for the exact reason that header gives: the clock on screen and
- * whatever else reads "what hour is it locally" (sleep's night window,
- * Task 6) must never be able to disagree.
+ * kf.time()/hour()/minute()/clock_set()/set_clock() -- Task 4 of the
+ * screens/clock/sleep plan, "the answer to question 2": four reads and one
+ * write, no epoch ever crosses into Lua. Every one of these goes through
+ * kf/clock.h's stateless civil-time conversion (ADR 0046) rather than
+ * reimplementing hour/minute arithmetic here, for the exact reason that
+ * header gives: the clock on screen and whatever else reads "what hour is
+ * it locally" (sleep's night window, Task 6) must never be able to
+ * disagree.
  * --------------------------------------------------------------------- */
 
 /* kf.time() -- "9:05 AM", ready to draw, the only call most scripts need.
@@ -232,18 +232,15 @@ int lua_kf_set_clock(lua_State *L) {
  * ("up"/"down"/"left"/"right"/"a"/"b"/"menu"), matching pet.stage()'s own
  * lowercase-string convention rather than exposing kf_button's integer
  * bitmask.
- *
- * Added for Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md): the tuck-in interaction is declared entirely in creature.lua,
- * not wired through a NEW C++ input handler the way feed/play/rest/bath/
- * flush are -- this is the one call that makes that possible without
- * inventing a shared cross-screen button registry (kf_lua_settings_
- * screen.cpp's own header comment explains why THAT would be a mistake;
- * reading kf_app_buttons_pressed() directly, scoped to whichever screen's
- * own per-frame function happens to be running, carries none of that risk
- * -- it is exactly what every C++ handler already does, just reachable
- * from Lua now too).
- *
+ * Added for Task 7 (the screens/clock/sleep plan): the tuck-in interaction
+ * is declared entirely in creature.lua, not wired through a NEW C++ input
+ * handler the way feed/play/rest/bath/ flush are -- this is the one call
+ * that makes that possible without inventing a shared cross-screen button
+ * registry (kf_lua_settings_ screen.cpp's own header comment explains why
+ * THAT would be a mistake; reading kf_app_buttons_pressed() directly,
+ * scoped to whichever screen's own per-frame function happens to be
+ * running, carries none of that risk -- it is exactly what every C++
+ * handler already does, just reachable from Lua now too).
  * An unrecognised name is a script bug, not a corrupted button state --
  * raises via luaL_error(), matching this codebase's existing convention
  * for "the argument itself is wrong" (see e.g. lua_pet_reaction_to()'s own
@@ -426,12 +423,11 @@ int lua_pet_flush(lua_State *L) {
     return 0;
 }
 
-/* pet.wake() -- Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md): wakes a sleeping creature deliberately. Costs happiness (kf/
- * pet.h's kf_pet_wake(), config->wake_happiness_cost_mp) and is a no-op if
- * the creature is already awake, or dead. No argument, no return value --
- * same shape as pet.flush(): one way to do it, nothing to configure at the
- * call site. */
+/* pet.wake() -- Task 7 (the screens/clock/sleep plan): wakes a sleeping
+ * creature deliberately. Costs happiness (kf/ pet.h's kf_pet_wake(),
+ * config->wake_happiness_cost_mp) and is a no-op if the creature is already
+ * awake, or dead. No argument, no return value -- same shape as
+ * pet.flush(): one way to do it, nothing to configure at the call site. */
 int lua_pet_wake(lua_State *L) {
     (void)L;
     kf_pet_session_wake();
@@ -474,8 +470,7 @@ int lua_pet_dead(lua_State *L) {
  * richer sleep sub-state in Core to expose (ADR 0048's own decision --
  * "settling the creature into bed is the game layer's decoration"), so a
  * script that wants to know whether it is bedtime has exactly one question
- * to ask. Task 7 of docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md. */
+ * to ask. Task 7 of the screens/clock/sleep plan. */
 int lua_pet_asleep(lua_State *L) {
     lua_pushboolean(L, kf_pet_session_state()->asleep ? 1 : 0);
     return 1;
@@ -504,17 +499,16 @@ int lua_pet_tuck_in(lua_State *L) {
     return 0;
 }
 
-/* pet.wants() -- Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md): the attention signal. An UPPERCASE STRING NAME ("FOOD",
- * "REST", "BATH", "FLUSH", "PLAY") or nil, deliberately never the raw
- * kf_pet_want integer -- the audience constraint (CLAUDE.md) this whole SDK
- * is written against: "a WordPress developer or a jQuery developer" reading
- * `if pet.wants() == "FOOD" then` should never have to go learn what a
- * numbered enum means first, the same reasoning pet.stage() already applies
- * to kf_pet_stage. Wraps kf_pet_session_wants(), not kf_pet_wants()
- * directly -- see that session function's own header comment for why the
- * hysteresis memory has to live there and not be re-invented per call
- * here. */
+/* pet.wants() -- Task 8 (the screens/clock/sleep plan): the attention
+ * signal. An UPPERCASE STRING NAME ("FOOD", "REST", "BATH", "FLUSH",
+ * "PLAY") or nil, deliberately never the raw kf_pet_want integer -- the
+ * audience constraint (CLAUDE.md) this whole SDK is written against: "a
+ * WordPress developer or a jQuery developer" reading `if pet.wants() ==
+ * "FOOD" then` should never have to go learn what a numbered enum means
+ * first, the same reasoning pet.stage() already applies to kf_pet_stage.
+ * Wraps kf_pet_session_wants(), not kf_pet_wants() directly -- see that
+ * session function's own header comment for why the hysteresis memory has
+ * to live there and not be re-invented per call here. */
 int lua_pet_wants(lua_State *L) {
     switch (kf_pet_session_wants()) {
     case KF_PET_WANT_FOOD:
@@ -584,14 +578,14 @@ int lua_pet_stage(lua_State *L) {
 }
 
 /* pet.stage_seconds() -- how long the pet has been in ITS CURRENT stage,
- * added for the Info screen (Task 2, docs/superpowers/plans/2026-08-13-
- * screens-clock-sleep.md): stage_elapsed_seconds is the one field Info's
- * old LVGL implementation read that this binding had not exposed yet.
- * uint64_t straight to lua_Integer, no clamping, same as neglect_seconds()
- * above -- a Tamagotchi-scale lifetime never comes close to overflowing
- * either lua_Integer width this project builds with (64-bit on desktop,
- * 32-bit under LUA_32BITS on the ESP32 build; see kf_lua_scene.cpp's own
- * comment on that split). */
+ * added for the Info screen (Task 2, the screens/clock/sleep plan):
+ * stage_elapsed_seconds is the one field Info's old LVGL implementation
+ * read that this binding had not exposed yet. uint64_t straight to
+ * lua_Integer, no clamping, same as neglect_seconds() above -- a
+ * Tamagotchi-scale lifetime never comes close to overflowing either
+ * lua_Integer width this project builds with (64-bit on desktop, 32-bit
+ * under LUA_32BITS on the ESP32 build; see kf_lua_scene.cpp's own comment
+ * on that split). */
 int lua_pet_stage_seconds(lua_State *L) {
     lua_pushinteger(L, static_cast<lua_Integer>(
                             kf_pet_session_state()->stage_elapsed_seconds));

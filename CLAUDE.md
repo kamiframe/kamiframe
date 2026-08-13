@@ -58,10 +58,44 @@ Monorepo, Apache 2.0:
 /ports         device backends for the HAL (esp32, esp32-bringup)
 /tools         asset pipeline, packing, debug bridge, and dev scripts
 /examples      sample creatures
-/docs          docs site source
+/docs          public documentation: the user-facing guides someone needs to
+               build the thing or write a game against the SDK, plus the ADRs
+               in /docs/architecture
 ```
 
 Hardware files live in a **separate** `kamiframe/hardware` repo under CERN-OHL-W, so the licenses never blur. Not created yet.
+
+## Where documents go — this repo is public
+
+`kamiframe/kamiframe` is a **public** repo. Working notes live in a separate
+**private** one: **`kamiframe/working-notes`** (`plans/`, `specs/`,
+`reviews/`, `proposals/`). Split out 2026-08-12; the history came with them.
+
+Route by audience, not by topic:
+
+| Writing this | Goes here |
+|---|---|
+| An ADR — a decision, with its alternatives and why | `docs/architecture/` — **public** |
+| How to build it, wire it, or write a game against the SDK | `docs/` — **public** |
+| An implementation plan or spec to work from | `kamiframe/working-notes` → `plans/`, `specs/` — **private** |
+| A review or audit of landed work | `kamiframe/working-notes` → `reviews/` — **private** |
+| Product direction: what to build next, and why | `kamiframe/working-notes` → `proposals/` — **private** |
+
+**The rule behind the table:** an ADR is a record of a moment, so it stays
+true as history. A plan reads like an *intention*, so a stale one gets read as
+current by anyone who finds it — and this repo's own operator rules already
+say a stale plan is re-served to every implementer that follows it. Publishing
+that failure mode makes it worse, not better.
+
+**Never cite a private document by path from public code.** Those citations
+become dead links the moment someone outside clones the repo. Name it in
+prose: `the screens/clock/sleep plan`, not
+`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`. 157 such citations
+across 66 files were rewritten this way on 2026-08-12; don't reintroduce them.
+
+Nothing moved because it was sensitive — there are no credentials, costs or
+vendor complaints in any of it. It moved because three audiences were sharing
+one folder.
 
 Demo creature code is Apache; its characters and artwork are **not** licensed for reuse. See `LICENSING.md`.
 

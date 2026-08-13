@@ -17,17 +17,17 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, docs/superpowers/
-## plans/2026-08-12-lua-game-layer.md): which Home implementation this
-## firmware wires up -- "lua" (examples/creature_demo/creature.lua,
-## declaring the screen through kf/scene.h directly -- the default since
-## Task 6, ADR 0043) or "cpp" (kf_creature_screen.cpp, kept as the parity
-## reference and fallback for one release). Set here, at the TOP of the
-## whole project file, rather than in main/CMakeLists.txt where KF_PANEL
-## lives: both main and the kamiframe_lvgl_port component (kamiframe_lvgl_
-## port/CMakeLists.txt, added to EXTRA_COMPONENT_DIRS below) need to see
-## it, and a plain CACHE variable set here is visible to every component
-## ESP-IDF's build goes on to configure, in either order.
+## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, the Lua game-layer
+## plan): which Home implementation this firmware wires up -- "lua"
+## (examples/creature_demo/creature.lua, declaring the screen through
+## kf/scene.h directly -- the default since Task 6, ADR 0043) or "cpp"
+## (kf_creature_screen.cpp, kept as the parity reference and fallback for
+## one release). Set here, at the TOP of the whole project file, rather
+## than in main/CMakeLists.txt where KF_PANEL lives: both main and the
+## kamiframe_lvgl_port component (kamiframe_lvgl_ port/CMakeLists.txt,
+## added to EXTRA_COMPONENT_DIRS below) need to see it, and a plain CACHE
+## variable set here is visible to every component ESP-IDF's build goes on
+## to configure, in either order.
 ##
 ##     idf.py -DKF_HOME_SCREEN=cpp build   # the fallback, for comparison
 ##
@@ -40,18 +40,18 @@ if(NOT KF_HOME_SCREEN STREQUAL "cpp" AND NOT KF_HOME_SCREEN STREQUAL "lua")
         "KF_HOME_SCREEN must be 'cpp' or 'lua', got '${KF_HOME_SCREEN}'")
 endif()
 
-## KF_ENABLE_LVGL (ADR 0045, Task 2 of docs/superpowers/plans/2026-08-13-
-## screens-clock-sleep.md): OFF by default, same reasoning as the desktop
-## build's identically-named option (top-level CMakeLists.txt). Info -- the
-## screen that used to be this component's only real job -- moved to a
-## kf.screen() group over the retained scene, so a default build no longer
-## needs LVGL linked in at all. Set here, at the top, for the same reason
-## KF_HOME_SCREEN is: EXTRA_COMPONENT_DIRS below decides, once and for all
-## component-discovery passes, whether the kamiframe_lvgl_port DIRECTORY
-## even exists as a candidate component -- ESP-IDF has no notion of an
-## optional component once one is named, so leaving it off this list
-## entirely (rather than registering it and hoping nothing links it) is
-## what actually keeps LVGL out of a default build's image.
+## KF_ENABLE_LVGL (ADR 0045, Task 2 of the screens/clock/sleep plan): OFF
+## by default, same reasoning as the desktop build's identically-named
+## option (top-level CMakeLists.txt). Info -- the screen that used to be
+## this component's only real job -- moved to a kf.screen() group over the
+## retained scene, so a default build no longer needs LVGL linked in at
+## all. Set here, at the top, for the same reason KF_HOME_SCREEN is:
+## EXTRA_COMPONENT_DIRS below decides, once and for all component-discovery
+## passes, whether the kamiframe_lvgl_port DIRECTORY even exists as a
+## candidate component -- ESP-IDF has no notion of an optional component
+## once one is named, so leaving it off this list entirely (rather than
+## registering it and hoping nothing links it) is what actually keeps LVGL
+## out of a default build's image.
 ##
 ##     idf.py -DKF_ENABLE_LVGL=ON build   # the LVGL-vs-custom-engine
 ##                                          evaluation CLAUDE.md defers

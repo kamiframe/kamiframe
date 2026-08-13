@@ -12,7 +12,7 @@
  *
  * Character set: space, 0-9, A-Z (uppercase only), the punctuation the
  * constraint HUD needs: . , : - / % + ( ), and "!" (added for Task 8 of
- * docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's attention
+ * the screens/clock/sleep plan's attention
  * signal). Anything else in a string draws
  * as a blank cell, LOWERCASE LETTERS INCLUDED -- this module itself does no
  * case-folding. That matters well beyond the HUD this set was originally

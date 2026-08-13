@@ -5,8 +5,7 @@
 
 ## Context
 
-Task 3 of the screens/clock/sleep plan
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`) builds the piece
+Task 3 of the screens/clock/sleep plan builds the piece
 Task 4 (the Settings screen's 12-hour clock) and Task 6 (sleep's 22:00-07:00
 night window) both block on: turning a wall-clock second count into an hour
 and minute, and answering "how many seconds of this span fall inside a daily
@@ -293,7 +292,7 @@ sound and does not depend on the screen existing yet; only the present-tense
 
 **"the time API in Lua and the Settings screen, which will also be the
 first thing to persist a wall-clock value under its own storage key"** is
-also superseded: `docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`'s
+also superseded: the screens/clock/sleep plan's
 Task 4 was corrected to *not* add a storage key — nothing about the clock
 persists outside the RTC itself, "ready for" internet sync or otherwise. See
 that plan's own note against adding one.

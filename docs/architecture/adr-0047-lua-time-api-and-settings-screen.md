@@ -5,8 +5,7 @@
 
 ## Context
 
-Task 4 of the screens/clock/sleep plan
-(`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`) is the first
+Task 4 of the screens/clock/sleep plan is the first
 user-visible clock: a global Settings screen the owner can read, edit and
 save, plus the Lua binding surface behind it. It builds directly on Task 3
 (`kf/clock.h`, ADR 0046, stateless integer civil-time conversion) and Task 1

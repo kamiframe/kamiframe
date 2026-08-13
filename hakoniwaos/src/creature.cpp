@@ -124,7 +124,7 @@ void kf_creature_sprite_name(const kf_pet_state *pet, kf_creature_pose pose,
         snprintf(out, out_len, "egg_idle_%s", dir_tok);
         return;
     }
-    /* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md,
+    /* Task 7 (the screens/clock/sleep plan,
      * ADR 0049): ADULT has no `adult*_sleeping_*` art in the shipped pack
      * at all (the 18 sleeping sprites cover baby/child/teen0-3 only), so
      * an adult that falls asleep resolves a name this pack does not

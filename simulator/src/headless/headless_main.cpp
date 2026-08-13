@@ -459,16 +459,15 @@ int run_pet_check() {
               "elapsed clamps to zero rather than underflowing");
     }
 
-    /* 6. Requirement 1 of docs/superpowers/plans/2026-08-13-screens-clock-
-     * sleep.md's Task 6, and its own dedicated check landed BEFORE any
-     * sleep logic was written, per that requirement's own instruction:
-     * kf_pet_advance() now carries `last_advanced` forward by exactly the
-     * elapsed seconds it was handed, so a live session (many small
-     * kf_pet_advance() calls, one per flushed frame-batch -- see
-     * simulator/src/pet/kf_pet_session.cpp's kf_pet_session_frame())
-     * keeps Core's notion of "now" tracking real time, not only a
-     * reload's. See kf_pet_state::last_advanced's own comment in
-     * kf/pet.h. */
+    /* 6. Requirement 1 of the screens/clock/sleep plan's Task 6, and its
+     * own dedicated check landed BEFORE any sleep logic was written, per
+     * that requirement's own instruction: kf_pet_advance() now carries
+     * `last_advanced` forward by exactly the elapsed seconds it was handed,
+     * so a live session (many small kf_pet_advance() calls, one per flushed
+     * frame-batch -- see simulator/src/pet/kf_pet_session.cpp's
+     * kf_pet_session_frame()) keeps Core's notion of "now" tracking real
+     * time, not only a reload's. See kf_pet_state::last_advanced's own
+     * comment in kf/pet.h. */
     {
         kf_pet_state fresh{};
         kf_pet_init(&fresh);
@@ -527,17 +526,17 @@ int run_pet_check() {
               "chopped up");
     }
 
-    /* 7. Sleep's offline half (docs/superpowers/plans/2026-08-13-screens-
-     * clock-sleep.md's Task 6 requirement 8): the analytic offline path
-     * (save, sleep via kf_power_deep_sleep_until(), kf_pet_load_and_
-     * advance()) must still equal one direct kf_pet_advance() call across
-     * a night, exactly as case 4 above proved with no night in the
-     * picture at all -- and, separately, night hours must actually have
-     * been EXCLUDED from neglect_seconds, or the equivalence alone would
-     * pass even if sleep did nothing at all (both sides run the identical
-     * kf_pet_advance() code either way). Three spans, per the
-     * requirement: one starting mid-night, one ending mid-night, and one
-     * covering several whole nights. */
+    /* 7. Sleep's offline half (the screens/clock/sleep plan's Task 6
+     * requirement 8): the analytic offline path (save, sleep via
+     * kf_power_deep_sleep_until(), kf_pet_load_and_ advance()) must still
+     * equal one direct kf_pet_advance() call across a night, exactly as
+     * case 4 above proved with no night in the picture at all -- and,
+     * separately, night hours must actually have been EXCLUDED from
+     * neglect_seconds, or the equivalence alone would pass even if sleep
+     * did nothing at all (both sides run the identical kf_pet_advance()
+     * code either way). Three spans, per the requirement: one starting
+     * mid-night, one ending mid-night, and one covering several whole
+     * nights. */
     {
         /* Only hunger decays, fast enough to cross into neglect well
          * before any span below finishes; everything else (mess, the
@@ -827,14 +826,12 @@ int run_pet_check() {
      * case 7) cannot see: they all compare ONE big kf_pet_advance() call
      * against another ONE big advance of the identical elapsed time, which
      * proves save/reload fidelity but says nothing about SEGMENTATION --
-     * and the defect this task fixes (docs/reviews/2026-08-12-sleep-
-     * stack-audit.md finding 1, docs/architecture/adr-0053-overnight-
-     * floors-poop-suppression.md's amendment) was purely a segmentation
-     * bug: a live session flushes every KF_PET_SESSION_FLUSH_SECONDS
-     * (30s) via many small kf_pet_advance() calls, and the removed
-     * per-segment floor clamp used to re-apply on EVERY one of those
-     * calls while still asleep.
-     *
+     * and the defect this task fixes (the sleep-stack audit finding 1,
+     * docs/architecture/adr-0053-overnight- floors-poop-suppression.md's
+     * amendment) was purely a segmentation bug: a live session flushes
+     * every KF_PET_SESSION_FLUSH_SECONDS (30s) via many small
+     * kf_pet_advance() calls, and the removed per-segment floor clamp used
+     * to re-apply on EVERY one of those calls while still asleep.
      * A NOTE ON WHY THIS TEST'S SHAPE IS DELIBERATE, not the more obvious
      * "same span, one call vs many": care_integral_mp_seconds is this
      * file's own documented LEFT-RIEMANN-SUM approximation (this file's
@@ -927,7 +924,7 @@ int run_pet_check() {
          * is chosen to sit comfortably above both of those (observed
          * ~0.4% here with the fix in place) while sitting FAR below the
          * ~185% (2.85x) inflation the actual per-segment-reclamp defect
-         * produced (docs/reviews/2026-08-12-sleep-stack-audit.md's own
+         * produced (the sleep-stack audit's own
          * measured numbers) -- so this assertion is sensitive to the bug
          * this task fixes without being sensitive to either pre-existing,
          * accepted approximation. */
@@ -2560,8 +2557,8 @@ int run_pet_death_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Sleep (docs/superpowers/specs/2026-08-09-core-care-loop-design.md's
- * "Sleep, settled", docs/superpowers/plans/2026-08-13-screens-clock-sleep.md's
+/* Sleep (the core care-loop design spec's
+ * "Sleep, settled", the screens/clock/sleep plan's
  * Task 6, ADR 0048). run_pet_check() (--verify-pet) already proves
  * requirement 1 (last_advanced tracks live play, its own dedicated case)
  * and requirement 8 (offline analytic fast-forward across a night, cases
@@ -3161,7 +3158,7 @@ int run_pet_sleep_check(void) {
          * day, remaining == 0 past wake) -- the floor/cap is now a
          * WAKE-INSTANT set-point only (the 2026-08-12 fix for the defect
          * docs/architecture/adr-0053-overnight-floors-poop-suppression.md's
-         * amendment and docs/reviews/2026-08-12-sleep-stack-audit.md
+         * amendment and the sleep-stack audit
          * finding 1 both describe), not a value held continuously through
          * the night, so this is the only instant left where the band is
          * actually observable. A trial landed mid-night instead (02:00, an
@@ -4072,11 +4069,11 @@ int run_pet_care_variation_check(void) {
 }
 
 /* Proves kf_creature_pose_for()'s precedence -- dead beats sick beats
- * ASLEEP beats a held reaction beats neutral (docs/superpowers/plans/
- * 2026-08-13-screens-clock-sleep.md's Task 6 requirement 10, ADR 0048) --
- * and proves the reaction window actually gates the sticky last_reaction
- * field: the same LIKED reaction reads as happy while the window is open
- * and neutral once it has lapsed. See kf/creature.h and kf/creature.cpp. */
+ * ASLEEP beats a held reaction beats neutral (the screens/clock/sleep
+ * plan's Task 6 requirement 10, ADR 0048) -- and proves the reaction window
+ * actually gates the sticky last_reaction field: the same LIKED reaction
+ * reads as happy while the window is open and neutral once it has lapsed.
+ * See kf/creature.h and kf/creature.cpp. */
 int run_creature_pose_check(void) {
     kf_pet_state pet{};
     kf_pet_init(&pet);
@@ -4722,14 +4719,14 @@ static int run_creature_screen_input_check(void) {
 }
 
 /* Closes the coverage gap resolve_and_declare() (kf_creature_presenter.cpp)
- * used to record in its own comment: every check above (including run_creature_
- * screen_check() just above this one) mounts the checked-in DEFAULT asset
- * pack, which has no creature art at all, so every kf_assets_get() call
- * that function makes returns nullptr there and only the placeholder-
- * colour fallback ever runs -- kf_blit_frame(), kf_blit_frame_mirrored(),
- * and the "_w_"-not-found -> mirrored "_e_" fallback are never exercised
- * through the real drawing path by anything else in this file.
- *
+ * used to record in its own comment: every check above (including
+ * run_creature_ screen_check() just above this one) mounts the checked-in
+ * DEFAULT asset pack, which has no creature art at all, so every
+ * kf_assets_get() call that function makes returns nullptr there and only
+ * the placeholder- colour fallback ever runs -- kf_blit_frame(),
+ * kf_blit_frame_mirrored(), and the "_w_"-not-found -> mirrored "_e_"
+ * fallback are never exercised through the real drawing path by anything
+ * else in this file.
  * This check points the runtime pack override (kf_host_assets_set_pack_
  * path(), host_assets.h) at examples/creature_demo/assets.kfpack instead --
  * the real (if placeholder-tier) egg art the art-naming task generated,
@@ -4741,14 +4738,12 @@ static int run_creature_screen_input_check(void) {
  * against that untouched default and would fail legitimately if either
  * moved -- see simulator/CMakeLists.txt's KF_CREATURE_DEMO_PACK_PATH
  * comment for the compile-time path this reads.
- *
  * A fresh pet is stage EGG (kf_pet_init(), kf/pet.h) by default, which the
  * egg's single-state, three-direction design (kf_creature_sprite_name()
  * collapsing every pose to "egg_idle_<dir>") makes the simplest fixture
  * here -- no need to advance the pet through any stage first, and
  * poop_count starts at 0, so the mess-drawing path never adds anything
  * else to the panel to confuse the pixel sampling below.
- *
  * Drives the creature's facing directly via kf_creature_screen_debug_set_
  * direction() rather than waiting on the wander's own RNG to visit every
  * direction eventually. Every kf_creature_screen_frame() call below passes
@@ -4763,7 +4758,6 @@ static int run_creature_screen_input_check(void) {
  * bounding box inferred from pixel content (which would only be as tight as
  * this particular sprite's transparent margins
  * happen to be, and is not something a test should assume is symmetric).
- *
  * dt_ms == 0 also means the animation cursor (kf_creature::anim, kf/
  * creature.h) never advances here either: kf_creature_tick_anim() is a
  * no-op on dt_ms == 0 regardless of which of its two callers (the wander
@@ -5522,26 +5516,23 @@ static int run_creature_screen_debug_jump_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Task 9 of the hardware bring-up plan (docs/superpowers/plans/
- * 2026-08-11-hardware-bringup.md). The owner's own words, after the game ran
- * on real hardware: "I also can't see the pet's stats anywhere now like how
- * hungry/tired etc." The old LVGL pet screen (kf_pet_screen.cpp) had bars for
- * hunger, happiness and energy; the creature screen replaced it and left the
- * reserved band (y=[260,320)) showing only the already-static care-button
- * guide. This proves the stats band this task adds against the three claims
- * that actually matter:
- *
- *   1. all three bars are really painted -- real framebuffer pixels, not
- *      just an internal counter -- the moment the screen is entered;
- *   2. a run of frames where NO need changes costs nothing extra against
- *      the creature's own <=2u dirty-rect budget (run_creature_screen_
- *      check()'s own bound, reused here rather than invented fresh, because
- *      that IS the claim being tested: the band adds zero to it while
- *      steady);
- *   3. a need that changes enough to move its bar's QUANTISED width DOES
- *      cause exactly that bar -- and only that bar -- to redraw on the very
- *      next frame.
- *
+/* Task 9 of the hardware bring-up plan. The owner's own words, after the
+ * game ran on real hardware: "I also can't see the pet's stats anywhere now
+ * like how hungry/tired etc." The old LVGL pet screen (kf_pet_screen.cpp)
+ * had bars for hunger, happiness and energy; the creature screen replaced
+ * it and left the reserved band (y=[260,320)) showing only the
+ * already-static care-button guide. This proves the stats band this task
+ * adds against the three claims that actually matter:
+ * 1. all three bars are really painted -- real framebuffer pixels, not
+ * just an internal counter -- the moment the screen is entered;
+ * 2. a run of frames where NO need changes costs nothing extra against
+ * the creature's own <=2u dirty-rect budget (run_creature_screen_
+ * check()'s own bound, reused here rather than invented fresh, because
+ * that IS the claim being tested: the band adds zero to it while
+ * steady);
+ * 3. a need that changes enough to move its bar's QUANTISED width DOES
+ * cause exactly that bar -- and only that bar -- to redraw on the very
+ * next frame.
  * Claim 2 alone cannot tell "redraws only on change" apart from "never
  * redraws at all" -- a mechanism that draws nothing, ever, would also pass
  * it, which is exactly the vacuous-pass trap this task's own brief names:
@@ -6049,10 +6040,8 @@ static int run_creature_anim_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Task 1 of the hardware bring-up plan (docs/superpowers/plans/
- * 2026-08-11-hardware-bringup.md): proves the frame budget counters are not
- * structurally zero on the KF_DEMO_NONE path a real device runs.
- *
+/* Task 1 of the hardware bring-up plan: proves the frame budget counters
+ * are not structurally zero on the KF_DEMO_NONE path a real device runs.
  * Before hakoniwaos/src/app.cpp moved kf_draw_counters_reset() from the top
  * of kf_app_frame() to immediately after kf_draw_counters_get(), this would
  * have failed forever, not by accident: on KF_DEMO_NONE, kf_demo_update()/
@@ -6068,7 +6057,6 @@ static int run_creature_anim_check(void) {
  * nothing this check needs: the point is the ORDER (kf_app_frame()
  * returns, THEN something draws), not the routing that gets there on a
  * real device.
- *
  * Needs the real creature_demo pack (KF_CREATURE_DEMO_PACK_PATH), not the
  * default pack run_creature_screen_check() mounts: only a real, colour-
  * keyed sprite blit posts to the KEYED bucket kf/blit.h describes. The
@@ -6095,28 +6083,28 @@ static int run_frame_counters_check(void) {
     kf_pet_session_init();
     kf_creature_screen_init();
 
-    /* Task 4 of the Lua game-layer plan (docs/superpowers/plans/
-     * 2026-08-12-lua-game-layer.md): the creature screen is now retained --
-     * kf_creature_screen_frame() declares the creature to kf/scene.h and
-     * kf_scene_commit() paints only what actually changed since last frame
-     * (kf/scene.h's own "A frame in which nothing was changed produces zero
-     * dirty rectangles and draws nothing" comment). A fresh pet is an EGG
-     * (kf_pet_init(), kf/pet.h), which does not wander -- it only bobs by
-     * egg_bob_offset_y()'s own wave, which is exactly 0 for the first three
-     * 33ms ticks this loop drives (kEggBobQuarterMs is 750ms). Left as an
-     * egg, every one of these frames would genuinely declare the SAME
-     * position and sprite as the frame before it, kf_scene_commit() would
-     * correctly draw nothing, and keyed_pixels would read 0 for a true
-     * reason having nothing to do with the defect this check exists to
-     * catch -- exactly the "check passes because the drawing was deleted"
-     * trap this file's own banner and 2026-08-09-creature-on-screen.md warn
-     * about, this time sprung by a genuinely-idle frame rather than a
-     * genuinely-missing draw call. Forcing CHILD here (the same lever
-     * run_creature_screen_check() already uses) makes every one of the
-     * frames below a real wander tick, so the creature's declared position
-     * differs from the last-presented one on every single frame and a real
-     * kf_blit_frame() keyed draw happens for real -- not because the bound
-     * below was loosened to let a silent frame through. */
+    /* Task 4 of the Lua game-layer plan: the creature screen is now
+     * retained -- kf_creature_screen_frame() declares the creature to
+     * kf/scene.h and kf_scene_commit() paints only what actually changed
+     * since last frame (kf/scene.h's own "A frame in which nothing was
+     * changed produces zero dirty rectangles and draws nothing" comment). A
+     * fresh pet is an EGG (kf_pet_init(), kf/pet.h), which does not wander
+     * -- it only bobs by egg_bob_offset_y()'s own wave, which is exactly 0
+     * for the first three 33ms ticks this loop drives (kEggBobQuarterMs is
+     * 750ms). Left as an egg, every one of these frames would genuinely
+     * declare the SAME position and sprite as the frame before it,
+     * kf_scene_commit() would correctly draw nothing, and keyed_pixels
+     * would read 0 for a true reason having nothing to do with the defect
+     * this check exists to catch -- exactly the "check passes because the
+     * drawing was deleted" trap this file's own banner and
+     * 2026-08-09-creature-on-screen.md warn about, this time sprung by a
+     * genuinely-idle frame rather than a genuinely-missing draw call.
+     * Forcing CHILD here (the same lever run_creature_screen_check()
+     * already uses) makes every one of the frames below a real wander tick,
+     * so the creature's declared position differs from the last-presented
+     * one on every single frame and a real kf_blit_frame() keyed draw
+     * happens for real -- not because the bound below was loosened to let a
+     * silent frame through. */
     kf_pet_state *pet = kf_pet_session_state_mutable_for_test();
     pet->stage = KF_PET_STAGE_CHILD;
 
@@ -6466,25 +6454,23 @@ int run_screen_nav_check(unsigned long long expect_checksum,
  * nobody reads" convention (see ADR 0044's risk 5). */
 constexpr int kScreenGroupCheckExpectedObjectCount = 2;
 
-/* ADR 0044, Task 1 of docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md: kf.screen() groups over the ONE shared retained scene, and the
- * anti-two-owners property that is the whole point of routing screen:
- * show() and MENU/B through the exact same kf_screen_nav_show(). A small,
- * self-contained script declares two screens -- "a" and "b", each one
- * background colour and one text object -- and this check switches
- * between them twice through screen:show() and hashes the framebuffer
- * after each switch, then reproduces the identical two transitions
- * through kf_screen_nav_debug_advance()/_debug_home() (the same edges a
- * real MENU/B press produces) and asserts the SAME hashes -- if screen:
- * show() and the MENU/B path ever disagreed about which screen is
- * showing, this is where it would show up.
- *
- * Deliberately does NOT call kf_screen_nav_init(): that also brings up
- * Home and Info (and, under -DKF_ENABLE_LVGL=ON, LVGL), none of which this
- * mechanism needs to prove itself. kf_screen_nav_install_lua_hooks() -- the one
- * piece of kf_screen_nav_init() this check does need, to wire kf.screen()
- * up to the registry at all -- already ran once in main(), before every
- * check; see that call site's own comment. */
+/* ADR 0044, Task 1 of the screens/clock/sleep plan: kf.screen() groups over
+ * the ONE shared retained scene, and the anti-two-owners property that is
+ * the whole point of routing screen: show() and MENU/B through the exact
+ * same kf_screen_nav_show(). A small, self-contained script declares two
+ * screens -- "a" and "b", each one background colour and one text object --
+ * and this check switches between them twice through screen:show() and
+ * hashes the framebuffer after each switch, then reproduces the identical
+ * two transitions through kf_screen_nav_debug_advance()/_debug_home() (the
+ * same edges a real MENU/B press produces) and asserts the SAME hashes --
+ * if screen: show() and the MENU/B path ever disagreed about which screen
+ * is showing, this is where it would show up.
+ * Deliberately does NOT call kf_screen_nav_init(): that also brings up Home
+ * and Info (and, under -DKF_ENABLE_LVGL=ON, LVGL), none of which this
+ * mechanism needs to prove itself. kf_screen_nav_install_lua_hooks() -- the
+ * one piece of kf_screen_nav_init() this check does need, to wire
+ * kf.screen() up to the registry at all -- already ran once in main(),
+ * before every check; see that call site's own comment. */
 int run_screen_group_check() {
     bool ok = true;
     auto check = [&ok](bool cond, const char *what) {
@@ -6957,19 +6943,19 @@ int run_lua_pet_check() {
           "match the live C++ state exactly");
     kf_lua_port_shutdown();
 
-    /* Stage 6: care variations (docs/superpowers/plans/2026-08-09-care-
-     * variations.md), still the same session. The script itself works out
-     * which variation of feeding its own (randomly rolled) pet.base_trait()
-     * is DISLIKED via pet.reaction_to() -- proving that binding too, rather
-     * than assuming C++ and Lua agree on it -- then feeds with exactly that
-     * variation and reports pet.last_reaction()/pet.last_care_action()
-     * packed into one integer. The preference table's own exactly-one-of-
-     * each invariant (run_pet_preferences_check()) guarantees a disliked
-     * variation exists for every possible base_trait, so the reaction is
-     * known to land on DISLIKED specifically, not just "some reaction" --
-     * asserted directly against the live C++ state before comparing, so
-     * this cannot pass on two neutral zeroes the way the mess and health
-     * stages above guard against. */
+    /* Stage 6: care variations (the care-variations plan), still the same
+     * session. The script itself works out which variation of feeding its
+     * own (randomly rolled) pet.base_trait() is DISLIKED via
+     * pet.reaction_to() -- proving that binding too, rather than assuming
+     * C++ and Lua agree on it -- then feeds with exactly that variation and
+     * reports pet.last_reaction()/pet.last_care_action() packed into one
+     * integer. The preference table's own exactly-one-of- each invariant
+     * (run_pet_preferences_check()) guarantees a disliked variation exists
+     * for every possible base_trait, so the reaction is known to land on
+     * DISLIKED specifically, not just "some reaction" -- asserted directly
+     * against the live C++ state before comparing, so this cannot pass on
+     * two neutral zeroes the way the mess and health stages above guard
+     * against. */
     check(kf_lua_port_init(kKfLuaPetReactionProofScriptSource,
                             kKfLuaPetReactionProofScriptChunkName),
           "stage 6 (reaction) proof script loaded");
@@ -7170,7 +7156,7 @@ int run_asset_check() {
     if (sprite != nullptr) {
         check(sprite->format == KF_SPRITE_FORMAT_INDEXED8,
               "the checked-in default pack is now indexed -- see "
-              "docs/superpowers/plans/2026-08-10-animated-indexed-sprites.md");
+              "the animated-indexed-sprites plan");
         check(sprite->width == 32u && sprite->height == 32u,
               "test_sprite is 32x32, the fixed size "
               "tools/kf_pack_assets.py --test-sprite always writes");
@@ -7703,34 +7689,32 @@ int run_indexed_blit_check(void) {
     return 0;
 }
 
-/* Task 2 of the Lua game layer plan (docs/superpowers/plans/
- * 2026-08-12-lua-game-layer.md): proves the retained scene differ
- * (kf/scene.h) in isolation. No Lua exists yet and nothing else in
- * hakoniwaos/ calls this module -- Task 3 adds the Lua binding, Task 4
- * rebuilds the C++ creature screen on top of it. Four checks, in the order
- * the plan states them, and the first is the most important:
- *
- *   1. A committed frame with no changes marks zero dirty rectangles and
- *      draws zero pixels -- the differ's entire reason to exist.
- *   2. Moving one object into an overlapping position marks ONE dirty
- *      rectangle spanning both the old and the new position, because
- *      framebuffer.cpp's own touches_or_overlaps() merges them.
- *   3. THE REAL PROOF, and the one that needs no golden constant: a scene
- *      committed through kf_scene_commit() is memcmp-identical to the same
- *      picture drawn by hand, in the same order, with kf_fill_rect() and
- *      kf_blit_frame() called directly. Two objects at different layers,
- *      so paint ORDER is actually exercised, not just final coverage.
- *   4. Twelve independently-moving objects coalesce to at most
- *      KF_MAX_DIRTY_RECTS rectangles covering well under the whole
- *      framebuffer -- proving kf_scene_commit()'s own coalescer beats
- *      kf_fb_mark_dirty()'s full-screen fallback on a scene shaped
- *      specifically to trigger it (24 raw candidates, spread far enough
- *      apart that none merge for free the way check 2's did).
- *   5. A text object that never sets its own colours paints white on black
- *      -- kf_scene_add_text() takes no colour arguments, so scene.cpp's
- *      field initialiser is the whole of that contract, and nothing else
- *      in the suite would notice it changing.
- *
+/* Task 2 of the Lua game layer plan (the Lua game-layer plan): proves the
+ * retained scene differ (kf/scene.h) in isolation. No Lua exists yet and
+ * nothing else in hakoniwaos/ calls this module -- Task 3 adds the Lua
+ * binding, Task 4 rebuilds the C++ creature screen on top of it. Four
+ * checks, in the order the plan states them, and the first is the most
+ * important:
+ * 1. A committed frame with no changes marks zero dirty rectangles and
+ * draws zero pixels -- the differ's entire reason to exist.
+ * 2. Moving one object into an overlapping position marks ONE dirty
+ * rectangle spanning both the old and the new position, because
+ * framebuffer.cpp's own touches_or_overlaps() merges them.
+ * 3. THE REAL PROOF, and the one that needs no golden constant: a scene
+ * committed through kf_scene_commit() is memcmp-identical to the same
+ * picture drawn by hand, in the same order, with kf_fill_rect() and
+ * kf_blit_frame() called directly. Two objects at different layers,
+ * so paint ORDER is actually exercised, not just final coverage.
+ * 4. Twelve independently-moving objects coalesce to at most
+ * KF_MAX_DIRTY_RECTS rectangles covering well under the whole
+ * framebuffer -- proving kf_scene_commit()'s own coalescer beats
+ * kf_fb_mark_dirty()'s full-screen fallback on a scene shaped
+ * specifically to trigger it (24 raw candidates, spread far enough
+ * apart that none merge for free the way check 2's did).
+ * 5. A text object that never sets its own colours paints white on black
+ * -- kf_scene_add_text() takes no colour arguments, so scene.cpp's
+ * field initialiser is the whole of that contract, and nothing else
+ * in the suite would notice it changing.
  * A further thing the task brief asks for -- that this check FAILS if
  * kf_scene_commit()'s body is deleted -- is not code here: it was verified
  * by hand, once, by actually deleting that body, rebuilding, watching this
@@ -8149,7 +8133,7 @@ kf.report(ok and 1 or 0)
 
     /* ---- 7. The minimal-pet example (examples/hello_pet/pet.lua), read
      * from disk and run verbatim -- the plan's own acceptance test for
-     * this API (docs/superpowers/plans/2026-08-12-lua-game-layer.md, "The
+     * this API (the Lua game-layer plan, "The
      * minimal pet, in Lua": "if it does not work verbatim ... one of the
      * two is wrong"). Needs a live pet session -- pet.stage()/pet.hunger()
      * are read every frame, pet.feed()/pet.play() are wired to the two
@@ -8208,20 +8192,18 @@ kf.report(ok and 1 or 0)
     return ok ? 0 : 1;
 }
 
-/* Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-lua-
- * game-layer.md): THE correctness argument for the whole plan. Both screen
- * implementations declare into the same kf/scene.h retained scene and
- * render into the same framebuffer, so a fresh pet driven through the
- * IDENTICAL frame-by-frame event sequence -- same seed, same dt_ms per
- * frame, same debug levers pulled at the same frame indices -- must paint
- * the identical pixels on every single frame if the Lua screen is a
- * faithful port of the C++ one. Hashed PER FRAME (the same rolling FNV-1a
- * headless_display.cpp:54-78 computes, reproduced here since neither
- * screen implementation goes through kf_display_present() -- both draw
- * straight into kf_fb_pixels(), never through kf_app_frame()), not just at
- * the end: a divergence names the exact frame it started on, not merely
- * that SOME frame in 250 differed.
- *
+/* Task 5 of the Lua game-layer plan: THE correctness argument for the whole
+ * plan. Both screen implementations declare into the same kf/scene.h
+ * retained scene and render into the same framebuffer, so a fresh pet
+ * driven through the IDENTICAL frame-by-frame event sequence -- same seed,
+ * same dt_ms per frame, same debug levers pulled at the same frame indices
+ * -- must paint the identical pixels on every single frame if the Lua
+ * screen is a faithful port of the C++ one. Hashed PER FRAME (the same
+ * rolling FNV-1a headless_display.cpp:54-78 computes, reproduced here since
+ * neither screen implementation goes through kf_display_present() -- both
+ * draw straight into kf_fb_pixels(), never through kf_app_frame()), not
+ * just at the end: a divergence names the exact frame it started on, not
+ * merely that SOME frame in 250 differed.
  * The event sequence deliberately visits every behaviour named in this
  * task's brief: the egg sitting still and bobbing (frames 0-49, no wander
  * yet), the wander once past the egg (50-149), all eight poops appearing
@@ -8467,7 +8449,7 @@ int run_lua_vs_cpp_screen_check(void) {
                 break;
             }
         }
-        /* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md,
+        /* Task 8 (the screens/clock/sleep plan,
          * ADR 0050): apply_screen_parity_event()'s frame-150 event drives
          * poop_count to KF_PET_MAX_POOPS, which is now ALSO enough to cross
          * KF_PET_WANT_FLUSH_ON_POOPS -- creature.lua answers by overriding
@@ -8538,7 +8520,7 @@ int run_lua_vs_cpp_screen_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Task 3 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md:
+/* Task 3 of the screens/clock/sleep plan:
  * kf/clock.h, civil time in Core, proved on its own -- no pet, no Lua, no
  * Settings screen. Nothing outside this check calls kf/clock.h yet; that is
  * intended, see the plan's own "How you would know it worked" for this task.
@@ -8730,7 +8712,7 @@ int run_clock_check(void) {
  * site for how. */
 constexpr int kSettingsCheckExpectedObjectCount = 47; /* +1: the Home clock */
 
-/* Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+/* Task 4 of the screens/clock/sleep plan: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
  * screen's four-field editor, driven exactly the way a real MENU/LEFT/
  * RIGHT/UP/DOWN/A/B sequence would -- kf_screen_nav_debug_advance() for
@@ -9161,7 +9143,7 @@ int run_screen_isolation_check() {
     return ok ? 0 : 1;
 }
 
-/* Task 7 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): sleep
+/* Task 7 (the screens/clock/sleep plan): sleep
  * on screen -- everything screen_parity_check CANNOT catch, per the plan's
  * own warning: "A sleeping creature that keeps walking is the obvious bug
  * and the parity check will not catch it." That check only ever hashes a
@@ -9815,7 +9797,7 @@ end
     return ok ? 0 : 1;
 }
 
-/* Task 8 (docs/superpowers/plans/2026-08-13-screens-clock-sleep.md, ADR
+/* Task 8 (the screens/clock/sleep plan, ADR
  * 0050): the attention signal. Three parts, same shape as run_sleep_
  * screen_check() just above: A exercises kf_pet_wants() directly (no HAL,
  * no Lua, no screen -- the pure Core query and its hysteresis), B proves

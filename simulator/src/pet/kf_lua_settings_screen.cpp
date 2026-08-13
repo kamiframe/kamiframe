@@ -3,7 +3,7 @@
  *
  * See kf_lua_settings_screen.h.
  *
- * Task 4 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md: the
+ * Task 4 of the screens/clock/sleep plan: the
  * Settings screen's own per-frame update -- the same role kf_lua_home_
  * screen.cpp's Home/Info functions play, applied to a third screen whose
  * job is different enough to earn its own file. Home and Info only ever

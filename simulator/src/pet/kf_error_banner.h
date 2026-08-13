@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
- *
- * Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-lua-
- * game-layer.md): "when on_frame has been disabled by an error, the engine
- * draws the message into the reserved band. The panel says what the
- * console says."
- *
+ * Task 5 of the Lua game-layer plan: "when on_frame has been disabled by an
+ * error, the engine draws the message into the reserved band. The panel
+ * says what the console says."
  * Scoped to the LUA-OWNS-HOME case only (kf_lua_home_screen.cpp), not
  * kf_creature_screen.cpp: the C++ screen's own correctness never depends on
  * Lua (Global Constraint -- "the C++ screen must remain fully working

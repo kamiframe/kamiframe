@@ -339,7 +339,7 @@ extern "C" void app_main(void) {
         kf_lua_port_frame(0);
 
         /* kf_scene_commit() belongs to the frame loop, not the Lua binding
-         * (Task 3 of docs/superpowers/plans/2026-08-12-lua-game-layer.md)
+         * (Task 3 of the Lua game-layer plan)
          * -- same ordering and the same reasoning as sdl_main.cpp's
          * identical call, including the kf_lua_scene_declared_anything()
          * guard: without it, the very first frame after boot would paint

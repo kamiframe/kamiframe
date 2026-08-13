@@ -6,7 +6,7 @@
  * calls return userdata against. See docs/architecture/adr-0041-lua-
  * drawing-binding.md for the accessor convention, the userdata choice, and
  * every failure behaviour named below. kf.screen(name) (ADR 0044, Task 1
- * of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) adds named
+ * of the screens/clock/sleep plan) adds named
  * GROUPS of these same objects, over the same one scene -- see this
  * header's own section below.
  *
@@ -127,7 +127,7 @@ void kf_lua_scene_activate_screen(int index);
  * pet.* / on_frame logic with none at all, and kf_scene_commit() asserts
  * one). See this function's own definition for the bug this closes: a
  * script with two or more kf.screen() groups (Home and Info, since Task 2
- * of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md) would
+ * of the screens/clock/sleep plan) would
  * otherwise leave every group's objects visible-by-default and
  * overlapping until the first real screen switch. No-op if no group is
  * registered under `active_index`. */

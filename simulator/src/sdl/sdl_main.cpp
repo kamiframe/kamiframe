@@ -282,7 +282,7 @@ int main(int argc, char *argv[]) {
 #endif
         kf_lua_port_frame(0);
         /* kf_scene_commit() belongs to the frame loop, not the Lua binding
-         * (Task 3 of docs/superpowers/plans/2026-08-12-lua-game-layer.md)
+         * (Task 3 of the Lua game-layer plan)
          * -- present happens at the top of the NEXT kf_app_frame(), so a
          * scene committed here reaches the panel on the following frame,
          * the same as the creature screen's own drawing.

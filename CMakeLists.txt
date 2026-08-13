@@ -42,13 +42,13 @@ option(KAMIFRAME_BUILD_SIMULATOR "Build the SDL3 simulator" ON)
 option(KAMIFRAME_BUILD_HEADLESS  "Build the headless CI runner" ON)
 option(KAMIFRAME_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
-# KF_ENABLE_LVGL (ADR 0045, Task 2 of docs/superpowers/plans/2026-08-13-
-# screens-clock-sleep.md): OFF by default. Info -- the last screen that
-# needed LVGL -- moved to a kf.screen() group over the retained scene, so
-# a default build no longer links LVGL or carves its 256 KB PSRAM arena.
-# Kept as a build option, not deleted, because CLAUDE.md names "LVGL vs a
-# custom sprite engine" a deliberate later evaluation: -DKF_ENABLE_LVGL=ON
-# still builds kamiframe_lvgl_port and its two golden-checksum tests
+# KF_ENABLE_LVGL (ADR 0045, Task 2 of the screens/clock/sleep plan): OFF
+# by default. Info -- the last screen that needed LVGL -- moved to a
+# kf.screen() group over the retained scene, so a default build no longer
+# links LVGL or carves its 256 KB PSRAM arena. Kept as a build option, not
+# deleted, because CLAUDE.md names "LVGL vs a custom sprite engine" a
+# deliberate later evaluation: -DKF_ENABLE_LVGL=ON still builds
+# kamiframe_lvgl_port and its two golden-checksum tests
 # (lvgl_determinism_check, pet_screen_check) unchanged.
 option(KF_ENABLE_LVGL "Build LVGL and its two LVGL-only tests" OFF)
 

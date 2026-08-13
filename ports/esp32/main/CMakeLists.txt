@@ -68,7 +68,7 @@
 ## EXTRA_COMPONENT_DIRS) instead of being folded in here.
 ##
 ## kamiframe_lvgl_port REQUIRES, only under -DKF_ENABLE_LVGL=ON (ADR 0045,
-## Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-sleep.md): the
+## Task 2 of the screens/clock/sleep plan): the
 ## component does not even exist otherwise -- ../CMakeLists.txt only adds
 ## its directory to EXTRA_COMPONENT_DIRS when this is set, see that file's
 ## own comment. Historically (ADR 0027) app_main.cpp called kf_lvgl_port_

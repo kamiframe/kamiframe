@@ -1,35 +1,30 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
- *
- * Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-lua-
- * game-layer.md): the Home implementation for KF_HOME_SCREEN=lua -- the
- * exact counterpart to kf_creature_screen_init()/_enter()/_frame() (kf_
- * creature_screen.h), except that the actual drawing is examples/
- * creature_demo/creature.lua's job, not this file's. What this file DOES
- * own: the hardware care buttons (kf_home_screen_input.h, so KF_HOME_
- * SCREEN=lua does not silently make Feed/Play/Rest/Bath/Flush dead
- * buttons), telling the shared Lua VM this build's script should draw
- * (kf_lua_port_set_home_screen_active()), running its frame, committing
- * the scene it declared, and the one-line error banner (kf_error_
- * banner.h).
- *
+ * Task 5 of the Lua game-layer plan: the Home implementation for
+ * KF_HOME_SCREEN=lua -- the exact counterpart to
+ * kf_creature_screen_init()/_enter()/_frame() (kf_ creature_screen.h),
+ * except that the actual drawing is examples/ creature_demo/creature.lua's
+ * job, not this file's. What this file DOES own: the hardware care buttons
+ * (kf_home_screen_input.h, so KF_HOME_ SCREEN=lua does not silently make
+ * Feed/Play/Rest/Bath/Flush dead buttons), telling the shared Lua VM this
+ * build's script should draw (kf_lua_port_set_home_screen_active()),
+ * running its frame, committing the scene it declared, and the one-line
+ * error banner (kf_error_ banner.h).
  * Deliberately thin: the actual `kf.sprite`/`kf.text`/`kf.box` declarations
  * live entirely in creature.lua, which is the point of this whole task --
  * this file's job is only to call the Lua VM at the right moment with the
  * right buttons already applied, the same role kf_creature_screen.cpp's
  * kf_creature_screen_frame() plays for the C++ path.
- *
- * ADR 0045 (Task 2 of docs/superpowers/plans/2026-08-13-screens-clock-
- * sleep.md) added kf_lua_info_screen_frame() below, the same idea applied
- * to Info: no buttons, no presenter, just the shared VM's on_info_frame()
- * (its OWN dedicated entry point, not the generic on_frame() -- see kf_lua_
- * port.h's own comment on why Home needed the identical treatment) and the
- * error banner, registered as Info's own per-frame update (kf_screen_
- * nav.cpp) so its text objects keep refreshing while it is the active
- * screen. This file also moved out of simulator/src/lvgl/ that same task,
- * alongside kf_screen_nav.cpp and kf_error_banner.cpp: none of the three
- * has ever had an LVGL dependency of its own -- see ADR 0045 for the full
- * reasoning. */
+ * ADR 0045 (Task 2 of the screens/clock/sleep plan) added
+ * kf_lua_info_screen_frame() below, the same idea applied to Info: no
+ * buttons, no presenter, just the shared VM's on_info_frame() (its OWN
+ * dedicated entry point, not the generic on_frame() -- see kf_lua_ port.h's
+ * own comment on why Home needed the identical treatment) and the error
+ * banner, registered as Info's own per-frame update (kf_screen_ nav.cpp) so
+ * its text objects keep refreshing while it is the active screen. This file
+ * also moved out of simulator/src/lvgl/ that same task, alongside
+ * kf_screen_nav.cpp and kf_error_banner.cpp: none of the three has ever had
+ * an LVGL dependency of its own -- see ADR 0045 for the full reasoning. */
 
 #ifndef KF_LUA_HOME_SCREEN_H
 #define KF_LUA_HOME_SCREEN_H

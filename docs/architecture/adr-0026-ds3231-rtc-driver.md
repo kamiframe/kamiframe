@@ -187,7 +187,7 @@ whether a caller exists, the same discipline ADR 0020 used for
 ## Confirmed on hardware, 2026-08-11
 
 This is the Task 5 bench result from
-`docs/superpowers/plans/2026-08-13-screens-clock-sleep.md`, which required
+the screens/clock/sleep plan, which required
 that what was *seen* be recorded here rather than a verdict. Observed on the
 owner's board -- ESP32-S3-WROOM-1 N16R8, ILI9341 panel, DS3231 module with
 its coin cell fitted, I2C on GPIO13 (SDA) / GPIO14 (SCL).

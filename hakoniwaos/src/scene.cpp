@@ -121,8 +121,7 @@ struct SceneObject {
      * `declared.sprite_name` -- a linear scan over the asset directory
      * (hakoniwaos/src/assets.cpp) is fine once per change and wasteful
      * every frame for an object that is not even moving. This is what let
-     * Task 4 of the Lua game-layer plan (docs/superpowers/plans/
-     * 2026-08-12-lua-game-layer.md) delete simulator/src/pet/kf_creature_
+     * Task 4 of the Lua game-layer plan delete simulator/src/pet/kf_creature_
      * screen.cpp's own hand-rolled equivalent (g_sprite_cache) entirely:
      * the scene now does this once, here, for every caller, instead of
      * each caller needing its own copy. Safe to hold onto: kf/assets.h's
@@ -795,7 +794,7 @@ void kf_scene_commit(void) {
      *      candidate COUNT alone while still handing the framebuffer a
      *      needlessly long list of tiny, separately-transferred rectangles
      *      a human would call "one obvious patch". This closes exactly the
-     *      gap that led Task 4 of the Lua game-layer plan to give up eight
+     * gap that led Task 4 of the Lua game-layer plan to give up eight
      *      discrete mess poops for one growing box instead of fixing the
      *      coalescer: the box is gone (kf_creature_screen.cpp), and this is
      *      why it no longer needs to exist. ---- */

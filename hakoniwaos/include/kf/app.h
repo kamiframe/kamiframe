@@ -140,17 +140,15 @@ uint32_t kf_app_buttons_pressed(void);
  * callable without one," not a second input path. Sets the two fields
  * kf_app_buttons_held()/_pressed() read directly, bypassing kf_app_frame()'s
  * own HAL poll and 8ms debounce entirely.
- *
  * Exists because a headless check that never calls kf_app_frame() -- every
  * check built around kf_screen_nav_frame() and the per-screen update
  * functions it calls, which read these two exactly like a real button press
- * would -- has no other way to drive one. Task 4 of docs/superpowers/plans/
- * 2026-08-13-screens-clock-sleep.md is the first caller: the Settings
- * screen's four-field editor (simulator/src/pet/kf_lua_settings_screen.cpp)
- * needs individual LEFT/RIGHT/UP/DOWN/A presses to move its cursor and
- * change a value, one frame at a time, which kf_screen_nav_debug_advance()
- *'s fixed MENU/B edges cannot express.
- *
+ * would -- has no other way to drive one. Task 4 of the screens/clock/sleep
+ * plan is the first caller: the Settings screen's four-field editor
+ * (simulator/src/pet/kf_lua_settings_screen.cpp) needs individual
+ * LEFT/RIGHT/UP/DOWN/A presses to move its cursor and change a value, one
+ * frame at a time, which kf_screen_nav_debug_advance() 's fixed MENU/B
+ * edges cannot express.
  * `pressed_edge` should be a subset of `held` -- a button cannot be newly
  * pressed without also being currently down -- but this is not enforced:
  * it is a test-only escape hatch, not part of the debounce contract itself,

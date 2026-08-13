@@ -1,14 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
- *
- * Task 5 of the Lua game-layer plan (docs/superpowers/plans/2026-08-12-lua-
- * game-layer.md): the single source of truth for "where the demo creature
- * is and what it looks like right now", extracted out of kf_creature_
- * screen.cpp so BOTH the C++ screen and the Lua screen can read the exact
- * same wander/pose/animation result on any given frame.
- *
+ * Task 5 of the Lua game-layer plan: the single source of truth for "where
+ * the demo creature is and what it looks like right now", extracted out of
+ * kf_creature_ screen.cpp so BOTH the C++ screen and the Lua screen can
+ * read the exact same wander/pose/animation result on any given frame.
  * WHY THIS EXISTS, AND WHY IT IS STILL HERE AFTER KF_HOME_SCREEN DEFAULTS
- * TO LUA. The plan (docs/superpowers/plans/2026-08-12-lua-game-layer.md,
+ * TO LUA. The plan (the Lua game-layer plan,
  * "What moves and what stays") always meant the wander (kf_creature_
  * update, choose_target) and pose/sprite-name selection to end up owned by
  * the script, not by Core -- moving them while the renderer was also new
@@ -35,7 +32,6 @@
  * headless parity check drives each half explicitly, resetting between
  * them), so there is exactly one advance() call per real frame, exactly as
  * there was before this file existed.
- *
  * WHAT DID NOT MOVE HERE. kf_creature_pose_for()/kf_creature_sprite_name()/
  * kf_creature_update() themselves (hakoniwaos/include/kf/creature.h) stay
  * exactly where they were -- this file only owns the ORCHESTRATION that
