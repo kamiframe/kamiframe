@@ -38,3 +38,11 @@ venv/
 
 # Local credentials. NEVER commit .env -- see .env.example for the shape.
 .env
+
+# Raw source audio staged for a pack pipeline that does not exist yet.
+# Excluded on purpose, NOT as tidiness: examples/creature_demo/audio's
+# current contents came from a purchased commercial audio bundle, this
+# repository is public, and most such licences permit using a sound in a
+# game while prohibiting redistribution of the raw asset file. See that
+# directory's README before removing this rule.
+examples/creature_demo/audio/*.wav
