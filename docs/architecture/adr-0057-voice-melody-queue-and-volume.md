@@ -158,6 +158,12 @@ to.
 
 ### 6. A persisted, cross-pet volume setting
 
+**Annotated 2026-08-13 — see the addendum at the end of this ADR.** The
+Settings screen's own presentation of these five positions changed (plain
+numbers → percentages, icon added); the setting itself — five positions,
+`kf_volume_level`, the storage format, the linear gain curve described
+below — did not.
+
 Five positions — OFF, 1, 2, 3, 4 — added to the Settings screen as a new
 field (HOUR → MINUTE → AM/PM → **VOLUME** → SAVE), edited locally like
 every other field and committed only on SAVE, applied live to the audio
@@ -261,3 +267,66 @@ corrections are folded into this ADR as the accepted design, not appended
 as an afterthought — there is no earlier "timer-based" version of this
 feature anywhere in the shipped code or tests for a future reader to trip
 over.
+
+## Addendum (2026-08-13): the volume field's presentation, after real hardware
+
+Chris tried the volume control on the ESP32 board and asked for a
+presentation-only change to §6 above, per CLAUDE.md's own rule to annotate
+a superseded line rather than silently rewrite it — this section is that
+annotation's full record, kept separate from the decision it amends.
+
+**What changed.** Three things, all on the Settings screen
+(`examples/creature_demo/creature.lua`), none of them touching
+`kf_volume_level`, `kf/settings.h`'s storage format, or any gain curve:
+
+1. **Labels are now percentages.** `KF_VOLUME_1..4` show as `25%` / `50%`
+   / `75%` / `100%`, not `1`..`4`. `KF_VOLUME_OFF` still shows `OFF`, never
+   `0%` — Chris's own explicit instruction: `0%` reads as a quantity,
+   `OFF` reads as a state, and only one of those is true of this setting.
+2. **A bar-meter icon beside the value**, drawn entirely from `kf.box()`
+   primitives — four bars of increasing height, lit up to the current
+   level and dimmed above it, with a single "X" glyph replacing all four
+   bars at OFF (a shape no partial-bars configuration can produce, so
+   "silent" cannot be mistaken for "quiet" at a glance). No sprite, no new
+   art, no manifest entry, no flash cost — `kf.box()` has no outline
+   primitive, so "hollow" here means dim/background-toned rather than a
+   true unfilled rectangle; at 3×13px that reads as unmistakably "not lit"
+   without needing one.
+3. **Five new scene objects** (4 bars + 1 mute glyph) on a screen that
+   already existed — the live scene-object count (Home + Info + Settings
+   together) moved from 49 to **54**, still well under `KF_SCENE_MAX_
+   OBJECTS` (64). Worst-case dirty rects for one volume-level change
+   (meter + label together, measured, not assumed): **1** — every changed
+   object is small and close enough together that `kf_scene_commit()`'s
+   own cheap-merge threshold (`kCheapMergeAreaPx`, `hakoniwaos/src/
+   scene.cpp`) collapses them into a single rectangle, comfortably under
+   `KF_MAX_DIRTY_RECTS` (8). A settled frame with nothing changed —
+   confirmed separately — still declares zero dirty rects: a box's own
+   `changed()` check (same file) only compares size and colour, so a bar
+   that repeats frame to frame contributes nothing to diff against.
+
+**What did NOT change, and was flagged rather than decided unilaterally.**
+§6's own gain-curve line is still accurate: levels 1–4 scale amplitude
+*linearly* (1/4, 2/4, 3/4, 4/4 of full), in each backend's own waveform
+synthesis. Labelling those same four steps as percentages makes that
+linearity more visible, not less true — and perceived loudness is not
+linear in amplitude, so the new labels are honest about the *setting* and
+could read as misleading about the *result* (a 25% step will not sound
+like "a quarter as loud"). This task did not touch the curve — Chris
+tested and liked the current levels, and changing how they sound while
+changing how they are labelled would confound two decisions that should
+each get made on their own terms. Flagged for Chris to decide, not fixed
+here.
+
+**Proof.** `ctest --test-dir build` — still 53/53 (this task extended
+`settings_screen_check` in place, the same convention §6's own proof
+section used, rather than registering a new top-level entry).
+`check_no_heap.py`/`check_no_float.py` both unchanged (39/40 heap-free
+files, 40 float-free files) — this task touched no file under
+`hakoniwaos/`. `idf.py -DKF_PANEL=ili9341 build` clean, zero warnings.
+Non-vacuity: the label check, the bar-state check, and the "differs from
+the previous level" check were each independently broken and watched
+fail before being restored — a wrong percentage string, an identical
+bar-lit predicate across two levels, and `OFF` mislabelled `"0%"` — every
+one produced its own distinct `FAILED:` line naming what broke, not a
+generic assertion failure.

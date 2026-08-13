@@ -1364,6 +1364,43 @@ void kf_lua_port_shutdown() {
 int64_t kf_lua_port_last_report() { return g.last_report; }
 uint32_t kf_lua_port_frame_count() { return g.frame_count; }
 
+namespace {
+
+/* Shared by both DEBUG/TEST ONLY accessors below (kf_lua_port.h's own
+ * comment on the pair) -- reads global `name` out of the live lua_State
+ * and copies it into `buf` if it is a string, leaving `buf` empty
+ * otherwise (unset, nil, or some other type). Never touches g.L when it is
+ * null (no script loaded yet), the same defensive shape every other
+ * accessor in this file takes. */
+void read_debug_global_string(const char *name, char *buf, size_t buf_size) {
+    buf[0] = '\0';
+    if (g.L == nullptr) {
+        return;
+    }
+    lua_getglobal(g.L, name);
+    if (lua_isstring(g.L, -1)) {
+        const char *s = lua_tostring(g.L, -1);
+        std::snprintf(buf, buf_size, "%s", s != nullptr ? s : "");
+    }
+    lua_pop(g.L, 1);
+}
+
+} // namespace
+
+const char *kf_lua_port_debug_settings_volume_label() {
+    static char buf[16];
+    read_debug_global_string("kf_settings_debug_volume_label", buf,
+                              sizeof(buf));
+    return buf;
+}
+
+const char *kf_lua_port_debug_settings_volume_bars() {
+    static char buf[16];
+    read_debug_global_string("kf_settings_debug_volume_bars", buf,
+                              sizeof(buf));
+    return buf;
+}
+
 void kf_lua_port_set_home_screen_active(bool active) {
     g.home_screen_active = active;
 }

@@ -196,6 +196,31 @@ int64_t kf_lua_port_last_report();
 uint32_t kf_lua_port_frame_count();
 
 /* ---------------------------------------------------------------------
+ * DEBUG/TEST ONLY -- same convention as kf_lua_settings_screen_debug_
+ * field() and its siblings (kf_lua_settings_screen.h): a narrow read-only
+ * window into state a real caller has no business reading, kept purely so
+ * a headless check can prove what actually got drawn. kf.report()'s own
+ * comment (kf_lua_port.cpp) already explains why Lua-to-C can only carry
+ * one integer at a time; nothing on this side of the boundary can read a
+ * live scene object's text or colour back at all (kf_lua_scene.cpp's own
+ * comment on LuaSceneObject: kf/scene.h's Core API is write-only past
+ * kf_scene_bounds()). examples/creature_demo/creature.lua's Settings
+ * screen writes two plain globals every on_settings_frame() call --
+ * kf_settings_debug_volume_label (the exact string shown beside VOLUME:
+ * "OFF"/"25%"/"50%"/"75%"/"100%") and kf_settings_debug_volume_bars (the
+ * meter's own state: 4 characters, one per bar, '1' lit/'0' dim left to
+ * right, or the literal "MUTE" at OFF) -- and these two functions read
+ * them straight back via lua_getglobal(), the ONLY way to prove the
+ * Settings screen's volume meter actually drew something different for
+ * each of the five levels rather than merely reaching the line that draws
+ * it. Returns a pointer into a small static buffer, valid until the next
+ * call to EITHER of this pair (two separate buffers, so calling both
+ * before using either is safe) -- empty string before Settings has ever
+ * run one frame, or if the global was somehow cleared. */
+const char *kf_lua_port_debug_settings_volume_label();
+const char *kf_lua_port_debug_settings_volume_bars();
+
+/* ---------------------------------------------------------------------
  * Task 5 of the Lua game-layer plan: the same creature.lua file has to
  * behave differently depending on whether IT is the one drawing Home this
  * build (KF_HOME_ SCREEN=lua) or the C++ screen is (KF_HOME_SCREEN=cpp,

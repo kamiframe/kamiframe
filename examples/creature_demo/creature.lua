@@ -956,6 +956,47 @@ local min_value = settings_label("", 96, 80)
 local ampm_value = settings_label("", 160, 80)
 settings_label("VOLUME", 16, 110)
 local volume_value = settings_label("", 16, 130)
+
+-- Presentation-only follow-up to ADR 0057's volume setting (owner's own
+-- request, after trying the control on real hardware): a small bar-meter
+-- icon beside the VOLUME value, drawn from kf.box() primitives -- no new
+-- art, no generation cost, no flash, no manifest entry, and it scales with
+-- the level for free. Four bars of increasing height, one per non-off
+-- level (1..4); "filled" (kVolumeBarLit) up to the current level, "hollow"
+-- (kVolumeBarDim, a muted grey close to settings_bg) above it -- kf.box()
+-- has no outline primitive, only a solid fill, so "hollow" here means
+-- dim/background-toned rather than a true unfilled outline; at this size
+-- (3x13px at most) a dim fill reads as unmistakably "not lit" at a glance,
+-- which is the actual requirement. Fixed x position regardless of label
+-- width (16 + 5*6 = 46, one cell past "100%", the widest label) so the
+-- icon never jitters as the value text changes width.
+local kVolumeIconX = 46
+local kVolumeBarW = 3
+local kVolumeBarGap = 2
+local kVolumeBarBottomY = 138 -- bottom-aligned with the value text's own
+                               -- cell (y=130, KF_FONT_CELL_H=8 tall)
+local kVolumeBarHeights = {4, 7, 10, 13}
+local kVolumeBarLit = kf.WHITE
+local kVolumeBarDim = kf.color(70, 74, 86)
+
+local volume_bars = {}
+for i = 1, 4 do
+    local h = kVolumeBarHeights[i]
+    local b = settings_screen:box(kVolumeBarW, h, kVolumeBarDim)
+    b:move(kVolumeIconX + (i - 1) * (kVolumeBarW + kVolumeBarGap),
+           kVolumeBarBottomY - h)
+    volume_bars[i] = b
+end
+
+-- OFF is genuinely silent (kf_audio_set_volume()'s own contract, kf/hal/
+-- audio.h) and must not LOOK like "all four bars quiet" -- that is exactly
+-- the "silent and quiet must not look alike at a glance" failure mode --
+-- so OFF hides every bar and shows this single "X" glyph instead, an
+-- unmistakably different shape from any partial-bars configuration (bars
+-- always show an increasing-height run, never a lone centred glyph).
+local volume_mute = settings_label("X", kVolumeIconX, 130)
+volume_mute:hide()
+
 local save_row = settings_label("SAVE", 16, 160)
 settings_label("B: CANCEL", 16, 280)
 
@@ -971,11 +1012,67 @@ end
 
 -- 0..4 (KF_VOLUME_OFF..KF_VOLUME_4, kf/hal/audio.h) -> what the field
 -- shows -- "OFF" reads unambiguously as genuinely silent, matching kf_
--- audio_set_volume()'s own contract; the four non-off levels are plain
--- numbers, not invented names (CLAUDE.md's own "single nouns only" rule
--- for anything resembling flavour text -- a volume LEVEL is a number, not
--- a name to invent).
-local kVolumeLabel = {[0] = "OFF", [1] = "1", [2] = "2", [3] = "3", [4] = "4"}
+-- audio_set_volume()'s own contract, and is NEVER "0%" (the owner's own
+-- explicit instruction: 0% reads as a quantity, "OFF" reads as a state).
+-- Levels 1..4 are the SAME four positions kf_audio_set_volume() has always
+-- had, now labelled as the amplitude fraction each one actually sets
+-- (volume_gain_permille() in simulator/src/sdl/sdl_audio.cpp and ports/
+-- esp32/hal/esp_audio.cpp: 250/500/750/1000 permille of full amplitude) --
+-- a presentation change only, per the owner's own request; the gain curve
+-- itself is untouched. See this file's own header comment above the
+-- volume bars for why these are amplitude percentages, not perceived-
+-- loudness ones, and why that is flagged rather than silently "fixed".
+local kVolumeLabel = {
+    [0] = "OFF", [1] = "25%", [2] = "50%", [3] = "75%", [4] = "100%",
+}
+
+-- DEBUG/TEST ONLY -- read back by kf_lua_port_debug_settings_volume_label()/
+-- _bars() (sdk/lua/kf_lua_port.cpp), for exactly the reason those two
+-- functions' own header comments give: kf.report()'s one-way channel
+-- carries a single integer, and nothing on the C++ side of the Lua/SDK
+-- boundary can read a live scene object's text or colour back (kf_lua_
+-- scene.cpp's own comment on LuaSceneObject explains why -- kf/scene.h's
+-- Core API is write-only past kf_scene_bounds()). Two plain globals,
+-- written every on_settings_frame() call alongside the real drawing below,
+-- never read by anything else in this script. kf_settings_debug_volume_
+-- bars is 4 characters, one per bar ('1' lit, '0' dim, left to right), or
+-- the literal string "MUTE" at OFF.
+kf_settings_debug_volume_label = ""
+kf_settings_debug_volume_bars = ""
+
+-- Draws the bar-meter icon for the CURRENT (unsaved) volume field value --
+-- called from on_settings_frame() below, every frame, the same "idempotent,
+-- safe to call regardless of whether anything actually changed" contract
+-- paint_guide()/paint() already have on this screen. Bar objects are boxes
+-- (kf.box()): only :size()/:color()/position/visibility ever change a
+-- box's declared state (hakoniwaos/src/scene.cpp's own changed() switch),
+-- and this function only ever touches :color()/:show()/:hide() -- never
+-- :size() or :move() -- so a level that repeats frame to frame declares
+-- nothing different and the retained scene's own diff drops it before it
+-- ever becomes a dirty rectangle.
+local function paint_volume_meter(level)
+    if level <= 0 then
+        for i = 1, 4 do
+            volume_bars[i]:hide()
+        end
+        volume_mute:show()
+        kf_settings_debug_volume_bars = "MUTE"
+        return
+    end
+    volume_mute:hide()
+    local bits = {}
+    for i = 1, 4 do
+        volume_bars[i]:show()
+        if i <= level then
+            volume_bars[i]:color(kVolumeBarLit)
+            bits[i] = "1"
+        else
+            volume_bars[i]:color(kVolumeBarDim)
+            bits[i] = "0"
+        end
+    end
+    kf_settings_debug_volume_bars = table.concat(bits)
+end
 
 -- Global, not local -- kf_lua_port_settings_frame() (sdk/lua/kf_lua_
 -- port.cpp) calls this by name while Settings is the active screen, its
@@ -988,7 +1085,10 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume)
     hour_value:set("" .. hour)
     min_value:set(pad2(minute))
     ampm_value:set(ampm)
-    volume_value:set(kVolumeLabel[volume] or "?")
+    local volume_label = kVolumeLabel[volume] or "?"
+    volume_value:set(volume_label)
+    kf_settings_debug_volume_label = volume_label
+    paint_volume_meter(volume)
 
     if saved == true then
         save_row:set("SAVED")

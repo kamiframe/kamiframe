@@ -8711,13 +8711,20 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 49; /* +1: the Home clock;
+constexpr int kSettingsCheckExpectedObjectCount = 54; /* +1: the Home clock;
                                                          * +2: the sound-
                                                          * foundation follow-
                                                          * up's VOLUME label
                                                          * and value text on
                                                          * the Settings
-                                                         * screen (47 -> 49) */
+                                                         * screen (47 -> 49);
+                                                         * +5: this
+                                                         * presentation
+                                                         * follow-up's volume
+                                                         * meter icon -- 4
+                                                         * kf.box() bars plus
+                                                         * the OFF/mute "X"
+                                                         * glyph (49 -> 54) */
 
 /* Task 4 of the screens/clock/sleep plan: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -8980,6 +8987,127 @@ end
           "cancelling with B from a modified state did not move the clock");
 
 #ifdef KF_HOME_SCREEN_LUA
+    /* ---- 7. The presentation-only volume-meter follow-up (owner's own
+     * request, after trying the control on real hardware): every one of
+     * the five VOLUME positions renders the expected percentage label
+     * (OFF is never "0%" -- the owner's own explicit instruction), and the
+     * bar-meter icon beside it actually differs between every adjacent
+     * pair of levels, not merely "drew something". Read through kf_lua_
+     * port_debug_settings_volume_label()/_bars() (sdk/lua/kf_lua_port.h),
+     * which peek at two globals the REAL loaded creature.lua writes from
+     * its own on_settings_frame() -- see that pair's own header comment
+     * for why this is the only way to prove what the ACTUAL production
+     * script drew, not a second, parallel reimplementation of its label
+     * table that could drift from the real one and still pass. ---- */
+    kf_screen_nav_debug_home();
+    kf_screen_nav_debug_advance(); /* home -> info */
+    kf_screen_nav_debug_advance(); /* info -> settings */
+    tap(KF_BTN_RIGHT); /* hour -> minute */
+    tap(KF_BTN_RIGHT); /* minute -> ampm */
+    tap(KF_BTN_RIGHT); /* ampm -> volume */
+    check(kf_lua_settings_screen_debug_field() == 3,
+          "re-entered Settings and navigated to VOLUME for the meter sweep");
+
+    /* Frame-budget follow-up (KF_MAX_DIRTY_RECTS = 8, kf/budget.h): a
+     * meter that only redraws on change should cost nothing on a static
+     * frame. Proven, not assumed -- one settled frame with no button held,
+     * dirty state cleared immediately before it, must declare ZERO dirty
+     * rects: kf.box()'s changed() (hakoniwaos/src/scene.cpp) only compares
+     * w/h/fg (plus the shared x/y/visible/layer check), and this frame
+     * moves, resizes, shows/hides and recolours nothing, so every one of
+     * the meter's 5 objects (4 bars + the mute glyph) should diff to
+     * "unchanged" and contribute no candidate at all. */
+    kf_fb_clear_dirty();
+    kf_screen_nav_frame(kFixedDtMs);
+    check(kf_fb_dirty_rects().count == 0,
+          "a settled Settings frame with nothing changed -- volume meter "
+          "included -- declares zero dirty rects");
+
+    /* A fresh edit starts from whatever kf_audio_get_volume() currently is
+     * (kf_lua_settings_screen_enter()'s own "seeded from the CURRENT live
+     * volume" contract) -- section 5c above deliberately perturbed that
+     * in-memory value to KF_VOLUME_4 (proving kf_settings_load() re-reads
+     * from storage rather than trusting it) and never restored it, so this
+     * reads whatever is ACTUALLY live rather than assuming the number
+     * saved earlier. Pressing DOWN exactly `start_level` times always
+     * reaches OFF without ever wrapping (change_value()'s own DOWN-from-
+     * OFF wrap only fires going below 0, never on the way down to it), so
+     * this walk works from any starting level. */
+    const int start_level = kf_lua_settings_screen_debug_volume();
+    check(start_level >= 0 && start_level <= 4,
+          "sanity: the meter sweep starts from a valid volume level");
+
+    /* Measures the SAME press-edge frame tap() itself drives (the frame
+     * change_value() actually runs on), clearing dirty state immediately
+     * before it so the count this returns is exactly this one button
+     * press's contribution, not anything accumulated earlier. The
+     * following release-edge frame is not measured -- nothing changes on
+     * it (kf_lua_settings_screen_frame() only calls change_value() on the
+     * press edge), so it is not a candidate for the worst case. */
+    size_t worst_volume_dirty_rects = 0;
+    auto tap_measured = [&](uint32_t button) {
+        kf_fb_clear_dirty();
+        kf_app_debug_set_buttons(button, button);
+        kf_screen_nav_frame(kFixedDtMs);
+        const size_t count = static_cast<size_t>(kf_fb_dirty_rects().count);
+        if (count > worst_volume_dirty_rects) {
+            worst_volume_dirty_rects = count;
+        }
+        kf_app_debug_set_buttons(0, 0);
+        kf_screen_nav_frame(kFixedDtMs);
+    };
+
+    for (int i = 0; i < start_level; ++i) {
+        tap_measured(KF_BTN_DOWN);
+    }
+    check(kf_lua_settings_screen_debug_volume() == 0,
+          "the meter sweep reached OFF before its comparison walk begins");
+
+    struct VolumeExpectation {
+        int level;
+        const char *label;
+        const char *bars;
+    };
+    constexpr VolumeExpectation kExpected[5] = {
+        {0, "OFF", "MUTE"},   {1, "25%", "1000"}, {2, "50%", "1100"},
+        {3, "75%", "1110"},   {4, "100%", "1111"},
+    };
+    /* Already at OFF (kExpected[0]) -- UP four times visits 1, 2, 3, 4 in
+     * order, covering all five positions exactly once each. */
+    char prev_bars[16] = "";
+    for (const VolumeExpectation &exp : kExpected) {
+        check(kf_lua_settings_screen_debug_volume() == exp.level,
+              "the meter sweep's own button sequence actually reached the "
+              "level it claims to be checking");
+        const char *label = kf_lua_port_debug_settings_volume_label();
+        const char *bars = kf_lua_port_debug_settings_volume_bars();
+        check(std::strcmp(label, exp.label) == 0,
+              "the VOLUME field's rendered label matches the expected "
+              "percentage (or OFF, never \"0%\") for this level");
+        check(std::strcmp(bars, exp.bars) == 0,
+              "the bar-meter icon's rendered state matches this level "
+              "exactly (lit/dim bars, or MUTE at OFF)");
+        check(std::strcmp(bars, prev_bars) != 0,
+              "the meter icon actually differs from the PREVIOUS level's "
+              "icon -- an icon that looks the same at two adjacent levels "
+              "is the failure mode this check exists to catch");
+        std::snprintf(prev_bars, sizeof(prev_bars), "%s", bars);
+        tap_measured(KF_BTN_UP);
+    }
+
+    KF_LOGI(TAG,
+            "settings-screen: worst-case dirty rects for one volume-level "
+            "change (meter + label together) = %zu (KF_MAX_DIRTY_RECTS = "
+            "%d)",
+            worst_volume_dirty_rects, KF_MAX_DIRTY_RECTS);
+    check(worst_volume_dirty_rects >= 1,
+          "sanity: changing the volume level actually dirtied something "
+          "(a worst case of 0 here would mean this measurement itself is "
+          "not exercising a real change)");
+    check(worst_volume_dirty_rects <= static_cast<size_t>(KF_MAX_DIRTY_RECTS),
+          "one volume-level change (meter + label) stays within the "
+          "8-rect dirty budget");
+
     kf_lua_port_shutdown();
 #endif
     kf_pet_session_shutdown();
