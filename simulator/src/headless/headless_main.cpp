@@ -69,6 +69,7 @@
 #include "kf/pet.h"
 #include "kf/rng.h"
 #include "kf/scene.h"
+#include "kf/settings.h"
 #include "../host/host_assets.h"
 #include "../host/host_storage.h"
 #include "../host/host_time.h"
@@ -8710,7 +8711,13 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 47; /* +1: the Home clock */
+constexpr int kSettingsCheckExpectedObjectCount = 49; /* +1: the Home clock;
+                                                         * +2: the sound-
+                                                         * foundation follow-
+                                                         * up's VOLUME label
+                                                         * and value text on
+                                                         * the Settings
+                                                         * screen (47 -> 49) */
 
 /* Task 4 of the screens/clock/sleep plan: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -8737,6 +8744,11 @@ int run_settings_screen_check() {
 
     check(kf_store_init() == KF_OK, "kf_store_init");
     check(kf_power_init() == KF_OK, "kf_power_init");
+    check(kf_audio_init() == KF_OK, "kf_audio_init"); /* the Settings screen
+                                                         * now touches audio
+                                                         * (the volume field)
+                                                         * -- see step 5/7
+                                                         * below */
     kf_arena_init_all();
 
     constexpr uint32_t kFixedDtMs =
@@ -8869,14 +8881,40 @@ end
     check(kf_lua_settings_screen_debug_hour12() == 3,
           "three UP presses on HOUR move 12 -> 1 -> 2 -> 3");
 
-    /* RIGHT x3: HOUR -> MINUTE -> AM/PM -> SAVE, visiting every field the
-     * plan's own four-field cursor names. */
+    /* RIGHT x4: HOUR -> MINUTE -> AM/PM -> VOLUME -> SAVE, visiting every
+     * field the five-field cursor names (VOLUME appended before SAVE by
+     * the sound-foundation follow-up). */
     tap(KF_BTN_RIGHT);
     check(kf_lua_settings_screen_debug_field() == 1, "RIGHT moves to MINUTE");
     tap(KF_BTN_RIGHT);
     check(kf_lua_settings_screen_debug_field() == 2, "RIGHT moves to AM/PM");
     tap(KF_BTN_RIGHT);
-    check(kf_lua_settings_screen_debug_field() == 3, "RIGHT moves to SAVE");
+    check(kf_lua_settings_screen_debug_field() == 3, "RIGHT moves to VOLUME");
+    check(kf_lua_settings_screen_debug_volume() ==
+              static_cast<int>(KF_SETTINGS_DEFAULT_VOLUME),
+          "VOLUME starts at the default (KF_VOLUME_4) on a device with no "
+          "settings save yet");
+
+    /* ---- 5b. The volume field: wraps, and does NOT touch the live
+     * kf_audio_get_volume() until SAVE -- exactly like HOUR/MINUTE/AM-PM
+     * do not touch the real clock until SAVE. Two UP presses: 4 -> wraps to
+     * 0 (OFF) -> 1. */
+    check(kf_audio_get_volume() == KF_VOLUME_4,
+          "sanity: kf_audio_init()'s own process-start default is still in "
+          "effect -- nothing has saved yet");
+    tap(KF_BTN_UP);
+    check(kf_lua_settings_screen_debug_volume() == 0,
+          "UP from 4 wraps to 0 (OFF), the same wrap-at-the-edges behaviour "
+          "HOUR/MINUTE already have");
+    tap(KF_BTN_UP);
+    check(kf_lua_settings_screen_debug_volume() == 1,
+          "a second UP moves OFF -> 1");
+    check(kf_audio_get_volume() == KF_VOLUME_4,
+          "editing the VOLUME field live did NOT change the actual device "
+          "volume yet -- only SAVE does that");
+
+    tap(KF_BTN_RIGHT);
+    check(kf_lua_settings_screen_debug_field() == 4, "RIGHT moves to SAVE");
 
     const int64_t before_save = kf_time_wall().epoch_seconds;
     tap(KF_BTN_A); /* A on SAVE commits */
@@ -8884,6 +8922,36 @@ end
     check(after_save - before_save == 3 * 3600,
           "saving HOUR=3, MINUTE=0, AM moved the clock by exactly 3 hours "
           "and nothing else -- same date, same seconds field");
+    check(kf_audio_get_volume() == KF_VOLUME_1,
+          "saving also applied VOLUME=1 to the live audio HAL immediately");
+
+    /* ---- 5c. The load-bearing persistence test: volume survives a PET
+     * reset -- the whole requirement (owner's own words): "persist
+     * globally through multiple pets until the user changes it again
+     * themselves in settings." kf_pet_session_debug_reset() wipes the
+     * live pet's own save entirely (KFDBG RESET); this asserts the
+     * SEPARATE kf/settings.h store is untouched by it. Reset both the
+     * in-memory HAL state AND re-load from storage, so this genuinely
+     * proves PERSISTENCE, not merely that an in-memory variable survived a
+     * call that never touched it. ---- */
+    kf_pet_session_debug_reset();
+    check(kf_audio_get_volume() == KF_VOLUME_1,
+          "the live volume is unchanged by a pet reset (kf_pet_session_"
+          "debug_reset() does not touch kf/settings.h's store at all)");
+    kf_audio_set_volume(KF_VOLUME_4); /* perturb the in-memory HAL state, so
+                                        * the reload below cannot pass by
+                                        * accident (it would already read
+                                        * KF_VOLUME_4 without ever touching
+                                        * storage) */
+    {
+        kf_settings reloaded = kf_settings_default();
+        check(kf_settings_load(&reloaded) == KF_OK, "kf_settings_load");
+        check(reloaded.volume == static_cast<uint8_t>(KF_VOLUME_1),
+              "the PERSISTED volume (kf/settings.h's own store, read back "
+              "fresh from kf_store) still says 1 after a pet reset -- this "
+              "is the actual persistence guarantee, not just an untouched "
+              "in-memory variable");
+    }
 
     /* ---- 6. Cancel: re-enter Settings (a fresh edit, reset from the
      * just-saved 03:00), modify HOUR again, then B -- kf_screen_nav_frame()
@@ -8915,6 +8983,7 @@ end
     kf_lua_port_shutdown();
 #endif
     kf_pet_session_shutdown();
+    kf_audio_shutdown();
     kf_power_shutdown();
     kf_store_shutdown();
     std::filesystem::remove_all(dir, rm_ec);
@@ -10438,33 +10507,25 @@ end
     return ok ? 0 : 1;
 }
 
-/* Sound foundation task: kf/hal/audio.h, its headless recording backend
- * (headless_audio.cpp), the kf.tone()/kf.beep() Lua binding, and the
- * attention-signal chirp creature.lua now fires. "did it make the right
- * sound at the right moment" is a real assertion here, not a hope, because
- * headless_audio.cpp records exactly what kf_audio_tone()/kf_audio_stop()
- * were asked to do and makes no sound at all -- see that file's own header
- * comment.
+/* Sound foundation task, and its follow-up (the queue fix, duty cycle,
+ * kf.melody(), the level-crossing want-ping system, care/wake/sleep sounds,
+ * and the volume setting): kf/hal/audio.h, its headless recording backend
+ * (headless_audio.cpp), the kf.tone()/kf.beep()/kf.melody() Lua bindings,
+ * and every sound examples/creature_demo/creature.lua now fires. "did it
+ * make the right sound at the right moment" is a real assertion here, not a
+ * hope, because headless_audio.cpp records exactly what kf_audio_tone()/
+ * kf_audio_play_notes()/kf_audio_stop() were asked to do and makes no sound
+ * at all -- see that file's own header comment.
  *
- * NOTE on what this check does NOT independently prove: creature.lua's
- * chirp is guarded twice -- `if want then` (want is nil whenever the
- * creature is dead or asleep, unconditionally, INSIDE kf_pet_wants() itself
- * -- ADR 0050, already covered by run_attention_signal_check()'s own Part
- * A7) and, only reachable once that first gate has already passed, an
- * explicit `if not pet.asleep() then`. Because the first gate is
- * unconditional and checked first, the second one is currently dead code
- * in every real play session -- there is no way to reach it with `want`
- * non-nil and the creature actually asleep at the same time. Section C
- * below still asserts "no chirp while asleep, hunger critical" end to end,
- * because that is the property that actually matters and a future
- * reordering of creature.lua's branches could reintroduce a real bug here
- * -- but that specific assertion is guaranteed by construction (Core's own
- * already-tested gate), not something this task broke and watched fail
- * on its own: doing that would mean weakening kf_pet_wants()'s dead/asleep
- * check in hakoniwaos/src/pet.cpp, which is explicitly other agents'
- * territory tonight, not this task's to touch. Sections A, B and D below
- * ARE each independently broken and restored -- see this task's own report
- * for the exact messages. */
+ * NOTE on what Section F (asleep, hunger critical) does NOT independently
+ * prove: the want-ping system reads raw need values directly (pet.hunger()
+ * etc.), not pet.wants(), so it is not shielded by kf_pet_wants()'s own
+ * dead/asleep gate (hakoniwaos/src/pet.cpp, ADR 0050) the way the old
+ * single-chirp mechanism was -- every ping call site in creature.lua
+ * (update_ping()) is gated by its OWN `not asleep` argument, and that gate
+ * IS exercised end to end by Section F below, using the real demo script.
+ * Sections A, B, C, D, E and G ARE each independently broken and restored
+ * -- see this task's own report for the exact messages. */
 int run_audio_check(void) {
     bool ok = true;
     auto check = [&ok](bool cond, const char *what) {
@@ -10592,10 +10653,17 @@ end
         std::filesystem::remove_all(dir, rm_ec);
     }
 
-    /* ---- C. The real interactive app: Home, the real creature.lua --
-     * exactly run_attention_signal_check()'s own Part C pattern, so this
-     * exercises the actual demo script and its actual chirp constants
-     * (kWantChirpHz/kWantChirpMs, 880/150), not a stand-in. ---- */
+    /* ---- C. The real interactive app: Home, the real creature.lua -- the
+     * level-crossing want-ping system (owner's own correction, 2026-08-12:
+     * "ping once when the care level gets to that level, then ping again
+     * about 1/2 the rest of the way to zero, then one urgent ping at 5
+     * points/units before 0"), care-response sounds, and wake/sleep. Every
+     * assertion below reads the real melody the real creature.lua asked
+     * for (kf_headless_audio_melody_count()/_last_melody_*()), not a
+     * stand-in -- the exact note/duty values are computed from tools/
+     * kf_chiptune.py's own note_hz() formula (A4=440, MIDI numbering), the
+     * SAME formula sdk/lua/kf_lua_port.cpp's kf.melody() parser uses, so a
+     * mismatch here would mean the two disagree. ---- */
     {
         const std::filesystem::path dir =
             std::filesystem::temp_directory_path() /
@@ -10641,71 +10709,247 @@ end
         for (int i = 0; i < 20; ++i) {
             drive_frame(kFixedDtMs); /* wander a while, nothing wanted yet */
         }
-        check(kf_headless_audio_tone_count() == 0,
-              "sanity: no chirp while nothing is wanted");
+        check(kf_headless_audio_melody_count() == 0,
+              "sanity: no ping while every need is full");
 
-        /* C1: hunger drops below threshold -- FOOD becomes the want, and
-         * the chirp fires exactly once, at the transition. */
-        pet->hunger_mp = 5000u;
+        /* C1: hunger crosses ping1 (25% -- KF_PET_WANT_FOOD_ON_MP, kf/
+         * pet.h) -- the want_food melody plays exactly once, at the
+         * transition. 32000mp -> 20000mp is BELOW ping1 (25000) but ABOVE
+         * ping2 (12500), so this crosses exactly one threshold. */
+        pet->hunger_mp = 20000u;
         for (int i = 0; i < 3; ++i) {
             drive_frame(kFixedDtMs);
         }
-        check(kf_headless_audio_tone_count() == 1 &&
-                  kf_headless_audio_last_hz() == 880u &&
-                  kf_headless_audio_last_ms() == 150u,
-              "wanting FOOD: exactly one chirp fired, at creature.lua's own "
-              "880 Hz / 150 ms (kWantChirpHz/kWantChirpMs)");
+        check(kf_headless_audio_melody_count() == 1 &&
+                  kf_headless_audio_last_melody_note_count() == 4 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_THIN &&
+                  kf_headless_audio_last_melody_note_hz(0) == 2093u &&
+                  kf_headless_audio_last_melody_note_ms(0) == 32u &&
+                  kf_headless_audio_last_melody_note_hz(3) == 2794u &&
+                  kf_headless_audio_last_melody_note_ms(3) == 75u,
+              "hunger crosses ping1 (25%): want_food plays -- 4 notes, "
+              "kf.DUTY_THIN, C7:32 ... F7:75 (SOUNDS['want_food'] in "
+              "creature.lua)");
 
-        /* C2: the want streak continues for many more frames -- still
-         * exactly one chirp, not one per frame. This is the assertion this
-         * task broke and watched fail: moving creature.lua's kf.tone() call
-         * outside its `if not was_wanting then` guard made this fail with
-         * tone_count == 301 instead of 1 (see this task's own report for
-         * the exact message), confirming the guard is load-bearing rather
-         * than vacuously true. */
+        /* C2: the crossing persists for many more frames at the SAME
+         * level -- still exactly one ping, not one per frame. This is the
+         * load-bearing non-vacuity assertion for the whole ping system:
+         * removing update_ping()'s own `current_level > previous` edge
+         * check (e.g. calling play_sound() unconditionally every frame
+         * instead) makes this fail with melody_count in the hundreds
+         * instead of 1 -- verified by temporarily doing exactly that and
+         * re-running this check, which failed with "FAILED: hunger holds
+         * at ping1 for 300 more frames: still exactly one ping -- the
+         * level-crossing edge, not a level-persists spam" and a melody_
+         * count of 301, then restored. */
         for (int i = 0; i < 300; ++i) {
             drive_frame(kFixedDtMs);
         }
-        check(kf_headless_audio_tone_count() == 1,
-              "wanting FOOD continuously for 300 more frames: still exactly "
-              "one chirp -- tasteful and rare, not spam");
+        check(kf_headless_audio_melody_count() == 1,
+              "hunger holds at ping1 for 300 more frames: still exactly one "
+              "ping -- the level-crossing edge, not a level-persists spam");
 
-        /* C3: feeding clears the want; a fresh hunger drop later fires a
-         * SECOND, independent chirp -- proving the chirp fires again for a
-         * new want streak, not merely once ever for the whole process. */
-        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
-        for (int i = 0; i < 5; ++i) {
-            drive_frame(kFixedDtMs);
-        }
-        pet->hunger_mp = 5000u;
+        /* C3: hunger falls further, crossing ping2 (12.5%) -- escalates to
+         * want_again, a SECOND, independent ping. */
+        pet->hunger_mp = 10000u;
         for (int i = 0; i < 3; ++i) {
             drive_frame(kFixedDtMs);
         }
-        check(kf_headless_audio_tone_count() == 2,
-              "a fresh want streak (fed to full, then hungry again) fires "
-              "its own chirp -- the second recorded tone, not a stale first "
-              "one");
+        check(kf_headless_audio_melody_count() == 2 &&
+                  kf_headless_audio_last_melody_note_count() == 5 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_THIN &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1760u &&
+                  kf_headless_audio_last_melody_note_ms(0) == 50u,
+              "hunger crosses ping2 (12.5%): escalates to want_again -- 5 "
+              "notes, first note A6:50 (SOUNDS['want_again'])");
+
+        /* C4: hunger falls further still, crossing ping3 (5%, the urgent
+         * one) -- escalates to want_whine. */
+        pet->hunger_mp = 3000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_melody_count() == 3 &&
+                  kf_headless_audio_last_melody_note_count() == 5 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_THIN &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1976u &&
+                  kf_headless_audio_last_melody_note_ms(0) == 40u,
+              "hunger crosses ping3 (5%, urgent): escalates to want_whine "
+              "-- 5 notes, first note B6:40 (SOUNDS['want_whine'])");
+
+        /* C5: full recovery -- SILENT, by design (recovering is never a
+         * ping, only falling further is). */
         pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
         for (int i = 0; i < 5; ++i) {
             drive_frame(kFixedDtMs);
         }
+        check(kf_headless_audio_melody_count() == 3,
+              "fed to full: no ping on recovery -- the latch reset silently");
 
-        /* ---- D. Asleep, hunger critical: no chirp. Guaranteed by
-         * construction (see this function's own header comment) -- Core's
-         * kf_pet_wants() (hakoniwaos/src/pet.cpp) gates dead/asleep before
-         * `want` can ever be non-nil, unconditionally, and that gate is
-         * already independently broken-and-restored by run_attention_
-         * signal_check()'s own Part A7. What this section adds is the
-         * end-to-end proof that the SOUND path specifically never fires
-         * downstream of that gate, using the real demo script. ---- */
+        /* C6: a FRESH decline crosses ping1 again -- proves the latch
+         * genuinely reset (not merely frozen at level 3 forever) and pings
+         * again from want_food, not a stale want_whine. */
+        pet->hunger_mp = 20000u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(kf_headless_audio_melody_count() == 4 &&
+                  kf_headless_audio_last_melody_note_hz(0) == 2093u,
+              "a fresh decline (fed to full, then hungry again past ping1) "
+              "pings want_food again -- the latch genuinely reset, this is "
+              "not the escalated sound from before recovery");
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        for (int i = 0; i < 5; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+        check(pet->poop_count == 0u, "sanity: no poops yet to confuse the "
+                                       "FLUSH care-sound test below");
+
+        /* ---- D. Care-response sounds: care_feed vs care_disliked, keyed
+         * off pet.last_reaction() -- deterministic, not left to whatever
+         * base_trait kf_rng_below() happened to roll: this scans every
+         * base_trait for one that likes FEED and one that dislikes it
+         * (kf_pet_reaction_to() is a pure function of the table, see kf/
+         * pet.h), so both branches of care_sound() in creature.lua are
+         * exercised for real rather than assumed. ---- */
+        int liked_trait = -1;
+        int disliked_trait = -1;
+        for (uint8_t trait = 0; trait < KF_PET_BASE_TRAIT_COUNT; ++trait) {
+            const uint8_t reaction =
+                kf_pet_reaction_to(trait, KF_PET_CARE_FEED, 0);
+            if (reaction == KF_PET_REACTION_DISLIKED && disliked_trait < 0) {
+                disliked_trait = trait;
+            } else if (reaction != KF_PET_REACTION_DISLIKED &&
+                       liked_trait < 0) {
+                liked_trait = trait;
+            }
+        }
+        check(liked_trait >= 0 && disliked_trait >= 0,
+              "sanity: the base-trait table has at least one trait that "
+              "likes/is neutral about FEED and at least one that dislikes "
+              "it -- both are needed to exercise care_sound()'s own if/else");
+
+        auto tap = [&](uint32_t button) {
+            kf_app_debug_set_buttons(button, button);
+            drive_frame(kFixedDtMs);
+            kf_app_debug_set_buttons(0, 0);
+            drive_frame(kFixedDtMs);
+        };
+
+        pet->base_trait = static_cast<uint8_t>(liked_trait);
+        const uint64_t before_liked_feed = kf_headless_audio_melody_count();
+        tap(KF_BTN_A); /* feed */
+        check(kf_headless_audio_melody_count() == before_liked_feed + 1 &&
+                  kf_headless_audio_last_melody_note_count() == 2 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_MID &&
+                  kf_headless_audio_last_melody_note_hz(0) == 2093u,
+              "a liked/neutral feed plays care_feed -- 2 notes, kf.DUTY_"
+              "MID, C7:50 ... (SOUNDS['care_feed']), not care_disliked");
+
+        pet->base_trait = static_cast<uint8_t>(disliked_trait);
+        /* kf_home_screen_input.cpp cycles its own per-action variation
+         * counter on every accepted press (g_feed_variation), so the
+         * FIRST feed above already advanced it away from 0 -- reset it
+         * back so this second press also applies variation 0, matching
+         * the reaction this test computed liked_trait/disliked_trait
+         * against above (both searched at variation 0). Without this
+         * reset, the second press's actual variation (1) could reaction
+         * differently than expected, which is exactly the kind of subtle
+         * mismatch a "just add more taps" test would silently get wrong. */
+        kf_home_screen_input_reset_variations_for_test();
+        const uint64_t before_disliked_feed = kf_headless_audio_melody_count();
+        tap(KF_BTN_A); /* feed again, different trait */
+        check(kf_headless_audio_melody_count() == before_disliked_feed + 1 &&
+                  kf_headless_audio_last_melody_note_count() == 2 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_MID &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1319u,
+              "a disliked feed plays care_disliked INSTEAD -- 2 notes, "
+              "E6:60 ... (SOUNDS['care_disliked']), not care_feed");
+
+        const uint64_t before_flush = kf_headless_audio_melody_count();
+        tap(KF_BTN_RIGHT); /* flush -- no reaction, always the same sound */
+        check(kf_headless_audio_melody_count() == before_flush + 1 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_MID &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1568u,
+              "flush plays care_flush unconditionally -- G6:50 ... "
+              "(SOUNDS['care_flush']), flush has no reaction to key off");
+
+        pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
+        pet->happiness_mp = KF_PET_MILLIPERCENT_MAX;
+        pet->energy_mp = KF_PET_MILLIPERCENT_MAX;
+        pet->dirtiness_mp = 0u;
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+
+        /* ---- E. Sleep/wake -- the two edges "never while asleep, except
+         * wake itself" carves out explicitly. Every need is full and
+         * dirtiness is 0 going in (just reset above), so no want-ping can
+         * fire during this sub-section and confuse the counts. ---- */
+        const uint64_t before_sleep_edge = kf_headless_audio_melody_count();
         pet->asleep = true;
+        drive_frame(kFixedDtMs);
+        check(kf_headless_audio_melody_count() == before_sleep_edge + 1 &&
+                  kf_headless_audio_last_melody_note_count() == 3 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_THIN &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1568u,
+              "falling asleep plays 'sleep' -- 3 notes, kf.DUTY_THIN, "
+              "G6:90 ... (SOUNDS['sleep'])");
+
+        const uint64_t before_asleep_hold = kf_headless_audio_melody_count();
+        for (int i = 0; i < 20; ++i) {
+            drive_frame(kFixedDtMs); /* holds asleep -- no repeat sleep sound,
+                                       * no want-ping sound either */
+        }
+        check(kf_headless_audio_melody_count() == before_asleep_hold,
+              "staying asleep for 20 more frames plays nothing further -- "
+              "the sleep sound is a one-shot edge, not a loop");
+
+        const uint64_t before_wake_edge = kf_headless_audio_melody_count();
+        pet->asleep = false;
+        drive_frame(kFixedDtMs);
+        check(kf_headless_audio_melody_count() == before_wake_edge + 1 &&
+                  kf_headless_audio_last_melody_note_count() == 3 &&
+                  kf_headless_audio_last_melody_duty() == KF_AUDIO_DUTY_MID &&
+                  kf_headless_audio_last_melody_note_hz(0) == 1047u,
+              "waking plays 'wake' -- 3 notes, kf.DUTY_MID, C6:70 ... "
+              "(SOUNDS['wake']) -- the ONE sound this file's own rule "
+              "explicitly allows even though it fires right at the "
+              "asleep-related transition");
+
+        /* ---- F. Asleep, hunger critical: no ping at all. Guaranteed in
+         * part by construction -- Core's kf_pet_wants() (hakoniwaos/src/
+         * pet.cpp) gates dead/asleep before `want` can ever be non-nil,
+         * unconditionally, and that gate is independently broken-and-
+         * restored by run_attention_signal_check()'s own Part A7 -- but
+         * the want-PING system reads raw need values directly, not
+         * pet.wants(), so this section is the genuine end-to-end proof for
+         * THIS sound path specifically, using the real demo script.
+         *
+         * pet->asleep is set true directly here (the previous sub-section
+         * left it false, post-wake), which is itself a fresh false->true
+         * transition from creature.lua's own `was_asleep` local -- so the
+         * VERY FIRST frame below correctly plays 'sleep' again (Section E
+         * already proved that edge; asserted again here only as a sanity
+         * check that this section's setup is what it claims to be), and
+         * `before_asleep_critical` is captured AFTER that settles, so the
+         * real assertion is specifically about the hunger-critical want-
+         * ping, not contaminated by the sleep-edge sound firing on the
+         * same first frame. */
+        pet->asleep = true;
+        drive_frame(kFixedDtMs); /* consumes the fresh asleep edge -- 'sleep'
+                                   * plays once here, same as Section E */
+        check(kf_headless_audio_last_melody_note_hz(0) == 1568u,
+              "sanity: this section's own first frame is the 'sleep' edge, "
+              "not something else -- see this section's own header comment");
+        const uint64_t before_asleep_critical = kf_headless_audio_melody_count();
         pet->hunger_mp = 0u;
         for (int i = 0; i < 20; ++i) {
             drive_frame(kFixedDtMs);
         }
-        check(kf_headless_audio_tone_count() == 2,
-              "asleep with hunger critical: no chirp -- the tone count "
-              "recorded above is unchanged");
+        check(kf_headless_audio_melody_count() == before_asleep_critical,
+              "asleep with hunger critical: no ping -- the melody count "
+              "recorded right after the sleep edge above is unchanged");
         pet->asleep = false;
         pet->hunger_mp = KF_PET_MILLIPERCENT_MAX;
 
@@ -10717,6 +10961,54 @@ end
         kf_power_shutdown();
         kf_store_shutdown();
         std::filesystem::remove_all(dir, rm_ec);
+    }
+
+    /* ---- G. Volume: KF_VOLUME_OFF is GENUINELY silent -- neither the
+     * tone counters nor the melody counters move, only kf_headless_audio_
+     * muted_count() does -- and kf_audio_set_volume() clamps an out-of-
+     * range level rather than erroring. ---- */
+    {
+        check(kf_audio_init() == KF_OK, "kf_audio_init (part G)");
+        kf_headless_audio_reset();
+
+        check(kf_audio_get_volume() == KF_VOLUME_4,
+              "kf_audio_get_volume() defaults to KF_VOLUME_4 before this "
+              "process ever calls kf_audio_set_volume()");
+
+        kf_audio_set_volume(KF_VOLUME_OFF);
+        check(kf_audio_get_volume() == KF_VOLUME_OFF, "kf_audio_set_volume "
+                                                        "(OFF) took effect");
+
+        check(kf_audio_tone(880u, 150u) == KF_OK,
+              "kf_audio_tone() while muted still returns KF_OK -- silence "
+              "is a safe default, not an error");
+        check(kf_headless_audio_tone_count() == 0 &&
+                  kf_headless_audio_muted_count() == 1,
+              "the tone was NOT recorded as played -- only muted_count "
+              "moved, proving 'off' produced no sound at all rather than "
+              "one nobody happened to check for");
+
+        const kf_audio_note notes[2] = {{523u, 100u}, {659u, 100u}};
+        check(kf_audio_play_notes(notes, 2u, KF_AUDIO_DUTY_FAT) == KF_OK,
+              "kf_audio_play_notes() while muted also returns KF_OK");
+        check(kf_headless_audio_melody_count() == 0 &&
+                  kf_headless_audio_muted_count() == 2,
+              "the melody was NOT recorded as played either -- same "
+              "genuine-silence guarantee for the sequence-aware call");
+
+        kf_audio_set_volume(KF_VOLUME_2);
+        check(kf_audio_tone(880u, 150u) == KF_OK, "unmuted tone succeeds");
+        check(kf_headless_audio_tone_count() == 1 &&
+                  kf_headless_audio_muted_count() == 2,
+              "un-muting (KF_VOLUME_2) lets a tone through again -- "
+              "recorded normally, muted_count unchanged from before");
+
+        kf_audio_set_volume(static_cast<kf_volume_level>(99));
+        check(kf_audio_get_volume() == KF_VOLUME_4,
+              "an out-of-range kf_audio_set_volume() level clamps to "
+              "KF_VOLUME_4 rather than erroring or doing nothing");
+
+        kf_audio_shutdown();
     }
 
     std::printf("%s\n", ok ? "PASS" : "FAIL");

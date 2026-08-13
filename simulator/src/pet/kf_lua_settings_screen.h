@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright the Kamiframe contributors.
  *
- * Task 4 of the screens/clock/sleep plan: the
- * Settings screen -- a global, device-wide system clock the owner can read,
- * edit and save, with a four-field cursor (HOUR -> MINUTE -> AM/PM -> SAVE)
- * over the seven hardware buttons. See kf_lua_settings_screen.cpp's own
+ * Task 4 of the screens/clock/sleep plan, extended by the sound-foundation
+ * follow-up's volume setting: the Settings screen -- a global, device-wide
+ * system clock AND volume the owner can read, edit and save, with a five-
+ * field cursor (HOUR -> MINUTE -> AM/PM -> VOLUME -> SAVE) over the seven
+ * hardware buttons. See kf_lua_settings_screen.cpp's own
  * header comment for why this screen reads its buttons directly in C++
  * rather than through kf.on_button(), and sdk/lua/kf_lua_port.h's
  * kf_lua_port_settings_frame() for how the edit state reaches Lua, which is
@@ -55,8 +56,9 @@ void kf_lua_settings_screen_frame(uint32_t dt_ms);
  * time and trusting the state machine got there the way it was supposed
  * to.
  * --------------------------------------------------------------------- */
-int kf_lua_settings_screen_debug_field(void); /* 0=HOUR,1=MINUTE,2=AMPM,3=SAVE */
+int kf_lua_settings_screen_debug_field(void); /* 0=HOUR,1=MINUTE,2=AMPM,3=VOLUME,4=SAVE */
 int kf_lua_settings_screen_debug_hour12(void); /* 1..12 */
 int kf_lua_settings_screen_debug_minute(void); /* 0..59 */
+int kf_lua_settings_screen_debug_volume(void); /* 0..4, KF_VOLUME_OFF..KF_VOLUME_4 */
 
 #endif /* KF_LUA_SETTINGS_SCREEN_H */

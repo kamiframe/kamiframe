@@ -121,19 +121,23 @@ void kf_lua_port_home_frame(uint32_t synthetic_frame_delta_ms);
  * replaced. */
 void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms);
 
-/* Task 4 of the screens/clock/sleep plan: calls
- * the script's global on_settings_frame(dt_ms, field, hour, minute, ampm,
- * saved) -- the Settings screen's own dedicated entry point, the same
- * reasoning as kf_lua_port_info_frame() above applied to a third screen: a
- * screen's own per-frame drawing must never run while some OTHER screen is
- * the one actually showing.
+/* Task 4 of the screens/clock/sleep plan, extended by the sound-foundation
+ * follow-up's volume setting: calls the script's global on_settings_
+ * frame(dt_ms, field, hour, minute, ampm, saved, volume) -- the Settings
+ * screen's own dedicated entry point, the same reasoning as kf_lua_port_
+ * info_frame() above applied to a third screen: a screen's own per-frame
+ * drawing must never run while some OTHER screen is the one actually
+ * showing.
  *
- * The four state arguments are the Settings editor's CURRENT, possibly
- * unsaved, values -- `field` is "hour"/"minute"/"ampm"/"save" (which cursor
- * position is selected), `hour`/`minute`/`ampm` are what the fields should
- * currently show, and `saved` is nil (no save attempted since the screen was
- * entered), true, or false (kf.set_clock() -- kf_lua_port_apply_clock()
- * below -- refused). Passed IN by the caller (kf_lua_settings_screen.cpp,
+ * The state arguments are the Settings editor's CURRENT, possibly unsaved,
+ * values -- `field` is "hour"/"minute"/"ampm"/"volume"/"save" (which cursor
+ * position is selected), `hour`/`minute`/`ampm` are what the clock fields
+ * should currently show, `volume` is 0..4 (KF_VOLUME_OFF..KF_VOLUME_4,
+ * kf/hal/audio.h) for what the volume field should currently show, and
+ * `saved` is nil (no save attempted since the screen was entered), true, or
+ * false (kf.set_clock()/kf_lua_port_apply_volume() below refused -- see
+ * kf_lua_settings_screen.cpp's own commit_save() for why ONE save result
+ * covers both). Passed IN by the caller (kf_lua_settings_screen.cpp,
  * simulator/src/pet/, which owns the actual editor state and reads the
  * hardware buttons directly) rather than read by this file reaching UP into
  * that caller: kamiframe_lua_port (this file's own library) links BELOW
@@ -152,7 +156,7 @@ void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms);
  * is active (and vice versa). */
 void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
                                  const char *field, int hour, int minute,
-                                 bool is_pm, int save_result);
+                                 bool is_pm, int save_result, int volume);
 
 /* Shared by kf.set_clock() (the Lua binding, sdk/lua/kf_lua_port.cpp) and
  * the Settings screen's own SAVE action (kf_lua_settings_screen.cpp) -- both
@@ -164,6 +168,22 @@ void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
  * false, without raising, when the backend refuses (KF_ERR_UNAVAILABLE on a
  * read-only clock) -- Task 4's own documented contract for kf.set_clock(). */
 bool kf_lua_port_apply_clock(int hour, int minute);
+
+/* Shared by kf.set_volume() (the Lua binding) and the Settings screen's own
+ * SAVE action, the identical split kf_lua_port_apply_clock() above has for
+ * the clock -- both must apply hardware output (kf_audio_set_volume()) AND
+ * persist it (kf_settings_save(), kf/settings.h) the same way, so the two
+ * can never disagree about what "the volume is N" means. `level` is 0..4
+ * (KF_VOLUME_OFF..KF_VOLUME_4); out-of-range values are clamped, matching
+ * kf_audio_set_volume()'s own documented contract. UNLIKE the clock, this
+ * cannot fail against a "read-only" backend -- kf/settings.h's own store is
+ * always writable in the same sense the pet's own save is -- so this
+ * returns false only if the underlying kf_settings_save() call itself
+ * failed (a storage error), matching kf_lua_port_apply_clock()'s own
+ * "false, without raising" convention for the identical reason: the
+ * Settings screen shows "SAVE FAILED" rather than silently doing
+ * nothing. */
+bool kf_lua_port_apply_volume(int level);
 
 void kf_lua_port_shutdown();
 

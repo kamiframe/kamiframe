@@ -38,6 +38,48 @@ local function classify(mp)
     end
 end
 
+-- Sound foundation, part 2: the creature's voice. MIRRORS tools/kf_
+-- chiptune.py's own SOUNDS table EXACTLY -- note names, ':ms' durations,
+-- duty tier. THE TWO MUST BE CHANGED TOGETHER: kf_chiptune.py is the
+-- preview tool (renders a .wav a human can audition before flashing
+-- anything), this table is the shipping copy the device actually plays via
+-- kf.melody(). See that file's own header comment for the full design
+-- rationale -- the rising-major-triad motif, why duty separates "the
+-- creature's own voice" (kf.DUTY_THIN) from "system fanfares" (kf.DUTY_
+-- FAT), why a want reads as a QUESTION, not a doorbell.
+local SOUNDS = {
+    want_food     = {kf.DUTY_THIN, "C7:32 C7:32 C7:32 F7:75"},
+    want_play     = {kf.DUTY_THIN, "G6:55 C7:55 E7:90"},
+    want_rest     = {kf.DUTY_THIN, "E6:70 -:30 B6:120"},
+    want_bath     = {kf.DUTY_THIN, "C7:50 A6:50 D7:95"},
+    want_flush    = {kf.DUTY_THIN, "E6:55 A6:55 D7:100"},
+    want_again    = {kf.DUTY_THIN, "A6:50 C7:65 -:60 C7:50 E7:85"},
+    want_whine    = {kf.DUTY_THIN, "B6:40 A#6:40 B6:40 A#6:40 D7:85"},
+    care_feed     = {kf.DUTY_MID, "C7:50 E7:70"},
+    care_play     = {kf.DUTY_MID, "D7:50 F#7:70"},
+    care_rest     = {kf.DUTY_MID, "E7:50 G#7:70"},
+    care_bath     = {kf.DUTY_MID, "F6:50 A6:70"},
+    care_flush    = {kf.DUTY_MID, "G6:50 B6:70"},
+    care_disliked = {kf.DUTY_MID, "E6:60 C6:90"},
+    wake          = {kf.DUTY_MID, "C6:70 E6:70 G6:110"},
+    sleep         = {kf.DUTY_THIN, "G6:90 E6:90 C6:150"},
+    hatch         = {kf.DUTY_FAT, "C6:60 E6:60 G6:60 C7:60 E7:60 G7:60 C8:220"},
+    evolve        = {kf.DUTY_FAT, "G6:55 C7:55 E7:55 G7:55 E7:55 G7:55 C8:240"},
+    death         = {kf.DUTY_MID, "G6:150 D#6:150 C6:150 G5:400"},
+}
+
+-- Declared here, at the top level, rather than inside the Home-only block
+-- below: hatch/evolve/death fire from announce_stage()/announce_death(),
+-- which run from the SCREEN-AGNOSTIC on_frame() (see that function's own
+-- header comment for why) and so must work whether or not this build's
+-- Home screen is the Lua one.
+local function play_sound(name)
+    local spec = SOUNDS[name]
+    if spec then
+        kf.melody(spec[2], spec[1])
+    end
+end
+
 -- Previous band per need, so a message fires only on the frame a need
 -- actually crosses a boundary. Starts empty: the very first observation
 -- of each need records its band silently, with nothing to compare against
@@ -64,6 +106,12 @@ end
 -- script only just started watching it.
 local previous_stage = nil
 
+-- Sound foundation, part 2: has the creature ever been observed dead
+-- before? Same "nil/false means first observation, stay quiet" convention
+-- as previous_stage above -- a pet LOADED already dead should not
+-- immediately announce a death that happened in a previous session.
+local previous_dead = false
+
 local kStageMessage = {
     baby = "the egg cracks open -- hello, little one!",
     child = "growing bigger every day!",
@@ -82,6 +130,22 @@ local function announce_stage()
     if message then
         kf.log(message)
     end
+    -- The hatch/evolve sounds: the egg's own first stage change gets the
+    -- motif fully resolved (hatch); every later one gets the same
+    -- extension a step further transposed (evolve) -- see SOUNDS' own
+    -- header comment. Guarded by pet.asleep() -- "never while asleep,
+    -- except wake itself" applies here exactly as it does to every other
+    -- sound in this file, including the rare, once-per-life ones: a stage
+    -- boundary crossed during an offline catch-up that also lands the
+    -- creature back in a sleep segment should stay silent until it wakes,
+    -- same as a want would.
+    if not pet.asleep() then
+        if previous == "egg" then
+            play_sound("hatch")
+        else
+            play_sound("evolve")
+        end
+    end
     -- The two branch points: which teen form care during Child picked,
     -- and which adult form care during Teen picked. Raw indices only --
     -- see this file's header comment on why nothing here invents a name.
@@ -92,6 +156,22 @@ local function announce_stage()
         kf.log("care during the teen years settled into adult form " ..
                pet.teen_form() .. "-" .. pet.adult_branch())
     end
+end
+
+-- Sound foundation, part 2: the death edge, the same shape announce_
+-- stage() gives the hatch/evolve edges above -- fires once, the frame
+-- pet.dead() first goes from false to true, never again for this
+-- creature's remaining lifetime (dead is terminal, kf/pet.h's own
+-- comment). Guarded by pet.asleep() for the identical reason the stage
+-- transitions above are: this fires from the screen-agnostic on_frame(),
+-- which runs regardless of whether the creature happens to be asleep at
+-- the moment neglect finally catches up with it.
+local function announce_death()
+    local dead = pet.dead()
+    if dead and not previous_dead and not pet.asleep() then
+        play_sound("death")
+    end
+    previous_dead = dead
 end
 
 -- Home's objects and on_home_frame() both live inside this one `if` block,
@@ -351,19 +431,133 @@ if kf.home_screen_active() then
     local want_elapsed_ms = 0
     local was_wanting = false
 
-    -- Sound foundation task: the attention signal's voice. A single short
-    -- chirp, fired once at the SAME false->true edge want_elapsed_ms's own
-    -- reset already detects -- ADR 0050's own "Not verified" section named
-    -- this exact call site as the hook for whenever sound arrived. Chris's
-    -- own numbers to tune on the board: 880Hz reads as a plain, attention-
-    -- getting beep (not a specific note -- CLAUDE.md bars inventing
-    -- flavour text/meaning for numbers like this), 150ms is long enough to
-    -- notice across a room, short enough that it reads as one chirp, not a
-    -- tone. Kept tasteful and rare on purpose (this task's own brief, in
-    -- those words) -- once per want streak, not once per frame; see the
-    -- `if not was_wanting then` guard below, the only place this fires.
-    local kWantChirpHz = 880
-    local kWantChirpMs = 150
+    -- Sound foundation, part 2: the want-ping system, replacing the single
+    -- 880Hz attention chirp above with three LEVEL-CROSSING pings per unmet
+    -- need, mapped onto SOUNDS' own escalation rungs (ping1 = the want's
+    -- own call, ping2 = want_again, ping3 = want_whine). Owner's own words,
+    -- 2026-08-12: "The unmet need rechirp should ping once when the care
+    -- level gets to that level, then ping again about 1/2 the rest of the
+    -- way to zero, then one urgent ping at 5 points/units before 0." No
+    -- timer, no interval -- self-limiting by construction: a need that
+    -- stops falling stops crossing thresholds, so it stops ping-ing on its
+    -- own, without anything having to notice it recovered and cancel a
+    -- countdown.
+    --
+    -- FOOD/PLAY/REST drain toward 0 -- ping1 is the want's own ON
+    -- threshold (25%, kf/pet.h's KF_PET_WANT_*_ON_MP), ping2 is halfway
+    -- from there to zero (12.5%), ping3 (urgent) is 5 percentage points
+    -- before zero (5%) -- read literally from the owner's own "5
+    -- points/units before 0".
+    local kPing1FoodPlayRestMp = 25000
+    local kPing2FoodPlayRestMp = 12500
+    local kPing3FoodPlayRestMp = 5000
+
+    -- BATH is driven by dirtiness, which RISES rather than drains -- the
+    -- owner's own confirmed mapping: mirror the INTENT (three evenly-
+    -- spaced pings, worst last), not the literal "halfway to zero" formula,
+    -- since there is no zero to approach here. ping1 (80%) matches kf/
+    -- pet.h's KF_PET_WANT_BATH_ON_MP (== KF_PET_DIRTY_STINK_MP) exactly;
+    -- 90%/95% are evenly spaced on toward the 100% ceiling.
+    local kPing1BathMp = 80000
+    local kPing2BathMp = 90000
+    local kPing3BathMp = 95000
+
+    -- FLUSH is a discrete poop COUNT, not a level -- same mirrored intent,
+    -- owner-confirmed: ping1 (3) matches kf/pet.h's KF_PET_WANT_FLUSH_ON_
+    -- POOPS exactly; ping2/ping3 (5, 7) are evenly spaced two apart, up to
+    -- KF_PET_MAX_POOPS (8).
+    local kPing1FlushPoops = 3
+    local kPing2FlushPoops = 5
+    local kPing3FlushPoops = 7
+
+    -- Which raw need each want name reads, and (for FOOD/PLAY/REST) which
+    -- direction "worse" is -- drain_level()/rise_level() below take the
+    -- three thresholds already named above, not a fourth copy of them.
+    local function drain_level(mp)
+        if mp <= kPing3FoodPlayRestMp then
+            return 3
+        elseif mp <= kPing2FoodPlayRestMp then
+            return 2
+        elseif mp <= kPing1FoodPlayRestMp then
+            return 1
+        else
+            return 0
+        end
+    end
+
+    local function rise_level(value, ping1, ping2, ping3)
+        if value >= ping3 then
+            return 3
+        elseif value >= ping2 then
+            return 2
+        elseif value >= ping1 then
+            return 1
+        else
+            return 0
+        end
+    end
+
+    -- The want name each ping level's sound comes from -- ping1 is the
+    -- want's own call (SOUNDS' want_food/want_play/.../want_flush), ping2
+    -- is always want_again, ping3 is always want_whine: the SAME two
+    -- escalation rungs across every need, not five separate escalation
+    -- sounds, matching kf_chiptune.py's own header comment ("Two rungs:
+    -- asked again, then a whine... the SAME creature, not a new alarm").
+    local kWantSoundName = {
+        FOOD = "want_food", PLAY = "want_play", REST = "want_rest",
+        BATH = "want_bath", FLUSH = "want_flush",
+    }
+    local function ping_sound_name(want_name, level)
+        if level >= 3 then
+            return "want_whine"
+        elseif level >= 2 then
+            return "want_again"
+        else
+            return kWantSoundName[want_name]
+        end
+    end
+
+    -- One latched level (0..3) per need -- 0 means "not currently past
+    -- ping1". A ping SOUND fires only the frame the level goes UP (a new,
+    -- deeper threshold just crossed); the level dropping back down is
+    -- ALWAYS silent (the need recovering, whether from care or simply not
+    -- having fallen that far) -- this is the "the latch must reset when
+    -- the need recovers back above the level" requirement, expressed as a
+    -- single integer per need rather than three separate booleans: keeping
+    -- only the DEEPEST currently-crossed level means a partial recovery
+    -- that clears ping3 but not ping1 leaves ping1 still latched (it does
+    -- not re-fire), while a full recovery clears all three silently,
+    -- ready to ping again from ping1 the next time this need falls that
+    -- far. `awake` gates the SOUND only -- the level itself is tracked
+    -- every frame regardless, so a night's worth of unprotected decay
+    -- (ADR 0053) does not surface as a burst of pings the instant the
+    -- creature wakes; it simply reflects the current true level, silently
+    -- caught up, same as every other muted-while-asleep sound in this
+    -- file.
+    local ping_level = {FOOD = 0, PLAY = 0, REST = 0, BATH = 0, FLUSH = 0}
+    local function update_ping(want_name, current_level, awake)
+        local previous = ping_level[want_name]
+        ping_level[want_name] = current_level
+        if current_level > previous and awake then
+            play_sound(ping_sound_name(want_name, current_level))
+        end
+    end
+
+    -- Care-response sounds: which sound plays for a JUST-accepted care
+    -- action, given the reaction it produced. `2` is KF_PET_REACTION_
+    -- DISLIKED (kf/pet.h) -- a raw literal, not a named Lua constant,
+    -- because pet.last_reaction() itself is documented to return the raw
+    -- enum integer (sdk/lua/kf_lua_port.cpp's own comment on why: "a
+    -- script showing a reaction is picking a sprite... not printing a
+    -- word"), and this file already reads pet.stage()/pet.teen_form() the
+    -- same raw-index way elsewhere.
+    local function care_sound(base_name)
+        if pet.last_reaction() == 2 then
+            play_sound("care_disliked")
+        else
+            play_sound(base_name)
+        end
+    end
 
     function on_home_frame(dt_ms)
         local clock_str = kf.time()
@@ -391,7 +585,18 @@ if kf.home_screen_active() then
                 if i <= poops then poop[i]:show() else poop[i]:hide() end
             end
 
-            local asleep = pet.asleep()
+            -- Captured BEFORE the manual-wake check below can change
+            -- `asleep` -- this is the state kf_home_screen_input.cpp (the
+            -- shared C++ care-button handler, called earlier THIS SAME
+            -- frame, before creature.lua ever runs) actually saw when it
+            -- decided whether to apply a feed/play/rest/bath/flush press.
+            -- The care-sound block further down gates on THIS value, not
+            -- the post-wake `asleep` local -- otherwise pressing A to wake
+            -- a sleeping creature would ALSO play care_feed the same
+            -- frame, even though kf_home_screen_input.cpp's own `if (pet-
+            -- >asleep) return;` guard means no feed actually happened.
+            local raw_asleep = pet.asleep()
+            local asleep = raw_asleep
 
             -- Waking it deliberately is allowed and costs happiness (the
             -- spec's own words, kept small -- pet.wake()). Checked before
@@ -402,6 +607,22 @@ if kf.home_screen_active() then
                 asleep = false
             end
 
+            -- Sound foundation, part 2: the wake/sleep edges -- fires on
+            -- the SAME Core-driven asleep<->awake transition kf_pet_state's
+            -- own `asleep` field defines, covering both a deliberate
+            -- kf.button("a") wake (above, already reflected in `asleep`
+            -- this same frame) and Core's own automatic morning wake.
+            -- "Never while asleep, except wake itself" (this task's own
+            -- rule): the sleep sound is the one place that guard does NOT
+            -- apply -- it fires exactly AT the transition INTO asleep, by
+            -- design, not "while" asleep.
+            if not was_asleep and asleep then
+                play_sound("sleep")
+            end
+            if was_asleep and not asleep then
+                play_sound("wake")
+            end
+
             -- The morning: Core wakes the creature on its own (the next
             -- clock-crossing segment simply computes asleep = false) --
             -- "it wakes, gets itself out of bed, and puts the bedding
@@ -410,6 +631,44 @@ if kf.home_screen_active() then
                 tucked_in = false
             end
             was_asleep = asleep
+
+            -- Sound foundation, part 2: care-response sounds, edge-
+            -- detected via the SAME debounced button press kf_home_screen_
+            -- input.cpp (called earlier this frame, before this script's
+            -- on_home_frame) already used to decide whether to feed/play/
+            -- rest/bath/flush -- kf.button() here reads the identical bit,
+            -- and pet.last_reaction() already reflects the JUST-applied
+            -- result of that same press by the time this runs, not a
+            -- stale one from an earlier frame. Gated on `raw_asleep`, NOT
+            -- `asleep` -- see that local's own comment above for why.
+            if not raw_asleep then
+                if kf.button("a") then care_sound("care_feed") end
+                if kf.button("up") then care_sound("care_play") end
+                if kf.button("down") then care_sound("care_rest") end
+                if kf.button("left") then care_sound("care_bath") end
+                if kf.button("right") then play_sound("care_flush") end
+            end
+
+            -- Sound foundation, part 2: the want-ping system itself --
+            -- see kPing1FoodPlayRestMp/update_ping()'s own comments above.
+            -- Evaluated every frame regardless of bed_shown/asleep (the
+            -- level is tracked continuously; only the SOUND is gated,
+            -- inside update_ping() via the `not asleep` argument here),
+            -- and regardless of which want kf_pet_wants()'s own priority
+            -- order currently displays -- this reads the five raw needs
+            -- directly, not the single resolved `want` below, so a need
+            -- crossing a threshold pings even while a DIFFERENT want has
+            -- priority for the visual attention signal.
+            update_ping("FOOD", drain_level(pet.hunger()), not asleep)
+            update_ping("PLAY", drain_level(pet.happiness()), not asleep)
+            update_ping("REST", drain_level(pet.energy()), not asleep)
+            update_ping("BATH", rise_level(pet.dirtiness(), kPing1BathMp,
+                                            kPing2BathMp, kPing3BathMp),
+                         not asleep)
+            update_ping("FLUSH", rise_level(pet.poops(), kPing1FlushPoops,
+                                             kPing2FlushPoops,
+                                             kPing3FlushPoops),
+                         not asleep)
 
             -- Tuck-in: available only during Core's own ten-minute drowsy
             -- window (kf_pet_drowsy(), ADR 0052), while still awake and not
@@ -491,24 +750,17 @@ if kf.home_screen_active() then
                     body:frame(0) -- objecting is a single-frame pose
                     body:move(kWantPoseX, kWantPoseY)
 
+                    -- VISUAL only now -- the "!" blink's own reset, unchanged
+                    -- from Task 8. The SOUND used to fire here too (a single
+                    -- kf.tone() on this exact edge); it is now driven
+                    -- independently by the want-ping system above
+                    -- (update_ping()), which pings on raw need-level
+                    -- crossings rather than this coarse "is anything wanted"
+                    -- boolean -- see that system's own header comment for
+                    -- why (a want-TYPE change while `want` stays non-nil
+                    -- throughout would never trip this edge at all).
                     if not was_wanting then
                         want_elapsed_ms = 0
-
-                        -- The chirp: fires exactly here, the frame `want`
-                        -- first goes from nil to something, and nowhere
-                        -- else -- see kWantChirpHz/kWantChirpMs's own
-                        -- comment above. Guarded by pet.asleep() as an
-                        -- explicit second line of defence even though
-                        -- `want` above is only ever non-nil while awake
-                        -- already (kf_pet_wants()'s own dead/asleep gate,
-                        -- ADR 0050 -- and the bed_shown branch above never
-                        -- reaches this one at all while tucked in): a
-                        -- future change to either guard should not have to
-                        -- rediscover this rule to avoid reintroducing a pet
-                        -- that beeps in its sleep.
-                        if not pet.asleep() then
-                            kf.tone(kWantChirpHz, kWantChirpMs)
-                        end
                     end
                     was_wanting = true
                     want_elapsed_ms = want_elapsed_ms + dt_ms
@@ -670,16 +922,17 @@ function on_info_frame(dt_ms)
     end
 end
 
--- Task 4 of the screens/clock/sleep plan: the
--- global system clock -- read, edited and saved with the seven hardware
--- buttons, registered third so MENU cycles HOME -> INFO -> SETTINGS ->
--- HOME. The cursor logic (which field is selected, hold-to-repeat) lives
--- in C++ (kf_lua_settings_screen.cpp) and reads the buttons directly, NOT
--- through kf.on_button -- see that file's own header comment for why a
--- shared button registry would let this screen's buttons also fire while
--- Home is showing. This screen only ever DRAWS: on_settings_frame below
--- gets handed the current field/hour/minute/AM-PM/save-result every frame
--- and sets text and colour, nothing else.
+-- Task 4 of the screens/clock/sleep plan, extended by the sound-foundation
+-- follow-up's volume setting: the
+-- global system clock AND volume -- read, edited and saved with the seven
+-- hardware buttons, registered third so MENU cycles HOME -> INFO ->
+-- SETTINGS -> HOME. The cursor logic (which field is selected, hold-to-
+-- repeat) lives in C++ (kf_lua_settings_screen.cpp) and reads the buttons
+-- directly, NOT through kf.on_button -- see that file's own header comment
+-- for why a shared button registry would let this screen's buttons also
+-- fire while Home is showing. This screen only ever DRAWS: on_settings_
+-- frame below gets handed the current field/hour/minute/AM-PM/save-
+-- result/volume every frame and sets text and colour, nothing else.
 local settings_screen = kf.screen("settings")
 local settings_bg = kf.color(20, 24, 32)
 settings_screen:background(settings_bg)
@@ -701,7 +954,9 @@ settings_label("AM/PM", 160, 60)
 local hour_value = settings_label("", 16, 80)
 local min_value = settings_label("", 96, 80)
 local ampm_value = settings_label("", 160, 80)
-local save_row = settings_label("SAVE", 16, 140)
+settings_label("VOLUME", 16, 110)
+local volume_value = settings_label("", 16, 130)
+local save_row = settings_label("SAVE", 16, 160)
 settings_label("B: CANCEL", 16, 280)
 
 -- Minutes read "05", not "5" -- hours do not: kf.time()'s own "9:05 AM"
@@ -714,16 +969,26 @@ local function pad2(n)
     return "" .. n
 end
 
+-- 0..4 (KF_VOLUME_OFF..KF_VOLUME_4, kf/hal/audio.h) -> what the field
+-- shows -- "OFF" reads unambiguously as genuinely silent, matching kf_
+-- audio_set_volume()'s own contract; the four non-off levels are plain
+-- numbers, not invented names (CLAUDE.md's own "single nouns only" rule
+-- for anything resembling flavour text -- a volume LEVEL is a number, not
+-- a name to invent).
+local kVolumeLabel = {[0] = "OFF", [1] = "1", [2] = "2", [3] = "3", [4] = "4"}
+
 -- Global, not local -- kf_lua_port_settings_frame() (sdk/lua/kf_lua_
 -- port.cpp) calls this by name while Settings is the active screen, its
 -- own dedicated entry point for the identical reason on_info_frame() is
 -- separate from on_frame(): one screen's per-frame logic must never touch
 -- another screen's objects. `saved` is nil (no save attempted since this
--- screen was opened), true, or false.
-function on_settings_frame(dt_ms, field, hour, minute, ampm, saved)
+-- screen was opened), true, or false -- ONE result covering both the clock
+-- and the volume (kf_lua_settings_screen.cpp's own commit_save()).
+function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume)
     hour_value:set("" .. hour)
     min_value:set(pad2(minute))
     ampm_value:set(ampm)
+    volume_value:set(kVolumeLabel[volume] or "?")
 
     if saved == true then
         save_row:set("SAVED")
@@ -746,6 +1011,7 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved)
     paint(hour_value, "hour")
     paint(min_value, "minute")
     paint(ampm_value, "ampm")
+    paint(volume_value, "volume")
     paint(save_row, "save")
 end
 
@@ -759,6 +1025,7 @@ end
 -- for why Home's drawing used to live here, and what that cost.
 function on_frame(dt_ms)
     announce_stage()
+    announce_death()
     announce("hunger", pet.hunger(), {
         critical = "hunger is critical -- feed me!",
         low = "starting to get hungry...",

@@ -24,6 +24,7 @@
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
 #include "kf/demo.h"
+#include "kf/settings.h"
 
 #include <cinttypes>
 #include <cstdint>
@@ -321,6 +322,21 @@ void kf_app_init(kf_demo_mode mode) {
      * kf_audio_tone() that reports KF_ERR_UNAVAILABLE later, per call, not
      * this init. See kf/hal/audio.h's own header comment. */
     KF_ASSERT(kf_audio_init() == KF_OK, "audio HAL failed to start");
+    /* The persisted, cross-pet volume setting (kf/settings.h) -- loaded
+     * once, here, right after the audio HAL itself comes up (and after
+     * storage, already initialised above) so every sound this process ever
+     * plays, starting with the very first one, obeys whatever the owner
+     * last saved on the Settings screen. kf_settings_load() always returns
+     * KF_OK on a fresh device (falls back to KF_SETTINGS_DEFAULT_VOLUME,
+     * see that function's own header comment), so there is nothing to
+     * assert against here the way kf_audio_init() itself is asserted --
+     * only kf_store_init() failing outright would matter, and that is
+     * already asserted above. */
+    {
+        kf_settings settings = kf_settings_default();
+        (void)kf_settings_load(&settings);
+        kf_audio_set_volume(static_cast<kf_volume_level>(settings.volume));
+    }
     /* Before kf_demo_init() below: the demo looks up sprites by name via
      * kf_assets_get(), so the pack must already be mounted and parsed. */
     KF_ASSERT(kf_assets_init() == KF_OK, "assets HAL failed to start");

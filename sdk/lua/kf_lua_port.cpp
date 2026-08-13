@@ -16,6 +16,7 @@
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
+#include "kf/settings.h"
 #include "kf/types.h"
 
 extern "C" {
@@ -24,8 +25,12 @@ extern "C" {
 #include <lualib.h>
 }
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <strings.h> /* POSIX strncasecmp -- not in <cstring>/std::, see
+                       * note_token_hz() below for the one call site */
 
 namespace {
 
@@ -335,6 +340,188 @@ int lua_kf_beep(lua_State *L) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------
+ * kf.melody() -- a short phrase, played in order. Takes the SAME note-name
+ * string format tools/kf_chiptune.py's own SOUNDS table already uses
+ * ("E6:55 -:35 B6:85") rather than raw Hz: "{{1318,60}}" is not something a
+ * jQuery developer would ever type, "E6:55" is -- see docs/sdk-style-
+ * guide.md's own goal ("someone who has never written Lua... should be able
+ * to guess what most lines do just by reading them"). examples/creature_
+ * demo/creature.lua's own SOUNDS table and kf_chiptune.py's must be changed
+ * together -- see both files' header comments.
+ * --------------------------------------------------------------------- */
+
+namespace {
+
+/* Semitone offset from C, within an octave -- the SAME table kf_chiptune.
+ * py's own NOTES dict encodes, so a note name resolves to the identical Hz
+ * value here as it does in that preview tool (both use A4 = 440, MIDI
+ * numbering -- see note_token_hz() below). */
+struct NoteName {
+    const char *letters;
+    int semitone;
+};
+constexpr NoteName kNoteTable[] = {
+    {"C", 0}, {"C#", 1}, {"D", 2}, {"D#", 3}, {"E", 4},  {"F", 5},
+    {"F#", 6}, {"G", 7}, {"G#", 8}, {"A", 9}, {"A#", 10}, {"B", 11},
+};
+
+/* "C7" / "F#5" / "-" (len 1) -> Hz, or 0 for a rest ("-"/"r"/"R", matching
+ * kf_chiptune.py's note_hz() exactly). `tok` is a slice of the full spec
+ * string, `len` bytes, NOT NUL-terminated -- callers pass a pointer into the
+ * middle of a larger buffer. Returns false if `tok` is not a recognised
+ * note name, so the caller can raise a clear script error rather than
+ * silently mis-parsing a typo.
+ *
+ * Floating point (std::pow) is fine in THIS file: sdk/lua/ is not
+ * hakoniwaos/ core -- tools/check_no_float.py only scans hakoniwaos/src and
+ * hakoniwaos/include -- and this runs once per note per kf.melody() call,
+ * not per audio sample, so there is no per-frame cost to worry about
+ * either. Using the identical formula kf_chiptune.py's note_hz() uses,
+ * rather than a hand-rolled integer approximation, is what guarantees a
+ * phrase previewed with that script sounds like the same phrase kf.melody()
+ * plays here -- consistency with the preview tool matters more than staying
+ * float-free in a file no scanner checks anyway. */
+bool note_token_hz(const char *tok, size_t len, uint32_t *out_hz) {
+    if (len == 0) {
+        return false;
+    }
+    if (len == 1 && (tok[0] == '-' || tok[0] == 'r' || tok[0] == 'R')) {
+        *out_hz = 0;
+        return true;
+    }
+    if (len < 2) {
+        return false;
+    }
+    const char octave_ch = tok[len - 1];
+    if (octave_ch < '0' || octave_ch > '9') {
+        return false;
+    }
+    const int octave = octave_ch - '0';
+    const size_t letters_len = len - 1;
+    for (const NoteName &n : kNoteTable) {
+        if (std::strlen(n.letters) == letters_len &&
+            strncasecmp(n.letters, tok, letters_len) == 0) {
+            const double semitones_from_a4 =
+                (octave + 1) * 12 + n.semitone - 69;
+            const double hz = 440.0 * std::pow(2.0, semitones_from_a4 / 12.0);
+            *out_hz = static_cast<uint32_t>(hz + 0.5);
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+/* kf.melody(spec, duty_permille) -- `spec` is "NAME:MS NAME:MS ..."
+ * (kf_chiptune.py's own grammar: note name, optional ':'+duration in ms --
+ * 70ms if omitted, matching that script's own default -- '-'/'r'/'R' for a
+ * rest). `duty_permille` is optional (default KF_AUDIO_DUTY_FAT, matching
+ * kf.tone()'s own implicit 50%) -- pass kf.DUTY_THIN/kf.DUTY_MID/kf.DUTY_FAT
+ * for the tiers kf_chiptune.py's own header comment explains (12.5%: the
+ * creature's own voice; 25%: ordinary care-response jingles; 50%: system
+ * fanfares).
+ *
+ * Bounded to KF_AUDIO_MAX_NOTES notes, in a fixed local array -- no heap,
+ * the same discipline this codebase keeps even in files no scanner checks.
+ * Raises via luaL_error() on a malformed spec (too many notes, an
+ * unrecognised token) -- a script author's typo, the SAME "a literal a
+ * script author typed by hand is a script bug, not data" line kf.button()'s
+ * own unknown-name case draws (docs/sdk-style-guide.md), unlike kf.tone()'s
+ * out-of-range hz/ms, which is far more likely to come from arithmetic and
+ * so is treated as data instead.
+ *
+ * Non-blocking, replaces whatever is currently playing -- kf_audio_play_
+ * notes()'s own "replaces, not queued behind it" contract (kf/hal/audio.h).
+ * Returns true if the phrase actually started, false otherwise (an
+ * accepted-but-rejected-by-the-HAL call, or KF_ERR_UNAVAILABLE) -- never
+ * raises for that; only a parse failure raises, matching kf.tone()'s own
+ * "out-of-range is data, a malformed literal is a bug" split. */
+int lua_kf_melody(lua_State *L) {
+    const char *spec = luaL_checkstring(L, 1);
+    const lua_Integer duty = luaL_optinteger(L, 2, KF_AUDIO_DUTY_FAT);
+
+    kf_audio_note notes[KF_AUDIO_MAX_NOTES];
+    uint32_t count = 0;
+
+    const char *p = spec;
+    while (*p != '\0') {
+        while (*p == ' ') {
+            ++p;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        const char *tok_start = p;
+        while (*p != '\0' && *p != ' ') {
+            ++p;
+        }
+        const size_t tok_len = static_cast<size_t>(p - tok_start);
+
+        const char *colon = static_cast<const char *>(
+            std::memchr(tok_start, ':', tok_len));
+        const size_t name_len = colon != nullptr
+                                     ? static_cast<size_t>(colon - tok_start)
+                                     : tok_len;
+        uint32_t ms = 70u; /* kf_chiptune.py's render() own bare-note default */
+        if (colon != nullptr) {
+            const size_t ms_len = tok_len - name_len - 1;
+            char ms_buf[8];
+            if (ms_len == 0 || ms_len >= sizeof(ms_buf)) {
+                return luaL_error(L, "kf.melody: bad duration in note '%.*s'",
+                                   static_cast<int>(tok_len), tok_start);
+            }
+            std::memcpy(ms_buf, colon + 1, ms_len);
+            ms_buf[ms_len] = '\0';
+            ms = static_cast<uint32_t>(std::atoi(ms_buf));
+        }
+
+        uint32_t hz = 0;
+        if (!note_token_hz(tok_start, name_len, &hz)) {
+            return luaL_error(L, "kf.melody: unrecognised note '%.*s'",
+                               static_cast<int>(name_len), tok_start);
+        }
+        if (count >= KF_AUDIO_MAX_NOTES) {
+            return luaL_error(
+                L, "kf.melody: '%s' has more than KF_AUDIO_MAX_NOTES (%u) notes",
+                spec, static_cast<unsigned>(KF_AUDIO_MAX_NOTES));
+        }
+        notes[count].hz = hz;
+        notes[count].ms = ms;
+        ++count;
+    }
+
+    if (count == 0) {
+        return luaL_error(L, "kf.melody: empty note spec");
+    }
+
+    const bool ok = kf_audio_play_notes(notes, count,
+                                         static_cast<uint32_t>(duty)) == KF_OK;
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+/* kf.volume()/kf.set_volume() -- read/write the persisted, cross-pet device
+ * volume (kf/settings.h). "Your game almost certainly should not" call
+ * kf.set_volume() -- exactly kf.set_clock()'s own header comment -- this
+ * exists for the same reason that one does: the Settings screen itself
+ * uses the direct C++ path (kf_lua_port_apply_volume(), called from kf_lua_
+ * settings_screen.cpp's commit_save()), not this binding; this binding is
+ * for a third-party script that has its own reason to read or change it. */
+int lua_kf_volume(lua_State *L) {
+    lua_pushinteger(L,
+                     static_cast<lua_Integer>(kf_audio_get_volume()));
+    return 1;
+}
+
+int lua_kf_set_volume(lua_State *L) {
+    const lua_Integer level = luaL_checkinteger(L, 1);
+    lua_pushboolean(L, kf_lua_port_apply_volume(static_cast<int>(level)) ? 1
+                                                                          : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
@@ -347,11 +534,20 @@ const luaL_Reg kKfFuncs[] = {
     {"button", lua_kf_button},
     {"tone", lua_kf_tone},
     {"beep", lua_kf_beep},
+    {"melody", lua_kf_melody},
+    {"volume", lua_kf_volume},
+    {"set_volume", lua_kf_set_volume},
     {nullptr, nullptr},
 };
 
 void register_bindings(lua_State *L) {
     luaL_newlib(L, kKfFuncs);
+    lua_pushinteger(L, KF_AUDIO_DUTY_THIN);
+    lua_setfield(L, -2, "DUTY_THIN");
+    lua_pushinteger(L, KF_AUDIO_DUTY_MID);
+    lua_setfield(L, -2, "DUTY_MID");
+    lua_pushinteger(L, KF_AUDIO_DUTY_FAT);
+    lua_setfield(L, -2, "DUTY_FAT");
     lua_setglobal(L, "kf");
 }
 
@@ -1046,7 +1242,7 @@ void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms) {
 
 void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
                                  const char *field, int hour, int minute,
-                                 bool is_pm, int save_result) {
+                                 bool is_pm, int save_result, int volume) {
     if (!g.ready || g.disabled_after_error) {
         return;
     }
@@ -1082,7 +1278,8 @@ void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
     } else {
         lua_pushboolean(g.L, save_result != 0);
     }
-    if (lua_pcall(g.L, 6, 0, 0) != LUA_OK) {
+    lua_pushinteger(g.L, volume);
+    if (lua_pcall(g.L, 7, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(g.L, -1);
         KF_LOGE(TAG,
                 "on_settings_frame raised an error, disabling further calls "
@@ -1124,6 +1321,32 @@ bool kf_lua_port_apply_clock(int hour, int minute) {
      * is no date-setting UI in this task, and none is promised by it. */
     const int64_t new_epoch = kf_epoch_from_civil(&civil);
     return kf_time_set_wall(new_epoch) == KF_OK;
+}
+
+bool kf_lua_port_apply_volume(int level) {
+    int clamped = level;
+    if (clamped < 0) {
+        clamped = 0;
+    } else if (clamped > static_cast<int>(KF_VOLUME_4)) {
+        clamped = static_cast<int>(KF_VOLUME_4);
+    }
+    /* Applies hardware output immediately (so a change is audible right
+     * away, the same instant kf_audio_set_volume() itself takes effect --
+     * see that function's own header comment, kf/hal/audio.h) AND persists
+     * it -- kf.set_clock()'s own kf_lua_port_apply_clock() above is the
+     * shape this mirrors, one function both the Lua binding and the
+     * Settings screen's C++ path call so the two can never disagree about
+     * what "the volume is N" means. */
+    kf_audio_set_volume(static_cast<kf_volume_level>(clamped));
+    /* kf_settings has exactly one field today, so starting from the default
+     * and overwriting it is equivalent to a read-modify-write -- the day a
+     * second field lands (kf/settings.h's own "sized to hold whatever the
+     * next global preference turns out to be"), THIS must become an actual
+     * kf_settings_load()-then-modify-then-save, or saving the volume here
+     * would silently reset that other field to its default. */
+    kf_settings settings = kf_settings_default();
+    settings.volume = static_cast<uint8_t>(clamped);
+    return kf_settings_save(&settings) == KF_OK;
 }
 
 void kf_lua_port_shutdown() {

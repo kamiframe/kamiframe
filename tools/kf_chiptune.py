@@ -97,6 +97,15 @@ def render(spec, duty=FAT, gap_ms=8):
 
 
 # ---------------------------------------------------------------------------
+# THIS TABLE AND examples/creature_demo/creature.lua's OWN SOUNDS TABLE MUST
+# BE CHANGED TOGETHER. This file is the preview tool -- it renders a .wav a
+# human can audition before flashing anything, and does not run on the
+# device. creature.lua's copy (note specs, duty tier, note names -- the same
+# grammar kf.melody() parses) is the shipping copy that actually plays.
+# Changing a note here without mirroring it there previews a sound the
+# device does not make; changing it there without mirroring it here makes
+# this script's preview a lie.
+#
 # The approved set. Chris picked these by ear on 2026-08-13, from 12 initial
 # candidates plus 8 follow-ups for "wants" specifically.
 #

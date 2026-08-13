@@ -49,27 +49,35 @@
 
 #include "kf/app.h"
 #include "kf/clock.h"
+#include "kf/hal/audio.h"
 #include "kf/hal/time.h"
 #include "kf/scene.h"
+#include "kf/settings.h"
 #include "kf/types.h"
 
 namespace {
 
 kf_scene_id g_error_banner_id = 0;
 
-/* The four cursor positions, in the order LEFT/RIGHT (and A on any field
- * but SAVE) move through them -- "HOUR -> MINUTE -> AM/PM -> SAVE", the
- * plan's own answer to "what does the time API look like". Plain ints
- * rather than an enum crossing the C boundary: kf_lua_port_settings_
- * frame()'s own `field` argument and the debug accessors below both just
- * need a small integer, and one shared int is easier to keep in sync
- * across this file than a type declared in two places. */
+/* The five cursor positions, in the order LEFT/RIGHT (and A on any field
+ * but SAVE) move through them -- "HOUR -> MINUTE -> AM/PM -> VOLUME ->
+ * SAVE". The first three are the plan's own answer to "what does the time
+ * API look like" (Task 4); VOLUME was appended before SAVE by the sound-
+ * foundation follow-up (owner's own words: "add a volume setting on the
+ * clock settings page"), so both fields share the one SAVE action -- see
+ * commit_save() below. Plain ints rather than an enum crossing the C
+ * boundary: kf_lua_port_settings_frame()'s own `field` argument and the
+ * debug accessors below both just need a small integer, and one shared int
+ * is easier to keep in sync across this file than a type declared in two
+ * places. */
 constexpr int kFieldHour = 0;
 constexpr int kFieldMinute = 1;
 constexpr int kFieldAmPm = 2;
-constexpr int kFieldSave = 3;
+constexpr int kFieldVolume = 3;
+constexpr int kFieldSave = 4;
 
-constexpr const char *kFieldNames[4] = {"hour", "minute", "ampm", "save"};
+constexpr const char *kFieldNames[5] = {"hour", "minute", "ampm", "volume",
+                                         "save"};
 
 /* Feel constants named in the plan's own answer to "what does the button
  * map look like": repeat starts ~400ms after UP/DOWN is first held, then
@@ -90,13 +98,17 @@ struct SettingsEdit {
     int hour12 = 12; /* 1..12 */
     bool is_pm = false;
     int minute = 0; /* 0..59 */
+    int volume = static_cast<int>(KF_SETTINGS_DEFAULT_VOLUME); /* 0..4 */
     uint32_t up_held_ms = 0;
     uint32_t down_held_ms = 0;
     /* -1: no save attempted since the screen was last entered. 0/1: the
      * result of the most recent A-on-SAVE press -- lets creature.lua's
      * on_settings_frame say "SAVE FAILED" rather than silently doing
      * nothing, per Task 4's own reason kf.set_clock() returns false
-     * instead of raising. */
+     * instead of raising. ONE result covers both the clock and the volume
+     * (commit_save() below) -- "SAVE" is a single action from the player's
+     * point of view, not two independent ones with two independent
+     * outcomes to show. */
     int save_result = -1;
 };
 
@@ -129,6 +141,22 @@ void change_value(int delta) {
         break;
     case kFieldAmPm:
         g_edit.is_pm = !g_edit.is_pm;
+        break;
+    case kFieldVolume:
+        /* Wraps across all five positions (OFF..4), the same "wrap at each
+         * field's own edges" behaviour HOUR/MINUTE already have -- five
+         * being a small ordered set makes wrapping the more natural fit
+         * here than clamping at the ends. Edited in LOCAL state only, same
+         * as every other field: the live device volume is not touched
+         * until SAVE (commit_save() below) -- a player scrolling through
+         * levels while deciding, then pressing B to cancel, should not have
+         * already changed what is actually playing. */
+        g_edit.volume += delta;
+        if (g_edit.volume > static_cast<int>(KF_VOLUME_4)) {
+            g_edit.volume = static_cast<int>(KF_VOLUME_OFF);
+        } else if (g_edit.volume < static_cast<int>(KF_VOLUME_OFF)) {
+            g_edit.volume = static_cast<int>(KF_VOLUME_4);
+        }
         break;
     default: /* kFieldSave -- nothing to change */
         break;
@@ -167,14 +195,19 @@ void handle_hold(uint32_t held, kf_button btn, uint32_t dt_ms,
  * and hands it to the exact same helper kf.set_clock() itself calls
  * (kf_lua_port_apply_clock(), sdk/lua/kf_lua_port.cpp) -- so the Settings
  * screen and any third-party script calling kf.set_clock() directly can
- * never disagree about what "save" means. */
+ * never disagree about what "save" means. ALSO commits the volume field
+ * the identical way (kf_lua_port_apply_volume()) -- one SAVE press, two
+ * independent persisted values, ONE combined result: true only if both
+ * succeeded, so "SAVE FAILED" is shown whenever EITHER one was refused
+ * rather than silently reporting success on a partial save. */
 void commit_save() {
     int hour24 = g_edit.hour12 % 12; /* 12 -> 0 */
     if (g_edit.is_pm) {
         hour24 += 12;
     }
-    g_edit.save_result =
-        kf_lua_port_apply_clock(hour24, g_edit.minute) ? 1 : 0;
+    const bool clock_ok = kf_lua_port_apply_clock(hour24, g_edit.minute);
+    const bool volume_ok = kf_lua_port_apply_volume(g_edit.volume);
+    g_edit.save_result = (clock_ok && volume_ok) ? 1 : 0;
 }
 
 } // namespace
@@ -193,6 +226,14 @@ void kf_lua_settings_screen_enter(void) {
     }
     g_edit.is_pm = civil.hour >= 12;
     g_edit.minute = civil.minute;
+    /* Seeded from the CURRENT live volume (kf_audio_get_volume()), not
+     * re-read from storage -- the live value is already authoritative
+     * (kf_app_init() loads it once at boot, and every prior SAVE on this
+     * screen already applied it live too), and reading it this way means a
+     * fresh edit always starts from what is actually playing right now,
+     * the same "what the fields should currently show" contract HOUR/
+     * MINUTE/AM-PM already have from the wall clock above. */
+    g_edit.volume = static_cast<int>(kf_audio_get_volume());
     g_edit.up_held_ms = 0;
     g_edit.down_held_ms = 0;
     g_edit.save_result = -1;
@@ -233,7 +274,7 @@ void kf_lua_settings_screen_frame(uint32_t dt_ms) {
 
     kf_lua_port_settings_frame(dt_ms, kFieldNames[g_edit.field],
                                 g_edit.hour12, g_edit.minute, g_edit.is_pm,
-                                g_edit.save_result);
+                                g_edit.save_result, g_edit.volume);
     kf_error_banner_update(g_error_banner_id);
     if (kf_lua_scene_declared_anything()) {
         kf_scene_commit();
@@ -243,3 +284,4 @@ void kf_lua_settings_screen_frame(uint32_t dt_ms) {
 int kf_lua_settings_screen_debug_field(void) { return g_edit.field; }
 int kf_lua_settings_screen_debug_hour12(void) { return g_edit.hour12; }
 int kf_lua_settings_screen_debug_minute(void) { return g_edit.minute; }
+int kf_lua_settings_screen_debug_volume(void) { return g_edit.volume; }
