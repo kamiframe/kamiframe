@@ -1,83 +1,87 @@
-# Demo creature audio — staging, not yet a pipeline
+# Demo creature audio
 
-Raw source audio waiting on a pack pipeline that does not exist yet. **No
-code reads anything in this directory.** It is here so the file is findable
-when the work happens, not because anything works today.
+**The creature's sounds are square waves, not recordings.** There are no
+audio assets here to pack, load or license. Every sound is a short list of
+notes played through `kf_audio_tone(hz, ms)` — the definitions live in
+`tools/kf_chiptune.py`'s `SOUNDS` table.
 
-## The raw `.wav` files here are deliberately NOT committed
+To hear them without flashing a board:
 
-`.gitignore` excludes `examples/creature_demo/audio/*.wav`, on purpose, and
-that exclusion should not be removed without answering the licence question
-below first.
+```
+python3 tools/kf_chiptune.py /tmp/preview     # writes a .wav per sound
+python3 tools/kf_chiptune.py --list           # just the note specs
+```
 
-`attention_voice_source.wav` came from a **purchased "Puzzle Audio Bundle"**
-(`Dropbox/Game Dev Projects/Music & SFX/Puzzle Audio Bundle/WAV/FX/Voices/
-Confusion Voice 4.wav`). This repository is public and Apache 2.0. Most
-commercial audio-pack licences permit *using* a sound in a game while
-prohibiting *redistribution of the raw asset files* — and pushing one to a
-public repository is redistribution, regardless of intent.
+The `.wav` files that script writes are **previews for human ears**. They
+are not shipped and not packed; the device synthesises from the notes.
 
-**Unanswered, and it gates shipping this sound at all:**
+## How this got here, because the dead end is worth recording
 
-1. Does the bundle's licence permit redistribution of the source `.wav`?
-   (Usually no.)
-2. Does it permit distributing a *processed, embedded* form — resampled,
-   converted to 16-bit PCM and packed into a `.kfpack`? (Often yes, as
-   "use in a game", but bundles vary and some require the sound be
-   "integrated" rather than extractable.)
-3. If (2) is yes but (1) is no, the pipeline must consume this file from
-   **outside** the repo, the way `tools/kf_ingest_sprites.py` can already
-   be pointed at any directory.
+This started as text-to-speech: generate a voice, pitch it up, bit-crush
+it, pack it as PCM. That produced a chipmunk. Pitch-shifting preserves
+every cue that says *human* — harmonics, formants, breath — so a sped-up
+voice is a small person, not a synthetic creature. Chiptune is a different
+*waveform*, not a faster one.
 
-Kamiframe already keeps a hard line here — see `LICENSING.md`, where the
-demo creature's artwork is copyright-reserved while its code is Apache 2.0,
-and hardware lives in a separate CERN-OHL-W repository specifically so the
-licences never blur. Audio should not be the thing that blurs them.
+Chris, 2026-08-13: *"Maybe I'm actually looking for 8-bit nintendo midi
+representations of chirps."* That was the correct instinct, and abandoning
+samples deleted an entire pipeline that had not been built yet:
 
-## What this file actually is
+- no `ASSET_TYPE_AUDIO_CLIP` packer support (still reserved, still unused)
+- no PCM decoder in `hakoniwaos/src/assets.cpp`
+- no sample-rate conversion, and no float maths in an integer-only Core
+- no flash cost per sound (a 0.3s clip was ~14 KB; a note list is bytes)
+- **no third-party audio licence to reason about at all**
 
-Measured, not assumed:
+That last one mattered. The first source was a purchased Humble Bundle
+asset pack, which permits *use* in a game but not redistribution of the raw
+files — a genuine problem for a public Apache-2.0 repository where forking
+is the point. See `LICENSING.md` for the line this project already draws
+around the demo creature's artwork. **A frequency belongs to nobody**, so
+that whole question disappeared.
 
-| | |
-|---|---|
-| Format | IEEE float (RIFF tag 3), **not** integer PCM |
-| Channels | 2 (stereo) |
-| Sample rate | 44,100 Hz |
-| Bit depth | 32-bit |
-| Duration | 0.332 s |
-| On disk | 126,110 bytes |
+`attention_voice_source.wav` may still be sitting in this directory
+untracked (`.gitignore` excludes `*.wav` here). It is the abandoned TTS
+source, kept only in case the sampled route is ever revisited. Nothing
+reads it.
 
-Converted to the packer's reserved audio shape (16-bit signed PCM, mono,
-uncompressed — see `tools/kf_pack_assets.py`'s format comment):
+## The design
 
-- at **22,050 Hz**: ~14.3 KB
-- at **44,100 Hz**: ~28.6 KB
+Every sound is a transformation of **one motif: the rising major triad**.
+Extended and resolved for rare events, fragmentary for frequent ones,
+inverted for bad news, minor for the worst of it. Twelve sounds that share
+a shape read as one creature; twelve unrelated jingles read as a sound
+pack.
 
-Either is negligible against `KF_FLASH_ASSET_BUDGET_BYTES` (12 MB). Length
-is the friendly part: a third of a second streams comfortably; a multi-second
-line would be a different engineering problem.
+**Duty cycle is the second lever and it is free.** 50% is the fat classic
+beep, 12.5% the thin nasal NES pulse — same oscillator, same cost. So the
+**creature's own voice is a thin pulse** and system fanfares are fat, which
+separates "the pet is talking" from "the device is announcing something"
+without changing a single note.
 
-## What has to be built before it makes a sound
+**The five wants each get their own call.** `kf_pet_want` has five values,
+and giving each a distinct sound lets a player learn what the creature
+needs by ear, without looking at the screen — something the original
+Tamagotchi never did.
 
-Four gaps, in dependency order:
+One rejected idea is worth keeping, because it explains the shape of all
+five. The first want sound was *repeat-then-leap* — the same note twice,
+then a jump up. That is a **summons**: the shape of a doorbell. Wanting is
+a **question** — rising, unresolved, faintly plaintive. `want_flush`
+deliberately ends on the second rather than the tonic, so it never
+resolves; the tension is the point.
 
-1. **Packer support.** `ASSET_TYPE_AUDIO_CLIP = 1` is *reserved* in
-   `tools/kf_pack_assets.py` with its intended `type_meta` already written
-   down (sample_rate u32, channels u8, bits_per_sample u8), but nothing
-   packs or reads it.
-2. **A loader.** `hakoniwaos/src/assets.cpp` has no audio decoder.
-3. **A HAL capability.** `kf/hal/audio.h` is deliberately tone-only —
-   ADR 0055 rejected sampled playback because there was no way to author a
-   clip. This file is what makes that reasoning expire.
-4. **Conversion.** Stereo 32-bit float → mono 16-bit PCM, and a sample-rate
-   decision. Core is integer-only, so any resampling happens **host-side at
-   pack time**, never on device.
+## Not built yet
 
-## An API decision that is not mine to make
+The notes exist; the playback path does not.
 
-`kf.beep()` and `kf.tone(hz, ms)` are the whole sound API today, and
-third-party developers build against it. A creature voice could be a
-general `kf.play("name")` for any packed clip — more useful to other
-developers, more work — or a single built-in attention sound, which is
-quicker and does not generalise. The SDK is the product, which argues for
-the general one, but it is a scope call.
+1. **`kf.melody("E6:55 -:35 B6:85")`** — a Lua binding taking a note-name
+   string. Note names, not raw Hz, because the SDK is the product and
+   `{{1318,60},{1568,60}}` is not something a jQuery developer writes.
+2. **Duty-cycle support** in `kf/hal/audio.h`, which is currently tone-only
+   with a fixed 50% square.
+3. **The queue depth.** `ports/esp32/hal/esp_audio.cpp` uses a depth-1
+   queue with `xQueueOverwrite`, so two `kf_audio_tone()` calls in quick
+   succession *replace* each other. **A multi-note phrase currently plays
+   only its last note on hardware.** Nothing in this file works on a real
+   board until that is fixed.
