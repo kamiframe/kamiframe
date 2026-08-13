@@ -126,6 +126,35 @@ void audio_task(void * /*arg*/) {
         if (half_period == 0u) {
             continue; /* cannot happen within this HAL's own Hz ceiling */
         }
+
+        /* THE CHANNEL IS ENABLED PER TONE AND DISABLED AGAIN BELOW, and
+         * that is the whole fix for the bug this cost us on real hardware.
+         *
+         * Chris, 2026-08-12, first time this driver ever ran on a board:
+         * "as soon as the chirp started, it would not stop the sound, even
+         * if I satisfied the need of the pet. I had to unplug it."
+         *
+         * An enabled I2S TX channel does NOT go quiet when you stop feeding
+         * it. Its DMA ring keeps cycling, so an underrun replays whatever
+         * bytes were last in those buffers -- which, having just played a
+         * tone, is the tone. Forever. The original code enabled once in
+         * kf_audio_init() and only disabled in kf_audio_shutdown(), so
+         * every chirp became a permanent one.
+         *
+         * The cruel part, and the reason this was not obvious from
+         * reading: kf_audio_stop() sets g_stop_requested, which stops the
+         * write loop -- i.e. the function whose entire job is to stop the
+         * sound was triggering the exact underrun that sustained it. There
+         * was no way out except a power cycle, which is what he had to do.
+         *
+         * Silence, then disable, in that order. Disabling alone genuinely
+         * does stop the output, but it leaves a buffer full of loud
+         * samples for the NEXT enable to start replaying, which is an
+         * audible spit at the front of every chirp. */
+        if (i2s_channel_enable(g_tx) != ESP_OK) {
+            KF_LOGW(TAG, "i2s_channel_enable failed -- skipping this tone");
+            continue;
+        }
         const uint64_t total_samples =
             (static_cast<uint64_t>(kSampleRateHz) * msg.ms) / 1000ull;
 
@@ -159,6 +188,29 @@ void audio_task(void * /*arg*/) {
             }
             phase += this_chunk;
             played += this_chunk;
+        }
+
+        /* Flush the DMA ring with silence, then stop the peripheral. See
+         * the enable above for why both steps, in this order.
+         *
+         * Sized generously against I2S_CHANNEL_DEFAULT_CONFIG's ring
+         * (6 descriptors x 240 frames = 1440 on IDF v5+, and this does not
+         * hard-code that number so a future IDF changing it cannot quietly
+         * under-flush). Best-effort throughout: every path below ends in a
+         * disable regardless, because a failed flush must still not leave a
+         * tone running -- that is the failure being fixed. */
+        static const int16_t kSilence[kChunkSamples] = {};
+        for (int i = 0; i < 16; ++i) {
+            size_t written = 0;
+            if (i2s_channel_write(g_tx, kSilence, sizeof kSilence, &written,
+                                   20) != ESP_OK) {
+                break;
+            }
+        }
+        if (i2s_channel_disable(g_tx) != ESP_OK) {
+            /* Loud, because the audible symptom is a stuck tone and the
+             * only remaining recovery is a power cycle. */
+            KF_LOGE(TAG, "i2s_channel_disable failed -- a tone may be stuck");
         }
     }
 }
@@ -194,17 +246,21 @@ kf_result kf_audio_init(void) {
         g_tx = nullptr;
         return KF_OK;
     }
-    if (i2s_channel_enable(g_tx) != ESP_OK) {
-        KF_LOGW(TAG, "i2s_channel_enable failed -- audio disabled");
-        i2s_del_channel(g_tx);
-        g_tx = nullptr;
-        return KF_OK;
-    }
+    /* DELIBERATELY NOT ENABLED HERE. The channel is enabled per tone by
+     * audio_task() and disabled again as soon as that tone ends -- see the
+     * long comment there. Enabling at init is what made the first chirp on
+     * real hardware play forever: an idle-but-enabled TX channel replays
+     * its DMA ring rather than going quiet. Leaving it disabled between
+     * tones is also the only state in which "no sound" is guaranteed.
+     *
+     * Consequence for anything added later: i2s_channel_enable() is not
+     * idempotent (it returns ESP_ERR_INVALID_STATE on an already-enabled
+     * channel), so a second enable path would need to track state rather
+     * than call it blindly. */
 
     g_queue = xQueueCreate(1, sizeof(ToneMsg));
     if (g_queue == nullptr) {
         KF_LOGW(TAG, "xQueueCreate failed -- audio disabled");
-        i2s_channel_disable(g_tx);
         i2s_del_channel(g_tx);
         g_tx = nullptr;
         return KF_OK;
@@ -215,7 +271,8 @@ kf_result kf_audio_init(void) {
         KF_LOGW(TAG, "xTaskCreate failed -- audio disabled");
         vQueueDelete(g_queue);
         g_queue = nullptr;
-        i2s_channel_disable(g_tx);
+        /* No disable here: nothing enabled the channel. Init stopped doing
+         * that when the per-tone enable landed -- see the comment above. */
         i2s_del_channel(g_tx);
         g_tx = nullptr;
         return KF_OK;
@@ -259,6 +316,14 @@ void kf_audio_stop(void) {
 
 void kf_audio_shutdown(void) {
     if (g_task != nullptr) {
+        /* Deleting the task can land mid-tone, with the channel enabled and
+         * a loud DMA ring -- exactly the stuck-tone state. The disable
+         * below is therefore load-bearing on this path, not tidy-up, and
+         * must stay after the delete: doing it first would let the task
+         * write again before it dies. Its return value is ignored on
+         * purpose, since the channel may legitimately already be disabled
+         * (task idle between tones), and "already off" is the outcome
+         * wanted either way. */
         vTaskDelete(g_task);
         g_task = nullptr;
     }
@@ -267,7 +332,7 @@ void kf_audio_shutdown(void) {
         g_queue = nullptr;
     }
     if (g_tx != nullptr) {
-        i2s_channel_disable(g_tx);
+        (void)i2s_channel_disable(g_tx);
         i2s_del_channel(g_tx);
         g_tx = nullptr;
     }
