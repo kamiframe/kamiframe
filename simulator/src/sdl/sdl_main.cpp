@@ -15,8 +15,6 @@
 
 #include "kf/app.h"
 #include "kf/hal/log.h"
-#include "kf/hal/time.h"
-#include "kf/scene.h"
 #include "host_assets.h"
 #include "sdl_debug_window.h"
 #include "sdl_shared.h"
@@ -26,7 +24,7 @@
 #endif
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
 #include "../../../sdk/lua/kf_lua_port.h"
-#include "../../../sdk/lua/kf_lua_scene.h"
+#include "../pet/kf_frame_loop.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
 
@@ -190,120 +188,21 @@ int main(int argc, char *argv[]) {
 
     KF_LOGI(TAG, "running (close the window or press Ctrl-C to stop)");
 
-    /* Tracked here, not left to kf_pet_session_frame()'s own internal
-     * real-time tracking, because the debug window's time multiplier
-     * (kf_sdl_debug_window_time_multiplier()) has to scale ONLY the delta
-     * fed to the pet session -- not LVGL's tick (kf_lvgl_port_pump()) or
-     * Lua's frame delta (kf_lua_port_frame()), both of which stay
-     * real-time so animation and script frame-rate semantics are
-     * unaffected. Passing a non-zero synthetic value every frame (instead
-     * of 0 = "use your own real-time tracking") also avoids a correctness
-     * trap: kf_pet_session_frame() only updates ITS internal last-call
-     * timestamp on the `dt_ms == 0` path, so interleaving 0 and non-zero
-     * calls across frames (e.g. multiplier flips between 1x and 2x) would
-     * leave that internal timestamp stale and cause a double-counted
-     * jump the next time 0 was passed. Always computing and passing the
-     * delta ourselves sidesteps that entirely. */
-    uint64_t last_frame_us = 0;
+    /* The one shared per-frame sequence (ADR 0058, kf_frame_loop.h/.cpp) --
+     * time handling, the pet session tick, screen nav, LVGL's pump, Lua's
+     * frame and the scene commit -- lives there now, not here, so this file
+     * and app_main.cpp cannot independently drift the way they did before
+     * (see that header's own comment for the incident this fixed). The one
+     * genuinely desktop-only piece, the debug window's own click/drag
+     * handling, is threaded through as a hook rather than folded into the
+     * shared function, in the exact position it always ran from: after the
+     * pet session ticks, before screen nav reads this frame's state. */
+    kf_frame_loop_hooks hooks{};
+    hooks.after_pet_session = kf_sdl_debug_window_frame;
+
     long frames = 0;
     while (kf_app_frame()) {
-        const uint64_t now_us = kf_time_mono_us();
-        const uint32_t real_dt_ms =
-            last_frame_us == 0u
-                ? 0u
-                : static_cast<uint32_t>((now_us - last_frame_us) / 1000u);
-        last_frame_us = now_us;
-        const uint32_t multiplier = kf_sdl_debug_window_time_multiplier();
-
-        /* kf_pet_session_frame() and kf_screen_nav_frame() both run before
-         * kf_lvgl_port_pump(): the session needs to have applied this
-         * frame's elapsed time before the active screen reads it. Under
-         * -DKF_ENABLE_LVGL=ON this also keeps a still-LVGL screen from
-         * showing last frame's numbers one frame behind, the reason the
-         * pump call used to be conditional on which screen was active
-         * (kf_screen_nav_wants_lvgl(), removed with ADR 0045 -- every
-         * screen this build can show is a kf.screen() group now, so LVGL,
-         * when built in at all, has nothing left to pump for). A button
-         * press this frame is handled INSIDE pump (LVGL processes input
-         * during lv_timer_handler()), so its effect shows up starting next
-         * frame's update -- one frame of input lag, imperceptible at this
-         * frame rate. kf_screen_nav_frame() itself reads MENU/B straight
-         * from kf_app_buttons_pressed() (ADR 0022), which kf_app_frame()
-         * -- the while-condition above -- has already refreshed for this
-         * frame by the time we get here, so a screen switch this frame is
-         * NOT subject to that same one-frame lag.
-         *
-         * kf_screen_nav_frame() gets the real, un-multiplied elapsed time
-         * -- the creature's wander is presentation, not pet decay, so it
-         * stays real-time exactly the way LVGL's own tick and Lua's frame
-         * delta already do (see this function's header comment on why the
-         * multiplier applies only to the pet session). */
-        /* The wall clock is dragged along with the multiplier too, and this
-         * is NOT the same thing as the pet delta above.
-         *
-         * Core evaluates the 22:00-07:00 night window against
-         * kf_pet_state::last_advanced, which kf_pet_advance() carries
-         * forward by the MULTIPLIED delta on the line below. Lua's
-         * kf.hour() -- the Settings clock, the drowsy cue, the on-screen
-         * clock -- reads kf_time_wall() instead. Left alone, the wall clock
-         * ticks at 1x while Core's races at up to 256x, so within seconds
-         * the creature is asleep against a displayed clock that still says
-         * mid-afternoon. Chris hit exactly this on 2026-08-11 ("I was also
-         * using the time speed multiplier, which I guess doesn't
-         * necessarily affect the actual clock time that runs the sleep
-         * schedule?" -- correct, and it does now).
-         *
-         * This deliberately does NOT make the multiplier affect animation:
-         * kf_screen_nav_frame() and kf_lua_port_frame() below still get
-         * real time, and neither reads the wall clock for timing. Only what
-         * kf_time_wall() REPORTS changes.
-         *
-         * Whole seconds only, with the remainder carried -- kf_time_set_
-         * wall() takes seconds, so accumulating the sub-second part here is
-         * what stops 33ms frames at 2x from rounding away to nothing. */
-        if (multiplier > 1u) {
-            static uint64_t extra_ms_carry = 0u;
-            extra_ms_carry +=
-                static_cast<uint64_t>(real_dt_ms) * (multiplier - 1u);
-            const uint64_t whole_seconds = extra_ms_carry / 1000ull;
-            if (whole_seconds > 0u) {
-                extra_ms_carry -= whole_seconds * 1000ull;
-                const kf_wall_time wall = kf_time_wall();
-                kf_time_set_wall(wall.epoch_seconds +
-                                  static_cast<int64_t>(whole_seconds));
-            }
-        }
-
-        kf_pet_session_frame(real_dt_ms * multiplier);
-        kf_sdl_debug_window_frame();
-        kf_screen_nav_frame(real_dt_ms);
-#ifdef KF_ENABLE_LVGL
-        kf_lvgl_port_pump(0);
-#endif
-        kf_lua_port_frame(0);
-        /* kf_scene_commit() belongs to the frame loop, not the Lua binding
-         * (Task 3 of the Lua game-layer plan)
-         * -- present happens at the top of the NEXT kf_app_frame(), so a
-         * scene committed here reaches the panel on the following frame,
-         * the same as the creature screen's own drawing.
-         *
-         * Guarded on kf_lua_scene_declared_anything(): kf_scene_reset() is
-         * never called this task (Task 4's job) or ever by this file, so
-         * hakoniwaos/src/scene.cpp's own g_force_full_redraw starts true
-         * and stays true until the process's first kf_scene_commit() ever
-         * runs -- by design, so that first commit repaints correctly with
-         * no reset needed. Calling it unconditionally here, before any
-         * script has declared a single object, would paint one solid
-         * KF_BLACK frame over whatever the creature screen or LVGL just
-         * drew. The demo creature script (examples/creature_demo/
-         * creature.lua) declares its entire Home screen through
-         * kf.screen("home") and IS the render path under KF_HOME_SCREEN=lua
-         * (the default), so this guard is live, not a no-op -- see
-         * kf_lua_scene.h's own comment on this predicate for the full
-         * reasoning. */
-        if (kf_lua_scene_declared_anything()) {
-            kf_scene_commit();
-        }
+        kf_frame_loop_run(kf_sdl_debug_window_time_multiplier(), &hooks);
         update_title(static_cast<uint64_t>(frames));
         frames++;
         if (max_frames > 0 && frames >= max_frames) {

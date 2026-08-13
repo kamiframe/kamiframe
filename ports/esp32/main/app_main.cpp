@@ -100,13 +100,12 @@
 #include "kf/app.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
-#include "kf/scene.h"
 
 #include "kf_app_post_frame.h"
 #include "kf_dbg_bridge.h"
+#include "kf_frame_loop.h"
 #include "kf_lua_demo_creature_script.h"
 #include "kf_lua_port.h"
-#include "kf_lua_scene.h"
 #ifdef KF_ENABLE_LVGL
 #include "kf_lvgl_port.h"
 #endif
@@ -241,28 +240,6 @@ extern "C" void app_main(void) {
 
     uint64_t next_pet_log_us = kf_time_mono_us() + kPetLogIntervalUs;
 
-    /* Tracked here, not left to kf_pet_session_frame()'s own internal
-     * real-time tracking, because KFDBG MULT's time multiplier
-     * (kf_dbg_time_multiplier()) has to scale the delta fed to the pet
-     * session AND the wall clock (see the block further down, added
-     * 2026-08-13 -- this comment previously said "ONLY the delta fed to the
-     * pet session", which was the bug), but NOT LVGL's tick
-     * (kf_lvgl_port_pump()) or Lua's frame delta (kf_lua_port_frame()),
-     * both of which stay real-time so animation and script frame-rate
-     * semantics are unaffected. Scaling the wall clock does not affect
-     * either of those: they are driven by real_dt_ms, and nothing in the
-     * animation path reads kf_time_wall(). This
-     * mirrors sdl_main.cpp's identical treatment of
-     * kf_sdl_debug_window_time_multiplier() exactly -- see that file's own
-     * comment on its last_frame_us/real_dt_ms/multiplier dance for the
-     * full reasoning, including the correctness trap it avoids: passing a
-     * non-zero synthetic value every frame (instead of 0 = "use your own
-     * real-time tracking") sidesteps kf_pet_session_frame() only updating
-     * its internal last-call timestamp on the `dt_ms == 0` path, which
-     * would otherwise leave that timestamp stale across a multiplier
-     * change and double-count the next 0-argument call. */
-    uint64_t last_frame_us = 0;
-
     KF_LOGI(TAG, "running (kf_app_frame loop; no quit condition on device)");
     for (;;) {
         /* kf_dbg_bridge_frame() runs BEFORE kf_app_frame() specifically so
@@ -273,8 +250,11 @@ extern "C" void app_main(void) {
          * after. Non-blocking either way: see kf_dbg_bridge.h's own "WHY A
          * BACKGROUND TASK" comment for why this never stalls the loop
          * regardless of where it sits in it. A KFDBG MULT command sitting
-         * in the same queue is handled here too, so the multiplier read
-         * below already reflects it this same iteration. */
+         * in the same queue is handled here too, so the multiplier
+         * kf_frame_loop_run() reads below already reflects it this same
+         * iteration. This call has to stay outside kf_frame_loop_run(): it
+         * needs to run before kf_app_frame(), which the shared function
+         * does not call at all -- see that function's own header comment. */
         kf_dbg_bridge_frame();
 
         if (!kf_app_frame()) {
@@ -286,128 +266,29 @@ extern "C" void app_main(void) {
          * vTaskDelay needed here, matching sdl_main.cpp's own bare
          * while-loop shape on desktop.
          *
-         * real_dt_ms * multiplier feeds ONLY kf_pet_session_frame() --
-         * see this loop's header comment above. Every 0 argument below
-         * still means "use your own real-elapsed-time tracking" (see
-         * kf_lvgl_port.h, kf_lua_port.h). kf_screen_nav_frame() is the one
-         * exception: it has no internal real-time tracker of its own (the
-         * creature screen's wander just advances by whatever dt_ms it is
-         * handed), so it gets real_dt_ms directly, UN-multiplied -- the
-         * creature's walk is presentation, not pet decay, and stays
-         * real-time the same way LVGL's tick and Lua's frame delta do.
+         * The shared sequence -- time handling, the pet session tick,
+         * screen nav, LVGL's pump, Lua's frame and the scene commit -- lives
+         * in kf_frame_loop_run() now (ADR 0058), not here, so this file and
+         * sdl_main.cpp cannot independently drift the way they did before:
+         * see that function's own header comment for the incident this
+         * fixed, and this file's header comment above for the device half
+         * of it. No hooks here -- the device has nothing to plug into the
+         * one slot the shared function exposes (sdl_main.cpp's debug window
+         * is desktop-only).
          *
-         * Ordering matches sdl_main.cpp's frame-ordering comment exactly,
-         * for the same two reasons. kf_pet_session_frame() and
-         * kf_screen_nav_frame() both run before kf_lvgl_port_pump() (under
-         * -DKF_ENABLE_LVGL=ON): the active screen has this frame's numbers
-         * pushed into it before pump's lv_timer_handler() would redraw and
-         * flush. ADR 0045 removed the kf_screen_nav_wants_lvgl() guard that
-         * call used to need: every screen this build can show (Home, Info)
-         * is a kf.screen() group over the retained scene now, so LVGL, when
-         * built in at all, has nothing left to pump for -- the call below is
-         * unconditional on which screen is active, only on KF_ENABLE_LVGL
-         * itself. And the pet session runs before kf_lua_port_frame(), so
-         * the script's pet.hunger() and friends see this frame's elapsed
-         * time already applied. */
-        const uint64_t now_us = kf_time_mono_us();
-        const uint32_t real_dt_ms =
-            last_frame_us == 0u
-                ? 0u
-                : static_cast<uint32_t>((now_us - last_frame_us) / 1000u);
-        last_frame_us = now_us;
-        const uint32_t multiplier = kf_dbg_time_multiplier();
-
-        /* Brackets exactly the segment kf_app_post_frame.h describes: the
-         * work a PORT does after kf_app_frame() returned above -- pet
-         * session, screen nav (which is what actually draws the creature;
-         * see hakoniwaos/src/app.cpp's kf_draw_counters_reset() comment,
-         * ADR 0036, for why Core cannot see or time this itself), LVGL's
-         * pump when it runs, and Lua's own frame. Task 7 reads this
-         * alongside cpu_us (kf_frame_stats, timed separately inside
-         * kf_app_frame() by Core) to see the two segments apart rather than
-         * folded into one number that would answer neither "is the render
-         * path over budget" nor "is the rest of the loop over budget"
-         * precisely. */
+         * Timed from OUTSIDE, across the whole call, for
+         * kf_app_post_frame_us(): this brackets exactly the segment
+         * kf_app_post_frame.h describes -- the work a PORT does after
+         * kf_app_frame() returned above (pet session, screen nav, LVGL's
+         * pump, Lua's frame). Task 7 reads this alongside cpu_us
+         * (kf_frame_stats, timed separately inside kf_app_frame() by Core)
+         * to see the two segments apart rather than folded into one number
+         * that would answer neither "is the render path over budget" nor
+         * "is the rest of the loop over budget" precisely. */
         const uint64_t post_frame_start_us = kf_time_mono_us();
-
-        /* The wall clock is dragged along with the multiplier too, exactly
-         * as simulator/src/sdl/sdl_main.cpp does -- see that file for the
-         * full reasoning; this is the device half of the same fix.
-         *
-         * IT WAS MISSING HERE, AND IT COST A REAL DIAGNOSIS. The desktop
-         * side got this on 2026-08-12; app_main.cpp did not, so on hardware
-         * KFDBG MULT scaled only the pet delta while the DS3231 kept
-         * ticking at 1x. kf_pet_advance() carries last_advanced forward by
-         * the delta it is given (ADR 0048), so a multiplied session pushes
-         * Core's clock AHEAD of the RTC by (multiplier - 1) x real time.
-         * The damage shows up on the NEXT boot, not during the session:
-         * kf_pet_load_and_advance() computes `now - last_advanced`, and
-         * with last_advanced already ahead, the offline fast-forward
-         * credits LESS time than actually passed. Chris measured exactly
-         * that -- an unplugged gap of 3h31m aged the pet only 2h54m, and
-         * the missing 37 minutes looked like a broken fast-forward when
-         * the fast-forward was fine.
-         *
-         * A pointed lesson about this codebase's two-backend split: fixing
-         * one of sdl_main.cpp/app_main.cpp and not the other produces a
-         * bug that is invisible on desktop and only surfaces on device,
-         * one power cycle later.
-         *
-         * Whole seconds only, with the remainder carried -- kf_time_set_
-         * wall() takes seconds, so accumulating the sub-second part is what
-         * stops 33ms frames at 2x rounding away to nothing. On device this
-         * also writes through to the DS3231 (ports/esp32/hal/esp_time.cpp),
-         * so a multiplied session genuinely moves the board's clock, and it
-         * stays moved across a power cut. That is the honest meaning of
-         * "time is running faster", and it is debug-gated. */
-        if (multiplier > 1u) {
-            static uint64_t extra_ms_carry = 0u;
-            extra_ms_carry +=
-                static_cast<uint64_t>(real_dt_ms) * (multiplier - 1u);
-            const uint64_t whole_seconds = extra_ms_carry / 1000ull;
-            if (whole_seconds > 0u) {
-                extra_ms_carry -= whole_seconds * 1000ull;
-                const kf_wall_time wall = kf_time_wall();
-                if (wall.valid) {
-                    kf_time_set_wall(wall.epoch_seconds +
-                                      static_cast<int64_t>(whole_seconds));
-                }
-            }
-        }
-
-        kf_pet_session_frame(real_dt_ms * multiplier);
-        kf_screen_nav_frame(real_dt_ms);
-#ifdef KF_ENABLE_LVGL
-        kf_lvgl_port_pump(0);
-#endif
-
-        /* kf_lua_port_frame(0): same "0 means real elapsed time" convention
-         * as kf_pet_session_frame() would use without a multiplier, tracked
-         * internally the same way kf_lvgl_port_pump()'s is -- Lua's frame
-         * delta deliberately does not get the multiplier folded in, per
-         * this loop's header comment. */
-        kf_lua_port_frame(0);
-
-        /* kf_scene_commit() belongs to the frame loop, not the Lua binding
-         * (Task 3 of the Lua game-layer plan)
-         * -- same ordering and the same reasoning as sdl_main.cpp's
-         * identical call, including the kf_lua_scene_declared_anything()
-         * guard: without it, the very first frame after boot would paint
-         * one solid KF_BLACK frame over whatever the creature screen or
-         * LVGL just drew, because hakoniwaos/src/scene.cpp's own
-         * g_force_full_redraw starts true and nothing here ever calls
-         * kf_scene_reset() (that is Task 4's job). See kf_lua_scene.h's
-         * own comment on this predicate for the full reasoning; the demo
-         * creature script (creature.lua) declares its entire Home screen
-         * through kf.screen("home") and IS the render path under
-         * KF_HOME_SCREEN=lua (the default), so this guard is live, not a
-         * no-op. */
-        if (kf_lua_scene_declared_anything()) {
-            kf_scene_commit();
-        }
-
-        g_post_frame_us = static_cast<uint32_t>(kf_time_mono_us() -
-                                                  post_frame_start_us);
+        kf_frame_loop_run(kf_dbg_time_multiplier(), nullptr);
+        const uint64_t now_us = kf_time_mono_us();
+        g_post_frame_us = static_cast<uint32_t>(now_us - post_frame_start_us);
 
         if (now_us >= next_pet_log_us) {
             log_pet_state();

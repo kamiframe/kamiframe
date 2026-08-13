@@ -98,6 +98,16 @@
 ## KF_ENABLE_LVGL): every build needs screen navigation, whether or not
 ## LVGL is linked in at all.
 ##
+## kf_frame_loop.cpp (ADR 0058): the one per-frame sequence app_main.cpp's
+## own loop and sdl_main.cpp's now both call instead of each hand-
+## maintaining their own copy -- see that file's own header comment for why
+## (a real, hardware-diagnosed bug) and for exactly what stayed out of it.
+## Same one-canonical-copy-by-relative-path pattern as kf_pet_session.cpp
+## above; it needs kf_pet_session.h and kf_screen_nav.h (already this
+## component's own neighbours) plus kf_lua_port.h/kf_lua_scene.h (already
+## reachable via the "../../../sdk/lua" INCLUDE_DIRS entry below, the same
+## way kf_screen_nav.cpp already reaches them).
+##
 ## KF_MAIN_REQUIRES built as a list, not inline in REQUIRES below, purely so
 ## kamiframe_lvgl_port can be conditional (ADR 0045) -- REQUIRES itself
 ## takes a plain list, and appending to one before the call is simpler and
@@ -164,6 +174,7 @@ idf_component_register(
         ../../../simulator/src/pet/kf_lua_home_screen.cpp
         ../../../simulator/src/pet/kf_lua_settings_screen.cpp
         ../../../simulator/src/pet/kf_error_banner.cpp
+        ../../../simulator/src/pet/kf_frame_loop.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp
         ../../../sdk/lua/kf_lua_scene.cpp

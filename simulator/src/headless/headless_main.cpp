@@ -46,6 +46,7 @@
  *     kamiframe-headless --verify-screen-groups
  *     kamiframe-headless --verify-clock
  *     kamiframe-headless --verify-audio
+ *     kamiframe-headless --verify-frame-loop-multiplier
  *
  * Exit codes:
  *     0  everything asserted held
@@ -87,6 +88,7 @@
 #include "../pet/kf_creature_screen.h"
 #include "../pet/kf_home_screen_input.h"
 #include "../pet/kf_lua_home_screen.h"
+#include "../pet/kf_frame_loop.h"
 #include "../pet/kf_lua_settings_screen.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
@@ -102,6 +104,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -10250,6 +10253,177 @@ int run_clock_jump_check() {
     return ok ? 0 : 1;
 }
 
+/* ADR 0058: kf_frame_loop_run()'s own invariant -- the multiplier drags the
+ * wall clock and the pet's clock by the SAME amount, in the SAME call. This
+ * is the exact thing that was missing from ports/esp32/main/app_main.cpp
+ * (fixed in d1ab8a7) while simulator/src/sdl/sdl_main.cpp already had it:
+ * two hand-maintained copies of this logic drifted, and the drift was
+ * invisible until a power cycle later. Extracting the sequence into
+ * kf_frame_loop_run() (this file's own header comment) makes that specific
+ * drift structurally impossible -- there is only one copy left to get
+ * wrong -- but the invariant deserves its own direct proof rather than
+ * resting entirely on that structural argument.
+ *
+ * Calls kf_frame_loop_run() itself, not a hand-rolled restatement of its
+ * logic: restating it would prove the restatement self-consistent, not the
+ * actual shared function. */
+int run_frame_loop_multiplier_check() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-frame-loop-multiplier-" +
+         std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* kf_app_init(), not the four individual store/power/arena/fb calls
+     * other checks in this file sometimes use piecemeal: kf_frame_loop_run()
+     * needs kf_time_mono_us() actually ticking, which only kf_time_init()
+     * (called from INSIDE kf_app_init(), hakoniwaos/src/app.cpp) sets up --
+     * every one of the piecemeal HAL calls this codebase's other checks use
+     * happens to not need the mono clock; this one, being the frame loop
+     * itself, uniquely does. Also brings up kf_store_init()/kf_power_init()
+     * (both required before kf_pet_session_init(), see its own header
+     * comment) and, under -DKF_ENABLE_LVGL=ON, the arenas and framebuffer
+     * kf_lvgl_port_init() below needs -- same order run_pet_screen_check()
+     * above already uses for the identical reason. */
+    kf_app_init(KF_DEMO_NONE);
+#ifdef KF_ENABLE_LVGL
+    /* kf_frame_loop_run()'s #ifdef KF_ENABLE_LVGL block calls kf_lvgl_
+     * port_pump(), which calls lv_timer_handler() -- unsafe before lv_init()
+     * has run. Every other headless check that reaches a *_frame() function
+     * without this either never compiles this block in (KF_ENABLE_LVGL off,
+     * the default) or, like run_screen_nav_check() above, only exercises
+     * kf_screen_nav_frame() directly, which has had no LVGL dependency of
+     * its own since ADR 0045. This check goes through kf_frame_loop_run()
+     * itself, so it needs the real thing brought up under this build
+     * configuration, the same as sdl_main.cpp/app_main.cpp do before their
+     * own first frame. */
+    kf_lvgl_port_init();
+#endif
+
+    kf_pet_session_init();
+    /* Deliberately NOT kf_pet_session_debug_jump_to_stage(): that helper
+     * calls kf_pet_init() directly (kf_pet_session.cpp), which resets
+     * last_advanced to INVALID (hakoniwaos/src/pet.cpp) and nothing short
+     * of kf_pet_session_debug_set_clock() or another load re-validates it --
+     * kf_pet_advance() itself never flips valid from false to true (see its
+     * own header comment). The plain pet kf_pet_session_init() just created
+     * has no such gap: kf_pet_load_and_advance() (hakoniwaos/src/pet.cpp)
+     * unconditionally adopts the current wall clock as a valid last_advanced
+     * baseline for a fresh pet once the wall clock itself is valid, which it
+     * already is here (main() below pins it before any check runs). Egg
+     * stage is fine for this check: the stage-specific handling run_clock_
+     * jump_check() avoids Egg for ("eggs never sleep") is irrelevant here --
+     * this check never reads `asleep`. */
+    const kf_civil start{2026, 8, 13, 12, 0, 0}; /* noon: nowhere near a
+                                                     day-boundary edge */
+    check(kf_time_set_wall(kf_epoch_from_civil(&start)) == KF_OK,
+          "move the wall clock to a known start -- last_advanced is left "
+          "wherever kf_pet_session_init() put it (whatever main() pinned "
+          "the clock to), which is fine: everything below compares DELTAS "
+          "across the timed section, never absolute alignment between the "
+          "two clocks");
+
+    /* Priming call. kf_frame_loop_run()'s own real_dt_ms is measured against
+     * its LAST call (kf_frame_loop.cpp's g_last_frame_us), and this is its
+     * first call ever in this process, so it reports 0 real elapsed ms --
+     * the same "first call reports zero" sentinel every other *_frame()
+     * function in this codebase uses. Real elapsed time starts accumulating
+     * from here, not from process start. multiplier=1 so this cannot itself
+     * touch the wall clock (kf_frame_loop_run()'s own `multiplier > 1u`
+     * guard) or contribute anything to the pet session's pending_ms (0ms *
+     * 1). */
+    kf_frame_loop_run(1u, nullptr);
+
+    const kf_wall_time wall_before = kf_time_wall();
+    const kf_wall_time pet_before = kf_pet_session_state()->last_advanced;
+    check(wall_before.valid && pet_before.valid,
+          "both clocks are valid before the multiplied frame (setup check, "
+          "not the invariant itself)");
+
+    /* A real sleep, deliberately: kf_frame_loop_run() measures its own
+     * elapsed time from kf_time_mono_us(), the host's real steady_clock
+     * (kf/hal/time.h) -- nothing in this harness can fast-forward that (the
+     * same limitation checkpoint 3/4 of run_pet_save_checkpoints_check()
+     * documents for the identical reason). 40ms is short enough not to slow
+     * the suite meaningfully. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+
+    /* Large enough that ONE call's multiplied delta already exceeds
+     * KF_PET_SESSION_FLUSH_SECONDS (30s, kf_pet_session.h) on its own --
+     * otherwise kf_pet_session_frame() would only ACCUMULATE the delta into
+     * its internal batching buffer (see that function's own comment) and
+     * last_advanced would not move THIS call, making the comparison below
+     * vacuous regardless of whether the multiplier reached it at all. */
+    constexpr uint32_t kMultiplier = 2000u;
+    const uint32_t real_dt_ms = kf_frame_loop_run(kMultiplier, nullptr);
+
+    check(real_dt_ms >= 20u,
+          "non-vacuity guard: the sleep above actually registered as real "
+          "elapsed time -- without this, multiplying zero by anything is "
+          "still zero and every assertion below would pass against a "
+          "broken implementation too");
+
+    const kf_wall_time wall_after = kf_time_wall();
+    const kf_wall_time pet_after = kf_pet_session_state()->last_advanced;
+    check(wall_after.valid && pet_after.valid,
+          "both clocks are still valid after the multiplied frame");
+
+    const int64_t wall_delta =
+        wall_after.epoch_seconds - wall_before.epoch_seconds;
+    const int64_t pet_delta =
+        pet_after.epoch_seconds - pet_before.epoch_seconds;
+
+    /* Computed FROM the measured real_dt_ms, not an assumed constant --
+     * robust to scheduler jitter making the sleep above run long. -2 for
+     * the wall clock's whole-seconds carry (kf_frame_loop.cpp's own
+     * g_extra_ms_carry can lose up to 999ms of the true delta into the next
+     * call, which never comes in this check) and the pet session's own
+     * pending_ms remainder (the identical loss, kf_pet_session.cpp). */
+    const int64_t expected_min =
+        static_cast<int64_t>(real_dt_ms) *
+            static_cast<int64_t>(kMultiplier - 1u) / 1000 -
+        2;
+
+    /* THE assertion this check exists for. A backend that reaches the pet's
+     * clock but not the wall clock -- the exact bug d1ab8a7 fixed, and the
+     * exact shape ADR 0058 exists to make impossible in only one of two
+     * copies ever again -- fails exactly here: wall_delta stays ~0 while
+     * pet_delta jumps by ~real_dt_ms * kMultiplier / 1000 seconds. */
+    check(wall_delta >= expected_min,
+          "the wall clock advanced by roughly real_dt_ms * (multiplier - 1) "
+          "seconds -- the multiplier drags the wall clock, not just the "
+          "pet's delta");
+    check(pet_delta >= expected_min,
+          "the pet's own clock (last_advanced) advanced by a comparable "
+          "amount in the same call (setup check for the skew assertion "
+          "below, not itself new coverage -- run_clock_jump_check() and "
+          "others already cover the pet's live-tick path)");
+
+    const int64_t skew = pet_delta - wall_delta;
+    check(skew >= -3 && skew <= 3,
+          "the wall clock and the pet's clock moved by the SAME amount in "
+          "this one call -- not two independently-multiplied deltas that "
+          "merely happen to both be positive");
+
+    kf_pet_session_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    if (ok) {
+        KF_LOGI(TAG, "PASS");
+    }
+    return ok ? 0 : 1;
+}
+
 int run_attention_signal_check() {
     bool ok = true;
     auto check = [&ok](bool cond, const char *what) {
@@ -11401,6 +11575,7 @@ int main(int argc, char *argv[]) {
     bool verify_clock_jump = false;
     bool verify_home_clock = false;
     bool verify_audio = false;
+    bool verify_frame_loop_multiplier = false;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -11534,6 +11709,9 @@ int main(int argc, char *argv[]) {
             verify_home_clock = true;
         } else if (std::strcmp(argv[i], "--verify-audio") == 0) {
             verify_audio = true;
+        } else if (std::strcmp(argv[i], "--verify-frame-loop-multiplier") ==
+                   0) {
+            verify_frame_loop_multiplier = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -11590,7 +11768,8 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-sleep-screen\n"
                         "kamiframe-headless --verify-clock-jump\n"
                         "kamiframe-headless --verify-attention-signal\n"
-                        "kamiframe-headless --verify-audio\n");
+                        "kamiframe-headless --verify-audio\n"
+                        "kamiframe-headless --verify-frame-loop-multiplier\n");
             return 0;
         }
     }
@@ -11829,6 +12008,10 @@ int main(int argc, char *argv[]) {
     }
     if (verify_audio) {
         return run_audio_check();
+    }
+
+    if (verify_frame_loop_multiplier) {
+        return run_frame_loop_multiplier_check();
     }
 
     kf_app_init(mode);

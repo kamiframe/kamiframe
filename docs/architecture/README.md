@@ -63,6 +63,7 @@ future us in month eight asking the same question with less patience.
 | [0055](adr-0055-audio-hal-and-attention-chirp.md) | An audio HAL of one tone, three backends, and the attention chirp | Accepted |
 | [0056](adr-0056-pet-save-checkpoints.md) | Real save checkpoints — after care, at sleep, and a dirty-gated periodic net | Accepted |
 | [0057](adr-0057-voice-melody-queue-and-volume.md) | Giving the creature its voice — the sequence queue fix, duty cycle, `kf.melody()`, level-crossing want pings, and a persisted volume setting | Accepted |
+| [0058](adr-0058-shared-frame-loop.md) | One shared frame loop, not two hand-maintained copies | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 

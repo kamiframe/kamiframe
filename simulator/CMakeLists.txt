@@ -197,15 +197,38 @@ target_link_libraries(kamiframe_lua_port
 # depend on kamiframe_lua_port too, a straight cycle. This library sits
 # above both instead, the same position kamiframe_lvgl_port occupied before
 # ADR 0045 moved these files out of it for the identical reason.
+#
+# kf_frame_loop.cpp (ADR 0058) joined this library for the same dependency
+# reason: it needs both kamiframe_pet_port (kf_pet_session.h) and
+# kamiframe_lua_port (kf_lua_port.h/kf_lua_scene.h), the exact set this
+# library already has. It is the one shared per-frame sequence both
+# kamiframe-sim (below) and ports/esp32/main/app_main.cpp drive -- see that
+# file's own header comment. ports/esp32/main/CMakeLists.txt compiles the
+# identical source by relative path, the same one-canonical-copy pattern
+# kf_screen_nav.cpp above and kf_pet_session.cpp already use.
 # ---------------------------------------------------------------------------
 add_library(kamiframe_screen_port STATIC
     src/pet/kf_screen_nav.cpp
     src/pet/kf_lua_home_screen.cpp
     src/pet/kf_lua_settings_screen.cpp
     src/pet/kf_error_banner.cpp
+    src/pet/kf_frame_loop.cpp
 )
 target_link_libraries(kamiframe_screen_port
     PUBLIC hakoniwaos kamiframe_pet_port kamiframe_lua_port kamiframe_options)
+
+# kf_frame_loop.cpp's #ifdef KF_ENABLE_LVGL block calls kf_lvgl_port_pump(),
+# declared in kamiframe_lvgl_port's own kf_lvgl_port.h -- which pulls in
+# <lvgl.h> for lv_group_t, so it needs that target's real INCLUDE_DIRS, not
+# just its symbol at final link time. Only under KF_ENABLE_LVGL, same as
+# kamiframe_lvgl_port's own definition above (the target does not exist
+# otherwise). Not circular: kamiframe_lvgl_port depends on kamiframe_pet_port,
+# never on kamiframe_screen_port. This mirrors ports/esp32/main/CMakeLists.txt's
+# own conditional REQUIRES kamiframe_lvgl_port, added for the identical reason
+# (app_main.cpp's own #include "kf_lvgl_port.h") before this file existed.
+if(KF_ENABLE_LVGL)
+    target_link_libraries(kamiframe_screen_port PUBLIC kamiframe_lvgl_port)
+endif()
 
 # ---------------------------------------------------------------------------
 # KF_HOME_SCREEN (Task 5 of the Lua game-layer plan, the Lua game-layer
@@ -1075,6 +1098,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # asleep. See headless_main.cpp's run_audio_check().
     add_test(NAME audio_check
              COMMAND kamiframe-headless --verify-audio)
+
+    # ADR 0058: the one new assertion the frame-loop extraction adds --
+    # kf_frame_loop_run()'s debug time multiplier moves the wall clock and
+    # the pet's own clock by the SAME amount in the SAME call. This is the
+    # exact invariant whose violation (only the pet's delta was scaled,
+    # ports/esp32/main/app_main.cpp, fixed in d1ab8a7) cost a real
+    # diagnosis one power cycle after the fact. See headless_main.cpp's
+    # run_frame_loop_multiplier_check().
+    add_test(NAME frame_loop_multiplier_check
+             COMMAND kamiframe-headless --verify-frame-loop-multiplier)
 endif()
 
 # ---------------------------------------------------------------------------
