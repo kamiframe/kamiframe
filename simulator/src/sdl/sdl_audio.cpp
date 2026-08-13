@@ -82,16 +82,41 @@ kf_volume_level g_volume = KF_VOLUME_4;
  * play_notes() below skips producing output entirely rather than reaching
  * this table with a 0), so it has no entry here. */
 uint32_t volume_gain_permille(kf_volume_level level) {
+    /* PERCEPTUAL, NOT LINEAR -- roughly 8 dB per step, so each position is
+     * audibly different from its neighbours.
+     *
+     * This was 250/500/750/1000 (linear amplitude) until 2026-08-13, and
+     * Chris found the problem by ear on real hardware before the arithmetic
+     * was checked: "I noticed the changes weren't as clear as I thought
+     * they'd be." He was right, and the numbers say why. Linear amplitude
+     * gives steps of 6.0, 3.5 and 2.5 dB -- SHRINKING as you go up, and
+     * 2.5 dB sits right at the threshold where most people stop hearing a
+     * difference at all. So the top half of the control did almost nothing.
+     *
+     * Loudness is logarithmic, so equal PERCEIVED steps means equal dB
+     * steps. These give -23.7 / -15.9 / -8.0 / 0 dB: 7.8, 7.9 and 8.0 dB
+     * apart, uniform by ear rather than uniform on a number line.
+     *
+     * Level 4 is unchanged at full scale deliberately -- Chris tested and
+     * liked the maximum. Only the quieter positions moved, which is what
+     * widens the contrast between them.
+     *
+     * THE LABELS ARE UNCHANGED AND STILL SAY 25/50/75/100%, on his explicit
+     * instruction ("You are free to use the suggested curve ... but keep
+     * the labels as is"). They describe the POSITION of the control, not
+     * the amplitude ratio -- the same convention a hi-fi volume knob marked
+     * 1-10 uses, and the reason no consumer volume control is labelled in
+     * dB. Do not "fix" the labels to match these numbers. */
     switch (level) {
     case KF_VOLUME_1:
-        return 250u;
+        return 65u;   /* -23.7 dB */
     case KF_VOLUME_2:
-        return 500u;
+        return 160u;  /* -15.9 dB */
     case KF_VOLUME_3:
-        return 750u;
+        return 400u;  /*  -8.0 dB */
     case KF_VOLUME_4:
     default:
-        return 1000u;
+        return 1000u; /*   0.0 dB, full scale */
     }
 }
 

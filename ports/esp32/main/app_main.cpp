@@ -243,10 +243,15 @@ extern "C" void app_main(void) {
 
     /* Tracked here, not left to kf_pet_session_frame()'s own internal
      * real-time tracking, because KFDBG MULT's time multiplier
-     * (kf_dbg_time_multiplier()) has to scale ONLY the delta fed to the
-     * pet session -- not LVGL's tick (kf_lvgl_port_pump()) or Lua's frame
-     * delta (kf_lua_port_frame()), both of which stay real-time so
-     * animation and script frame-rate semantics are unaffected. This
+     * (kf_dbg_time_multiplier()) has to scale the delta fed to the pet
+     * session AND the wall clock (see the block further down, added
+     * 2026-08-13 -- this comment previously said "ONLY the delta fed to the
+     * pet session", which was the bug), but NOT LVGL's tick
+     * (kf_lvgl_port_pump()) or Lua's frame delta (kf_lua_port_frame()),
+     * both of which stay real-time so animation and script frame-rate
+     * semantics are unaffected. Scaling the wall clock does not affect
+     * either of those: they are driven by real_dt_ms, and nothing in the
+     * animation path reads kf_time_wall(). This
      * mirrors sdl_main.cpp's identical treatment of
      * kf_sdl_debug_window_time_multiplier() exactly -- see that file's own
      * comment on its last_frame_us/real_dt_ms/multiplier dance for the
@@ -324,6 +329,51 @@ extern "C" void app_main(void) {
          * path over budget" nor "is the rest of the loop over budget"
          * precisely. */
         const uint64_t post_frame_start_us = kf_time_mono_us();
+
+        /* The wall clock is dragged along with the multiplier too, exactly
+         * as simulator/src/sdl/sdl_main.cpp does -- see that file for the
+         * full reasoning; this is the device half of the same fix.
+         *
+         * IT WAS MISSING HERE, AND IT COST A REAL DIAGNOSIS. The desktop
+         * side got this on 2026-08-12; app_main.cpp did not, so on hardware
+         * KFDBG MULT scaled only the pet delta while the DS3231 kept
+         * ticking at 1x. kf_pet_advance() carries last_advanced forward by
+         * the delta it is given (ADR 0048), so a multiplied session pushes
+         * Core's clock AHEAD of the RTC by (multiplier - 1) x real time.
+         * The damage shows up on the NEXT boot, not during the session:
+         * kf_pet_load_and_advance() computes `now - last_advanced`, and
+         * with last_advanced already ahead, the offline fast-forward
+         * credits LESS time than actually passed. Chris measured exactly
+         * that -- an unplugged gap of 3h31m aged the pet only 2h54m, and
+         * the missing 37 minutes looked like a broken fast-forward when
+         * the fast-forward was fine.
+         *
+         * A pointed lesson about this codebase's two-backend split: fixing
+         * one of sdl_main.cpp/app_main.cpp and not the other produces a
+         * bug that is invisible on desktop and only surfaces on device,
+         * one power cycle later.
+         *
+         * Whole seconds only, with the remainder carried -- kf_time_set_
+         * wall() takes seconds, so accumulating the sub-second part is what
+         * stops 33ms frames at 2x rounding away to nothing. On device this
+         * also writes through to the DS3231 (ports/esp32/hal/esp_time.cpp),
+         * so a multiplied session genuinely moves the board's clock, and it
+         * stays moved across a power cut. That is the honest meaning of
+         * "time is running faster", and it is debug-gated. */
+        if (multiplier > 1u) {
+            static uint64_t extra_ms_carry = 0u;
+            extra_ms_carry +=
+                static_cast<uint64_t>(real_dt_ms) * (multiplier - 1u);
+            const uint64_t whole_seconds = extra_ms_carry / 1000ull;
+            if (whole_seconds > 0u) {
+                extra_ms_carry -= whole_seconds * 1000ull;
+                const kf_wall_time wall = kf_time_wall();
+                if (wall.valid) {
+                    kf_time_set_wall(wall.epoch_seconds +
+                                      static_cast<int64_t>(whole_seconds));
+                }
+            }
+        }
 
         kf_pet_session_frame(real_dt_ms * multiplier);
         kf_screen_nav_frame(real_dt_ms);
