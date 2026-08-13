@@ -586,7 +586,20 @@ void handle_state() {
      * tucked_in are plain kf_pet_state fields; drowsy is derived, same as
      * every other reader of it (kf_pet_drowsy(), hakoniwaos/include/kf/
      * pet.h -- NOT a separate saved sub-state, see that function's own
-     * comment). */
+     * comment).
+     *
+     * sick/dead added 2026-08-13, and the reason is worth recording because
+     * it cost real diagnosis time. Chris's pet came back from an unplugged
+     * gap with all three needs at zero and its clock 37 minutes short of
+     * the real elapsed time. The first hypothesis was "it died, and
+     * kf_pet_advance()'s `if (state->dead) return;` froze the clock" --
+     * entirely plausible, and STATE COULD NOT ANSWER IT. The single most
+     * important fact about a pet was the one thing this reply did not
+     * carry, on a bridge whose entire purpose is diagnosing a board with no
+     * one looking at it. (It had not died; the shortfall was the
+     * KFDBG MULT wall-clock parity bug, fixed the same day.)
+     *
+     * Both are plain kf_pet_state fields -- no derivation, no cost. */
     const bool drowsy = kf_pet_drowsy(pet);
 
     /* Single-line, minified JSON -- see the ADR for the exact key set;
@@ -602,22 +615,29 @@ void handle_state() {
      * app.h's kf_frame_stats::cpu_us field name instead of this file's
      * older, unrelated one.
      *
-     * 1024, recomputed for asleep/drowsy/tucked_in (ADR 0054): the literal
-     * text of the format string below (every key name, quote, colon and
-     * comma, no substitutions) is 463 bytes; the worst-case width of every
-     * substituted value -- uint64_t fields (%llu, 4 of them) as 20 digits,
-     * every uint32_t/size_t/%d field (24 of them) as 10 digits, and the
-     * five %s fields (vsync_enabled, over_budget, and the three new
-     * booleans) as "false" (5) -- sums to 4*20 + 24*10 + 5*5 = 345; plus
-     * the NUL snprintf always writes, that is 809 in the worst case.
-     * (Derivation checked by exhaustively enumerating every specifier and
-     * its cast in the snprintf call below, not by re-deriving the OLD
-     * comment's 773 -- that number no longer matches a literal+specifier
-     * count of the pre-Task-5.5 format string either, so it is not trusted
-     * as a baseline here; 809 is verified against THIS format string as
-     * written.) 1024 clears 809 with 215 bytes of margin -- still enough
-     * for a future field or two before this buffer is the next thing that
-     * needs raising. */
+     * 1024, recomputed for sick/dead (2026-08-13). RECOMPUTE THIS EVERY
+     * TIME A KEY IS ADDED -- it has now been redone three times, and each
+     * time the previous figure turned out not to match the format string
+     * as written, so derive from the string below rather than adjusting
+     * the last number.
+     *
+     * Worst case, counted off the ONE snprintf that writes `json` (not the
+     * error-log ones further down -- including those over-counts by ~190
+     * and was the first mistake made here): 479 bytes of literal text
+     * (every key name, quote, colon and comma, no substitutions), plus the
+     * widest each substitution can be -- 4x %llu at 20 digits, 18x %lu and
+     * 3x %u and 2x %zu at 10, 1x %d at 11, and 7x %s as "false" (5) --
+     * which is 356. Plus the NUL snprintf always writes: 836.
+     *
+     * 1024 clears 836 with 188 bytes of margin, so roughly six more
+     * boolean fields fit before this needs raising.
+     *
+     * A TRUNCATION HERE CANNOT PASS SILENTLY REGARDLESS: the check below
+     * tests snprintf's return against sizeof(json) and replies with an
+     * explicit error rather than a clipped JSON body, so the failure mode
+     * is a loud error on the host, not a mystifying parse failure. That
+     * guard is the real safety net; this arithmetic exists so the guard
+     * never has to fire. */
     char json[1024];
     const int n = std::snprintf(
         json, sizeof json,
@@ -631,7 +651,8 @@ void handle_state() {
         "\"dirty_rects\":%u,\"dirty_pct\":%u,\"opaque_px\":%lu,"
         "\"keyed_px\":%lu,\"over_budget\":%s,\"worst_us\":%lu,"
         "\"p99_us\":%lu,\"frames\":%llu,\"over_budget_frames\":%llu,"
-        "\"asleep\":%s,\"drowsy\":%s,\"tucked_in\":%s}",
+        "\"asleep\":%s,\"drowsy\":%s,\"tucked_in\":%s,"
+        "\"sick\":%s,\"dead\":%s}",
         static_cast<int>(pet->stage), static_cast<unsigned long>(pet->hunger_mp),
         static_cast<unsigned long>(pet->happiness_mp),
         static_cast<unsigned long>(pet->energy_mp),
@@ -660,7 +681,8 @@ void handle_state() {
         static_cast<unsigned long long>(summary.frames),
         static_cast<unsigned long long>(summary.over_budget_frames),
         pet->asleep ? "true" : "false", drowsy ? "true" : "false",
-        pet->tucked_in ? "true" : "false");
+        pet->tucked_in ? "true" : "false",
+        pet->sick ? "true" : "false", pet->dead ? "true" : "false");
 
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
         KF_LOGE(TAG, "STATE: JSON build failed or truncated (n=%d, cap=%zu)", n,
