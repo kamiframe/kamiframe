@@ -14,6 +14,7 @@
  *     kamiframe-headless --verify-lvgl [--expect-checksum HEX]
  *     kamiframe-headless --verify-lua [--frames N]
  *     kamiframe-headless --verify-pet
+ *     kamiframe-headless --verify-pet-save-checkpoints
  *     kamiframe-headless --verify-pet-stage
  *     kamiframe-headless --verify-pet-personality
  *     kamiframe-headless --verify-mess
@@ -92,6 +93,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -950,6 +952,323 @@ int run_pet_check() {
             ok = false;
         }
     }
+
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+/* Proves docs/architecture/adr-0056-pet-save-checkpoints.md: the pet
+ * actually gets persisted at the real checkpoints a battery-powered device
+ * has, not only at kf_pet_session_shutdown() -- which ports/esp32/main/
+ * app_main.cpp's own comment calls "unreachable in practice" on device,
+ * since esp_input.cpp's kf_input_poll() hardcodes quit_requested = false
+ * and the main loop's for(;;) never exits. Every case below therefore
+ * deliberately never calls kf_pet_session_shutdown() before checking what
+ * actually landed on disk -- that call's own save would make every one of
+ * these vacuously pass regardless of whether the checkpoint under test did
+ * anything at all.
+ *
+ * Six things, in order:
+ *   1. A care action saves immediately -- and a documented no-op (feeding
+ *      an already-dead pet) does NOT attempt a save at all.
+ *   2. The awake -> asleep transition, detected live inside
+ *      kf_pet_session_frame(), saves immediately -- Chris's "low power
+ *      mode".
+ *   3/4. The periodic safety-net checkpoint saves when due AND dirty, and
+ *      does NOT save when due but not dirty (the idle case: a dead pet,
+ *      whose kf_pet_advance() is a verified no-op) -- proving the dirty
+ *      flag gates something real, not just that it always says no.
+ *   5. THE LOAD-BEARING CASE: a pet checkpointed ONLY via mechanism 1
+ *      above (no explicit save, no shutdown) survives an abrupt "power
+ *      loss" and reloads, via kf_pet_load_and_advance() called directly
+ *      against the same on-disk store, correctly aged for the elapsed
+ *      wall-clock time -- the actual thing that has never worked on
+ *      device before this task.
+ *   6. A save's measured cost, on this (desktop) backend -- reported, not
+ *      asserted against a threshold; see the ADR for why and for the
+ *      separate ESP32 NVS estimate this number does NOT represent. */
+int run_pet_save_checkpoints_check() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-save-checkpoints-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. Care action checkpoint. Pinned to a known daytime hour so this
+     * case is self-contained and not accidentally exercising the night
+     * window checkpoint 2 covers on its own. */
+    {
+        kf_civil noon{2026, 8, 12, 12, 0, 0};
+        check(kf_time_set_wall(kf_epoch_from_civil(&noon)) == KF_OK,
+              "checkpoint 1: pin the wall clock to a known daytime hour");
+
+        kf_pet_session_init();
+        kf_pet_state *mutable_state = kf_pet_session_state_mutable_for_test();
+        mutable_state->stage = KF_PET_STAGE_BABY;
+
+        /* A partial hunger value, not kf_pet_init()'s own full-max
+         * default, so the fed value checked below is not just
+         * coincidentally equal to what a fresh pet already starts at
+         * (which an unrelated bug could satisfy vacuously) -- it is
+         * specifically the result of THIS feed call. Set directly rather
+         * than via a live-tick decay: kf_pet_session_frame()'s synthetic
+         * elapsed time deliberately does NOT move the real wall clock
+         * (that's the whole point of "synthetic" -- see that function's
+         * own header comment), so decaying this way would leave the HAL
+         * wall clock and the pet's own last_advanced disagreeing by
+         * however long the decay ran, which is a real and correct
+         * behaviour elsewhere but only noise for what THIS case is
+         * checking. */
+        mutable_state->hunger_mp = 40000u; /* 40%, comfortably off max */
+        const kf_pet_millipercent hunger_before_feed = mutable_state->hunger_mp;
+
+        const uint32_t before = kf_pet_session_debug_save_attempt_count();
+        kf_pet_session_feed(0u);
+        check(kf_pet_session_debug_save_attempt_count() == before + 1u,
+              "checkpoint 1: a real care action attempts exactly one save");
+
+        /* Independent proof, not just "a save was attempted": load
+         * directly from the SAME store, bypassing the session entirely,
+         * with the wall clock unmoved since the feed (zero elapsed, so no
+         * further decay to confuse the comparison), and confirm the fed
+         * value actually landed on disk. */
+        kf_pet_state reloaded{};
+        check(kf_pet_load_and_advance(&reloaded, &config) == KF_OK,
+              "checkpoint 1: reload after the care action succeeds");
+        check(reloaded.stage == KF_PET_STAGE_BABY &&
+                  reloaded.hunger_mp == kf_pet_session_state()->hunger_mp &&
+                  reloaded.hunger_mp > hunger_before_feed,
+              "checkpoint 1: the care action's own save landed on disk -- "
+              "an independent reload sees the decayed-then-fed value, not "
+              "kf_pet_init()'s fresh-egg default and not the pre-feed "
+              "decayed value either");
+
+        /* The documented no-op: feeding an already-DEAD pet must not
+         * attempt a write at all (kf_pet_feed()'s own leading
+         * `if (state->dead) return;`, hakoniwaos/src/pet.cpp) -- a shrine
+         * screen a player can still poke at should not cost the device a
+         * flash write for a press that changes nothing. */
+        kf_pet_session_state_mutable_for_test()->dead = true;
+        const uint32_t before_dead_feed =
+            kf_pet_session_debug_save_attempt_count();
+        kf_pet_session_feed(0u);
+        check(kf_pet_session_debug_save_attempt_count() == before_dead_feed,
+              "checkpoint 1: feeding an already-dead pet attempts no save "
+              "at all -- the documented no-op costs nothing");
+
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
+
+    /* 2. The awake -> asleep transition, detected live inside
+     * kf_pet_session_frame(), saves immediately. */
+    {
+        kf_civil before_bedtime{2026, 8, 12, 21, 59, 0};
+        const int64_t start_epoch = kf_epoch_from_civil(&before_bedtime);
+        check(kf_time_set_wall(start_epoch) == KF_OK,
+              "checkpoint 2: pin the wall clock to one minute before "
+              "bedtime");
+
+        kf_pet_session_init(); /* last_advanced adopts start_epoch */
+        kf_pet_session_state_mutable_for_test()->stage = KF_PET_STAGE_BABY;
+
+        check(!kf_pet_session_state()->asleep,
+              "checkpoint 2: LOAD-BEARING SETUP -- the pet is genuinely "
+              "awake one minute before bedtime, so the transition below "
+              "has something real to detect");
+
+        const uint32_t before = kf_pet_session_debug_save_attempt_count();
+        /* One flush, comfortably past KF_PET_SESSION_FLUSH_SECONDS, that
+         * crosses 22:00 inside a single kf_pet_session_frame() call. The
+         * real wall clock advances by the identical amount right
+         * afterward -- on a real device the two are the same passage of
+         * time; only a synthetic-delta headless call can pull them apart
+         * (kf_pet_session_frame()'s own header comment), and this case is
+         * not testing that divergence, checkpoint 5 is testing something
+         * else that needs the wall clock accurate for its own reload. */
+        constexpr uint32_t kCrossBedtimeSeconds =
+            KF_PET_SESSION_FLUSH_SECONDS + 60u;
+        kf_pet_session_frame(kCrossBedtimeSeconds * 1000u);
+        check(kf_time_set_wall(start_epoch + kCrossBedtimeSeconds) == KF_OK,
+              "checkpoint 2: keep the wall clock in step with the flush "
+              "above");
+
+        check(kf_pet_session_state()->asleep,
+              "checkpoint 2: LOAD-BEARING SETUP -- the flush actually "
+              "crossed into the night window");
+        check(kf_pet_session_debug_save_attempt_count() == before + 1u,
+              "checkpoint 2: the awake -> asleep transition attempts "
+              "exactly one save, with no explicit kf_pet_session_save() "
+              "call anywhere in this case");
+
+        kf_pet_state reloaded{};
+        check(kf_pet_load_and_advance(&reloaded, &config) == KF_OK &&
+                  reloaded.asleep,
+              "checkpoint 2: an independent reload sees the pet asleep -- "
+              "the sleep-transition save actually reached disk, not just "
+              "memory");
+
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
+
+    /* 3/4. The periodic safety-net checkpoint. Real elapsed monotonic time
+     * cannot be fast-forwarded here (kf_time_mono_us() is the host's real
+     * steady_clock, unlike the pet's own simulated wall clock -- see
+     * kf/hal/time.h), so this uses kf_pet_session_debug_force_periodic_
+     * save_due() rather than an actual ten-minute sleep. */
+    {
+        kf_civil noon{2026, 8, 13, 12, 0, 0};
+        check(kf_time_set_wall(kf_epoch_from_civil(&noon)) == KF_OK,
+              "checkpoint 3/4: pin the wall clock to a known daytime hour");
+
+        kf_pet_session_init();
+        kf_pet_session_state_mutable_for_test()->stage = KF_PET_STAGE_BABY;
+
+        /* 4 first: a DEAD pet is the idle case -- due, but not dirty. */
+        kf_pet_session_state_mutable_for_test()->dead = true;
+        kf_pet_session_save(); /* known on-disk baseline; clears dirty. */
+        kf_pet_session_debug_force_periodic_save_due();
+
+        const uint32_t before_idle =
+            kf_pet_session_debug_save_attempt_count();
+        kf_pet_session_frame(KF_PET_SESSION_FLUSH_SECONDS * 1000u);
+        check(kf_pet_session_debug_save_attempt_count() == before_idle,
+              "checkpoint 4: due but not dirty (a dead pet, whose "
+              "kf_pet_advance() is a verified no-op) attempts no periodic "
+              "save -- the idle case the dirty flag exists for");
+
+        /* Now 3: revive it (state_mutable_for_test, the same TOOLS-gated
+         * reach every other case here uses) so a flush is genuinely dirty
+         * again, force due again, and confirm the periodic save DOES fire
+         * this time -- proving the flag gates something real rather than
+         * always saying no. */
+        kf_pet_session_state_mutable_for_test()->dead = false;
+        kf_pet_session_save();
+        kf_pet_session_debug_force_periodic_save_due();
+
+        const uint32_t before_live =
+            kf_pet_session_debug_save_attempt_count();
+        kf_pet_session_frame(KF_PET_SESSION_FLUSH_SECONDS * 1000u);
+        check(kf_pet_session_debug_save_attempt_count() == before_live + 1u,
+              "checkpoint 3: due AND dirty (a live pet that just ticked) "
+              "attempts exactly one periodic save");
+
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
+
+    /* 5. THE LOAD-BEARING CASE. */
+    {
+        kf_civil start{2026, 8, 12, 12, 0, 0};
+        const int64_t start_epoch = kf_epoch_from_civil(&start);
+        check(kf_time_set_wall(start_epoch) == KF_OK,
+              "checkpoint 5: pin the wall clock to a known start");
+
+        kf_pet_session_init();
+        kf_pet_session_state_mutable_for_test()->stage = KF_PET_STAGE_BABY;
+
+        /* The ONLY save in this entire case: one care action. Deliberately
+         * no explicit kf_pet_session_save() call and no kf_pet_session_
+         * shutdown() anywhere below -- see this function's own header
+         * comment for why that absence is the whole point. */
+        kf_pet_session_feed(0u);
+
+        const kf_pet_state pre_power_loss = *kf_pet_session_state();
+
+        /* "Power loss": the session is simply abandoned here -- no
+         * shutdown, no further session calls -- exactly like an unplugged
+         * device. The RTC keeps ticking regardless (this project's
+         * hardware has a battery-backed RTC proven across a real power
+         * cut -- see the hardware-on-hand note), which kf_time_set_wall()
+         * stands in for. */
+        constexpr int64_t kElapsedSeconds = 2 * 3600; /* 2 hours offline */
+        check(kf_time_set_wall(start_epoch + kElapsedSeconds) == KF_OK,
+              "checkpoint 5: the wall clock advances while nothing is "
+              "running -- simulating the device being off");
+
+        kf_pet_state loaded{};
+        check(kf_pet_load_and_advance(&loaded, &config) == KF_OK,
+              "checkpoint 5: a fresh, independent load succeeds");
+
+        kf_pet_state expected = pre_power_loss;
+        kf_pet_advance(&expected, &config,
+                        static_cast<uint32_t>(kElapsedSeconds));
+
+        check(loaded.stage == expected.stage &&
+                  loaded.hunger_mp == expected.hunger_mp &&
+                  loaded.happiness_mp == expected.happiness_mp &&
+                  loaded.energy_mp == expected.energy_mp,
+              "checkpoint 5: LOAD-BEARING -- a pet checkpointed only by "
+              "the care-action save above, then reloaded after an abrupt "
+              "'power loss' with no shutdown, comes back identical to one "
+              "direct kf_pet_advance() call across the same elapsed time "
+              "-- the actual thing that has never worked on device before "
+              "this task");
+        check(loaded.last_advanced.valid &&
+                  loaded.last_advanced.epoch_seconds ==
+                      start_epoch + kElapsedSeconds,
+              "checkpoint 5: the reloaded pet's own clock baseline is "
+              "exactly the post-power-loss wall-clock reading");
+
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
+
+    /* 6. Save cost, measured -- not asserted against a threshold. N real
+     * writes through the exact kf_pet_session_save() path production code
+     * uses, timed with std::chrono::steady_clock. This is the DESKTOP
+     * backend's cost (host_storage.cpp: fopen + fwrite + fflush + fsync +
+     * rename, through the OS filesystem) -- it is NOT ESP32 NVS's cost,
+     * which is a different device entirely (nvs_set_blob + nvs_commit
+     * direct to SPI flash, no OS, no filesystem in between). See
+     * docs/architecture/adr-0056-pet-save-checkpoints.md for why this
+     * number is reported as a desktop proxy rather than an ESP32
+     * measurement, and for the datasheet-based ESP32 estimate alongside
+     * it. */
+    {
+        kf_civil noon{2026, 8, 14, 12, 0, 0};
+        check(kf_time_set_wall(kf_epoch_from_civil(&noon)) == KF_OK,
+              "checkpoint 6: pin the wall clock to a known daytime hour");
+
+        kf_pet_session_init();
+        kf_pet_session_state_mutable_for_test()->stage = KF_PET_STAGE_BABY;
+
+        constexpr int kSaveCount = 500;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kSaveCount; ++i) {
+            kf_pet_session_save();
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const double total_us =
+            std::chrono::duration<double, std::micro>(t1 - t0).count();
+        KF_LOGI(TAG,
+                "save cost (desktop host_storage.cpp backend): %.1f us/save "
+                "over %d saves (%.2f ms total) -- NOT the ESP32 NVS number, "
+                "see docs/architecture/adr-0056-pet-save-checkpoints.md",
+                total_us / kSaveCount, kSaveCount, total_us / 1000.0);
+
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
 
     kf_power_shutdown();
     kf_store_shutdown();
@@ -10633,6 +10952,7 @@ int main(int argc, char *argv[]) {
     bool verify_lvgl = false;
     bool verify_lua = false;
     bool verify_pet = false;
+    bool verify_pet_save_checkpoints = false;
     bool verify_pet_stage = false;
     bool verify_tree_shape = false;
     bool verify_hokorimaru = false;
@@ -10703,6 +11023,9 @@ int main(int argc, char *argv[]) {
             verify_lua = true;
         } else if (std::strcmp(argv[i], "--verify-pet") == 0) {
             verify_pet = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-save-checkpoints") ==
+                   0) {
+            verify_pet_save_checkpoints = true;
         } else if (std::strcmp(argv[i], "--verify-pet-stage") == 0) {
             verify_pet_stage = true;
         } else if (std::strcmp(argv[i], "--verify-tree-shape") == 0) {
@@ -10816,6 +11139,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-lvgl [--expect-checksum HEX]\n"
                         "kamiframe-headless --verify-lua [--frames N]\n"
                         "kamiframe-headless --verify-pet\n"
+                        "kamiframe-headless --verify-pet-save-checkpoints\n"
                         "kamiframe-headless --verify-pet-stage\n"
                         "kamiframe-headless --verify-tree-shape\n"
                         "kamiframe-headless --verify-hokorimaru\n"
@@ -10912,6 +11236,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet) {
         return run_pet_check();
+    }
+
+    if (verify_pet_save_checkpoints) {
+        return run_pet_save_checkpoints_check();
     }
 
     if (verify_pet_stage) {

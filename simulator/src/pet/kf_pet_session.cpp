@@ -140,6 +140,23 @@ struct Session {
      * header comment in kf_pet_session.h. Session-only, never saved. */
     kf_pet_want last_want = KF_PET_WANT_NONE;
 
+    /* ADR 0056 -- the periodic-checkpoint dirty flag and its deadline. See
+     * KF_PET_SESSION_PERIODIC_SAVE_SECONDS's own comment (kf_pet_session.h)
+     * for the endurance reasoning; see save() below for exactly when each
+     * gets touched. Neither is ever saved to disk -- both describe the gap
+     * between memory and disk, which is meaningless once the two agree. */
+    bool dirty = false;
+    uint64_t next_periodic_save_us = 0;
+
+    /* TEST ONLY (see kf_pet_session_debug_save_attempt_count() in
+     * kf_pet_session.h) -- incremented unconditionally in production too
+     * (there is no TOOLS #if around the increment site itself, only
+     * around the getter), because it costs one integer increment per save
+     * and gating it would mean two different call counts depending on
+     * which backend compiled this file -- not worth the divergence for a
+     * counter nothing but a desktop test ever reads. */
+    uint32_t debug_save_attempts = 0;
+
 #if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
     /* Debug-only: the timeline snapshot ring, gated on TOOLS specifically
      * (not CONTROLS -- see kf_pet_session.h's "DEBUG ONLY" section).
@@ -216,6 +233,24 @@ void kf_pet_session_init(void) {
     g.last_call_us = 0;
     g.pending_ms = 0;
     g.last_want = KF_PET_WANT_NONE;
+
+    /* ADR 0056: the state kf_pet_load_and_advance() just produced (above)
+     * is very likely NOT what is on disk -- it already fast-forwarded the
+     * offline gap in memory, but never wrote that back. Starting dirty is
+     * the honest description of that, and means the first periodic
+     * checkpoint (below) captures the post-fast-forward baseline rather
+     * than only a much later care action or sleep transition doing it --
+     * bounding how much a NEXT boot's own fast-forward has to replay. Not
+     * urgent for correctness (see that macro's own comment: the on-disk
+     * `last_advanced` a boot finds is always a valid, exact baseline to
+     * replay forward from, however old it is), just tidy. */
+    g.dirty = true;
+    g.next_periodic_save_us =
+        kf_time_mono_us() +
+        static_cast<uint64_t>(KF_PET_SESSION_PERIODIC_SAVE_SECONDS) *
+            1000000ull;
+    g.debug_save_attempts = 0;
+
     g.ready = true;
     debug_snapshot_reset();
 }
@@ -244,9 +279,45 @@ void kf_pet_session_frame(uint32_t synthetic_frame_delta_ms) {
     if (g.pending_ms >= kFlushThresholdMs) {
         const uint32_t whole_seconds =
             static_cast<uint32_t>(g.pending_ms / 1000ull);
+
+        /* Both read BEFORE kf_pet_advance() mutates the state, so each
+         * compares against what was true going INTO this flush. */
+        const bool was_asleep = g.state.asleep;
+        const bool was_dead = g.state.dead;
+
         kf_pet_advance(&g.state, &g.config, whole_seconds);
         g.pending_ms = g.pending_ms % 1000ull;
         debug_snapshot_push();
+
+        /* ADR 0056's dirty flag. `!was_dead`, not `!g.state.dead` --
+         * kf_pet_advance() itself is a verified no-op for an
+         * already-dead pet (hakoniwaos/src/pet.cpp's leading
+         * `if (state->dead) return;`), so a flush starting from dead
+         * changes nothing this call and has nothing new to persist. This
+         * is the actual "idle pet" case the periodic checkpoint below
+         * gets to skip. An egg, by contrast, IS marked dirty here (its
+         * needs do not decay, but stage_elapsed_seconds still advances
+         * every flush) -- harmless, since its periodic checkpoint is
+         * still bounded by the same dirty-gated interval, not every
+         * flush. */
+        if (!was_dead) {
+            g.dirty = true;
+        }
+
+        if (!was_asleep && g.state.asleep) {
+            /* Checkpoint 2 of 3 (kf_pet_session_save()'s own comment):
+             * the awake -> asleep transition, live -- Chris's "low power
+             * mode". Unconditional on the dirty flag: falling asleep is
+             * itself the state change worth saving, whatever the flag
+             * already said. */
+            kf_pet_session_save();
+        } else if (g.dirty && kf_time_mono_us() >= g.next_periodic_save_us) {
+            /* Checkpoint 3 of 3: the periodic safety net, gated on both
+             * "due" and "dirty" -- see KF_PET_SESSION_PERIODIC_SAVE_
+             * SECONDS's own comment (kf_pet_session.h) for the endurance
+             * arithmetic this interval is sized against. */
+            kf_pet_session_save();
+        }
     }
 }
 
@@ -256,53 +327,99 @@ const kf_pet_state *kf_pet_session_state(void) {
     return &g.state;
 }
 
+/* Every care action below shares a shape: mutate, push a debug snapshot,
+ * then kf_pet_session_save() -- checkpoint 1 of 3 (see that function's own
+ * comment). These are rare, human-paced events (a button press), never a
+ * per-frame path, so an unconditional immediate save would cost nothing
+ * worth gating behind the dirty flag the periodic checkpoint uses -- see
+ * docs/architecture/adr-0056-pet-save-checkpoints.md.
+ *
+ * "Unconditional" is not quite right, though: every one of kf/pet.h's care
+ * functions is a documented no-op under some condition of its own (dead,
+ * for feed/play/rest/bath/flush; dead-or-not-asleep for wake; not-drowsy
+ * for tuck_in -- see each Core function's own header comment in kf/pet.h).
+ * A pet screen that still lets a shrine be tapped (or a test loop that
+ * calls one of these against a dead/inapplicable pet on purpose) would
+ * otherwise burn a real NVS write for a press that changed nothing at
+ * all. Each function below reads the SAME condition Core's own early
+ * return checks -- not a guess at one -- before deciding whether the
+ * mutation could possibly have done anything, and only saves if so. */
+
 void kf_pet_session_feed(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_feed called before kf_pet_session_init");
+    const bool applies = !g.state.dead;
     kf_pet_feed(&g.state, &g.config, variation);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_play(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_play called before kf_pet_session_init");
+    const bool applies = !g.state.dead;
     kf_pet_play(&g.state, &g.config, variation);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_rest(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_rest called before kf_pet_session_init");
+    const bool applies = !g.state.dead;
     kf_pet_rest(&g.state, &g.config, variation);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_bath(uint8_t variation) {
     KF_ASSERT(g.ready,
               "kf_pet_session_bath called before kf_pet_session_init");
+    const bool applies = !g.state.dead;
     kf_pet_bath(&g.state, &g.config, variation);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_flush(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_flush called before kf_pet_session_init");
+    const bool applies = !g.state.dead;
     kf_pet_flush(&g.state);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_wake(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_wake called before kf_pet_session_init");
+    const bool applies = !g.state.dead && g.state.asleep;
     kf_pet_wake(&g.state, &g.config);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 void kf_pet_session_tuck_in(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_tuck_in called before kf_pet_session_init");
+    const bool applies = kf_pet_drowsy(&g.state);
     kf_pet_tuck_in(&g.state);
     debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
 }
 
 kf_pet_want kf_pet_session_wants(void) {
@@ -315,13 +432,25 @@ kf_pet_want kf_pet_session_wants(void) {
 void kf_pet_session_save(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_save called before kf_pet_session_init");
+    g.debug_save_attempts++;
     const kf_result result = kf_pet_save(&g.state);
     if (result != KF_OK) {
         KF_LOGE(TAG,
                 "kf_pet_save failed (%d) -- will try again at the next "
                 "checkpoint",
                 static_cast<int>(result));
+        /* Dirty stays true, and the periodic deadline is deliberately
+         * NOT pushed forward -- see ADR 0056: a failed write (e.g.
+         * KF_ERR_EXHAUSTED, a full NVS partition) should be retried at
+         * the very next checkpoint of ANY kind, not stall until a full
+         * KF_PET_SESSION_PERIODIC_SAVE_SECONDS has passed again. */
+        return;
     }
+    g.dirty = false;
+    g.next_periodic_save_us =
+        kf_time_mono_us() +
+        static_cast<uint64_t>(KF_PET_SESSION_PERIODIC_SAVE_SECONDS) *
+            1000000ull;
 }
 
 void kf_pet_session_shutdown(void) {
@@ -577,6 +706,25 @@ kf_pet_state *kf_pet_session_state_mutable_for_test(void) {
     KF_ASSERT(g.ready, "kf_pet_session_state_mutable_for_test called before "
                         "kf_pet_session_init");
     return &g.state;
+}
+
+void kf_pet_session_debug_force_periodic_save_due(void) {
+    KF_ASSERT(g.ready, "kf_pet_session_debug_force_periodic_save_due called "
+                        "before kf_pet_session_init");
+    /* kf_time_mono_us(), not 0 -- "due now" has to mean "not later than the
+     * very next comparison against it" regardless of what the mono clock
+     * happens to read at the time (0 the whole run, in a headless check
+     * that never calls kf_app_init()/kf_time_init() -- see kf/hal/time.h
+     * and host_time.cpp's kf_time_mono_us()). 0 would still work today,
+     * but reading the real clock is the version that stays correct if a
+     * future caller of this ever runs with kf_app_init() up too. */
+    g.next_periodic_save_us = kf_time_mono_us();
+}
+
+uint32_t kf_pet_session_debug_save_attempt_count(void) {
+    KF_ASSERT(g.ready, "kf_pet_session_debug_save_attempt_count called "
+                        "before kf_pet_session_init");
+    return g.debug_save_attempts;
 }
 
 #endif // KF_PET_SESSION_ENABLE_DEBUG_TOOLS

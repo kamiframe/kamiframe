@@ -61,6 +61,7 @@ future us in month eight asking the same question with less patience.
 | [0053](adr-0053-overnight-floors-poop-suppression.md) | Overnight floors, a dirtiness cap, and no poop while asleep | Accepted |
 | [0054](adr-0054-kfdbg-clock-and-rtc.md) | `KFDBG CLOCK`, `KFDBG RTC`, and sleep-state STATE parity | Accepted |
 | [0055](adr-0055-audio-hal-and-attention-chirp.md) | An audio HAL of one tone, three backends, and the attention chirp | Accepted |
+| [0056](adr-0056-pet-save-checkpoints.md) | Real save checkpoints — after care, at sleep, and a dirty-gated periodic net | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 

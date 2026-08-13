@@ -79,7 +79,15 @@ void kf_pet_session_init(void);
  * unboundedly across flushes) -- see ADR 0016 for the numbers. Offline
  * fast-forward (kf_pet_load_and_advance(), called once at boot with
  * however many real seconds actually passed) is unaffected and remains
- * exact; this trade-off is specific to the per-frame live path. */
+ * exact; this trade-off is specific to the per-frame live path.
+ *
+ * Also where two of kf_pet_session_save()'s automatic checkpoints live
+ * (see that function's own comment for the full list): every flush that
+ * crosses the awake -> asleep transition saves immediately, and every
+ * flush otherwise checks whether the periodic safety-net checkpoint is
+ * due. Both are ordinary calls to kf_pet_session_save() -- no separate
+ * code path -- so a failed write is logged and retried exactly the way a
+ * manual save would be. */
 void kf_pet_session_frame(uint32_t synthetic_frame_delta_ms);
 
 /* How long a burst of live elapsed time must accumulate before
@@ -89,6 +97,27 @@ void kf_pet_session_frame(uint32_t synthetic_frame_delta_ms);
  * percent, not the ~100% loss a 1-second flush would suffer) while still
  * being imperceptible against rates that take DAYS to empty a need. */
 #define KF_PET_SESSION_FLUSH_SECONDS 30u
+
+/* How often kf_pet_session_frame() re-checks whether a periodic safety-net
+ * save is due -- the "periodically while running" checkpoint alongside
+ * "after every care action" and "at the awake -> asleep transition" (see
+ * kf_pet_session_save()'s own comment for the full checkpoint list). Real
+ * (monotonic) seconds, deliberately NOT pet-time and NOT scaled by KFDBG
+ * MULT's time multiplier: NVS wear is a property of real elapsed time, not
+ * simulated pet-time, so this reads kf_time_mono_us() directly rather than
+ * riding the same multiplied delta kf_pet_session_frame()'s caller feeds
+ * the decay math (see that function's own header comment on why the
+ * multiplier only ever reaches the pet's own advance).
+ *
+ * A periodic tick only actually WRITES if something changed since the last
+ * save (a dirty flag, private to kf_pet_session.cpp) -- an idle pet (the
+ * concrete case: a dead one, whose kf_pet_advance() is a verified no-op,
+ * hakoniwaos/src/pet.cpp's `if (state->dead) return;`) burns no further
+ * NVS writes just because the clock ticked. 600 (10 minutes) and the
+ * endurance arithmetic behind it are in docs/architecture/adr-0056-
+ * pet-save-checkpoints.md -- change this constant and that ADR's numbers
+ * both, in the same commit. */
+#define KF_PET_SESSION_PERIODIC_SAVE_SECONDS 600u
 
 /* Read-only view of the live pet -- for the Lua binding (ADR 0016), and
  * later a UI screen. Never NULL after kf_pet_session_init(); asserts if
@@ -132,15 +161,39 @@ void kf_pet_session_tuck_in(void);
  * those two already apply to the debug snapshot ring. */
 kf_pet_want kf_pet_session_wants(void);
 
-/* Persists the active pet's state now, via kf_pet_save(). Called
- * automatically by kf_pet_session_shutdown(), and exposed here too (and to
- * Lua, via the pet.save() binding) so a caller can save at a meaningful
- * checkpoint -- e.g. right after a care action -- rather than only at
- * exit, which on the device may not run at all: see kf/hal/power.h's
- * warning that kf_power_deep_sleep_until() may not return in the normal
- * sense. A failed save is logged, not fatal -- a full NVS partition
- * (KF_ERR_EXHAUSTED) should not crash the device, it should be visible in
- * the log and tried again next checkpoint. */
+/* Persists the active pet's state now, via kf_pet_save(). Exposed here for
+ * manual checkpoints (the SDL debug window's Save button, and Lua's
+ * pet.save() binding), but -- since docs/architecture/adr-0056-pet-save-
+ * checkpoints.md -- also called AUTOMATICALLY at every real checkpoint a
+ * battery-powered device actually has, because kf_pet_session_shutdown()
+ * alone is not one: on ESP32 the main loop's `for(;;)` has no quit
+ * condition (ports/esp32/main/app_main.cpp's own comment calls its
+ * shutdown call "unreachable in practice"), so a device that is unplugged
+ * or battery-dies mid-session never reaches it. The automatic checkpoints,
+ * all inside kf_pet_session.cpp:
+ *
+ *   1. After every care action (feed/play/rest/bath/flush/wake/tuck_in) --
+ *      rare, human-paced events, always worth an immediate write.
+ *   2. At the awake -> asleep transition, detected live inside
+ *      kf_pet_session_frame() -- Chris's "low power mode": the pet is
+ *      about to do nothing for hours, so this is the natural checkpoint,
+ *      not device deep sleep (kf_power_deep_sleep_until() has no
+ *      production caller yet -- see that function's own header comment --
+ *      and this task deliberately does not add one).
+ *   3. Periodically while running (KF_PET_SESSION_PERIODIC_SAVE_SECONDS),
+ *      but ONLY if a private dirty flag says something changed since the
+ *      last save -- see that macro's own comment for the endurance
+ *      reasoning and where the idle/no-write case actually occurs.
+ *
+ * Every automatic checkpoint funnels through this same function, so a
+ * manual call and an automatic one are indistinguishable and both reset
+ * the dirty flag and the periodic timer -- calling this yourself never
+ * causes a redundant write shortly after. A failed save is logged, not
+ * fatal -- a full NVS partition (KF_ERR_EXHAUSTED) should not crash the
+ * device, it should be visible in the log and tried again next
+ * checkpoint (the dirty flag is deliberately left set on failure so a
+ * later checkpoint keeps retrying, rather than only the player's next
+ * care action). */
 void kf_pet_session_save(void);
 
 /* Saves, then tears the session down. */
@@ -443,6 +496,38 @@ void kf_pet_session_debug_seek(uint64_t target_age_seconds);
  * only: not reachable on ESP32, exactly like the other TOOLS-gated
  * functions here. */
 kf_pet_state *kf_pet_session_state_mutable_for_test(void);
+
+/* TEST ONLY: makes the periodic safety-net checkpoint (KF_PET_SESSION_
+ * PERIODIC_SAVE_SECONDS, kf_pet_session_save()'s own comment) immediately
+ * due, without waiting that many REAL monotonic seconds -- unlike the
+ * pet's own simulated clock (kf_time_set_wall() and friends), this
+ * project has no way to fast-forward kf_time_mono_us() itself (it is the
+ * host's real steady_clock, see kf/hal/time.h), so a test that wants to
+ * observe the periodic checkpoint firing needs this rather than an actual
+ * ten-minute sleep. Does not touch the dirty flag -- a periodic save
+ * still only actually writes if something changed since the last one, so
+ * this proves the TIMER path, not a way to force a write past the dirty
+ * check.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_TOOLS, same as every other test-only
+ * reach into this file's session state above. Desktop/headless only: not
+ * reachable on ESP32. */
+void kf_pet_session_debug_force_periodic_save_due(void);
+
+/* TEST ONLY: how many times kf_pet_session_save() has actually invoked
+ * kf_pet_save() (i.e. attempted a real write to the store) since
+ * kf_pet_session_init() -- whether that write succeeded or not, and
+ * regardless of which checkpoint triggered it (manual, care-action,
+ * sleep-transition, or periodic). Behavioural proof that a given call DID
+ * or DID NOT reach the store, which reading kf_pet_session_state() alone
+ * cannot give you: a no-op care action (e.g. feeding a dead pet) and a
+ * real one that happens to leave every field unchanged look identical in
+ * the state, but not in whether a write actually happened.
+ *
+ * Gated by KF_PET_SESSION_ENABLE_DEBUG_TOOLS, same as every other test-only
+ * reach into this file's session state above. Desktop/headless only: not
+ * reachable on ESP32. */
+uint32_t kf_pet_session_debug_save_attempt_count(void);
 
 #ifdef __cplusplus
 } /* extern "C" */

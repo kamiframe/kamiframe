@@ -439,6 +439,22 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_offline_ageing_check
              COMMAND kamiframe-headless --verify-pet)
 
+    # Proves docs/architecture/adr-0056-pet-save-checkpoints.md: the pet is
+    # actually persisted at the real checkpoints a battery-powered device
+    # has -- after a care action, at the awake -> asleep transition, and by
+    # a dirty-gated periodic safety net -- not only at kf_pet_session_
+    # shutdown(), which never runs on ESP32 (ports/esp32/main/app_main.cpp's
+    # own comment calls it "unreachable in practice"). Every case
+    # deliberately never calls shutdown() before checking what landed on
+    # disk, so a checkpoint that silently did nothing would not be masked
+    # by it. Includes the load-bearing case: a pet checkpointed by a care
+    # action alone, with no explicit save and no shutdown, survives an
+    # abrupt "power loss" and reloads correctly aged -- the thing that has
+    # never worked on device before this task. See headless_main.cpp's
+    # run_pet_save_checkpoints_check().
+    add_test(NAME pet_save_checkpoints_check
+             COMMAND kamiframe-headless --verify-pet-save-checkpoints)
+
     # Proves the life-stages/evolution mechanic (ADR 0021): the egg's
     # no-decay guarantee, a single kf_pet_advance() call correctly crossing
     # all four real stage boundaries at once, the care-integral accumulator
