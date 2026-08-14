@@ -94,8 +94,16 @@ extern "C" {
  * mounted at the TOP, COLMOD 0x55, inversion OFF, and -- the one that costs
  * an evening if you miss it -- a BIG-ENDIAN framebuffer.
  *
- * The 2in ST7789 remains the primary panel and has its own profile, not yet
- * hardware-verified: the first unit was faulty and was returned.
+ * The 2in ST7789 is the primary panel and is now hardware-verified too
+ * (2026-08-13, ADR 0059) -- it is the default profile as of that date. It
+ * needs one wiring change from the ILI9341 and no others: GPIO6 goes to its
+ * BL pin rather than to a data-out line, because that module's eight-pin
+ * flex has no SDO. Only one panel at a time, though -- they share CS.
+ *
+ * An earlier version of this comment said the ST7789 had never been
+ * verified because the first unit was faulty. That diagnosis is doubtful;
+ * see kf_panel_profile.h's ST7789 section and the LCD_DC comment just below,
+ * which are the same story from two directions.
  * ------------------------------------------------------------------------- */
 #define KF_ESP_PIN_LCD_MOSI GPIO_NUM_11
 #define KF_ESP_PIN_LCD_SCLK GPIO_NUM_12

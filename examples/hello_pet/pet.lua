@@ -1,5 +1,5 @@
 -- A complete pet: it appears, it reacts to two buttons, it says how it feels.
-kf.background(kf.color(232, 240, 216))
+kf.background(kf.color(248, 240, 216))
 
 local body = kf.sprite("egg_idle_s")
 body:move(96, 106)

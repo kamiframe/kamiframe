@@ -202,7 +202,12 @@ if kf.home_screen_active() then
     -- rather than bare kf.* calls -- a receiver change only, same layout,
     -- same object count, same declaration order.
     local home = kf.screen("home")
-    local bg = kf.color(232, 240, 216)
+    -- A warm cream. MUST match KF_CREATURE_PRESENTER_BG in
+    -- simulator/src/pet/kf_creature_presenter.h, which is where the C side
+    -- owns this same colour -- a Lua script cannot include a C header, so
+    -- this copy is hand-maintained and home_clock_check is what catches it
+    -- drifting. Change one, change the other, same commit.
+    local bg = kf.color(248, 240, 216)
     home:background(bg)
 
     -- Chris, 2026-08-11, after testing: a small always-on digital clock in

@@ -75,17 +75,27 @@ the current 2.8in module cannot do at all:
 - **A flex connector instead of eight jumper wires**, which is the correct
   mechanical answer for anything that goes in an enclosure.
 
-**This is backwards from where the code actually is today.** Both panels
-are 240x320 SPI and wire identically — the 2.8" is an ILI9341, the 2" is an
-ST7789 — but `esp_display.cpp` supports both through one panel-profile
-mechanism now (ADR 0039, `KF_PANEL`), and the **ILI9341 is the default
-profile and the only panel that has ever put a pixel on glass** —
-`ports/esp32/main/CMakeLists.txt` defaults `KF_PANEL` to `ili9341` for
-exactly that reason. **The ST7789 has never lit up.** It remains the
-intended primary panel (this doc's own hardware table above, ADR 0039), and
-the hardware bring-up plan's Tasks 5-8 build with `-DKF_PANEL=st7789`
-explicitly to get it there — but until that lands, wire and test against
-the 2.8" HiLetgo (ILI9341) first if you want to see a picture.
+**Both breadboard panels work as of 2026-08-13.** They are both 240x320 SPI
+and wire almost identically — the 2.8" is an ILI9341, the 2" is an ST7789 —
+and `esp_display.cpp` drives both through one panel-profile mechanism (ADR
+0039, `KF_PANEL`). The **2" ST7789 is the default profile** (ADR 0059); the
+ILI9341 is the supported alternative and is still the only one the `KFDBG
+SCANLINE`/`VSYNC` diagnostics work against, since it is the only module here
+with a data-out line.
+
+```bash
+idf.py -DKF_PANEL=ili9341 build     # only if you are on the 2.8"
+```
+
+Two things to know at the bench:
+
+- **One panel at a time.** They share CS on GPIO10, so leaving both
+  connected puts two controllers on one chip select.
+- **The only wiring difference is GPIO6.** On the ILI9341 it is that
+  module's SDO; on the ST7789 it is BL, a real backlight pin you can
+  actually drive — the HiLetgo's LED is tied straight to 3V3 and has never
+  been controllable. The firmware picks the role from the profile's
+  `has_read_line`, so this is a wire to move, not a flag to set.
 
 **The battery is last, not first.** The 503030 cells ship with bare leads
 that need JST PH connectors soldered on, and feeding the devkit's 5V pin
@@ -380,9 +390,14 @@ measured, its `ASSUMPTION, NOT MEASURED` banner is gone, and the ~32fps
 full-frame ceiling the frame budget is built on is real.
 
 `kRunClockSweep` is therefore `false`. Turn it back on when the wiring or the
-panel changes, and specifically when the replacement 2in ST7789 arrives:
-that is the primary panel, this was measured on the 2.8in ILI9341, and
-ST7789 modules commonly tolerate more.
+panel changes.
+
+**Still outstanding for the 2in ST7789**, which is now the default panel
+(ADR 0059) but was verified for *picture*, not for *speed*: no clock sweep
+has ever been run against it. It inherits 40MHz from a measurement taken on
+the 2.8in ILI9341, which is safe — ST7789 modules commonly tolerate more —
+but it means the frame budget's ~32fps full-frame ceiling is, on the primary
+panel, a conservative inherited number rather than a measured one.
 
 Two things worth remembering about that number. 40MHz is about four times the
 ILI9341 datasheet's own write-cycle figure -- it works, and it is what
@@ -449,10 +464,11 @@ three.
 **Still not measured.** The I2S lines are reserved and have never been wired.
 `KF_DISPLAY_TRANSFER_OVERHEAD_BYTES` in `kf/budget.h` keeps its assumption
 banner -- the clock sweep tested throughput, not per-rectangle overhead. The
-primary 2in ST7789 panel has not been measured at all; everything above was
-measured on the 2.8in ILI9341, which is the supported alternative rather than
-the reference. And none of these figures have been re-measured on a real PCB,
-where they should all improve.
+primary 2in ST7789 panel now displays correctly (ADR 0059) but has had no
+timing measured on it at all; every figure above was taken on the 2.8in
+ILI9341 and is inherited, not confirmed, on the panel that is now the default.
+And none of these figures have been re-measured on a real PCB, where they
+should all improve.
 
 **Still true, and worth keeping:** both `ports/esp32` and `ports/esp32-bringup`
 build clean against ESP-IDF v6.0.2 for the esp32s3 target, and the

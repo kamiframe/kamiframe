@@ -210,6 +210,28 @@ Soldering direct to the pad restored 3.3V and the panel still never
 displayed. A HiLetgo 2.8in ILI9341 on the identical eight wires lit up
 immediately. Returned.
 
+> **Correction, 2026-08-13 (ADR 0059).** This conclusion is probably wrong,
+> and the paragraph above is kept only as the record of what was believed on
+> 2026-08-07. Read it as a diagnosis, not as a fact about that module.
+>
+> The reading it rests on — 0.7mV at DC — is the same reading, on the same
+> signal, that condemned GPIO9 two sections earlier in this same document.
+> One session, one symptom, two culprits named. GPIO9 is FSPIHD, so if SPI2
+> claimed it through IOMUX then DC carried hold-line traffic regardless of
+> how sound the wire or the solder joint was, and every `esp_lcd` call would
+> still have returned `ESP_OK` against dark glass. That accounts for the
+> whole observation, including the part this section treated as decisive:
+> restoring 3.3V at the pad and still seeing nothing.
+>
+> A replacement module of the same type, on DC/GPIO7, rendered the home
+> screen correctly on its second flash — the first flash needed only
+> `invert`. Nothing else in the profile changed.
+>
+> **The lesson worth carrying forward is not about this panel.** When two
+> independent suspects produce one identical measurement in one session,
+> naming both is not two findings; it is one finding and one guess, and the
+> guess costs a returned part.
+
 ### Settled ILI9341 configuration
 
 Confirmed by photograph on 2026-08-08, after the byte-order fix:

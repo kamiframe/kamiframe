@@ -41,7 +41,11 @@ namespace {
  * screen and the Lua screen must never be able to disagree about it. */
 constexpr kf_rect kField = KF_CREATURE_PRESENTER_FIELD;
 
-constexpr kf_color kBackground = KF_RGB(232, 240, 216);
+/* Aliases KF_CREATURE_PRESENTER_BG rather than spelling the RGB again, for
+ * the same reason kField above aliases KF_CREATURE_PRESENTER_FIELD: this
+ * screen and the Lua screen must never be able to disagree about it. See
+ * that constant's own comment for the four copies this replaced. */
+constexpr kf_color kBackground = KF_CREATURE_PRESENTER_BG;
 
 /* Mess (Task 5 of the pet-screen plan). pet->poop_count (kf/pet.h) is a
  * COUNT, 0..KF_PET_MAX_POOPS, with no positions -- Core says so

@@ -10,8 +10,8 @@
 ##
 ##     cd ports/esp32
 ##     idf.py set-target esp32s3
-##     idf.py build                       # KF_PANEL defaults to ili9341
-##     idf.py -DKF_PANEL=st7789 build     # the primary panel -- ADR 0039
+##     idf.py build                       # KF_PANEL defaults to st7789
+##     idf.py -DKF_PANEL=ili9341 build    # the 2.8in alternative -- ADR 0059
 ##     idf.py flash monitor               # needs real hardware
 ##     idf.py wokwi                       # needs a WOKWI_CLI_TOKEN, see wokwi.toml
 

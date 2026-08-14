@@ -293,16 +293,23 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 ## has to remember to edit, selecting which table in
 ## ../hal/kf_panel_profile.h this build drives. Passed on the command line:
 ##
-##     idf.py -DKF_PANEL=st7789 build      # the primary panel
-##     idf.py -DKF_PANEL=ili9341 build     # explicit default, same as a
+##     idf.py -DKF_PANEL=st7789 build      # explicit default, same as a
 ##                                            plain `idf.py build`
+##     idf.py -DKF_PANEL=ili9341 build     # the 2.8in alternative
 ##
-## Defaults to ili9341 -- the only panel that has ever put a pixel on glass
-## (ADR 0027) -- for the same "do not default to a black screen on the one
-## board in the world running this firmware" reasoning kf_panel_profile.h's
-## own KF_PANEL_PROFILE fallback already states. Tasks 5-8 of the hardware
-## bring-up plan all build with -DKF_PANEL=st7789 explicitly, since the
-## ST7789 is the panel actually going on the bench.
+## Defaults to st7789 as of 2026-08-13 (ADR 0059), when that panel was first
+## verified on hardware. It is the primary panel for the product, and both
+## profiles now display correctly, so the "do not default to a black screen
+## on the one board in the world running this firmware" reasoning that used
+## to pin this to ili9341 no longer selects between them -- see
+## kf_panel_profile.h's own KF_PANEL_PROFILE fallback, which moved with it.
+##
+## THIS IS A CACHE VARIABLE, so it sticks in a build directory once set.
+## Switching panels means passing the other value explicitly, and flashing
+## the wrong profile gives a black screen or wrong colours with a completely
+## clean log. Keep this default and kf_panel_profile.h's in step: they are
+## two spellings of one decision, and the header's #ifndef never fires in
+## this build because the line below always defines it.
 ##
 ## Validated here, at CMake configure time, rather than left for the
 ## compiler to discover: a typo (e.g. KF_PANEL=st7889) that reached
@@ -310,7 +317,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 ## "use of undeclared identifier kf_panel_st7889" deep inside a header,
 ## which reads like a code bug, not a command-line mistake. Catching it here
 ## turns that into one clear FATAL_ERROR naming the actual typo instead.
-set(KF_PANEL "ili9341" CACHE STRING "Panel profile: ili9341 or st7789")
+set(KF_PANEL "st7789" CACHE STRING "Panel profile: st7789 or ili9341")
 if(NOT KF_PANEL STREQUAL "ili9341" AND NOT KF_PANEL STREQUAL "st7789")
     message(FATAL_ERROR
         "KF_PANEL must be 'ili9341' or 'st7789', got '${KF_PANEL}' -- see "

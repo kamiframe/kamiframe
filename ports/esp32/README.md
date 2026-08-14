@@ -429,6 +429,9 @@ These are already true and need to stay true:
   driven a physical panel -- the first unit was faulty and was returned
   (ADR 0024). See `docs/architecture/adr-0039-panel-read-line-and-backlight.md`'s
   "Not verified" section.
+  **Superseded 2026-08-13 (ADR 0059):** it runs on real hardware now, and
+  `KF_PANEL` defaults to `st7789` rather than `ili9341` as a result. The
+  profile needed one change, `invert`.
 
 ## What ADR 0054 added
 

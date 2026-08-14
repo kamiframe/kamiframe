@@ -6413,7 +6413,7 @@ int run_screen_nav_check(unsigned long long expect_checksum,
      * fixed value was never going to equal by chance. */
     {
         const kf_color *px = kf_fb_pixels();
-        const kf_color kKnownCreatureBackground = KF_RGB(232, 240, 216);
+        const kf_color kKnownCreatureBackground = KF_CREATURE_PRESENTER_BG;
         const kf_color band_pixel =
             px[static_cast<size_t>(280) * KF_DISPLAY_WIDTH + 10u];
         check(band_pixel == kKnownCreatureBackground,
@@ -11354,12 +11354,20 @@ int run_home_clock_check(void) {
 
     constexpr uint32_t kFixedDtMs =
         static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
-    /* creature.lua's own Home bg literal (kf.color(232, 240, 216)) and the
-     * clock's own colours (kf.BLACK on that bg) -- kf.color()/kf.BLACK are
-     * both plain KF_RGB() wrappers (sdk/lua/kf_lua_scene.cpp's lua_kf_
-     * color()), so these C literals produce the identical kf_color values
-     * Lua's own calls do. */
-    constexpr kf_color kHomeBg = KF_RGB(232, 240, 216);
+    /* creature.lua's own Home bg literal and the clock's own colours
+     * (kf.BLACK on that bg) -- kf.color()/kf.BLACK are both plain KF_RGB()
+     * wrappers (sdk/lua/kf_lua_scene.cpp's lua_kf_color()), so the shared C
+     * constant below produces the identical kf_color value Lua's own call
+     * does.
+     *
+     * THIS IS THE CHECK THAT KEEPS THE LUA COPY HONEST. creature.lua cannot
+     * include a C header, so its `local bg` is a hand-maintained duplicate
+     * of KF_CREATURE_PRESENTER_BG -- and comparing the painted pixels
+     * against the shared constant here is the only thing standing between
+     * that and silent drift. Spelling the RGB literally here again would
+     * have made this test agree with a third copy rather than with the
+     * screen, which is how a parity check quietly stops checking parity. */
+    constexpr kf_color kHomeBg = KF_CREATURE_PRESENTER_BG;
     /* creature.lua's own clock position/size: home:text(...):move(2, 2),
      * 8 characters ("--:-- --" / "H:MM AM") at KF_FONT_CELL_W (6px) each,
      * KF_FONT_CELL_H (8px) tall. */

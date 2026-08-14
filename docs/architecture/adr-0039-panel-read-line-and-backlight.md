@@ -249,6 +249,13 @@ Specifically:
   this reasoning expects — correct polarity, correct voltage level, no
   surprise inversion — is exactly what Task 6 (first pixels on the ST7789)
   has to find out.
+
+  > **Resolved 2026-08-13 (ADR 0059).** It found out: the reasoning held on
+  > every point except one. GPIO6 drove the ST7789's BL correctly, the
+  > `has_read_line` split put the pin in the right role with no flag to set,
+  > and the profile needed exactly one correction — `invert`, which this
+  > module wants on. The "surprise inversion" guessed at above turned out to
+  > be the panel's, not the backlight's.
 - **The IOMUX-fast-path claim for the ST7789 is reasoning, not a
   measurement.** No clock sweep has been run against that profile at all,
   on any path.

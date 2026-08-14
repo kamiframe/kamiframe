@@ -57,6 +57,33 @@
  * the same way kf_creature_screen.cpp's own kField always has been. */
 constexpr kf_rect KF_CREATURE_PRESENTER_FIELD = {0, 0, 240, 260};
 
+/* The Home screen's background, owned here for the same reason the field
+ * above is: it had four C copies and one Lua copy, and nothing stopped any
+ * of them drifting apart. Three of those four were C literals spelling the
+ * same RGB by hand -- kf_creature_screen.cpp's own kBackground and two
+ * separate test constants in headless_main.cpp -- so a colour change meant
+ * finding all three or shipping a screen that disagreed with its own tests.
+ *
+ * A WARM CREAM, not the pale green this was until 2026-08-13. The original
+ * kf.color(232, 240, 216) put green above red, which reads as a distinct
+ * green cast on a good IPS panel -- clearly visible once the 2in ST7789
+ * came up (ADR 0059) and unwanted. R > G > B is what reads as cream; the
+ * exact ratio is Chris's call, and this is the value he settled on.
+ *
+ * EVERY CHANNEL HERE IS EXACT IN RGB565 -- red and blue are multiples of 8
+ * (5 bits), green a multiple of 4 (6 bits) -- so what this source says is
+ * literally what reaches the panel, with no quantisation surprise between
+ * the constant and the glass.
+ *
+ * THE ONE COPY THIS CANNOT ABSORB is creature.lua's own `local bg`, because
+ * a Lua script cannot include a C header. That copy is kept honest by a
+ * test instead: home_clock_check compares the Lua screen's painted
+ * background against this constant, so the two cannot disagree without a
+ * test failing. If you change this, change creature.lua:189 in the same
+ * commit -- and examples/hello_pet/pet.lua, which is a separate example
+ * with its own deliberate copy. */
+constexpr kf_color KF_CREATURE_PRESENTER_BG = KF_RGB(248, 240, 216);
+
 /* Brings the presenter's creature up in the middle of KF_CREATURE_PRESENTER_
  * FIELD with a first wander target already chosen -- exactly what kf_
  * creature_screen_init() used to do directly. Call ONCE, at process start,

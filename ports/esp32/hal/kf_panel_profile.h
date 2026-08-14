@@ -207,17 +207,33 @@ static const kf_panel_profile kf_panel_ili9341 = {
 /* -------------------------------------------------------------------------
  * ST7789 -- Waveshare 2in, the PRIMARY panel for this project.
  *
- * NOT YET VERIFIED ON HARDWARE. The first unit was faulty -- its DC line
- * measured 0.7mV at the panel while every other line swung a clean 3.3V, and
- * soldering directly to the pad did not revive it (ADR 0024) -- and was
- * returned. A replacement has not arrived.
+ * VERIFIED ON HARDWARE 2026-08-13 (ADR 0059). The home screen rendered
+ * correctly on a replacement module: geometry reaching all four edges with no
+ * gap, and colour confirmed correct rather than coincidentally-correct. The
+ * Home background at the time was a pale green-tinted white whose red/blue
+ * swap is nearly indistinguishable by eye on near-white -- but the same swap
+ * would turn the orange needs bars teal, and they were orange. Channel order
+ * is right. (That background has since been changed to a warm cream on
+ * Chris's call; the proof is unaffected, since it rests on the saturated
+ * bars, not on the background. See KF_CREATURE_PRESENTER_BG.)
  *
- * So this profile is reasoned, not proven: the init values are the Waveshare
- * module's own sequence from the upstream Linux DRM driver written for this
- * exact board, and the flags follow from the controller's documented
- * behaviour. Expect to correct something here on the first real run. VCOMS,
- * VRHS, VDVS and PWCTRL1 are the four that decide whether anything is visible
- * at all; the gamma tables only change how colours look.
+ * The init values below are the Waveshare module's own sequence from the
+ * upstream Linux DRM driver written for this exact board, and needed no
+ * correction. Exactly one field did: `invert`. See its comment below.
+ *
+ * If a future module of this type shows nothing at all, VCOMS, VRHS, VDVS and
+ * PWCTRL1 are the four that decide whether anything is visible; the gamma
+ * tables only change how colours look.
+ *
+ * ON THE FIRST UNIT, WHICH WAS RETURNED AS FAULTY. That diagnosis is now
+ * doubtful and should not be used as prior evidence against a panel. It was
+ * condemned on a 0.7mV reading at its DC line -- in the same session, on the
+ * same signal, that condemned GPIO9 for producing a 0.7mV reading at its DC
+ * line. GPIO9 is FSPIHD, so if SPI2 had claimed it via IOMUX, DC would carry
+ * hold-line traffic no matter how sound the wire was, which accounts for the
+ * whole observation without a panel fault. This replacement lit up on the
+ * second flash with DC on GPIO7. See ADR 0059; ADR 0024 keeps its original
+ * account as the record of what was believed at the time.
  * ------------------------------------------------------------------------- */
 static const kf_panel_cmd kf_panel_st7789_init[] = {
     {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, 0}, /* PORCTRL  porch control */
@@ -247,10 +263,15 @@ static const kf_panel_profile kf_panel_st7789 = {
      * little-endian bit from data_endian, so the framebuffer can go to the
      * panel with no host-side swapping at all. */
     false,
-    /* invert: false, per the controller default. Worth suspecting first if
-     * the replacement module comes up as a photographic negative -- many IPS
-     * modules built on this controller are wired to need INVON. */
-    false,
+    /* invert: TRUE. MEASURED 2026-08-13, and the one field this profile got
+     * wrong. The first run that ever put a picture on this panel came up as a
+     * photographic negative; setting this cleared it and nothing else needed
+     * to change. It was false here on the reasoning that the ST7789 defaults
+     * to inversion off -- true of the silicon, false of this module, because
+     * many IPS panels built around this controller are wired to need INVON.
+     * Per module, not per controller, which is the whole reason this is a
+     * profile field and not a driver constant. */
+    true,
     0,
     0,
     /* has_read_line: false. The Waveshare 2in module's eight-pin flex is
@@ -267,20 +288,32 @@ static const kf_panel_profile kf_panel_st7789 = {
 /* -------------------------------------------------------------------------
  * WHICH PANEL THIS BUILD DRIVES.
  *
- * Defaulted to the ILI9341 because that is the panel that physically exists
- * and is verified. A default that produces a black screen on the only board
- * in the world running this firmware would be a bad default, however
- * defensible on paper.
+ * The ST7789, as of 2026-08-13 (ADR 0059). This is the flip the previous
+ * version of this comment asked a future reader to make: the default was the
+ * ILI9341 only because it was the sole panel that had ever displayed
+ * anything, and a default producing a black screen on the only board in the
+ * world running this firmware would have been a bad default however
+ * defensible on paper. Both panels display correctly now, so the default goes
+ * to the 2in ST7789 -- the primary panel for the product, per CLAUDE.md's
+ * hardware target and docs/hardware-bringup.md's parts table.
  *
- * REVISIT WHEN THE REPLACEMENT ST7789 ARRIVES: that is the primary panel, and
- * once it is verified this default should flip to it, with the ILI9341
- * remaining a supported option.
+ * The ILI9341 remains fully supported, not deprecated: it is the panel the
+ * KFDBG SCANLINE/VSYNC diagnostics need (it is the only profile with
+ * has_read_line == true), and it is the 2.8in size some builders will prefer.
+ *
+ * THE FOOTGUN THIS CREATES, stated plainly because it has already cost a
+ * session in the other direction: KF_PANEL is a CMake CACHE variable, so it
+ * persists in a build directory once set. Building for the other panel means
+ * passing it explicitly -- `idf.py -DKF_PANEL=ili9341 build` -- and flashing
+ * the wrong profile gives a black screen or wrong colours with a completely
+ * clean log, because every esp_lcd call returns ESP_OK against glass showing
+ * nothing.
  *
  * Override without editing this file by defining KF_PANEL_PROFILE at build
- * time, e.g. -DKF_PANEL_PROFILE=kf_panel_st7789.
+ * time, e.g. -DKF_PANEL_PROFILE=kf_panel_ili9341.
  * ------------------------------------------------------------------------- */
 #ifndef KF_PANEL_PROFILE
-#define KF_PANEL_PROFILE kf_panel_ili9341
+#define KF_PANEL_PROFILE kf_panel_st7789
 #endif
 
 #ifdef __cplusplus
