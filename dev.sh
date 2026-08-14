@@ -66,8 +66,25 @@ do_build() {
     # across the WSL2-to-Windows-drive bridge, so re-running it every time
     # costs a couple of seconds and removes an entire category of "I built
     # it but nothing changed" confusion.
+    # Warnings are errors here, matching .github/workflows/ci.yml, because
+    # the two disagreeing is how a broken build reaches main. Both CI jobs
+    # failed on 2026-08-14 against changes that built perfectly here: a
+    # POSIX-only <strings.h> MSVC does not have, and an out-of-range enum
+    # cast GCC rejects under -Werror=conversion. This setting would have
+    # caught the first of those locally.
+    #
+    # It does NOT close the gap, and believing it does would be worse than
+    # not having it. This machine is one compiler; CI is three. GCC's
+    # -Wconversion and MSVC's header set each find things Clang does not,
+    # and nothing local reproduces those short of installing the other
+    # toolchains. A green build here means "no Clang warnings", not "CI
+    # will pass".
+    #
+    # Escape hatch for a deliberate mid-refactor mess:
+    #     KF_WERROR=OFF ./dev.sh build
     echo "==> Configuring ($BUILD_DIR)"
-    cmake -B "$BUILD_DIR" -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake -B "$BUILD_DIR" -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DKAMIFRAME_WARNINGS_AS_ERRORS="${KF_WERROR:-ON}"
     echo "==> Building"
     cmake --build "$BUILD_DIR" -j"$(nproc_portable)"
 }
