@@ -744,6 +744,41 @@ def cmd_reset(link, args):
     print(f"reset to a fresh egg -- {payload.decode('utf-8', 'replace')}")
 
 
+def cmd_save(link, args):
+    """Force a save checkpoint now.
+
+    The pet saves after every care action and on a dirty-gated timer (ADR
+    0056), so this is not needed to avoid losing progress -- it is here to
+    make the save PATH testable on demand: pull the plug immediately after
+    and you know exactly what should come back.
+    """
+    payload = _expect(link, "KFDBG SAVE", "ack")
+    print(f"saved -- {payload.decode('utf-8', 'replace')}")
+
+
+def cmd_nextstage(link, args):
+    """Advance one life stage from wherever the pet is now.
+
+    The counterpart to `jump`, which takes an absolute stage. Adult is
+    terminal, so from Adult this refills needs and clears sickness without
+    moving the stage marker -- see run_next_stage() in kf_debug_actions.cpp.
+    """
+    payload = _expect(link, "KFDBG NEXTSTAGE", "ack")
+    print(f"advanced one stage -- {payload.decode('utf-8', 'replace')}")
+
+
+def cmd_screen(link, args):
+    """Advance to the next screen WITHOUT firing a MENU button edge.
+
+    Deliberately different from `press menu`: a real MENU edge also toggles
+    Core's on-device HUD (kf/app.cpp). This changes screen and nothing else,
+    which is what makes it useful for stepping through screens while
+    watching the frame counters.
+    """
+    payload = _expect(link, "KFDBG SCREEN", "ack")
+    print(f"next screen -- {payload.decode('utf-8', 'replace')}")
+
+
 def cmd_mult(link, args):
     if not 1 <= args.factor <= 256:
         raise KfDebugError(
@@ -1140,6 +1175,15 @@ def build_parser():
     sub.add_parser("reset", parents=[common],
                     help="reset the pet to a fresh egg")
 
+    sub.add_parser("save", parents=[common],
+                    help="force a save checkpoint now")
+
+    sub.add_parser("nextstage", parents=[common],
+                    help="advance one life stage from wherever the pet is")
+
+    sub.add_parser("screen", parents=[common],
+                    help="advance to the next screen (no MENU button edge)")
+
     mult = sub.add_parser("mult", parents=[common],
                            help="set the pet's time multiplier (1-256)")
     mult.add_argument("factor", type=int,
@@ -1227,6 +1271,12 @@ def main(argv=None):
                 cmd_advance(link, args)
             elif args.command == "reset":
                 cmd_reset(link, args)
+            elif args.command == "save":
+                cmd_save(link, args)
+            elif args.command == "nextstage":
+                cmd_nextstage(link, args)
+            elif args.command == "screen":
+                cmd_screen(link, args)
             elif args.command == "mult":
                 cmd_mult(link, args)
             elif args.command == "clock":

@@ -175,6 +175,7 @@ idf_component_register(
         ../../../simulator/src/pet/kf_lua_settings_screen.cpp
         ../../../simulator/src/pet/kf_error_banner.cpp
         ../../../simulator/src/pet/kf_frame_loop.cpp
+        ../../../simulator/src/pet/kf_debug_actions.cpp
         ../../../sdk/lua/kf_lua_alloc.cpp
         ../../../sdk/lua/kf_lua_port.cpp
         ../../../sdk/lua/kf_lua_scene.cpp

@@ -109,6 +109,8 @@ do_test() {
     python3 tools/check_no_heap.py
     echo "==> Checking core stays float-free"
     python3 tools/check_no_float.py
+    echo "==> Checking the debug surfaces have not drifted apart"
+    python3 tools/check_debug_parity.py
     echo "==> Running kf_debug.py's self-test (no hardware needed)"
     python3 tools/kf_debug_selftest.py
     # tools/kf_panel_layout_check.py needs tkinter AND a real display --

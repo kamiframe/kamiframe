@@ -142,6 +142,7 @@
 #include "kf_esp_display_diag.h"
 #include "kf_esp_display_vsync.h"
 #include "kf_esp_time_debug.h"
+#include "kf_debug_actions.h"
 #include "kf_panel_profile.h"
 #include "kf_pet_session.h"
 
@@ -1084,31 +1085,14 @@ void handle_btnhold(uint32_t mask, uint32_t ms) {
                           n > 0 ? static_cast<size_t>(n) : 0);
 }
 
-/* KFDBG ADVANCE <seconds>: kf_pet_session_debug_advance(), immediately --
- * see that function's own comment in kf_pet_session.h for why it is cheap
- * and safe to call directly (kf_pet_advance()'s bounded-loop design, ADR
- * 0021), and this file's own header comment for why a developer needs
- * this at all against this codebase's real decay rates. */
-void handle_advance(uint32_t seconds) {
-    kf_pet_session_debug_advance(seconds);
-    char content[64];
-    const int n = std::snprintf(content, sizeof content, "ADVANCE seconds=%lu",
-                                 static_cast<unsigned long>(seconds));
-    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
-                          n > 0 ? static_cast<size_t>(n) : 0);
-}
-
-/* KFDBG RESET: kf_pet_session_debug_reset() -- a fresh egg, in place,
- * without touching whatever is currently on the device's NVS. See that
- * function's own comment in kf_pet_session.h. */
-void handle_reset() {
-    kf_pet_session_debug_reset();
-    static const char kMsg[] = "RESET";
-    kf_dbg_enqueue_reply("ack", reinterpret_cast<const uint8_t *>(kMsg),
-                          sizeof(kMsg) - 1);
-}
-
-/* KFDBG MULT <n>: sets g_time_multiplier, read once per frame by
+/* ADVANCE and RESET used to have their own handlers here. They are now table
+ * entries in kf_debug_actions.cpp (ADR 0060), dispatched by
+ * dispatch_shared_action() below, so that the desktop debug window and this
+ * bridge cannot offer different sets of portable debug actions. The bodies
+ * were one call each into kf_pet_session.h; that call now lives in the table
+ * where both sides reach it.
+ *
+ * KFDBG MULT <n>: sets g_time_multiplier, read once per frame by
  * app_main.cpp's loop via kf_dbg_time_multiplier() and folded into ONLY
  * the delta it hands kf_pet_session_frame() -- never LVGL's tick or Lua's
  * frame delta. See kf_dbg_time_multiplier()'s own comment in
@@ -1261,21 +1245,14 @@ void handle_flush() {
  * out-of-range teen_form/adult_branch silently fall back to 0 rather than
  * erroring, and this way a caller sees exactly what landed without a
  * separate KFDBG STATE round trip. */
-void handle_jump(uint32_t stage, uint32_t teen_form, uint32_t adult_branch) {
-    kf_pet_session_debug_jump_to_stage(static_cast<kf_pet_stage>(stage),
-                                        static_cast<uint8_t>(teen_form),
-                                        static_cast<uint8_t>(adult_branch));
-    const kf_pet_state *pet = kf_pet_session_state();
-    char content[80];
-    const int n = std::snprintf(
-        content, sizeof content, "JUMP stage=%d teen_form=%u adult_branch=%u",
-        static_cast<int>(pet->stage), static_cast<unsigned>(pet->teen_form),
-        static_cast<unsigned>(pet->adult_branch));
-    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
-                          n > 0 ? static_cast<size_t>(n) : 0);
-}
-
-/* KFDBG CLOCK DROWSY|BEDTIME|MORNING, or KFDBG CLOCK EPOCH <seconds>: moves
+/* JUMP's handler now lives in kf_debug_actions.cpp's table, alongside a
+ * NEXTSTAGE entry the desktop window had as a button and this bridge did not
+ * (ADR 0060). The "report the state that actually resulted, not an echo of
+ * the request" behaviour described above is preserved and generalised:
+ * dispatch_shared_action() sends that shape of ack for EVERY table verb, not
+ * just this one.
+ *
+ * KFDBG CLOCK DROWSY|BEDTIME|MORNING, or KFDBG CLOCK EPOCH <seconds>: moves
  * the world's clock, mirroring the desktop debug window's Drowsy/Bedtime/
  * Morning buttons (sdl_debug_window.cpp) plus one thing those buttons don't
  * offer -- an arbitrary epoch, for fixing a drifted DATE on real hardware
@@ -1297,25 +1274,13 @@ void handle_jump(uint32_t stage, uint32_t teen_form, uint32_t adult_branch) {
  * desktop buttons and this KFDBG verb can never drift apart the way an
  * earlier version of the desktop buttons once did against their own test
  * (see kf_pet_debug_clock_point's own comment for that history). */
-void handle_clock_point(kf_pet_debug_clock_point point, const char *name) {
-    const int64_t epoch = kf_pet_session_debug_clock_target(point);
-    kf_pet_session_debug_set_clock(epoch);
-    char content[64];
-    const int n = std::snprintf(content, sizeof content,
-                                 "CLOCK point=%s epoch=%lld", name,
-                                 static_cast<long long>(epoch));
-    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
-                          n > 0 ? static_cast<size_t>(n) : 0);
-}
-
-void handle_clock_epoch(int64_t epoch_seconds) {
-    kf_pet_session_debug_set_clock(epoch_seconds);
-    char content[48];
-    const int n = std::snprintf(content, sizeof content, "CLOCK epoch=%lld",
-                                 static_cast<long long>(epoch_seconds));
-    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
-                          n > 0 ? static_cast<size_t>(n) : 0);
-}
+/* Both handlers are now the single run_clock() entry in
+ * kf_debug_actions.cpp's table, which keeps every word of the reasoning
+ * above intact -- it still calls kf_pet_session_debug_set_clock() rather
+ * than kf_time_set_wall(), and still resolves the three named points through
+ * kf_pet_session_debug_clock_target() rather than naming times itself. What
+ * changed is only that the desktop window now reaches the same code, instead
+ * of a parallel copy that once drifted against its own test. */
 
 /* KFDBG RTC: reads the DS3231 directly over I2C via kf_esp_time_debug.h's
  * one accessor -- NOT kf_time_wall(), which is the in-RAM clock and never
@@ -1482,6 +1447,138 @@ bool parse_care_variation(const char *&p, const char *line, uint8_t *out) {
     return true;
 }
 
+/* Every verb kf_debug_actions.h owns, dispatched from that ONE table rather
+ * than from a branch here (ADR 0060). This is what makes the desktop debug
+ * window and this bridge structurally incapable of offering different sets
+ * of portable debug actions: a verb exists here if and only if it is in the
+ * table, and the parity test enumerates the same table from the other side.
+ *
+ * Returns false when `verb` is not in the table at all, which is the caller's
+ * signal to fall through to its "unknown subcommand" reply. Returns TRUE for
+ * a verb that was found but whose arguments failed to parse -- the reply has
+ * already been sent in that case, and reporting it as "unknown" instead would
+ * be actively misleading.
+ *
+ * The device-only verbs (RTC/SCANLINE/VSYNC/SHOT) and the parity-by-other-
+ * means verbs (care actions, BTN/BTNHOLD, PING, STATE, MULT) are NOT here.
+ * They are still branches in process_command_line() below, and
+ * kf_debug_actions.cpp declares each one as a deliberate exception so the
+ * parity test can tell "excluded on purpose" from "forgotten". */
+bool dispatch_shared_action(const char *verb, const char *&p,
+                            const char *line) {
+    const kf_debug_action *action = kf_debug_action_find(verb);
+    if (action == nullptr) {
+        return false;
+    }
+    if (action->mutates && !require_mutate_enabled(line)) {
+        return true;
+    }
+
+    kf_debug_args args{};
+    char tok[24];
+
+    switch (action->arg) {
+    case KF_DEBUG_ARG_NONE:
+        break;
+
+    case KF_DEBUG_ARG_U32:
+        if (!next_token(p, tok, sizeof tok) || !parse_decimal(tok, &args.value)) {
+            reply_err(line, "this KFDBG command needs one decimal argument");
+            return true;
+        }
+        break;
+
+    case KF_DEBUG_ARG_STAGE: {
+        /* One required arg (stage), two optional (teen_form, adult_branch)
+         * -- both default to 0 when omitted, matching
+         * kf_pet_session_debug_jump_to_stage()'s own "unset" default. No
+         * further range validation here: the session layer owns that, and
+         * duplicating it would give two places to disagree. */
+        if (!next_token(p, tok, sizeof tok) || !parse_decimal(tok, &args.value)) {
+            reply_err(line, "KFDBG JUMP needs at least a decimal stage "
+                             "argument (0=egg..4=adult)");
+            return true;
+        }
+        if (next_token(p, tok, sizeof tok)) {
+            if (!parse_decimal(tok, &args.teen_form)) {
+                reply_err(line, "KFDBG JUMP's teen_form argument must be decimal");
+                return true;
+            }
+            if (next_token(p, tok, sizeof tok)) {
+                if (!parse_decimal(tok, &args.adult_branch)) {
+                    reply_err(line,
+                              "KFDBG JUMP's adult_branch argument must be decimal");
+                    return true;
+                }
+            }
+        }
+        break;
+    }
+
+    case KF_DEBUG_ARG_CLOCK: {
+        if (!next_token(p, tok, sizeof tok)) {
+            reply_err(line, "KFDBG CLOCK's argument must be DROWSY, "
+                             "BEDTIME, MORNING, or EPOCH <seconds>");
+            return true;
+        }
+        kf_pet_debug_clock_point point{};
+        if (parse_clock_point(tok, &point)) {
+            args.clock = point == KF_PET_DEBUG_CLOCK_DROWSY
+                             ? KF_DEBUG_CLOCK_DROWSY
+                             : (point == KF_PET_DEBUG_CLOCK_BEDTIME
+                                    ? KF_DEBUG_CLOCK_BEDTIME
+                                    : KF_DEBUG_CLOCK_MORNING);
+        } else if (std::strcmp(tok, "EPOCH") == 0) {
+            uint64_t epoch_u = 0;
+            if (!next_token(p, tok, sizeof tok) || !parse_decimal64(tok, &epoch_u)) {
+                reply_err(line, "KFDBG CLOCK EPOCH needs one decimal seconds "
+                                 "argument");
+                return true;
+            }
+            args.clock = KF_DEBUG_CLOCK_EPOCH;
+            args.epoch_seconds = static_cast<int64_t>(epoch_u);
+        } else {
+            reply_err(line, "KFDBG CLOCK's argument must be DROWSY, "
+                             "BEDTIME, MORNING, or EPOCH <seconds>");
+            return true;
+        }
+        break;
+    }
+
+    default:
+        reply_err(line, "internal: unhandled debug argument kind");
+        return true;
+    }
+
+    action->run(&args);
+
+    /* One ack shape for every table verb, reporting the resulting pet state
+     * rather than echoing the request. That is a deliberate change from the
+     * per-verb ack text these commands used to send: what a human at the
+     * other end of the serial link actually wants to know after JUMP or
+     * NEXTSTAGE is where the pet ENDED UP, and echoing the arguments back
+     * cannot tell them that. Safe to change because tools/kf_debug.py
+     * matches on the reply TYPE ("ack"), never on this text -- checked
+     * before making the change, not assumed. */
+    const kf_pet_state *pet = kf_pet_session_state();
+    char content[96];
+    const int n = std::snprintf(content, sizeof content,
+                                "%s ok stage=%d age=%lu", action->verb,
+                                static_cast<int>(pet->stage),
+                                static_cast<unsigned long>(
+                                    kf_pet_session_debug_age_seconds()));
+    if (n < 0 || static_cast<size_t>(n) >= sizeof content) {
+        /* Cannot happen with the longest verb and plausible values, but a
+         * silently truncated ack is the kind of thing that gets believed --
+         * see the KFDBG STATE buffer's own guard for the same reasoning. */
+        reply_err(line, "internal: ack buffer too small");
+        return true;
+    }
+    kf_dbg_enqueue_reply("ack", reinterpret_cast<uint8_t *>(content),
+                         static_cast<size_t>(n));
+    return true;
+}
+
 void process_command_line(const char *line) {
     const char *p = line;
     char tok0[16];
@@ -1546,22 +1643,6 @@ void process_command_line(const char *line) {
             return;
         }
         handle_btnhold(mask, ms);
-    } else if (std::strcmp(tok1, "ADVANCE") == 0) {
-        if (!require_mutate_enabled(line)) {
-            return;
-        }
-        char tok2[16];
-        uint32_t seconds = 0;
-        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &seconds)) {
-            reply_err(line, "KFDBG ADVANCE needs one decimal seconds argument");
-            return;
-        }
-        handle_advance(seconds);
-    } else if (std::strcmp(tok1, "RESET") == 0) {
-        if (!require_mutate_enabled(line)) {
-            return;
-        }
-        handle_reset();
     } else if (std::strcmp(tok1, "MULT") == 0) {
         if (!require_mutate_enabled(line)) {
             return;
@@ -1582,34 +1663,6 @@ void process_command_line(const char *line) {
             return;
         }
         handle_mult(mult);
-    } else if (std::strcmp(tok1, "CLOCK") == 0) {
-        if (!require_mutate_enabled(line)) {
-            return;
-        }
-        char tok2[16];
-        if (!next_token(p, tok2, sizeof tok2)) {
-            reply_err(line, "KFDBG CLOCK needs DROWSY, BEDTIME, MORNING, or "
-                             "EPOCH <seconds>");
-            return;
-        }
-        kf_pet_debug_clock_point point{};
-        if (parse_clock_point(tok2, &point)) {
-            handle_clock_point(point, tok2);
-        } else if (std::strcmp(tok2, "EPOCH") == 0) {
-            char tok3[24];
-            uint64_t epoch_u = 0;
-            if (!next_token(p, tok3, sizeof tok3) ||
-                !parse_decimal64(tok3, &epoch_u)) {
-                reply_err(line, "KFDBG CLOCK EPOCH needs one decimal seconds "
-                                 "argument");
-                return;
-            }
-            handle_clock_epoch(static_cast<int64_t>(epoch_u));
-        } else {
-            reply_err(line, "KFDBG CLOCK's argument must be DROWSY, "
-                             "BEDTIME, MORNING, or EPOCH <seconds>");
-            return;
-        }
     } else if (std::strcmp(tok1, "VSYNC") == 0) {
         char tok2[16];
         uint32_t v = 0;
@@ -1660,39 +1713,11 @@ void process_command_line(const char *line) {
             return;
         }
         handle_flush();
-    } else if (std::strcmp(tok1, "JUMP") == 0) {
-        if (!require_mutate_enabled(line)) {
-            return;
-        }
-        /* One required arg (stage), two optional (teen_form, adult_branch)
-         * -- both default to 0 when omitted, matching kf_pet_session_
-         * debug_jump_to_stage()'s own "unset" default. See handle_jump()'s
-         * own comment for why no further range validation happens here. */
-        char tok2[16];
-        char tok3[16];
-        char tok4[16];
-        uint32_t stage = 0;
-        uint32_t teen_form = 0;
-        uint32_t adult_branch = 0;
-        if (!next_token(p, tok2, sizeof tok2) || !parse_decimal(tok2, &stage)) {
-            reply_err(line, "KFDBG JUMP needs at least a decimal stage "
-                             "argument (0=egg..4=adult)");
-            return;
-        }
-        if (next_token(p, tok3, sizeof tok3)) {
-            if (!parse_decimal(tok3, &teen_form)) {
-                reply_err(line, "KFDBG JUMP's teen_form argument must be decimal");
-                return;
-            }
-            if (next_token(p, tok4, sizeof tok4)) {
-                if (!parse_decimal(tok4, &adult_branch)) {
-                    reply_err(line, "KFDBG JUMP's adult_branch argument must be decimal");
-                    return;
-                }
-            }
-        }
-        handle_jump(stage, teen_form, adult_branch);
-    } else {
+    } else if (!dispatch_shared_action(tok1, p, line)) {
+        /* Not one of the branches above and not in kf_debug_actions.h's
+         * table either -- see dispatch_shared_action()'s own comment for why
+         * a parse failure inside the table returns true rather than falling
+         * through to here. */
         reply_err(line, "unknown KFDBG subcommand");
     }
 }

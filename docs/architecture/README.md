@@ -65,6 +65,7 @@ future us in month eight asking the same question with less patience.
 | [0057](adr-0057-voice-melody-queue-and-volume.md) | Giving the creature its voice — the sequence queue fix, duty cycle, `kf.melody()`, level-crossing want pings, and a persisted volume setting | Accepted |
 | [0058](adr-0058-shared-frame-loop.md) | One shared frame loop, not two hand-maintained copies | Accepted |
 | [0059](adr-0059-st7789-verified-and-default.md) | The 2in ST7789 lights up, becomes the default, and takes a returned panel's reputation with it | Accepted |
+| [0060](adr-0060-shared-debug-actions.md) | One table of debug actions, and a checker that keeps both surfaces honest | Accepted |
 
 (0037 and 0038 do not exist — skipped numbers, not a gap in this list.)
 

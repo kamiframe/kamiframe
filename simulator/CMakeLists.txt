@@ -213,6 +213,13 @@ add_library(kamiframe_screen_port STATIC
     src/pet/kf_lua_settings_screen.cpp
     src/pet/kf_error_banner.cpp
     src/pet/kf_frame_loop.cpp
+    # kf_debug_actions.cpp: the one table of portable debug actions both the
+    # SDL debug window and the KFDBG bridge dispatch through. Lives in this
+    # library rather than kamiframe_pet_port because its SCREEN action calls
+    # kf_screen_nav_debug_advance(), declared right here in kf_screen_nav.h
+    # -- the same one-file-one-dependency reasoning kf_frame_loop.cpp above
+    # already follows.
+    src/pet/kf_debug_actions.cpp
 )
 target_link_libraries(kamiframe_screen_port
     PUBLIC hakoniwaos kamiframe_pet_port kamiframe_lua_port kamiframe_options)

@@ -54,6 +54,13 @@ jobs:
       - name: Core is float-free
         run: python3 tools/check_no_float.py .
 
+      # The desktop debug window and the KFDBG serial bridge offer the same
+      # set of debug actions, or this fails naming which one drifted. Source-
+      # level rather than a ctest case because kf_dbg_bridge.cpp is device-
+      # only code no desktop binary links -- see that script's own header.
+      - name: Debug surfaces are at parity
+        run: python3 tools/check_debug_parity.py
+
       # Stdlib-only (see that file's own header comment), so it runs on
       # every platform this workflow builds on -- unlike
       # tools/kf_panel_layout_check.py, which needs tkinter and a real

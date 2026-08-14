@@ -7,6 +7,7 @@
 #include "sdl_shared.h"
 
 #include "../host/host_time.h"
+#include "../pet/kf_debug_actions.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
 
@@ -456,6 +457,40 @@ kf_pet_stage jump_stage_for(DebugAction action) {
     }
 }
 
+/* Every button below that maps onto a portable debug action goes through
+ * kf_debug_actions.h's table rather than calling the session directly (ADR
+ * 0060). The button LAYOUT stays here -- rectangles, labels, which fixed
+ * argument each button supplies -- because that is presentation and the
+ * serial bridge has no use for it. What moved is the BEHAVIOUR, so that this
+ * window and KFDBG cannot offer different sets of debug actions.
+ *
+ * Aborts loudly on an unknown verb rather than silently doing nothing: a
+ * typo'd verb here is a dead button, which is exactly the class of quiet
+ * failure this whole mechanism exists to prevent. The parity checker
+ * (tools/check_debug_parity.py) catches it before a build, but this catches
+ * it if someone bypasses the checker. */
+void run_shared(const char *verb, const kf_debug_args &args) {
+    const kf_debug_action *action = kf_debug_action_find(verb);
+    if (action == nullptr) {
+        KF_LOGE("dbgwin", "debug button names verb '%s', which is not in "
+                          "kf_debug_actions.cpp's table -- button is dead",
+                verb);
+        return;
+    }
+    action->run(&args);
+}
+
+void run_shared(const char *verb) {
+    const kf_debug_args args{};
+    run_shared(verb, args);
+}
+
+void run_shared_u32(const char *verb, uint32_t value) {
+    kf_debug_args args{};
+    args.value = value;
+    run_shared(verb, args);
+}
+
 void perform(DebugAction action) {
     switch (action) {
     /* All three go through kf_pet_session_debug_clock_target() rather than
@@ -463,71 +498,86 @@ void perform(DebugAction action) {
      * the times these buttons ACTUALLY jump to. The first version of this
      * row did name them here, aimed ten seconds SHORT of each transition,
      * and appeared to do nothing -- see that function's header comment. */
-    case DebugAction::kClockDrowsy:
-        kf_pet_session_debug_set_clock(
-            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_DROWSY));
+    case DebugAction::kClockDrowsy: {
+        kf_debug_args args{};
+        args.clock = KF_DEBUG_CLOCK_DROWSY;
+        run_shared("CLOCK", args);
         break;
-    case DebugAction::kClockBedtime:
-        kf_pet_session_debug_set_clock(
-            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_BEDTIME));
+    }
+    case DebugAction::kClockBedtime: {
+        kf_debug_args args{};
+        args.clock = KF_DEBUG_CLOCK_BEDTIME;
+        run_shared("CLOCK", args);
         break;
-    case DebugAction::kClockMorning:
-        kf_pet_session_debug_set_clock(
-            kf_pet_session_debug_clock_target(KF_PET_DEBUG_CLOCK_MORNING));
+    }
+    case DebugAction::kClockMorning: {
+        kf_debug_args args{};
+        args.clock = KF_DEBUG_CLOCK_MORNING;
+        run_shared("CLOCK", args);
         break;
-    case DebugAction::kClockSyncHost:
+    }
+    case DebugAction::kClockSyncHost: {
         /* kf_host_time_system_now(), NOT kf_time_wall() -- the latter
          * reports the simulated clock this button exists to correct, so
          * using it would make the button a no-op that looks like it worked.
-         * Goes through _debug_set_clock() like the three above, so Core's
-         * last_advanced is dragged along with the HAL clock rather than
-         * left a day behind. */
-        kf_pet_session_debug_set_clock(kf_host_time_system_now());
+         *
+         * Resolved to an absolute epoch HERE and handed to the shared CLOCK
+         * action as one, rather than being a fifth clock target the table
+         * knows how to compute: kf_host_time_system_now() is desktop-only
+         * and is not part of the device build at all. The device reaches the
+         * identical code path with KFDBG CLOCK EPOCH <n>, which is what
+         * tools/kf_debug.py's `clock sync` sends after reading the host
+         * clock on its own side of the wire. */
+        kf_debug_args args{};
+        args.clock = KF_DEBUG_CLOCK_EPOCH;
+        args.epoch_seconds = kf_host_time_system_now();
+        run_shared("CLOCK", args);
         break;
+    }
     case DebugAction::kSkipHour:
-        kf_pet_session_debug_advance(3600u);
+        run_shared_u32("ADVANCE", 3600u);
         break;
     case DebugAction::kSkipDay:
-        kf_pet_session_debug_advance(24u * 3600u);
+        run_shared_u32("ADVANCE", 24u * 3600u);
         break;
     case DebugAction::kSkipWeek:
-        kf_pet_session_debug_advance(7u * 24u * 3600u);
+        run_shared_u32("ADVANCE", 7u * 24u * 3600u);
         break;
     case DebugAction::kReset:
-        kf_pet_session_debug_reset();
+        run_shared("RESET");
         break;
     case DebugAction::kSave:
-        kf_pet_session_save();
+        run_shared("SAVE");
         break;
     case DebugAction::kNextScreen:
         /* Same effect a real MENU press has on which pet-window screen is
-         * loaded -- see kf_screen_nav.h -- but calling this directly
-         * means kf_app_frame() never sees a KF_BTN_MENU edge, so Core's
-         * on-device HUD toggle (kf/app.cpp) never fires either. That is
-         * the entire point of this button; see this file's own header
-         * comment. */
-        kf_screen_nav_debug_advance();
+         * loaded -- see kf_screen_nav.h -- but this path means
+         * kf_app_frame() never sees a KF_BTN_MENU edge, so Core's on-device
+         * HUD toggle (kf/app.cpp) never fires either. That is the entire
+         * point of this button; see this file's own header comment. The
+         * device gained the same thing as KFDBG SCREEN with ADR 0060 --
+         * it previously had only BTN, which fires the real edge. */
+        run_shared("SCREEN");
         break;
     case DebugAction::kJumpNextStage: {
         /* "I want a button to just autoprogress" -- one press, one stage
-         * forward from wherever the pet currently is. Adult is terminal
-         * (kf/pet.h), so once already there, "the following stage" is
-         * Adult itself: this still refills needs and clears sickness/
-         * neglect/mess via the jump (kf_pet_session_debug_jump_to_stage()
-         * always starts from kf_pet_init()), it just does not move the
-         * marker further along the timeline -- there is nowhere further
-         * for it to go, the same terminal status kf_pet_advance() itself
-         * already enforces. */
-        const kf_pet_stage current = kf_pet_session_state()->stage;
-        const kf_pet_stage next = current < KF_PET_STAGE_ADULT
-                                       ? static_cast<kf_pet_stage>(
-                                             static_cast<int>(current) + 1)
-                                       : KF_PET_STAGE_ADULT;
-        kf_pet_session_debug_jump_to_stage(next, g.selected_teen_form,
-                                            g.selected_adult_branch);
+         * forward from wherever the pet currently is. The reasoning about
+         * Adult being terminal now lives with the behaviour, in
+         * kf_debug_actions.cpp's run_next_stage(); the device gained the
+         * same thing as KFDBG NEXTSTAGE with ADR 0060, having previously
+         * had only the absolute JUMP. */
+        kf_debug_args args{};
+        args.teen_form = g.selected_teen_form;
+        args.adult_branch = g.selected_adult_branch;
+        run_shared("NEXTSTAGE", args);
         break;
     }
     default:
+        /* The three picker families below set THIS WINDOW'S selection state
+         * and perform no pet action, which is why they are not table verbs:
+         * on the serial side the equivalent is passing teen_form/
+         * adult_branch as arguments to JUMP directly, and the multiplier is
+         * per-backend by design (see kf_debug_actions.h). */
         if (is_multiplier_button(action)) {
             g.multiplier = multiplier_for(action);
         } else if (is_teen_form_button(action)) {
@@ -535,9 +585,11 @@ void perform(DebugAction action) {
         } else if (is_adult_branch_button(action)) {
             g.selected_adult_branch = adult_branch_for(action);
         } else if (is_jump_stage_button(action)) {
-            kf_pet_session_debug_jump_to_stage(
-                jump_stage_for(action), g.selected_teen_form,
-                g.selected_adult_branch);
+            kf_debug_args args{};
+            args.value = static_cast<uint32_t>(jump_stage_for(action));
+            args.teen_form = g.selected_teen_form;
+            args.adult_branch = g.selected_adult_branch;
+            run_shared("JUMP", args);
         }
         break;
     }
