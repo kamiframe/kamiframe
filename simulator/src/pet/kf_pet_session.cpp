@@ -639,6 +639,24 @@ void kf_pet_session_debug_jump_to_stage(kf_pet_stage stage, uint8_t teen_form,
      * timelines in the same age range. Starting a fresh ring here avoids
      * that entirely rather than risking it. */
     debug_snapshot_reset();
+
+    /* Checkpoint immediately, for the same reason ADR 0056 made the care
+     * actions checkpoint: the pet you just changed should still be there
+     * after a power cut.
+     *
+     * This used to rely on the dirty-gated periodic save alone, which is a
+     * TEN MINUTE interval -- so jumping to a stage to set up a test and then
+     * pulling the plug inside that window silently gave the old pet back.
+     * Found on hardware: a KFDBG NEXTSTAGE to Teen, a power cycle a few
+     * minutes later for the coin-cell test, and the creature came back a
+     * Child at its pre-jump age. Nothing was broken; the jump had simply
+     * never been written, which is worse than broken because it looks like
+     * the jump silently failed.
+     *
+     * Applies to both surfaces at once now that they share one table
+     * (ADR 0060): the desktop window's stage buttons and KFDBG JUMP /
+     * NEXTSTAGE all land here. */
+    kf_pet_session_save();
 }
 
 uint64_t kf_pet_session_debug_age_seconds(void) {

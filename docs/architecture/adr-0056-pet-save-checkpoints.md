@@ -262,6 +262,29 @@ not to build ahead of what bring-up has actually shown.
   this task.
 - Device deep sleep remains unbuilt, on purpose — see "Context" above.
 
+### Extended 2026-08-14: debug stage jumps checkpoint too
+
+`kf_pet_session_debug_jump_to_stage()` did not save, and relied on the
+dirty-gated periodic checkpoint above — a **ten minute** interval.
+
+Found on hardware, not by reading: a `KFDBG NEXTSTAGE` to Teen, then a power
+cycle a few minutes later for the coin-cell OSF test, and the creature came
+back a Child at its pre-jump age. Nothing was broken — the jump had simply
+never been written. That is worse than broken, because it presents as a
+command that silently did nothing.
+
+It now saves immediately, on the same principle this ADR applied to the care
+actions: the pet you just changed should still be there after a power cut. A
+developer setting up a test state and then pulling the plug *to test
+persistence* is a likelier user of that jump than most, which makes the old
+behaviour actively misleading in exactly the situation it mattered.
+
+Covered by `checkpoint 4` in `run_save_checkpoint_check()`, asserting
+**exactly one** save attempt — not "at least one", since two would mean the
+checkpoint is firing from two places and one is redundant. Applies to the
+desktop stage buttons and the KFDBG verbs at once, both reaching it through
+ADR 0060's shared table.
+
 ## What was verified before writing this, and what was not
 
 - **Verified:** `kf_pet_session_shutdown()` was the sole caller of

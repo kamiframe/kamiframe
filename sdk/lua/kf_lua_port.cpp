@@ -29,8 +29,14 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <strings.h> /* POSIX strncasecmp -- not in <cstring>/std::, see
-                       * note_token_hz() below for the one call site */
+/* <strings.h> (POSIX strncasecmp) used to be included here for
+ * note_token_hz()'s one call site. It is gone: that header does not exist on
+ * MSVC, which broke the Windows CI job with `Cannot open include file:
+ * 'strings.h'`. The nearest portable replacements are all worse -- MSVC's
+ * _strnicmp is Windows-only, and C++ has no standard case-insensitive
+ * compare at all -- so ascii_ieq() below does the job in four lines. See its
+ * own comment for why ASCII-only is the right semantics here rather than a
+ * limitation. */
 
 namespace {
 
@@ -361,6 +367,35 @@ struct NoteName {
     const char *letters;
     int semitone;
 };
+
+/* Case-insensitive compare over exactly `n` bytes, ASCII only.
+ *
+ * Replaces POSIX strncasecmp(), which MSVC does not have -- see the note at
+ * this file's includes. ASCII-only is the correct semantics rather than a
+ * shortcut: both sides are note names, one from kNoteTable above (literally
+ * "C", "C#", "Db"...) and one a token out of a Lua melody string. A
+ * locale-aware fold would be wrong here, since a Turkish locale's dotless-i
+ * rule can make 'I' and 'i' compare unequal -- which would be an
+ * entertaining way for a melody to stop parsing on someone else's machine.
+ *
+ * std::tolower() is avoided for the same reason (it is locale-dependent, and
+ * additionally UB on negative char values). */
+bool ascii_ieq(const char *a, const char *b, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = static_cast<char>(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = static_cast<char>(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return true;
+}
 constexpr NoteName kNoteTable[] = {
     {"C", 0}, {"C#", 1}, {"D", 2}, {"D#", 3}, {"E", 4},  {"F", 5},
     {"F#", 6}, {"G", 7}, {"G#", 8}, {"A", 9}, {"A#", 10}, {"B", 11},
@@ -401,7 +436,7 @@ bool note_token_hz(const char *tok, size_t len, uint32_t *out_hz) {
     const size_t letters_len = len - 1;
     for (const NoteName &n : kNoteTable) {
         if (std::strlen(n.letters) == letters_len &&
-            strncasecmp(n.letters, tok, letters_len) == 0) {
+            ascii_ieq(n.letters, tok, letters_len)) {
             const double semitones_from_a4 =
                 (octave + 1) * 12 + n.semitone - 69;
             const double hz = 440.0 * std::pow(2.0, semitones_from_a4 / 12.0);

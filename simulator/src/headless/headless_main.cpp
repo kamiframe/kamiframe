@@ -1173,6 +1173,26 @@ int run_pet_save_checkpoints_check() {
               "checkpoint 3: due AND dirty (a live pet that just ticked) "
               "attempts exactly one periodic save");
 
+        /* Checkpoint 4: a debug stage jump saves immediately.
+         *
+         * Regression test for a real hardware finding: a KFDBG NEXTSTAGE to
+         * Teen followed by a power cycle a few minutes later gave back the
+         * pre-jump Child, because the jump relied on the ten-minute
+         * dirty-gated periodic save above and never reached it. The jump had
+         * not failed -- it had simply never been written, which reads as a
+         * silently broken command.
+         *
+         * Asserts exactly one attempt, not "at least one": a jump that
+         * saved twice would mean the checkpoint is firing from two places
+         * and one of them is redundant. */
+        const uint32_t before_jump =
+            kf_pet_session_debug_save_attempt_count();
+        kf_pet_session_debug_jump_to_stage(KF_PET_STAGE_TEEN, 0u, 0u);
+        check(kf_pet_session_debug_save_attempt_count() == before_jump + 1u,
+              "checkpoint 4: a debug stage jump attempts exactly one save, "
+              "so the jumped-to pet survives a power cut rather than waiting "
+              "on the ten-minute periodic checkpoint");
+
         kf_pet_session_shutdown();
     }
     kf_store_erase("pet");

@@ -242,6 +242,34 @@ typedef enum {
     KF_VOLUME_2 = 2,
     KF_VOLUME_3 = 3,
     KF_VOLUME_4 = 4,
+
+    /* NOT A VOLUME. A range guard, and the reason it exists is subtle
+     * enough to be worth the clutter.
+     *
+     * Without it, this enum's valid range is derived from its enumerators
+     * and stops at 7 (the smallest bit-field that holds 4). Casting
+     * anything larger into the type is then UNSPECIFIED behaviour, not
+     * merely an out-of-range value -- and out-of-range values genuinely
+     * occur here, because the level is persisted and restored, and
+     * kf_audio_set_volume() clamps precisely because it does not trust what
+     * it is handed. A clamp against a value the language says is
+     * meaningless is not a clamp.
+     *
+     * GCC says so out loud under -Wconversion ("the result of the
+     * conversion is unspecified because '99' is outside the range of type
+     * kf_volume_level"). It was invisible locally because CI builds with
+     * -DKAMIFRAME_WARNINGS_AS_ERRORS=ON and an ordinary local build does
+     * not.
+     *
+     * A fixed underlying type (`enum : uint8_t`) would be the tidier fix
+     * and is deliberately NOT used: that is C23, this project builds its
+     * HAL headers as C17, and ADR 0001 commits them to staying
+     * C-compatible. This spelling works in both languages.
+     *
+     * KF_VOLUME_LEVEL_COUNT below stays 5 -- anything iterating real levels
+     * must use that, never this. Any switch over kf_volume_level needs a
+     * default case, which every one in the tree already has. */
+    KF_VOLUME_LEVEL_RANGE_GUARD = 255,
 } kf_volume_level;
 
 #define KF_VOLUME_LEVEL_COUNT 5u
