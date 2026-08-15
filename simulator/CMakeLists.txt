@@ -98,11 +98,21 @@ target_compile_definitions(kamiframe_host_common PUBLIC
 # pointing the direction it actually runs (creature screen depended ON,
 # never depending on LVGL) instead of the reverse.
 # ---------------------------------------------------------------------------
+#
+# kf_soft3d.cpp joins this library for the same one-file-one-dependency
+# reason: it draws through kf/framebuffer.h and kf/blit.h and needs nothing
+# else. It is FLOAT code, which is why it is here rather than in hakoniwaos/
+# -- tools/check_no_float.py and tools/check_no_heap.py both gate Core, and a
+# perspective divide cannot honour either -- and it is compiled by relative
+# path into ports/esp32/main/CMakeLists.txt's SRCS as well, the same
+# one-canonical-copy pattern kf_frame_loop.cpp already uses. See
+# src/pet/kf_soft3d.h's own header comment.
 add_library(kamiframe_pet_port STATIC
     src/pet/kf_pet_session.cpp
     src/pet/kf_creature_screen.cpp
     src/pet/kf_creature_presenter.cpp
     src/pet/kf_home_screen_input.cpp
+    src/pet/kf_soft3d.cpp
 )
 target_include_directories(kamiframe_pet_port
     PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src/pet)

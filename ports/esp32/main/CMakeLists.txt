@@ -175,6 +175,7 @@ idf_component_register(
         ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../simulator/src/pet/kf_creature_presenter.cpp
         ../../../simulator/src/pet/kf_home_screen_input.cpp
+        ../../../simulator/src/pet/kf_soft3d.cpp
         ../../../simulator/src/pet/kf_screen_nav.cpp
         ../../../simulator/src/pet/kf_lua_home_screen.cpp
         ../../../simulator/src/pet/kf_lua_settings_screen.cpp
@@ -353,6 +354,33 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 ## survived the real game for a long run, not a test card: marginal SPI drops
 ## occasional bits rather than failing outright, and the symptom is a stray
 ## speckle or a slightly wrong colour minutes apart.
+## KF_DEMO3D: flash a build that shows the software 3D renderer instead of
+## the pet, to see what it actually looks like on glass.
+##
+##     idf.py -DKF_DEMO3D=1 build flash monitor    # 2.5D: 3D pet in a window
+##     idf.py -DKF_DEMO3D=2 build flash monitor    # full-screen 3D
+##     idf.py build flash monitor                  # back to the pet
+##
+## Every 3D number this project has is a desktop model (kamiframe-headless
+## --stress3d). This is the only way to get one off real silicon, and to see
+## whether a lit low-poly creature reads as 3D at 240x320 on a 2in panel --
+## which no measurement can answer.
+##
+## Does not touch the pet's save: the demo build never runs the pet session,
+## so reflashing without the flag brings the creature back where it was.
+set(KF_DEMO3D "0" CACHE STRING "0=pet, 1=2.5D demo, 2=full-screen 3D demo")
+if(NOT KF_DEMO3D MATCHES "^[012]$")
+    message(FATAL_ERROR
+        "KF_DEMO3D must be 0, 1 or 2, got '${KF_DEMO3D}'.")
+endif()
+if(NOT KF_DEMO3D STREQUAL "0")
+    message(STATUS "KF_DEMO3D=${KF_DEMO3D}: this build shows the 3D demo, "
+                    "NOT the pet")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    KF_DEMO3D_MODE=${KF_DEMO3D}
+)
+
 set(KF_SPI_HZ "" CACHE STRING "Display SPI clock in Hz; empty = the active panel profile's measured spi_hz")
 if(NOT KF_SPI_HZ STREQUAL "")
     if(NOT KF_SPI_HZ MATCHES "^[0-9]+$")

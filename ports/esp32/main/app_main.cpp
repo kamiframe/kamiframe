@@ -112,6 +112,32 @@
 #include "kf_pet_session.h"
 #include "kf_screen_nav.h"
 
+/* KF_DEMO3D_MODE: 0 = normal (the pet). 1 = the 2.5D configuration, a lit 3D
+ * creature in a small window inside a scene painted once. 2 = full-screen 3D.
+ *
+ * A LOOK-AT-IT BUILD, not a feature. It replaces the pet entirely for the
+ * session and exists to answer one question the desktop model cannot: what
+ * does software 3D actually look like, and cost, on this panel. The
+ * measurements in simulator/src/headless (--stress3d) are all host-modelled;
+ * this is the same renderer on real silicon.
+ *
+ *     idf.py -DKF_DEMO3D=1 build flash monitor    # 2.5D pet window
+ *     idf.py -DKF_DEMO3D=2 build flash monitor    # full-screen 3D
+ *     idf.py build flash monitor                  # back to the pet
+ *
+ * The pet's save in NVS is never touched by this build -- it does not run
+ * the pet session at all -- so reflashing without the flag brings the
+ * creature back exactly where it was, aged by however long the demo ran. */
+#ifndef KF_DEMO3D_MODE
+#define KF_DEMO3D_MODE 0
+#endif
+
+#if KF_DEMO3D_MODE
+#include "kf/framebuffer.h"
+#include "kf_soft3d.h"
+#include <cmath>
+#endif
+
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_system.h"
@@ -120,6 +146,165 @@
 #include <stdio.h>
 
 namespace {
+
+#if KF_DEMO3D_MODE
+/* One frame of the 3D demo, in place of the shared pet frame loop.
+ *
+ * Spins so the lighting sweeps across the faces -- a still lit blob and a
+ * flat silhouette look far too similar to judge from, which is the whole
+ * reason this exists rather than a screenshot.
+ *
+ * Logs its real measured cost once a second. Those numbers are the point:
+ * every 3D figure this project has so far is a desktop model, and this is
+ * the first time the rasteriser runs on the hardware it is being judged
+ * for. Reports the geometry and raster halves apart, because per-triangle
+ * setup and per-pixel fill scale with completely different things. */
+void run_soft3d_demo_frame() {
+    static float yaw = 0.0f;
+    static float pitch = 0.0f;
+    static float light_t = 0.0f;
+    static uint64_t next_log_us = 0;
+    static uint32_t frames = 0;
+    static uint64_t sum_us = 0;
+
+    constexpr kf_color kSceneColor = KF_RGB(24, 26, 34);
+
+#if KF_DEMO3D_MODE == 2
+    /* Full screen: the worst case, and the contrast that makes the 2.5D
+     * number meaningful. Nothing moves the window here -- it is already
+     * everything. */
+    const kf_rect viewport = {0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT};
+    static bool scene_painted = false;
+#else
+    /* 2.5D: a pet-sized window that DRIFTS around the screen, bouncing off
+     * the edges. Moving it is not decoration -- a stationary window cannot
+     * show whether the dirty-rectangle path keeps up when the changed region
+     * is somewhere new every frame, which is exactly what a wandering
+     * creature does. */
+    constexpr int16_t kWin = 120;
+    static float px = 20.0f;
+    static float py = 60.0f;
+    static float vx = 0.9f;
+    static float vy = 0.7f;
+    static bool scene_painted = false;
+
+    px += vx;
+    py += vy;
+    if (px < 0.0f) { px = 0.0f; vx = -vx; }
+    if (py < 0.0f) { py = 0.0f; vy = -vy; }
+    if (px > static_cast<float>(KF_DISPLAY_WIDTH - kWin)) {
+        px = static_cast<float>(KF_DISPLAY_WIDTH - kWin);
+        vx = -vx;
+    }
+    if (py > static_cast<float>(KF_DISPLAY_HEIGHT - kWin)) {
+        py = static_cast<float>(KF_DISPLAY_HEIGHT - kWin);
+        vy = -vy;
+    }
+    const int16_t x0 = static_cast<int16_t>(px);
+    const int16_t y0 = static_cast<int16_t>(py);
+    const kf_rect viewport = {x0, y0, static_cast<int16_t>(x0 + kWin),
+                              static_cast<int16_t>(y0 + kWin)};
+#endif
+
+    if (!scene_painted) {
+        kf_color *fb = kf_fb_pixels();
+        for (int i = 0; i < KF_FRAMEBUFFER_PIXELS; ++i) {
+            fb[i] = kSceneColor;
+        }
+        const kf_rect all = {0, 0, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT};
+        kf_fb_mark_dirty(all);
+        scene_painted = true;
+    }
+
+    /* CLEAR THE WINDOW BEFORE DRAWING INTO IT. Without this the object
+     * leaves a ghost trail of itself as it turns, which is exactly what the
+     * first run on hardware showed.
+     *
+     * It is not a bug in the rasteriser: kf_soft3d_rasterize() fills
+     * triangles and nothing else, deliberately, because a caller compositing
+     * a creature over a drawn scene must be able to do so without the
+     * renderer erasing what is underneath. Clearing is the caller's call,
+     * and a demo on a flat background is the case where the caller wants it.
+     *
+     * `last` is cleared as well as the current window: when the window
+     * moves, the pixels it VACATED still hold the previous frame's object
+     * and nothing else would ever repaint them. Both rectangles are marked
+     * dirty, which is 2 of the 8 the frame allows. */
+    static kf_rect last = {0, 0, 0, 0};
+    static bool have_last = false;
+    kf_color *fb = kf_fb_pixels();
+    auto clear_rect = [&](const kf_rect &r) {
+        for (int16_t y = r.y0; y < r.y1; ++y) {
+            kf_color *row = fb + static_cast<size_t>(y) * KF_DISPLAY_WIDTH;
+            for (int16_t x = r.x0; x < r.x1; ++x) {
+                row[x] = kSceneColor;
+            }
+        }
+        kf_fb_mark_dirty(r);
+    };
+    if (have_last) {
+        clear_rect(last);
+    }
+    clear_rect(viewport);
+    last = viewport;
+    have_last = true;
+
+    /* The light travels while the object tumbles on two axes. A single-axis
+     * spin under a fixed light is genuinely ambiguous -- it can read as a
+     * flat shape with cycling colours. A highlight sweeping ACROSS the
+     * surface while the silhouette changes independently is something only a
+     * solid can do, and settles the "does this look 3D" question that no
+     * timing number answers. */
+    const float lx = -0.60f * std::cos(light_t);
+    const float ly = 0.55f;
+    const float lz = -0.60f - 0.35f * std::sin(light_t);
+    kf_soft3d_set_light(lx, ly, lz);
+
+    const uint64_t t0 = kf_time_mono_us();
+    kf_soft3d_stats stats{};
+    kf_soft3d_render(viewport, yaw, pitch, &stats);
+    const uint64_t t1 = kf_time_mono_us();
+
+    yaw += 2.0f;
+    if (yaw >= 360.0f) {
+        yaw -= 360.0f;
+    }
+    /* Deliberately not a multiple of the yaw step, so the pair never settles
+     * into a short repeating cycle that looks like a canned animation. */
+    pitch += 0.7f;
+    if (pitch >= 360.0f) {
+        pitch -= 360.0f;
+    }
+    light_t += 0.05f;
+    if (light_t >= 6.2832f) {
+        light_t -= 6.2832f;
+    }
+
+    sum_us += (t1 - t0);
+    ++frames;
+    if (t1 >= next_log_us) {
+        /* Every FIVE seconds, not every one. Serial logging is the reason
+         * the first run hitched: this line plus Core's own per-second budget
+         * report is close to a kilobyte down a 115200 baud link, and that is
+         * roughly 80ms of blocking UART -- far more than the 1ms of actual
+         * 3D work it is reporting on. The measurement was disturbing the
+         * thing it measured. */
+        KF_LOGI("soft3d",
+                "mode %d: %lu us/frame avg over %lu frames, %lu of %lu tris, "
+                "%lu px, %lu spans",
+                KF_DEMO3D_MODE,
+                static_cast<unsigned long>(frames ? sum_us / frames : 0),
+                static_cast<unsigned long>(frames),
+                static_cast<unsigned long>(stats.tris_drawn),
+                static_cast<unsigned long>(stats.tris_submitted),
+                static_cast<unsigned long>(stats.pixels_written),
+                static_cast<unsigned long>(stats.spans));
+        next_log_us = t1 + 5000000ull;
+        frames = 0;
+        sum_us = 0;
+    }
+}
+#endif /* KF_DEMO3D_MODE */
 constexpr const char *TAG = "app_main";
 
 /* How often to print the pet's state to the serial log, on top of the
@@ -238,6 +423,13 @@ extern "C" void app_main(void) {
     KF_LOGI(TAG, "starting kf_dbg_bridge_init (serial debug bridge)");
     kf_dbg_bridge_init();
 
+#if KF_DEMO3D_MODE
+    KF_LOGW(TAG, "KF_DEMO3D_MODE=%d -- this build shows the software 3D "
+                 "demo INSTEAD of the pet. The pet's save in NVS is not "
+                 "touched; reflash without -DKF_DEMO3D to get it back.",
+            KF_DEMO3D_MODE);
+#endif
+
     uint64_t next_pet_log_us = kf_time_mono_us() + kPetLogIntervalUs;
 
     KF_LOGI(TAG, "running (kf_app_frame loop; no quit condition on device)");
@@ -286,7 +478,11 @@ extern "C" void app_main(void) {
          * that would answer neither "is the render path over budget" nor
          * "is the rest of the loop over budget" precisely. */
         const uint64_t post_frame_start_us = kf_time_mono_us();
+#if KF_DEMO3D_MODE
+        run_soft3d_demo_frame();
+#else
         kf_frame_loop_run(kf_dbg_time_multiplier(), nullptr);
+#endif
         const uint64_t now_us = kf_time_mono_us();
         g_post_frame_us = static_cast<uint32_t>(now_us - post_frame_start_us);
 

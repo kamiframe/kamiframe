@@ -47,6 +47,7 @@
  *     kamiframe-headless --verify-clock
  *     kamiframe-headless --verify-audio
  *     kamiframe-headless --verify-frame-loop-multiplier
+ *     kamiframe-headless --stress3d [2d|2.5d|3d|all] [--frames N]
  *
  * Exit codes:
  *     0  everything asserted held
@@ -64,6 +65,7 @@
 #include "kf/framebuffer.h"
 #include "kf/hal/log.h"
 #include "kf/hal/audio.h"
+#include "kf/hal/display.h"
 #include "kf/hal/power.h"
 #include "kf/hal/storage.h"
 #include "kf/hal/time.h"
@@ -92,6 +94,7 @@
 #include "../pet/kf_lua_settings_screen.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
+#include "../pet/kf_soft3d.h"
 #include "headless_probe.h"
 
 #include <algorithm>
@@ -11600,6 +11603,583 @@ int run_home_clock_check(void) {
     return ok ? 0 : 1;
 }
 
+/* ==========================================================================
+ * --stress3d MODE : could this device run a 3D virtual pet, and at what size?
+ *
+ * Three modes, measured with the same columns so they can be read against
+ * each other, because the question behind them is a product decision (2D
+ * sprite pet vs 3D creature in a 2D scene vs full 3D) and not a technical
+ * preference:
+ *
+ *   2d    many independently-moving animated sprites, no 3D at all
+ *   2.5d  a 3D lit creature in a small window inside a STATIC background
+ *   3d    full-screen 3D, every pixel redrawn -- the worst case
+ *
+ * HOW THE DEVICE NUMBERS ARE ARRIVED AT, because this runs on a PC and
+ * kf/budget.h is right that the PC lies about all of it:
+ *
+ *   - PIXEL WORK (fills, blits, triangle spans) is costed the way every other
+ *     screen in this project already is: kf/blit.h counts the pixels written,
+ *     split by cost shape, and KF_DRAW_OPAQUE_PX_PER_US / KF_DRAW_KEYED_PX_
+ *     PER_US convert the count to device microseconds. Host-independent by
+ *     construction -- the same count on any machine.
+ *
+ *   - GEOMETRY WORK (rotate, project, cull, shade, depth-sort) has no pixels
+ *     to count, so no existing model covers it. It is measured on the host and
+ *     multiplied by a CALIBRATION FACTOR derived, in this same run, from
+ *     scalar per-pixel blit code whose device cost the project's own model
+ *     already asserts. That makes the factor an internally-consistent
+ *     scalar-code host:device ratio rather than a number picked out of the
+ *     air -- but it is still a SCALING ASSUMPTION and not silicon. The factor
+ *     is printed so it can be judged, and the geometry column is reported
+ *     separately so a reader who distrusts it can discard exactly that column
+ *     and keep everything else.
+ *
+ *   - TRANSFER is estimated from the dirty rectangles at the display caps'
+ *     link speed, the identical arithmetic hakoniwaos/src/app.cpp's
+ *     estimate_transfer_us() uses.
+ *
+ * No golden checksum and no ctest entry: host wall-clock timing is not
+ * deterministic and has no business gating CI. This is an instrument, run by
+ * hand. It still asserts its own non-vacuity (triangles really get culled,
+ * shading really varies across faces, the static background really does stop
+ * costing transfer) and exits non-zero if any of that stops holding.
+ * ========================================================================== */
+
+using StressClock = std::chrono::steady_clock;
+
+double stress_us_since(StressClock::time_point t0) {
+    return std::chrono::duration<double, std::micro>(StressClock::now() - t0)
+        .count();
+}
+
+constexpr kf_rect kStressFullScreen = {0, 0,
+                                       static_cast<int16_t>(KF_DISPLAY_WIDTH),
+                                       static_cast<int16_t>(KF_DISPLAY_HEIGHT)};
+/* 120x120, horizontally centred, sitting where a creature stands on the Home
+ * screen today (kf_creature_screen.cpp's field is {0,0,240,260}). */
+constexpr kf_rect kStressPetWindow = {60, 70, 180, 190};
+
+/* Same arithmetic as hakoniwaos/src/app.cpp's estimate_transfer_us(), which
+ * is file-static there. Duplicated rather than exported: this is a
+ * measurement harness reading the same caps, and widening Core's surface for
+ * an experiment would be the wrong trade. */
+uint32_t stress_transfer_us(uint64_t bytes) {
+    const uint32_t bps = kf_display_get_caps()->link_bytes_per_second;
+    if (bps == 0u || bytes == 0u) {
+        return 0u;
+    }
+    return static_cast<uint32_t>((bytes * 1000000ull) / bps);
+}
+
+uint32_t stress_draw_us(const kf_draw_counters &c) {
+    return c.opaque_pixels / KF_DRAW_OPAQUE_PX_PER_US +
+           c.keyed_pixels / KF_DRAW_KEYED_PX_PER_US;
+}
+
+/* One row of the comparison table. */
+struct StressRow {
+    std::string name;
+    double draw_us = 0.0;     /* device estimate: pixel model + scaled geometry */
+    double geometry_us = 0.0; /* the scaled part, broken out */
+    double transfer_us = 0.0;
+    double dirty_px = 0.0;
+    double rects = 0.0;
+    double tris_per_frame = 0.0;
+    double host_us = 0.0; /* what the PC actually took, for reference only */
+};
+
+void stress_print_table(const std::vector<StressRow> &rows) {
+    std::printf(
+        "\n"
+        "  mode                        draw us  (geom)  xfer us  total us"
+        "    fps   dirty px  rects   tri/s\n"
+        "  ----------------------------------------------------------------"
+        "-------------------------------------\n");
+    for (const StressRow &r : rows) {
+        const double total = r.draw_us + r.transfer_us;
+        const double fps = total > 0.0 ? 1000000.0 / total : 0.0;
+        const double tris = total > 0.0 ? r.tris_per_frame * fps : 0.0;
+        std::printf("  %-26s %8.0f %7.0f %8.0f %9.0f %6.1f %10.0f %6.1f %7.0f%s\n",
+                    r.name.c_str(), r.draw_us, r.geometry_us, r.transfer_us,
+                    total, fps, r.dirty_px, r.rects, tris,
+                    total > static_cast<double>(KF_FRAME_BUDGET_US)
+                        ? "   OVER"
+                        : "");
+    }
+    std::printf("  ----------------------------------------------------------"
+                "-------------------------------------------\n"
+                "  budget at %d fps: %d us per frame.  Rows marked OVER do not"
+                " fit.\n\n",
+                KF_TARGET_FPS, static_cast<int>(KF_FRAME_BUDGET_US));
+}
+
+/* --------------------------------------------------------------------------
+ * The 2D mode's sprite: 32x32, four animation frames, indexed 8bpp with a
+ * colour key -- the exact shape examples/creature_demo/assets.kfpack's real
+ * creature art uses, so the cost this measures is the cost the real game
+ * would pay (kf/blit.h charges every indexed blit to the keyed counter, four
+ * times the per-pixel cost of an opaque row copy).
+ *
+ * Built procedurally into KF_ARENA_ASSETS rather than loaded from a pack, the
+ * same way hakoniwaos/src/demo.cpp's build_tileset() makes its tiles: this
+ * needs a KNOWN pixel count to reason about, not whatever art happens to be
+ * checked in.
+ * -------------------------------------------------------------------------- */
+constexpr int kStressSprW = 32;
+constexpr int kStressSprH = 32;
+constexpr int kStressSprFrames = 4;
+constexpr int kStressPaletteN = 16;
+
+kf_sprite build_stress_sprite(void) {
+    uint8_t *indices = static_cast<uint8_t *>(kf_arena_alloc(
+        KF_ARENA_ASSETS,
+        static_cast<size_t>(kStressSprW * kStressSprH * kStressSprFrames), 4));
+    kf_color *palette = static_cast<kf_color *>(
+        kf_arena_alloc(KF_ARENA_ASSETS,
+                       sizeof(kf_color) * static_cast<size_t>(kStressPaletteN), 2));
+
+    palette[0] = 0; /* KF_SPRITE_KEY_INDEX -- never drawn */
+    for (int i = 1; i < kStressPaletteN; ++i) {
+        const int v = 40 + i * 13;
+        palette[i] = KF_RGB(static_cast<uint8_t>(v > 255 ? 255 : v),
+                            static_cast<uint8_t>(200 - i * 6),
+                            static_cast<uint8_t>(90 + i * 8));
+    }
+
+    for (int f = 0; f < kStressSprFrames; ++f) {
+        /* A four-frame squash-and-stretch idle: the shape changes every
+         * frame, so an animation cursor that silently stopped advancing
+         * would be visible rather than free. */
+        const int squash = (f == 1) ? 2 : ((f == 3) ? -2 : 0);
+        uint8_t *frame = indices + static_cast<size_t>(f) *
+                                       static_cast<size_t>(kStressSprW * kStressSprH);
+        for (int y = 0; y < kStressSprH; ++y) {
+            for (int x = 0; x < kStressSprW; ++x) {
+                const int dx = x - kStressSprW / 2;
+                const int dy = (y - kStressSprH / 2) + squash;
+                const int d2 = dx * dx + dy * dy;
+                uint8_t index = 0; /* transparent */
+                if (d2 < 210) {
+                    const int shade = 15 - (d2 * 13) / 210;
+                    index = static_cast<uint8_t>(shade < 1 ? 1 : shade);
+                }
+                frame[static_cast<size_t>(y * kStressSprW + x)] = index;
+            }
+        }
+    }
+
+    kf_sprite s{};
+    s.pixels = nullptr;
+    s.indices = indices;
+    s.palette = palette;
+    s.width = static_cast<uint16_t>(kStressSprW);
+    s.height = static_cast<uint16_t>(kStressSprH);
+    s.frame_count = static_cast<uint16_t>(kStressSprFrames);
+    s.palette_count = static_cast<uint16_t>(kStressPaletteN);
+    s.color_key = palette[0];
+    s.has_color_key = true;
+    s.format = static_cast<uint8_t>(KF_SPRITE_FORMAT_INDEXED8);
+    return s;
+}
+
+/* The host:device scale for scalar, per-pixel code.
+ *
+ * Times a real keyed blit on this host and divides the device cost the
+ * project's own model asserts for the same pixels (count / KF_DRAW_KEYED_PX_
+ * PER_US) by what the host took. A keyed indexed blit is chosen over a
+ * memset-shaped fill deliberately: kf_fill() on a desktop is vectorised
+ * memory bandwidth and would produce a factor of several hundred, which says
+ * nothing useful about how a scalar float transform loop scales. An indexed
+ * blit is a byte load, a compare and a table lookup per pixel -- the same
+ * scalar shape as the rasteriser's geometry pass. */
+double stress_calibrate_scalar_factor(const kf_sprite &sprite) {
+    constexpr int kReps = 400;
+    kf_fill(KF_BLACK);
+    kf_draw_counters_reset();
+    const StressClock::time_point t0 = StressClock::now();
+    for (int i = 0; i < kReps; ++i) {
+        kf_blit_frame(&sprite, static_cast<int16_t>(20 + (i % 8)),
+                      static_cast<int16_t>(40 + (i % 8)),
+                      static_cast<uint16_t>(i % kStressSprFrames));
+    }
+    const double host_us = stress_us_since(t0);
+    const kf_draw_counters c = kf_draw_counters_get();
+    const double device_us = static_cast<double>(c.keyed_pixels) /
+                             static_cast<double>(KF_DRAW_KEYED_PX_PER_US);
+    if (host_us <= 0.0) {
+        return 1.0;
+    }
+    std::printf("  calibration: %u keyed pixels took %.0f us on this host; "
+                "kf/budget.h says %.0f us on the device\n",
+                c.keyed_pixels, host_us, device_us);
+    return device_us / host_us;
+}
+
+/* How many distinct colours the pet window holds. The non-vacuity proof for
+ * "it looks like a LIT 3D object, not a flat silhouette": a single directional
+ * light across ~150 visible faces must produce many shades, and a renderer
+ * that had quietly lost its Lambert term would produce two (creature and
+ * background) and still pass every timing assertion in this file. */
+size_t stress_distinct_colors(kf_rect r) {
+    const kf_color *fb = kf_fb_pixels();
+    std::vector<kf_color> seen;
+    for (int16_t y = r.y0; y < r.y1; ++y) {
+        for (int16_t x = r.x0; x < r.x1; ++x) {
+            seen.push_back(fb[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                              static_cast<size_t>(x)]);
+        }
+    }
+    std::sort(seen.begin(), seen.end());
+    seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+    return seen.size();
+}
+
+/* The 2.5D mode's static scene: painted once, then never touched again. Plain
+ * rectangles rather than art, because what is being measured is what it costs
+ * to LEAVE IT ALONE, and that is the same whatever is in it. */
+void stress_draw_static_scene(void) {
+    /* Sky, five bands. */
+    for (int i = 0; i < 5; ++i) {
+        const kf_rect band = {0, static_cast<int16_t>(i * 40), 240,
+                              static_cast<int16_t>((i + 1) * 40)};
+        kf_fill_rect(band, KF_RGB(static_cast<uint8_t>(40 + i * 8),
+                                  static_cast<uint8_t>(60 + i * 10),
+                                  static_cast<uint8_t>(120 + i * 12)));
+    }
+    /* Ground. */
+    kf_fill_rect({0, 200, 240, 300}, KF_RGB(46, 92, 58));
+    /* Stats band along the bottom, where Home's need bars live. */
+    kf_fill_rect({0, 300, 240, 320}, KF_RGB(22, 24, 34));
+    for (int i = 0; i < 4; ++i) {
+        kf_fill_rect({static_cast<int16_t>(8 + i * 58), 306,
+                      static_cast<int16_t>(8 + i * 58 + 46), 314},
+                     KF_RGB(120, 200, 140));
+    }
+    /* Scenery either side of the creature's window. */
+    kf_fill_rect({10, 150, 40, 210}, KF_RGB(70, 54, 40));
+    kf_fill_rect({200, 165, 228, 210}, KF_RGB(70, 54, 40));
+    /* The window's own frame, four bars just outside it. */
+    const kf_rect w = kStressPetWindow;
+    const kf_color frame_color = KF_RGB(24, 26, 38);
+    kf_fill_rect({static_cast<int16_t>(w.x0 - 3), static_cast<int16_t>(w.y0 - 3),
+                  static_cast<int16_t>(w.x1 + 3), w.y0}, frame_color);
+    kf_fill_rect({static_cast<int16_t>(w.x0 - 3), w.y1,
+                  static_cast<int16_t>(w.x1 + 3),
+                  static_cast<int16_t>(w.y1 + 3)}, frame_color);
+    kf_fill_rect({static_cast<int16_t>(w.x0 - 3), w.y0, w.x0, w.y1}, frame_color);
+    kf_fill_rect({w.x1, w.y0, static_cast<int16_t>(w.x1 + 3), w.y1}, frame_color);
+}
+
+/* -------------------------------------------------------------------------- */
+
+bool stress_run_2d(long frames, std::vector<StressRow> &rows) {
+    bool ok = true;
+    const size_t first_row = rows.size();
+    const kf_sprite sprite = build_stress_sprite();
+    const kf_color bg = KF_RGB(24, 26, 38);
+
+    /* The sweep the whole mode exists for: how many independently-moving
+     * sprites does the device sustain? KF_MAX_DIRTY_RECTS is 8, and each
+     * moving sprite needs TWO rectangles a frame (erase where it was, draw
+     * where it is), so the rectangle list is already full at five sprites.
+     * Past that everything collapses into one bounding box for the rest of
+     * the frame -- see kf/framebuffer.h -- and scattered movement makes that
+     * box very nearly the whole screen. That, not pixel throughput, is what
+     * actually limits this mode, which is why dirty pixels and rectangle
+     * count are columns in the table rather than a footnote. */
+    const int counts[] = {2, 4, 8, 16, 32, 64};
+
+    struct Mover {
+        int32_t x, y, vx, vy;
+        int frame;
+    };
+    constexpr int kMaxMovers = 64;
+    Mover movers[kMaxMovers];
+
+    for (int count : counts) {
+        kf_rng_seed(0x51DE3Du);
+        for (int i = 0; i < count; ++i) {
+            movers[i].x = static_cast<int32_t>(kf_rng_below(static_cast<uint32_t>(
+                              KF_DISPLAY_WIDTH - kStressSprW))) * 16;
+            movers[i].y = static_cast<int32_t>(kf_rng_below(static_cast<uint32_t>(
+                              KF_DISPLAY_HEIGHT - kStressSprH))) * 16;
+            movers[i].vx = 24 + static_cast<int32_t>(kf_rng_below(28u));
+            movers[i].vy = 24 + static_cast<int32_t>(kf_rng_below(28u));
+            if (kf_rng_next() & 1u) movers[i].vx = -movers[i].vx;
+            if (kf_rng_next() & 1u) movers[i].vy = -movers[i].vy;
+            movers[i].frame = i % kStressSprFrames;
+        }
+
+        kf_fill(bg);
+        kf_rect previous[kMaxMovers];
+        for (int i = 0; i < count; ++i) {
+            previous[i] = {static_cast<int16_t>(movers[i].x / 16),
+                           static_cast<int16_t>(movers[i].y / 16),
+                           static_cast<int16_t>(movers[i].x / 16 + kStressSprW),
+                           static_cast<int16_t>(movers[i].y / 16 + kStressSprH)};
+        }
+
+        double host_total = 0.0;
+        double draw_total = 0.0;
+        double dirty_total = 0.0;
+        double rect_total = 0.0;
+        const int32_t max_x = (KF_DISPLAY_WIDTH - kStressSprW) * 16;
+        const int32_t max_y = (KF_DISPLAY_HEIGHT - kStressSprH) * 16;
+
+        for (long f = 0; f < frames; ++f) {
+            kf_fb_clear_dirty();
+            kf_draw_counters_reset();
+            const StressClock::time_point t0 = StressClock::now();
+
+            for (int i = 0; i < count; ++i) {
+                kf_fill_rect(previous[i], bg);
+                movers[i].x += movers[i].vx;
+                movers[i].y += movers[i].vy;
+                if (movers[i].x < 0) { movers[i].x = 0; movers[i].vx = -movers[i].vx; }
+                if (movers[i].x > max_x) { movers[i].x = max_x; movers[i].vx = -movers[i].vx; }
+                if (movers[i].y < 0) { movers[i].y = 0; movers[i].vy = -movers[i].vy; }
+                if (movers[i].y > max_y) { movers[i].y = max_y; movers[i].vy = -movers[i].vy; }
+                movers[i].frame = (movers[i].frame + 1) % kStressSprFrames;
+
+                const int16_t px = static_cast<int16_t>(movers[i].x / 16);
+                const int16_t py = static_cast<int16_t>(movers[i].y / 16);
+                kf_blit_frame(&sprite, px, py,
+                              static_cast<uint16_t>(movers[i].frame));
+                previous[i] = {px, py, static_cast<int16_t>(px + kStressSprW),
+                               static_cast<int16_t>(py + kStressSprH)};
+            }
+
+            host_total += stress_us_since(t0);
+            draw_total += static_cast<double>(stress_draw_us(kf_draw_counters_get()));
+            dirty_total += static_cast<double>(kf_fb_dirty_bytes() / 2u);
+            rect_total += static_cast<double>(kf_fb_dirty_rects().count);
+        }
+
+        const double n = static_cast<double>(frames);
+        StressRow row;
+        row.name = "2d: " + std::to_string(count) + " sprites";
+        row.draw_us = draw_total / n;
+        row.geometry_us = 0.0;
+        row.dirty_px = dirty_total / n;
+        row.rects = rect_total / n;
+        row.transfer_us = static_cast<double>(stress_transfer_us(
+            static_cast<uint64_t>(row.dirty_px * 2.0) +
+            static_cast<uint64_t>(row.rects) * KF_DISPLAY_RECT_OVERHEAD_BYTES));
+        row.host_us = host_total / n;
+        rows.push_back(row);
+    }
+
+    /* Non-vacuity: the rectangle list really does saturate and fall back.
+     * If this ever stopped holding, every "dirty px" number above would be
+     * measuring something other than what the comment says it is. */
+    if (rows.size() >= first_row + 2u) {
+        const StressRow &small = rows[first_row];
+        const StressRow &big = rows.back();
+        if (!(big.dirty_px > small.dirty_px * 2.0)) {
+            KF_LOGE(TAG, "FAILED: 64 scattered sprites should dirty far more "
+                         "than 2 do (rect-list fallback); got %.0f vs %.0f",
+                    big.dirty_px, small.dirty_px);
+            ok = false;
+        }
+        if (!(big.rects <= static_cast<double>(KF_MAX_DIRTY_RECTS))) {
+            KF_LOGE(TAG, "FAILED: dirty rect count %.1f exceeds "
+                         "KF_MAX_DIRTY_RECTS (%d)",
+                    big.rects, KF_MAX_DIRTY_RECTS);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool stress_run_3d(long frames, double scalar_factor, bool small_window,
+                   bool static_background, const char *label,
+                   std::vector<StressRow> &rows) {
+    bool ok = true;
+    const kf_rect viewport = small_window ? kStressPetWindow : kStressFullScreen;
+    const kf_color window_bg = KF_RGB(30, 38, 58);
+
+    kf_fill(KF_RGB(0, 0, 0));
+
+    double first_frame_dirty_px = 0.0;
+    if (static_background) {
+        /* Frame zero: the whole scene, once. Reported on its own line so the
+         * one-off cost is visible rather than averaged away. */
+        kf_fb_clear_dirty();
+        kf_draw_counters_reset();
+        stress_draw_static_scene();
+        first_frame_dirty_px = static_cast<double>(kf_fb_dirty_bytes() / 2u);
+        StressRow row;
+        row.name = "2.5d: first frame (scene)";
+        row.draw_us = static_cast<double>(stress_draw_us(kf_draw_counters_get()));
+        row.dirty_px = first_frame_dirty_px;
+        row.rects = static_cast<double>(kf_fb_dirty_rects().count);
+        row.transfer_us = static_cast<double>(stress_transfer_us(
+            static_cast<uint64_t>(kf_fb_dirty_bytes()) +
+            static_cast<uint64_t>(kf_fb_dirty_rects().count) *
+                KF_DISPLAY_RECT_OVERHEAD_BYTES));
+        rows.push_back(row);
+    }
+
+    double geom_host = 0.0, raster_host = 0.0;
+    double draw_total = 0.0, dirty_total = 0.0, rect_total = 0.0;
+    double tris_total = 0.0, tri_px_total = 0.0;
+    uint32_t submitted_last = 0, drawn_last = 0;
+
+    for (long f = 0; f < frames; ++f) {
+        const float yaw = static_cast<float>(f) * 3.1f;
+        const float pitch = 14.0f + 10.0f * std::sin(static_cast<float>(f) * 0.031f);
+
+        kf_fb_clear_dirty();
+        kf_draw_counters_reset();
+
+        /* Only the window is repainted. In the 2.5d case that is the entire
+         * claim being tested: the static scene outside it is never touched,
+         * so it must never reach the panel again. */
+        if (static_background) {
+            kf_fill_rect(viewport, window_bg);
+        } else {
+            kf_fill(window_bg);
+        }
+
+        const StressClock::time_point t0 = StressClock::now();
+        kf_soft3d_transform(viewport, yaw, pitch);
+        const double geom_us = stress_us_since(t0);
+
+        const StressClock::time_point t1 = StressClock::now();
+        kf_soft3d_stats stats{};
+        kf_soft3d_rasterize(viewport, &stats);
+        const double raster_us = stress_us_since(t1);
+
+        geom_host += geom_us;
+        raster_host += raster_us;
+        draw_total += static_cast<double>(stress_draw_us(kf_draw_counters_get()));
+        dirty_total += static_cast<double>(kf_fb_dirty_bytes() / 2u);
+        rect_total += static_cast<double>(kf_fb_dirty_rects().count);
+        tris_total += static_cast<double>(stats.tris_drawn);
+        tri_px_total += static_cast<double>(stats.pixels_written);
+        submitted_last = stats.tris_submitted;
+        drawn_last = stats.tris_drawn;
+    }
+
+    const double n = static_cast<double>(frames);
+    StressRow row;
+    row.name = label;
+    row.geometry_us = (geom_host / n) * scalar_factor;
+    row.draw_us = draw_total / n + row.geometry_us;
+    row.dirty_px = dirty_total / n;
+    row.rects = rect_total / n;
+    row.transfer_us = static_cast<double>(stress_transfer_us(
+        static_cast<uint64_t>(row.dirty_px * 2.0) +
+        static_cast<uint64_t>(row.rects) * KF_DISPLAY_RECT_OVERHEAD_BYTES));
+    row.tris_per_frame = tris_total / n;
+    row.host_us = (geom_host + raster_host) / n;
+    rows.push_back(row);
+
+    /* THE 3D WORK ALONE, with the background clear taken back out: the
+     * original question was what a 3D creature costs at full screen versus in
+     * a pet-sized window, and the clear is not part of that -- a real screen
+     * would be clearing something either way. */
+    const double tri_px = tri_px_total / n;
+    const double tri_draw_us = tri_px / static_cast<double>(KF_DRAW_OPAQUE_PX_PER_US);
+    std::printf("  %-26s host: geometry %6.1f us + raster %6.1f us   "
+                "%u of %u triangles survive culling\n"
+                "  %-26s 3D WORK ALONE: %.0f shaded px/frame -> %.0f us raster "
+                "+ %.0f us geometry = %.0f us on the device\n",
+                label, geom_host / n, raster_host / n, drawn_last,
+                submitted_last, "", tri_px, tri_draw_us, row.geometry_us,
+                tri_draw_us + row.geometry_us);
+
+    /* Non-vacuity, all three of which a broken renderer could fail while
+     * still producing a plausible-looking timing table. */
+    if (!(drawn_last > 0u && drawn_last < submitted_last)) {
+        KF_LOGE(TAG, "FAILED: back-face culling drew %u of %u triangles -- "
+                     "expected some, but not all, to survive",
+                drawn_last, submitted_last);
+        ok = false;
+    }
+    const size_t shades = stress_distinct_colors(viewport);
+    if (shades < 8u) {
+        KF_LOGE(TAG, "FAILED: only %zu distinct colours in the render -- the "
+                     "Lambert term is not producing a lit surface",
+                shades);
+        ok = false;
+    } else {
+        std::printf("  %-26s %zu distinct shades in the window (a lit "
+                    "surface, not a silhouette)\n", "", shades);
+    }
+
+    if (static_background) {
+        /* THE LOAD-BEARING CLAIM of the 2.5d mode. If the steady-state dirty
+         * area is not exactly the window, the dirty-rect path is not doing
+         * what the rest of the system assumes and the whole "static scene is
+         * free" premise is wrong. */
+        const double window_px =
+            static_cast<double>((viewport.x1 - viewport.x0) *
+                                (viewport.y1 - viewport.y0));
+        if (row.dirty_px != window_px || row.rects != 1.0) {
+            KF_LOGE(TAG,
+                    "FAILED: steady-state dirty area is %.0f px in %.1f "
+                    "rect(s); the static background is NOT free -- expected "
+                    "exactly %.0f px in 1 rect",
+                    row.dirty_px, row.rects, window_px);
+            ok = false;
+        } else {
+            std::printf("  %-26s steady state dirties exactly %.0f px in 1 "
+                        "rect: the %.0f px of static scene costs zero "
+                        "transfer after frame 1\n",
+                        "", window_px,
+                        first_frame_dirty_px - window_px);
+        }
+    }
+    return ok;
+}
+
+int run_stress3d(const char *mode, long frames) {
+    bool ok = true;
+    const bool all = std::strcmp(mode, "all") == 0;
+
+    kf_arena_init_all();
+    kf_fb_init();
+
+    std::printf("\n---- stress3d: %ld frames per mode, %u-triangle mesh ----\n",
+                frames, kf_soft3d_mesh_triangle_count());
+
+    const kf_sprite sprite = build_stress_sprite();
+    const double scalar_factor = stress_calibrate_scalar_factor(sprite);
+    std::printf("  scalar host:device factor = %.0fx (applied ONLY to the 3D "
+                "geometry column)\n\n",
+                scalar_factor);
+
+    std::vector<StressRow> rows;
+
+    if (all || std::strcmp(mode, "2d") == 0) {
+        ok = stress_run_2d(frames, rows) && ok;
+    }
+    if (all || std::strcmp(mode, "2.5d") == 0) {
+        ok = stress_run_3d(frames, scalar_factor, /*small_window=*/true,
+                           /*static_background=*/true,
+                           "2.5d: 120x120 pet window", rows) &&
+             ok;
+        dump_framebuffer_ppm(g_dump_path);
+    }
+    if (all || std::strcmp(mode, "3d") == 0) {
+        ok = stress_run_3d(frames, scalar_factor, /*small_window=*/false,
+                           /*static_background=*/false,
+                           "3d: full screen 240x320", rows) &&
+             ok;
+    }
+
+    if (rows.empty()) {
+        KF_LOGE(TAG, "unknown --stress3d mode '%s' (2d, 2.5d, 3d, all)", mode);
+        return 1;
+    }
+
+    stress_print_table(rows);
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -11660,6 +12240,11 @@ int main(int argc, char *argv[]) {
     bool verify_home_clock = false;
     bool verify_audio = false;
     bool verify_frame_loop_multiplier = false;
+    /* --stress3d [2d|2.5d|3d|all]: the 3D feasibility instrument. A flag on
+     * this binary like every other mode here, with an optional value because
+     * "all" -- run the three and print one comparison table -- is what it is
+     * usually wanted for. */
+    const char *stress3d_mode = nullptr;
     kf_demo_mode mode = KF_DEMO_SPRITE;
 
     for (int i = 1; i < argc; ++i) {
@@ -11793,6 +12378,11 @@ int main(int argc, char *argv[]) {
             verify_home_clock = true;
         } else if (std::strcmp(argv[i], "--verify-audio") == 0) {
             verify_audio = true;
+        } else if (std::strcmp(argv[i], "--stress3d") == 0) {
+            stress3d_mode = "all";
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                stress3d_mode = argv[++i];
+            }
         } else if (std::strcmp(argv[i], "--verify-frame-loop-multiplier") ==
                    0) {
             verify_frame_loop_multiplier = true;
@@ -11853,7 +12443,9 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-clock-jump\n"
                         "kamiframe-headless --verify-attention-signal\n"
                         "kamiframe-headless --verify-audio\n"
-                        "kamiframe-headless --verify-frame-loop-multiplier\n");
+                        "kamiframe-headless --verify-frame-loop-multiplier\n"
+                        "kamiframe-headless --stress3d [2d|2.5d|3d|all] "
+                        "[--frames N] [--dump-fb PATH]\n");
             return 0;
         }
     }
@@ -11880,6 +12472,10 @@ int main(int argc, char *argv[]) {
      * check to remember it -- idempotent, so run_screen_nav_check()'s own
      * kf_screen_nav_init() (which also installs them) does not conflict. */
     kf_screen_nav_install_lua_hooks();
+
+    if (stress3d_mode != nullptr) {
+        return run_stress3d(stress3d_mode, frames);
+    }
 
     if (verify_storage_power) {
         return run_storage_power_check();
