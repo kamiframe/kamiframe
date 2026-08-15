@@ -71,19 +71,26 @@ constexpr int kHeight = 320;
  * "Then raise it" is stage 2b's job, not a value to edit here. This constant
  * is the SAFE clock -- the one stage 2 proves the panel at, and the one the
  * sweep returns to afterwards so the button stage stays readable. The real
- * achievable figure belongs in KF_DISPLAY_SPI_HZ (kf/budget.h) once the
- * sweep has measured it. */
+ * achievable figure belongs in the panel's own `spi_hz` field in
+ * ports/esp32/hal/kf_panel_profile.h once the sweep has measured it -- one
+ * figure per panel, because the two panels on hand do not agree. */
 constexpr int kLcdClockHz = 4 * 1000 * 1000;
 
-/* Stage 2b, the clock sweep. Off: it did its job on 2026-08-08. 40MHz was the
- * highest speed that rendered correctly on the ILI9341 and 80MHz came out
- * solid white, so KF_DISPLAY_SPI_HZ is now a measured 40MHz rather than an
- * assumed one, and running this every time would be 45 seconds spent
- * re-answering it.
+/* Stage 2b, the clock sweep. Off: it has now done its job on both panels on
+ * hand, and running it every time would be 45 seconds spent re-answering a
+ * question with two recorded answers.
  *
- * Turn it back on when the wiring or the panel changes -- specifically when
- * the replacement 2in ST7789 arrives, since that is the primary panel and
- * this figure was measured on the 2.8in ILI9341. */
+ * 2026-08-08, the 2.8in ILI9341: 40MHz was the highest speed that rendered
+ * correctly and 80MHz came out solid white. 2026-08-14, the 2in ST7789: the
+ * sweep held at 80MHz, and the real game then rendered correctly there over
+ * a long run, which is the stronger evidence of the two. Each figure lives
+ * in that panel's own `spi_hz` in ports/esp32/hal/kf_panel_profile.h; there
+ * is no single global clock to set any more, because these two panels would
+ * have disagreed about it.
+ *
+ * Turn it back on when the wiring or the panel changes -- a third panel
+ * profile, a shorter loom, or the first real PCB, all of which move the
+ * ceiling and none of which are covered by the two runs above. */
 constexpr bool kRunClockSweep = false;
 
 /* One horizontal strip of the framebuffer at a time, so nothing here needs
@@ -109,7 +116,9 @@ constexpr bool kRunClockSweep = false;
  * stays dark, everything I have concluded is wrong and the fault is on the
  * ESP32 side somewhere none of these tests has looked.
  * ---------------------------------------------------------------------- */
-constexpr bool kPanelIsIli9341 = true;
+constexpr bool kPanelIsIli9341 = false; /* the 2in ST7789 is on the bench and
+                                          * is the default panel as of ADR
+                                          * 0059 */
 
 /* ------------------------------------------------------------------------
  * DEAD-PANEL INVESTIGATION MODE.
@@ -947,7 +956,15 @@ void stage_display() {
      * inversion OFF, but many IPS modules built around it are wired to need
      * INVON instead, so this is a per-module question rather than a
      * per-controller one. */
-    lcd_ok(esp_lcd_panel_invert_color(g_panel, false), "invert_color(false)");
+    /* true on the ST7789, false on the ILI9341 -- measured on both (ADR
+     * 0059 for the ST7789: its first ever picture came up as a photographic
+     * negative and this one field cleared it). Matching kf_panel_profile.h's
+     * own per-module `invert` so the diagnostic and the firmware agree about
+     * what a correct picture looks like; a diagnostic showing a negative
+     * while the firmware shows a positive is a difference someone has to
+     * stop and explain mid-bring-up. */
+    lcd_ok(esp_lcd_panel_invert_color(g_panel, !kPanelIsIli9341),
+           kPanelIsIli9341 ? "invert_color(false)" : "invert_color(true)");
 
     const int card_hold_ms = kPanelDebugMode ? 90000 : 10000;
 
@@ -1199,10 +1216,13 @@ void print_cold_boot_verdict() {
 /* ------------------------------------------------------------------------
  * Stage 2b: how fast can this panel actually be driven?
  *
- * KF_DISPLAY_SPI_HZ in kf/budget.h is 40MHz and is marked ASSUMPTION, NOT
- * MEASURED. Every claim the desktop simulator makes about transfer cost and
- * frame budget rests on it, so it is the one number bring-up exists to
- * replace with a measured figure.
+ * The display clock is PER PANEL: each profile in
+ * ports/esp32/hal/kf_panel_profile.h carries its own measured `spi_hz`, and
+ * this sweep is how that figure gets measured. It began life as the one
+ * number bring-up existed to replace, back when kf/budget.h's
+ * KF_DISPLAY_SPI_HZ was a single global assumption for both panels; that
+ * constant is now only the DESKTOP model's figure, and nothing the device
+ * runs reads it.
  *
  * A full 240x320 RGB565 frame is 153,600 bytes, so the clock maps straight
  * onto a frame rate ceiling:
@@ -1210,8 +1230,8 @@ void print_cold_boot_verdict() {
  *     4MHz  -> 307ms/frame ->  ~3fps
  *    10MHz  -> 123ms/frame ->  ~8fps
  *    20MHz  ->  61ms/frame -> ~16fps
- *    40MHz  ->  31ms/frame -> ~32fps     <- what budget.h assumes
- *    80MHz  ->  15ms/frame -> ~65fps
+ *    40MHz  ->  31ms/frame -> ~32fps     <- the ILI9341's measured clock
+ *    80MHz  ->  15ms/frame -> ~65fps     <- the ST7789's, and the default
  *
  * The firmware cannot score this itself, and it is important to be honest
  * about why: this bus is write-only, there is no data-out pin on either
@@ -1233,7 +1253,13 @@ void stage_clock_sweep() {
         return;
     }
 
-    constexpr int kClocks[] = {4, 10, 20, 40, 80};
+    /* 60 and 50 added 2026-08-14. The original list jumped 40 -> 80, which
+     * was enough when the question was "is 40 safe"; it is not enough now
+     * that the question is "how much headroom is there above 40". If 80
+     * fails and 40 passes, the useful answer is somewhere in between, and a
+     * sweep that cannot express it would send someone away thinking 40 is
+     * the ceiling when 60 might render perfectly. */
+    constexpr int kClocks[] = {4, 10, 20, 40, 50, 60, 80};
     constexpr int kHoldMs = 7000;
 
     info("The test card will be redrawn at each speed below, %d seconds",
@@ -1288,10 +1314,10 @@ void stage_clock_sweep() {
     info("Every speed up to %d MHz was driven without a driver error.",
          last_good_attempted);
     info("That is NOT the answer -- only your eyes are. Tell me the highest");
-    info("speed where the card still looked perfect, and I will set");
-    info("KF_DISPLAY_SPI_HZ in kf/budget.h to it and drop its ASSUMPTION");
-    info("banner. If even 4 MHz looked wrong, something else is at fault");
-    info("and the speed is not the problem.");
+    info("speed where the card still looked perfect, and it becomes this");
+    info("panel's spi_hz in ports/esp32/hal/kf_panel_profile.h -- the clock");
+    info("is per panel, not one global figure. If even 4 MHz looked wrong,");
+    info("something else is at fault and the speed is not the problem.");
 }
 
 void stage_i2c_and_rtc() {

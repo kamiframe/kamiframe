@@ -47,8 +47,11 @@
  *
  *  Still unmeasured, and called out where they live rather than here: the
  *  I2S lines at the bottom of this file (reserved, never wired), and
- *  KF_DISPLAY_TRANSFER_OVERHEAD_BYTES in kf/budget.h. KF_DISPLAY_SPI_HZ is
- *  no longer among them -- the bring-up clock sweep measured it at 40MHz.
+ *  KF_DISPLAY_TRANSFER_OVERHEAD_BYTES in kf/budget.h. The display clock is
+ *  no longer among them -- the bring-up clock sweep measured it on both
+ *  panels, and each figure now lives in its own profile in
+ *  kf_panel_profile.h (`spi_hz`): 40MHz on the ILI9341, 80MHz on the
+ *  ST7789, which is the default.
  * ============================================================================
  *
  * HARD CONSTRAINTS, not guesses. Every assignment below avoids all of these:

@@ -427,13 +427,16 @@ constant is `kLcdClockHz` in `bringup_main.cpp`, and it is deliberately the
 
 ### Stage 2b: measuring the real clock ceiling
 
-`KF_DISPLAY_SPI_HZ` in `kf/budget.h` is 40MHz and marked **assumption, not
-measured**. Every claim the desktop simulator makes about transfer cost and
-frame budget rests on it, so replacing it with a measured number is one of
-the things bring-up exists for.
+The display clock started life as one global `KF_DISPLAY_SPI_HZ` in
+`kf/budget.h`, 40MHz, marked **assumption, not measured**. Every claim the
+desktop simulator makes about transfer cost and frame budget rested on it, so
+replacing it with a measured number is one of the things bring-up exists for.
+It is measured now, and it turned out to be **per panel** rather than one
+number -- each profile in `ports/esp32/hal/kf_panel_profile.h` carries its own
+`spi_hz`. The results are below.
 
-Stage 2b redraws the test card at 4, 10, 20, 40 and 80MHz in turn, seven
-seconds each, then returns the panel to the safe clock. The clock maps
+Stage 2b redraws the test card at 4, 10, 20, 40, 50, 60 and 80MHz in turn,
+seven seconds each, then returns the panel to the safe clock. The clock maps
 straight onto a frame-rate ceiling, because a full 240x320 RGB565 frame is
 153,600 bytes:
 
@@ -454,33 +457,54 @@ the picture is simply wrong. So you watch the glass, not the log.
 Look for the highest speed where the card is still perfect: solid patches,
 clean edges, no fizzing, no torn or shifted rows, no colour speckle. The
 first speed that misbehaves is the ceiling; the one below it is the answer,
-and that is the number `KF_DISPLAY_SPI_HZ` should become.
+and that is the number that panel's `spi_hz` should become in
+`ports/esp32/hal/kf_panel_profile.h`. It is that panel's answer, not the
+project's -- the two panels measured so far disagree by a factor of two.
 
 80MHz is on the list rather than being obviously hopeless because SPI2's
 IOMUX pins on the ESP32-S3 are exactly the ones this pinout uses (CLK 12,
 MOSI 11, CS 10), which is the configuration that can bypass the GPIO matrix
 and reach the full rate. Whether breadboard jumpers can is the real question.
 
-#### Result, 2026-08-08
+#### Result, 2026-08-08 (the 2.8in ILI9341)
 
 **40MHz.** It rendered the card correctly; 80MHz came out solid white, which
-is what wholesale data corruption looks like on this panel. `KF_DISPLAY_SPI_HZ`
-was already guessing 40MHz, so the number did not move -- but it is now
-measured, its `ASSUMPTION, NOT MEASURED` banner is gone, and the ~32fps
-full-frame ceiling the frame budget is built on is real.
+is what wholesale data corruption looks like on this panel. The global
+`KF_DISPLAY_SPI_HZ` was already guessing 40MHz, so the number did not move at
+the time -- but it became measured, its `ASSUMPTION, NOT MEASURED` banner went,
+and the ~32fps full-frame ceiling the frame budget was then built on was real.
+This is still that panel's figure today; it is the ST7789 result below that
+moved the project's normal clock.
 
-`kRunClockSweep` is therefore `false`. Turn it back on when the wiring or the
-panel changes.
+`kRunClockSweep` is `false` again now that both panels have been swept. Turn
+it back on when the wiring or the panel changes.
 
-**Still outstanding for the 2in ST7789**, which is now the default panel
-(ADR 0059) but was verified for *picture*, not for *speed*: no clock sweep
-has ever been run against it. It inherits 40MHz from a measurement taken on
-the 2.8in ILI9341, which is safe — ST7789 modules commonly tolerate more —
-but it means the frame budget's ~32fps full-frame ceiling is, on the primary
-panel, a conservative inherited number rather than a measured one.
+**Measured on the 2in ST7789, 2026-08-14: 80MHz.** The sweep held at 80, and
+the real game then rendered correctly there — the stronger of the two, since
+a seven-second test card cannot see an occasional dropped bit and minutes of
+on-screen text can.
 
-Two things worth remembering about that number. 40MHz is about four times the
-ILI9341 datasheet's own write-cycle figure -- it works, and it is what
+That halves a full-screen frame from ~31ms to ~15ms against a 33ms budget,
+which is the largest single change to this device's animation headroom that
+has been available.
+
+**The clock is per-panel now, not global.** The ILI9341 came out solid white
+at 80MHz, so a single constant could only ever have been wrong for one of the
+two. Each profile in `ports/esp32/hal/kf_panel_profile.h` carries its own
+measured `spi_hz`. To try a different clock on glass without editing that
+file:
+
+```bash
+idf.py -DKF_SPI_HZ=80000000 build flash monitor
+```
+
+**80MHz is the end of this road, not of the panel.** It is about as fast as
+the S3's SPI peripheral drives a display at all; better wiring may make 80
+more *reliable* but will not unlock more. The next step up is a parallel
+interface and a panel built for one — see `kf/budget.h`'s own table.
+
+Two things worth remembering about the ILI9341's 40MHz. It is about four
+times that datasheet's own write-cycle figure -- it works, and it is what
 practically every driver for this panel does, but it is outside spec and
 could be marginal on another unit or at a different temperature. And it was
 measured through Dupont jumpers with inline couplers, which is close to the
@@ -532,9 +556,11 @@ of it had been run on hardware. That is no longer true.
 via a full pass of the diagnostic: backlight, panel over SPI, I2C with a
 DS3231 present and keeping time across a real power cut, a microSD card
 mounting and round-tripping a file, and all seven buttons. `kf_esp_pins.h`
-has dropped its *assumption, not measured* banner. `KF_DISPLAY_SPI_HZ` is a
-measured 40MHz. The ILI9341 needed no x/y offset -- the test card's bars
-reach all four edges.
+has dropped its *assumption, not measured* banner. The display clock is
+measured rather than assumed, and per panel: 40MHz on the ILI9341 from this
+pass, 80MHz on the ST7789 from the 2026-08-14 one, each in its own profile's
+`spi_hz`. The ILI9341 needed no x/y offset -- the test card's bars reach all
+four edges.
 
 One pin moved: LCD_DC from GPIO9 to GPIO7, because GPIO9 measured under a
 millivolt at the panel while every other line swung a clean 3.3V. GPIO9 is

@@ -17,8 +17,8 @@
  * is the only remaining way to find out. handle_scanline() below is
  * measurement only -- it does not wait for, or act on, a scanline value
  * anywhere. It reads at a genuinely slow clock (2MHz by default, `KFDBG
- * SCANLINE <read_hz>` to override), NOT the 40MHz write clock every frame
- * uses -- the ILI9341's read cycle is only rated to about 6MHz, and reading
+ * SCANLINE <read_hz>` to override), NOT this panel's own 40MHz write clock
+ * -- the ILI9341's read cycle is only rated to about 6MHz, and reading
  * that much too fast is the confirmed, already-measured explanation for why
  * the first attempt at this diagnostic came back looking like noise. Getting
  * a slower clock means tearing down and rebuilding the one esp_lcd panel IO
@@ -710,7 +710,9 @@ constexpr int kScanlineReportStride = 5;  /* every 5th sample reported, not all 
 
 /* Default read clock for `KFDBG SCANLINE` with no argument. The ILI9341's
  * read cycle is roughly 150ns per the datasheet -- about 6MHz max -- and
- * the write clock this bus normally runs at (KF_DISPLAY_SPI_HZ, 40MHz) is
+ * the write clock this bus normally runs at on this panel (kPanelSpiHz,
+ * 40MHz from the ILI9341's own profile -- the ST7789 runs at 80MHz but has
+ * no read line, so SCANLINE never runs against it) is
  * 6-20x past that: the concrete, already-measured explanation for why the
  * first SCANLINE run (at the write clock) came back as runs of all-zero and
  * all-one bytes jumping by exactly 127, the classic signature of sampling

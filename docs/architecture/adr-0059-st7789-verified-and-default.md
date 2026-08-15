@@ -109,6 +109,20 @@ Verification was of *picture*, not *speed* or *longevity*:
   from a measurement taken on the ILI9341. Safe — ST7789 modules commonly
   tolerate more — but it means the frame budget's ~32fps full-frame ceiling
   is, on the panel that is now the default, an inherited number.
+
+  > **Resolved 2026-08-14: 80MHz.** The sweep held, and the real game then
+  > rendered correctly there — the stronger evidence, since a seven-second
+  > card cannot see an occasional dropped bit. A full-screen frame drops from
+  > ~31ms to ~15ms against a 33ms budget.
+  >
+  > It also showed the clock is **per-panel, not global**: the ILI9341 came
+  > out solid white at 80MHz, so one constant could only ever have been wrong
+  > for one of the two. `spi_hz` is now a panel-profile field, which is where
+  > every other per-module difference already lives.
+  >
+  > A brief screen dim on button presses was investigated and is **not** the
+  > clock — the MENU button, which changes screen and plays no sound, does
+  > not cause it. It is current draw, almost certainly the audio amp.
 - **Tearing behaviour is unassessed.** ADR 0032's finding that neither
   breadboard panel exposes a TE signal is unchanged, and this module's
   eight-pin flex has no TE pin.

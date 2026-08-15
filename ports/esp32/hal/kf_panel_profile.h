@@ -139,6 +139,27 @@ typedef struct {
      *                  rather than reporting whatever a floating input
      *                  returns. */
     bool has_read_line;
+
+    /* spi_hz     The clock this MODULE has been measured to render
+     *            correctly at. Per-panel, and it has to be: the ILI9341
+     *            came out SOLID WHITE at 80MHz (ADR 0024's own sweep) while
+     *            the ST7789 renders the real game correctly there
+     *            (2026-08-14). One global constant would mean either
+     *            throttling the good panel to the bad one's limit, or
+     *            handing the bad one a clock that produces a white screen
+     *            with a completely clean log -- the exact failure mode this
+     *            whole file exists to prevent.
+     *
+     *            MEASURED, both of them, by ports/esp32-bringup's stage 2b
+     *            sweep. Do not raise either without re-running it: marginal
+     *            SPI drops occasional bits rather than failing outright, so
+     *            a value that "looks fine" for a minute is not evidence.
+     *
+     *            Treat these as floors, not ceilings. Both were measured
+     *            through breadboard jumpers, which is the worst wiring this
+     *            project will ever have; a real PCB should do at least as
+     *            well. */
+    uint32_t spi_hz;
 } kf_panel_profile;
 
 /* -------------------------------------------------------------------------
@@ -152,7 +173,7 @@ typedef struct {
  * version that actually produced a correct picture. Keep the two in step: if
  * one changes, the other is now lying about what was proven.
  * ------------------------------------------------------------------------- */
-static const kf_panel_cmd kf_panel_ili9341_init[] = {
+static constexpr kf_panel_cmd kf_panel_ili9341_init[] = {
     {0xEF, {0x03, 0x80, 0x02}, 3, 0},          /* undocumented, in every driver */
     {0xCF, {0x00, 0xC1, 0x30}, 3, 0},          /* power control B */
     {0xED, {0x64, 0x03, 0x12, 0x81}, 4, 0},    /* power on sequence */
@@ -183,7 +204,7 @@ static const kf_panel_cmd kf_panel_ili9341_init[] = {
     {0x11, {0}, 0, 150},                       /* SLPOUT  wake up */
 };
 
-static const kf_panel_profile kf_panel_ili9341 = {
+static constexpr kf_panel_profile kf_panel_ili9341 = {
     "ILI9341 (HiLetgo 2.8in)",
     kf_panel_ili9341_init,
     sizeof(kf_panel_ili9341_init) / sizeof(kf_panel_ili9341_init[0]),
@@ -202,6 +223,12 @@ static const kf_panel_profile kf_panel_ili9341 = {
      * straight to 3V3, so nothing this board does can ever turn its
      * backlight off in software regardless of GPIO6's role. */
     true,
+    /* spi_hz: 40MHz. Measured 2026-08-08 -- 80MHz came out solid white on
+     * this module, which is what wholesale data corruption looks like here.
+     * About four times this panel's datasheet write-cycle figure already, so
+     * it is outside spec and works anyway, in line with what practically
+     * every driver for it does. */
+    40000000u,
 };
 
 /* -------------------------------------------------------------------------
@@ -235,7 +262,7 @@ static const kf_panel_profile kf_panel_ili9341 = {
  * second flash with DC on GPIO7. See ADR 0059; ADR 0024 keeps its original
  * account as the record of what was believed at the time.
  * ------------------------------------------------------------------------- */
-static const kf_panel_cmd kf_panel_st7789_init[] = {
+static constexpr kf_panel_cmd kf_panel_st7789_init[] = {
     {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, 0}, /* PORCTRL  porch control */
     {0xB7, {0x35}, 1, 0},                         /* GCTRL    gate control */
     {0xBB, {0x1F}, 1, 0},                         /* VCOMS    common voltage */
@@ -251,7 +278,7 @@ static const kf_panel_cmd kf_panel_st7789_init[] = {
             0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23}, 14, 0}, /* NVGAMCTRL */
 };
 
-static const kf_panel_profile kf_panel_st7789 = {
+static constexpr kf_panel_profile kf_panel_st7789 = {
     "ST7789 (Waveshare 2in)",
     kf_panel_st7789_init,
     sizeof(kf_panel_st7789_init) / sizeof(kf_panel_st7789_init[0]),
@@ -283,6 +310,20 @@ static const kf_panel_profile kf_panel_st7789 = {
      * so kf_display_init() always configures it as the backlight output
      * here -- see esp_display.cpp and ADR 0039. */
     false,
+    /* spi_hz: 80MHz. Measured 2026-08-14 -- the bring-up sweep held at 80,
+     * and the real game then rendered correctly there, which is the
+     * stronger evidence of the two (a seven-second test card cannot see an
+     * occasional dropped bit; minutes of text on screen can).
+     *
+     * This is the ceiling of the road, not of the panel: 80MHz is about as
+     * fast as the S3's SPI peripheral drives a display at all. Going faster
+     * means a parallel interface and a panel built for one -- see
+     * kf/budget.h's own table.
+     *
+     * Halves a full-screen frame from ~31ms to ~15ms against a 33ms budget,
+     * which is the single biggest change to this device's animation
+     * headroom that has been available. */
+    80000000u,
 };
 
 /* -------------------------------------------------------------------------

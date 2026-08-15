@@ -484,22 +484,35 @@ These are already true and need to stay true:
 - A real OTA client -- the partition table (ADR 0033) already reserves two
   app slots for it, but no code calls `esp_https_ota` or anything like it
   yet.
-- Replacing the faulty ST7789 reference panel and re-measuring against it.
-  Everything panel-specific confirmed so far -- byte order, SPI clock,
-  tearing behaviour -- was measured on the ILI9341 stand-in, not the
-  intended primary.
+
+(Replacing the faulty ST7789 reference panel and re-measuring against it
+used to be on this list. It is done: the replacement lit up on 2026-08-13
+(ADR 0059) and byte order, colour inversion and the SPI clock have all since
+been measured against it. Its clock is 80MHz -- see the section below.)
 
 ## The number checked first at bring-up, and its answer
 
-`KF_DISPLAY_SPI_HZ` in `kf/budget.h` was an **assumption** for all of Phase 1:
-40MHz, putting a full 240x320 RGB565 frame at about 30ms of wire time, with
-everything the simulator says about transfer cost resting on it.
+The display clock was an **assumption** for all of Phase 1: one global
+`KF_DISPLAY_SPI_HZ` in `kf/budget.h` at 40MHz, putting a full 240x320 RGB565
+frame at about 30ms of wire time, with everything the simulator says about
+transfer cost resting on it.
 
-**Measured 2026-08-08: 40MHz.** The bring-up diagnostic's clock sweep drove
-the panel at 4/10/20/40/80MHz in turn; 40 rendered correctly and 80 came out
-solid white. The guess was right, the ~32fps full-frame ceiling is real, and
-the banner is gone.
+**It is now measured, and it is per panel.** The bring-up diagnostic's clock
+sweep drove each panel at 4/10/20/40/50/60/80MHz in turn:
 
-Measured on the 2.8in ILI9341 through breadboard jumpers, which makes it a
-floor rather than a verdict -- re-measure when the primary 2in ST7789 arrives
-and again on the real PCB. See `docs/hardware-bringup.md` for the caveats.
+| Panel | Measured | Full frame | fps ceiling |
+|---|---|---|---|
+| 2.8in ILI9341 (2026-08-08) | 40MHz -- 80 came out solid white | ~31ms | ~32 |
+| 2in ST7789 (2026-08-14), the default | 80MHz -- the sweep held, and the real game then rendered correctly there | ~15ms | ~65 |
+
+Each figure lives in that panel's own `spi_hz` field in
+`hal/kf_panel_profile.h`, because a single constant could only ever have been
+right for one of the two -- it would either throttle the ST7789 or hand the
+ILI9341 a white screen. `KF_DISPLAY_SPI_HZ` still exists, but only as the
+figure the **desktop** backends report as their link speed; it tracks the
+primary panel and nothing on the device reads it. To try another clock on
+glass without editing a profile: `idf.py -DKF_SPI_HZ=<hz> build`.
+
+Both were measured through breadboard jumpers, which makes each a floor for
+its panel rather than a verdict -- re-measure on the real PCB. See
+`docs/hardware-bringup.md` for the caveats.

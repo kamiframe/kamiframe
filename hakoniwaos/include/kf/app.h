@@ -76,9 +76,9 @@ typedef struct {
      *
      * This is the number desktop would otherwise report as zero, and it is
      * usually the largest single item in the budget: a full 240x320 RGB565
-     * frame is 153,600 bytes, which at 40MHz is about 30ms of wire time.
-     * Without it you will happily design a 60fps game that the hardware
-     * cannot display. */
+     * frame is 153,600 bytes, which at the desktop model's 80MHz is about
+     * 15ms of wire time, and about 30ms on the 40MHz ILI9341. Without it you
+     * will happily design a game the hardware cannot display. */
     uint32_t transfer_us;
 
     /* The two ways the device could spend a frame.

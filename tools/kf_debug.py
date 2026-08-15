@@ -889,7 +889,7 @@ def cmd_scanline(link, args):
 
     The device reads at a slow, dedicated clock for the duration of this
     probe (2MHz by default -- the ILI9341's read cycle is only rated to
-    about 6MHz, well under the 40MHz the display normally writes at), not
+    about 6MHz, well under the 40MHz this panel normally writes at), not
     the display's own write clock. --read-hz overrides that from here, so a
     human can try 1MHz or 4MHz without reflashing. The screen will visibly
     glitch while this runs -- the firmware tears the panel down and rebuilds

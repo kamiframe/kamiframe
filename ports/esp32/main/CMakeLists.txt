@@ -333,6 +333,40 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KF_PANEL_PROFILE=kf_panel_${KF_PANEL}
 )
 
+## KF_SPI_HZ: the display clock, for A/B testing a faster panel on real glass
+## without editing the panel profile and without an experimental value
+## reaching a commit by accident.
+##
+##     idf.py -DKF_SPI_HZ=80000000 build flash monitor
+##
+## PRIVATE to this component is correct and not an oversight. The clock is
+## read only by ../hal/esp_display.cpp, compiled here. Core's transfer
+## estimate does NOT read any macro -- estimate_transfer_us() takes
+## link_bytes_per_second as a runtime argument, fed from the display caps
+## that esp_display.cpp fills in from the same clock. So the wire speed, the
+## caps and the budget model all move together. Widening this to hakoniwaos
+## would change nothing and would imply the opposite.
+##
+## Empty by default, which leaves the ACTIVE PANEL PROFILE's own measured
+## clock in place (kf_panel_profile.h's spi_hz -- 40MHz on the ILI9341, 80MHz
+## on the ST7789). Promote a value into that profile only after it has
+## survived the real game for a long run, not a test card: marginal SPI drops
+## occasional bits rather than failing outright, and the symptom is a stray
+## speckle or a slightly wrong colour minutes apart.
+set(KF_SPI_HZ "" CACHE STRING "Display SPI clock in Hz; empty = the active panel profile's measured spi_hz")
+if(NOT KF_SPI_HZ STREQUAL "")
+    if(NOT KF_SPI_HZ MATCHES "^[0-9]+$")
+        message(FATAL_ERROR
+            "KF_SPI_HZ must be a plain decimal number of Hz, got '${KF_SPI_HZ}' "
+            "-- e.g. -DKF_SPI_HZ=80000000, not 80MHz or 80000000u.")
+    endif()
+    message(STATUS "KF_SPI_HZ override: ${KF_SPI_HZ} Hz "
+                    "(kf/budget.h's default is not in effect)")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        KF_SPI_HZ_OVERRIDE=${KF_SPI_HZ}
+    )
+endif()
+
 ## KF_HOME_SCREEN (Task 5 of the Lua game-layer plan): set at the top of
 ## ../CMakeLists.txt, not here -- see that file's own comment for why. This
 ## one define covers both of this component's own readers: kf_lua_port.cpp

@@ -7,8 +7,10 @@
  * WHY RETAINED, NOT IMMEDIATE. If a caller could draw a pixel directly --
  * `draw_sprite(x, y)` every frame -- core would have no way to know what
  * changed, and would either have to mark the whole screen dirty every frame
- * (240*320*2 = 153,600 bytes, ~31ms of SPI transfer against a 33.3ms budget,
- * see kf/budget.h's KF_DISPLAY_SPI_HZ arithmetic) or make the caller manage
+ * (240*320*2 = 153,600 bytes, ~15ms of SPI transfer against a 33.3ms budget
+ * on the default ST7789 at its measured 80MHz, and ~31ms on the ILI9341 at
+ * its 40MHz -- see kf/budget.h's arithmetic and the per-panel `spi_hz` in
+ * ports/esp32/hal/kf_panel_profile.h) or make the caller manage
  * dirty rectangles by hand -- unacceptable for the audience this platform is
  * for (see CLAUDE.md: "a WordPress or jQuery developer should not have too
  * much trouble"). So a caller instead DECLARES what exists -- position,
@@ -57,7 +59,10 @@
  * already be dangling.
  *
  * See docs/architecture/adr-0040-retained-scene.md for the coalescing rule,
- * the 31ms arithmetic in full, and what "verified" does and does not mean
+ * the transfer arithmetic in full (written when the clock was a single
+ * global 40MHz, so its figure is 30.7ms; the shape of the argument is
+ * unchanged by the ST7789's faster clock), and what "verified" does and
+ * does not mean
  * yet (no scene declared through this API has rendered on real hardware).
  */
 
@@ -76,11 +81,35 @@ extern "C" {
  * header's own "HANDLES, NOT POINTERS" comment above. */
 typedef uint16_t kf_scene_id;
 
-/* Room for an order of magnitude more than the current home screen needs
- * (creature, up to four poops, three stat bars, three stat labels, five
- * care-guide labels -- under ten objects today) at ~40 bytes each, a couple
- * of KB of static storage. See kf_scene_add_sprite()'s own comment for what
- * happens past this limit. */
+/* MEASURED 2026-08-14: sizeof(SceneObject) is 232 bytes, so 64 slots cost
+ * 14.5 KB. An earlier version of this comment said "~40 bytes each, a couple
+ * of KB", which understated it by about 6x -- the struct carries TWO copies
+ * of its state (declared and presented, which is what makes the differ
+ * possible) and each of those holds a 32-byte sprite name and a 41-byte text
+ * buffer.
+ *
+ * THAT COST IS INTERNAL RAM, not PSRAM: this is a static array in Core, so
+ * it lands in .bss in the S3's 512 KB, which is the scarce pool -- a device
+ * running the demo creature reports around 86 KB of internal heap free.
+ * Raising this to 128 would spend another 14.5 KB of that.
+ *
+ * The other cost, easy to miss: eight loops in scene.cpp iterate the WHOLE
+ * array every frame (`for (auto &obj : g_objects)`), not just the live
+ * slots, so this constant sets per-frame work whether or not the objects
+ * exist. Cheap per element, not free.
+ *
+ * What raising it does NOT affect: the coalescer's pairwise merge, which is
+ * quadratic but bounded by KF_SCENE_MAX_DIRTY_CANDIDATES below -- a separate
+ * constant. More objects CHANGING in one frame does mean more merge pressure
+ * into those fixed slots, hence larger unioned dirty rects and more SPI
+ * transfer; static UI declares nothing new and never reaches that path.
+ *
+ * Occupancy today is 60 of 64 (Home + Info + Settings together, asserted by
+ * run_settings_screen_check()). One more Settings row of the usual shape
+ * costs 6 and does not fit. See kf_scene_add_sprite()'s own comment for what
+ * happens past this limit -- and note that in a Lua cartridge declaring its
+ * objects at module scope, that failure takes the WHOLE script down at load,
+ * not just the screen that overflowed. */
 #define KF_SCENE_MAX_OBJECTS 64
 
 /* Working set for the coalescer kf_scene_commit() runs before it marks

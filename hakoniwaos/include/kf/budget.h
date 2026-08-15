@@ -45,48 +45,78 @@
 #define KF_TARGET_FPS          30
 #define KF_FRAME_BUDGET_US     (1000000 / KF_TARGET_FPS)
 
-/* MEASURED, 2026-08-08, on the first real board. This was an assumption for
- * the whole of Phase 1 and is not one any more.
+/* MEASURED, PER PANEL, AND NO LONGER ONE NUMBER. This was an assumption for
+ * the whole of Phase 1, then a single measured 40MHz, and is now two measured
+ * figures that each live with the panel they were measured on.
  *
- * Stage 2b of ports/esp32-bringup swept the panel across 4/10/20/40/80MHz,
- * redrawing a test card at each. 40MHz was the highest that rendered
- * correctly; 80MHz produced a solid white screen, which is what wholesale
- * data corruption looks like on this panel. So the figure this file already
- * guessed turns out to be right, and the ~32fps ceiling below is real rather
- * than hoped for.
+ * Stage 2b of ports/esp32-bringup sweeps the panel across 4/10/20/40/50/60/
+ * 80MHz, redrawing a test card at each. On the 2.8in ILI9341 (2026-08-08)
+ * 40MHz was the highest that rendered correctly; 80MHz produced a solid white
+ * screen, which is what wholesale data corruption looks like on that module.
+ * On the 2in ST7789 (2026-08-14) the sweep held at 80MHz, and the real game
+ * then rendered correctly there over a long run -- the stronger of the two
+ * results, because a seven-second test card cannot see an occasional dropped
+ * bit and minutes of on-screen text can.
  *
- * Three caveats, because "measured" should not be read as "settled":
+ * The ST7789 is the default panel (ADR 0059), so 80MHz is what the device
+ * normally runs at. Each figure lives in its own profile in
+ * ports/esp32/hal/kf_panel_profile.h (`spi_hz`); one global constant could
+ * only ever have been right for one of the two panels.
  *
- *   1. Measured on a HiLetgo 2.8in ILI9341 -- the officially supported
- *      option, not the primary panel. The 2in ST7789 is the reference panel
- *      and has not been measured. Re-measure when it arrives; ST7789 modules
- *      commonly tolerate more, so this may go up.
- *   2. 40MHz is roughly four times the ILI9341 datasheet's own write-cycle
- *      figure. It works, and is what practically every driver for this panel
- *      does, but it is outside spec and could be marginal on a different unit
- *      or at a different temperature. It is a working number, not a
- *      guaranteed one.
- *   3. Measured on a breadboard through Dupont jumpers with inline couplers,
- *      which is close to the worst wiring this project will ever have. A real
- *      PCB should do at least this well, so treat 40MHz as a floor.
+ * Two caveats, because "measured" should not be read as "settled":
  *
- * At 40MHz a full 240x320 RGB565 frame is
+ *   1. Both were measured on a breadboard through Dupont jumpers with inline
+ *      couplers, which is close to the worst wiring this project will ever
+ *      have. A real PCB should do at least this well, so treat each figure as
+ *      a floor for its panel rather than a verdict.
+ *   2. Neither is inside its controller's datasheet. 80MHz is roughly the
+ *      ceiling of the road rather than of the panel -- about as fast as the
+ *      S3's SPI peripheral drives a display at all -- and the ILI9341's 40MHz
+ *      is about four times that controller's own write-cycle figure. Both
+ *      work, and both are what practically every driver for these panels
+ *      does, but they are working numbers rather than guaranteed ones and
+ *      could be marginal on a different unit or at a different temperature.
+ *
+ * At the default panel's 80MHz a full 240x320 RGB565 frame is
  *
  *     240 * 320 * 2 bytes * 8 bits = 1,228,800 bits
- *     1,228,800 / 40,000,000       = 30.7 ms
+ *     1,228,800 / 80,000,000       = 15.4 ms
  *
- * of wire time before the CPU has drawn anything at all. That is most of a
- * 33.3ms frame. The desktop backend reports this as zero, which is the single
- * most misleading thing about developing on a PC, so the core estimates it
- * from the dirty rectangle and includes it in every budget report.
+ * of wire time before the CPU has drawn anything at all. That is still the
+ * largest single item in a 33.3ms frame, and it is still what the desktop
+ * backend would otherwise report as zero -- the single most misleading thing
+ * about developing on a PC -- so the core estimates it from the dirty
+ * rectangle and includes it in every budget report. On the ILI9341 the same
+ * frame is 30.7ms, which is most of the budget rather than half of it.
  *
- * Raising this is the single biggest lever on full-screen animation:
- *   40 MHz SPI      30.7 ms/frame   ~32 fps ceiling
+ * The clock is the single biggest lever on full-screen animation, and the
+ * device has now taken the last step this bus offers:
+ *   40 MHz SPI      30.7 ms/frame   ~32 fps ceiling  (the ILI9341's clock)
  *   60 MHz SPI      20.5 ms/frame   ~49 fps ceiling
- *   80 MHz SPI      15.4 ms/frame   ~65 fps ceiling
+ *   80 MHz SPI      15.4 ms/frame   ~65 fps ceiling  (the ST7789's, default)
  *   8-bit parallel   3.8 ms/frame   far above any target (needs an i80 panel)
  * See docs/frame-budget.md. */
-#define KF_DISPLAY_SPI_HZ      40000000
+/* THE DESKTOP MODEL'S FIGURE. The device does not read this.
+ *
+ * The real clock is PER PANEL and lives in each profile in
+ * ports/esp32/hal/kf_panel_profile.h (`spi_hz`): 40MHz on the ILI9341, which
+ * came out solid white at 80, and 80MHz on the ST7789, measured 2026-08-14.
+ * One global constant could only have been wrong for one of them -- either
+ * throttling the good panel or handing the other a white screen.
+ *
+ * What this value still does: it is the link speed the DESKTOP backends
+ * report in their display caps, so the simulator's transfer-cost estimate
+ * models a real device rather than an infinitely fast one. It tracks the
+ * PRIMARY panel (the 2in ST7789, the default since ADR 0059), because that
+ * is the device the desktop should be pessimistic against.
+ *
+ * On device, override for an experiment with
+ * `idf.py -DKF_SPI_HZ=... build` (ports/esp32/main/CMakeLists.txt), which
+ * defines KF_SPI_HZ_OVERRIDE and wins over the profile. Promote a value into
+ * a profile only after it has survived the real game for a long run, not a
+ * test card: marginal SPI drops occasional bits rather than failing
+ * outright, and the symptom is a stray speckle minutes apart. */
+#define KF_DISPLAY_SPI_HZ      80000000
 
 /* ASSUMPTION, NOT MEASURED. Correct at hardware bring-up. (KF_DISPLAY_SPI_HZ
  * above no longer carries this banner -- stage 2b measured it -- but this one

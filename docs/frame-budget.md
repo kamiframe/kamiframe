@@ -1,12 +1,17 @@
 # The frame budget, and whether full-screen animation works
 
-**Short answer: yes, at 31fps today.** A scrolling tile background with
-sprites on top, every pixel redrawn every frame, runs at about **31fps**.
-Drawing is not the problem. The wire to the screen is — and the obvious free
-lever, a faster SPI clock, was tried at bring-up and failed on the wiring
-tested (see "Run the bus faster" below). 60fps is still reachable, but
-through a different lever: a parallel panel, a smaller panel, or reducing
-what a frame sends.
+**Short answer: yes, at 60fps today.** A scrolling tile background with
+sprites on top, every pixel redrawn every frame, runs at about **60fps** on
+the default 2in ST7789. Drawing is not the problem. The wire to the screen
+is — and the obvious free lever, a faster SPI clock, was tried at bring-up,
+failed on the 2.8in ILI9341, and held at 80MHz on the ST7789 (see "Run the
+bus faster" below). That doubled the ceiling and is where today's 60fps came
+from.
+
+On an ILI9341 build the same scene runs at about **31fps**, because that
+panel's measured ceiling is 40MHz. The clock is a property of the panel, not
+of the project: each profile in `ports/esp32/hal/kf_panel_profile.h` carries
+its own measured `spi_hz`.
 
 Run it yourself:
 
@@ -21,18 +26,19 @@ The console prints what it would cost on hardware.
 
 ## The measurement
 
-From `kamiframe-headless --frames 300 --stress`, at the current assumed 40MHz
-SPI clock:
+From `kamiframe-headless --frames 300 --stress`. The desktop backends model
+the primary panel's measured 80MHz, so this is what an ST7789 build costs:
 
 ```
-device estimate: draw  1259 us + transfer 30720 us
-   serial (today)        31979 us  ->   31.3 fps
-   overlapped (DMA+2buf) 30720 us  ->   32.6 fps
+device estimate: draw  1259 us + transfer 15361 us
+   serial (today)        16620 us  ->   60.1 fps
+   overlapped (DMA+2buf) 15361 us  ->   65.0 fps
 pixels drawn:  76800 opaque +  12288 keyed   dirty 100%
 ```
 
 Drawing the entire screen costs about **1.3ms**. Sending it costs about
-**30.7ms**. Drawing is 4% of the frame.
+**15.4ms**. Drawing is 8% of the frame. On a 40MHz ILI9341 the transfer is
+30.7ms instead and drawing is 4%.
 
 That is the single most important fact about this hardware, and it is the
 opposite of what a web or desktop background suggests. You are not
@@ -47,7 +53,7 @@ line that moves one bit per clock:
 
 ```
 153,600 bytes x 8 = 1,228,800 bits
-1,228,800 / 40,000,000 = 30.7 ms
+1,228,800 / 80,000,000 = 15.4 ms
 ```
 
 Nothing you do in software changes that. It is a property of the cable.
@@ -56,9 +62,9 @@ Measured with the bus clock varied, everything else identical:
 
 | Link | Full frame | Ceiling (overlapped) |
 |---|---|---|
-| SPI 40MHz (current assumption) | 30.7 ms | **32.6 fps** |
+| SPI 40MHz (the ILI9341's measured clock) | 30.7 ms | **32.6 fps** |
 | SPI 60MHz | 20.5 ms | **48.8 fps** |
-| SPI 80MHz | 15.4 ms | **65.1 fps** |
+| SPI 80MHz (the ST7789's, and the default) | 15.4 ms | **65.1 fps** |
 | 8-bit parallel, 20MHz pixel clock | 7.7 ms | ~130 fps (something else becomes the limit first) |
 
 Those first three are real runs, not arithmetic on a napkin. The parallel row
@@ -82,7 +88,8 @@ both.
 Where it earns its place is that most virtual-pet screens are not scrolling
 tilemaps. A pet idling in a room, a menu, a stats page, a sleeping animation:
 these change a small fraction of the screen. On those, dirty rectangles are
-the difference between 32fps and effectively unlimited, and between a battery
+the difference between the full-frame ceiling and effectively unlimited, and
+between a battery
 that lasts a day and one that lasts a week, because the display link is also
 one of the bigger power draws.
 
@@ -91,14 +98,16 @@ gets cheap. It is not what makes a busy screen possible.**
 
 ---
 
-## How to get 60fps with a full screen of animation
+## Where the remaining headroom is
 
-In rough order of cost to you.
+60fps with a full screen of animation is here, on the default panel. Past
+that — or on the 40MHz ILI9341, where it is not here yet — these are the
+levers, in rough order of cost to you.
 
 ### 1. Overlap drawing and sending (free, and already planned)
 
 Right now the model assumes the CPU draws the whole frame and then waits for
-all of it to go out: 1.3 + 30.7 = 32ms. With DMA and a second buffer, the
+all of it to go out: 1.3 + 15.4 = 16.6ms. With DMA and a second buffer, the
 previous frame goes out over the wire while the CPU draws the next one, so a
 frame costs `max(draw, transfer)` instead of `draw + transfer`.
 
@@ -113,22 +122,35 @@ the next strip while the first is in flight. Same overlap, a fraction of the
 RAM. `budget.h` has `KF_DISPLAY_DOUBLE_BUFFERED` sitting at 0, and the report
 prints both numbers so the headroom is always visible.
 
-### 2. Run the bus faster — tried, and it did not pan out
+### 2. Run the bus faster — already spent on the default panel
 
 40MHz was a conservative assumption, and the theoretical case for 80MHz
 looked good: the ST7789 datasheet is around 62MHz for serial writes, and
-80MHz is widely used in practice on the ESP32-S3. Going from 40 to 80 would
-double the ceiling — **32fps to 65fps** — for a single configuration line and
-no code changes, if the wiring cooperated.
+80MHz is widely used in practice on the ESP32-S3. Going from 40 to 80 doubles
+the ceiling — **32fps to 65fps** — for a single configuration line and no code
+changes, if the wiring cooperates.
 
-**It didn't.** Measured at bring-up (`docs/hardware-bringup.md`'s Stage 2b
-clock sweep, 2026-08-08, on the breadboard ILI9341): 40MHz rendered the test
-card correctly; 80MHz came out **solid white** — wholesale data corruption on
-this wiring, not a subtle glitch. `KF_DISPLAY_SPI_HZ` stays 40MHz, now as a
-measured ceiling rather than a guess. Worth re-trying if the wiring changes
-(shorter leads, a PCB instead of jumpers) or once the primary 2in ST7789
-panel is on the bench — this result is from the 2.8in ILI9341 — but treat it
-as a re-test, not a free win still on the table.
+**It depends entirely on the panel, which is why the clock now lives with the
+panel.** Both figures come from `docs/hardware-bringup.md`'s Stage 2b clock
+sweep, on breadboard wiring:
+
+- **2.8in ILI9341, 2026-08-08: 40MHz.** 40 rendered the test card correctly;
+  80MHz came out **solid white** — wholesale data corruption, not a subtle
+  glitch.
+- **2in ST7789, 2026-08-14: 80MHz.** The sweep held at 80, and the real game
+  then rendered correctly there over a long run, which is the stronger of the
+  two results: a seven-second test card cannot see an occasional dropped bit,
+  and minutes of on-screen text can.
+
+Each lives in its panel's `spi_hz` in `ports/esp32/hal/kf_panel_profile.h`.
+A single global constant could only ever have been right for one of them.
+
+**On the default panel this lever is now spent.** 80MHz is about as fast as
+the S3's SPI peripheral drives a display at all, so better wiring may make 80
+more *reliable* but will not unlock more. The next step up is a parallel
+interface, below. On an ILI9341 build it is worth re-testing if the wiring
+improves (shorter leads, a PCB instead of jumpers) — but treat that as a
+re-test, not a free win still on the table.
 
 ### 3. Choose a parallel panel instead of SPI (a hardware decision)
 
@@ -149,8 +171,8 @@ yours.** It does not need deciding now. It needs deciding before the PCB.
 ### 4. Reduce how much data a frame is (an architecture decision, later)
 
 - **A smaller panel.** 240x240 is a very common size and is 25% less data,
-  taking 40MHz SPI from 32fps to 43fps. It also changes what the pet looks
-  like, so it is a design call.
+  taking 80MHz SPI from 65fps to 87fps, or 40MHz from 32fps to 43fps. It also
+  changes what the pet looks like, so it is a design call.
 - **12-bit colour.** The ST7789 accepts RGB444 as well as RGB565: 1.5 bytes
   per pixel instead of 2, so 25% less data, at the cost of visible banding on
   gradients. Retro-appropriate, arguably.
@@ -180,24 +202,27 @@ remembering when a specific game needs more than the bus can give.
 
 ## What the numbers assume, stated plainly
 
-Two of the figures in `budget.h` are estimates, not measurements, and both are
-flagged in the file:
+**The clock is measured, not assumed, and it is not global.** The device
+reads its panel profile's `spi_hz`: 80MHz on the default ST7789, 40MHz on the
+ILI9341. `KF_DISPLAY_SPI_HZ` in `budget.h` still exists at `80000000`, but
+only as the figure the **desktop** backends report as their link speed — it
+tracks the primary panel so the simulator is pessimistic against the device
+you are most likely to build, and nothing on the device reads it.
 
-**`KF_DISPLAY_SPI_HZ = 40000000`.** Conservative. Likely improvable to 60 or
-80 on real hardware. First thing to check at bring-up.
+The drawing figures are still estimates, and are flagged in the file:
 
 **`KF_DRAW_OPAQUE_PX_PER_US = 100`, `KF_DRAW_KEYED_PX_PER_US = 25`.** How fast
 the device fills pixels. Genuine guesses, and could reasonably be out by a
 factor of two either way.
 
-That second uncertainty does not change any conclusion here, which is worth
-saying explicitly. Drawing is 4% of the frame. If the estimate is wrong by 4x
-in the pessimistic direction, drawing becomes 16% of the frame and transfer
-still dominates. The conclusion "you are wire-bound" is robust to being quite
-badly wrong about the CPU.
+That uncertainty does not change any conclusion here, which is worth saying
+explicitly. Drawing is 8% of the frame at 80MHz. If the estimate is wrong by
+4x in the pessimistic direction, drawing becomes about a third of the frame
+and transfer still dominates. The conclusion "you are wire-bound" is robust to
+being quite badly wrong about the CPU.
 
-Both get corrected in Phase 1b, and the simulator's numbers become accurate
-rather than merely useful.
+They get corrected as the device is measured further, and the simulator's
+numbers become accurate rather than merely useful.
 
 ---
 
@@ -227,12 +252,14 @@ of the frame: **measure the work, not the machine.**
 
 ## Summary
 
-- Full-screen animation works. About 31fps today, 60fps within reach.
-- Drawing is 4% of the frame. The wire is 96%.
+- Full-screen animation works. About 60fps today on the default 2in ST7789,
+  about 31fps on the 2.8in ILI9341.
+- Drawing is 8% of the frame. The wire is 92%.
 - Dirty rectangles are how a quiet screen gets cheap, not a limit on a busy
   one. Pass the whole screen when the whole screen changes.
-- The biggest lever would have been the bus, 40MHz to 80MHz doubling the
-  ceiling for free — but it was tried at bring-up and 80MHz came out solid
-  white on the wiring tested. 40MHz is the measured ceiling for now.
+- The biggest lever was the bus, and it has been pulled: 80MHz on the ST7789
+  doubled the ceiling for one line of configuration. The ILI9341 came out
+  solid white at 80 and stays at its measured 40MHz, which is why the clock
+  is a per-panel field rather than a project-wide constant.
 - The decision this eventually forces is a hardware one, SPI versus parallel
   panel, and it is due before the PCB rather than now.

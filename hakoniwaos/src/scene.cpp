@@ -778,7 +778,7 @@ void kf_scene_commit(void) {
      *
      *   1. MANDATORY. Past KF_MAX_DIRTY_RECTS, kf/framebuffer.h's
      *      kf_fb_mark_dirty() would collapse to one screen-sized box itself
-     *      (framebuffer.cpp) -- correct, but exactly the ~31ms-of-transfer
+     *      (framebuffer.cpp) -- correct, but exactly the ~15ms-of-transfer
      *      cost this whole module exists to avoid (kf/scene.h's "WHY
      *      RETAINED, NOT IMMEDIATE" comment). Doing the reduction here
      *      first, with full knowledge of every candidate at once, is what

@@ -345,8 +345,9 @@ void kf_demo_draw(void) {
     const kf_rect now = sprite_rect(d.movers[0]);
 
     if (d.needs_full_repaint) {
-        /* The expensive case: the whole buffer down the wire, about 30ms at
-         * 40MHz. The budget report will show it. */
+        /* The expensive case: the whole buffer down the wire, about 15ms on
+         * the default ST7789 at its measured 80MHz and about 30ms on the
+         * ILI9341 at its 40MHz. The budget report will show it. */
         kf_fill(d.background);
         d.needs_full_repaint = false;
     } else {

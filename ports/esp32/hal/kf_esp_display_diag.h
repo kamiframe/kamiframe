@@ -76,7 +76,9 @@ extern "C" {
  * run (see kf_dbg_bridge.cpp's handle_scanline()).
  *
  * Reads at whatever clock g_io is CURRENTLY built for in esp_display.cpp --
- * KF_DISPLAY_SPI_HZ (the normal write clock) outside of a SCANLINE probe,
+ * kPanelSpiHz, the active panel profile's own measured write clock, outside
+ * of a SCANLINE probe (40MHz on the ILI9341, the only panel this diagnostic
+ * can run on at all, since it is the only one with a read line),
  * or whatever kf_esp_display_diag_begin_probe() below most recently built
  * it at, in between that call and kf_esp_display_diag_end_probe().
  *
@@ -113,7 +115,7 @@ bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count);
 bool kf_esp_display_diag_begin_probe(uint32_t read_hz);
 
 /* The other half of kf_esp_display_diag_begin_probe(): rebuilds the panel
- * IO/panel back at KF_DISPLAY_SPI_HZ, the normal write clock, and re-sends
+ * IO/panel back at kPanelSpiHz, the normal write clock, and re-sends
  * the init table. Must be called exactly once after every
  * kf_esp_display_diag_begin_probe() call, even if that call returned false,
  * so a probe always attempts to leave the display usable again. If this

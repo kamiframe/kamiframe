@@ -28,8 +28,12 @@
  *    pulsing band travelling down the screen. A still pet now costs zero
  *    bytes and the flicker has nowhere to come from.
  *
- *    It is also most of the frame budget: a full frame is ~31ms of wire time
- *    at the measured 40MHz, against a 33ms budget at 30fps.
+ *    It is also the largest single item in the frame budget: a full frame is
+ *    ~15ms of wire time on the default ST7789 at its measured 80MHz, and
+ *    ~31ms on the ILI9341 at its measured 40MHz, against a 33ms budget at
+ *    30fps. The clock is per-panel -- see kPanelSpiHz below and the `spi_hz`
+ *    field in kf_panel_profile.h -- so which of those two a build pays
+ *    depends on which profile it was built for.
  *
  * 2. Byte order is per-panel, and on a panel that needs swapping it costs a
  *    pass over the frame. See kf_display_present() for the reasoning and
@@ -111,6 +115,33 @@ bool g_backlight_pwm_ready = false;
 /* The panel this build drives. One line, resolved at compile time. */
 const kf_panel_profile &kPanel = KF_PANEL_PROFILE;
 
+/* The clock this build actually drives the panel at.
+ *
+ * From the PANEL PROFILE, not from kf/budget.h, because it is a per-module
+ * measurement: 40MHz on the ILI9341 (80 came out solid white) and 80MHz on
+ * the ST7789. A single global would either throttle the good panel or hand
+ * the other one a white screen with a clean log.
+ *
+ * KF_DISPLAY_SPI_HZ still wins when someone defines it explicitly
+ * (-DKF_SPI_HZ=... via ports/esp32/main/CMakeLists.txt), which is how a new
+ * clock gets A/B tested on glass before it is promoted into a profile.
+ * kf/budget.h's own value is the DESKTOP model's figure and is not used
+ * here. */
+#ifdef KF_SPI_HZ_OVERRIDE
+constexpr uint32_t kPanelSpiHz = KF_SPI_HZ_OVERRIDE;
+#else
+constexpr uint32_t kPanelSpiHz = KF_PANEL_PROFILE.spi_hz;
+#endif
+
+/* A profile added without a clock would configure SPI at 0Hz, which is not a
+ * slow panel -- it is undefined behaviour in the driver and a black screen
+ * with a clean log, this file's recurring failure mode. Compile-time,
+ * because a profile is compile-time data and there is no reason to discover
+ * this at boot. */
+static_assert(kPanelSpiHz > 0u,
+              "the active panel profile has no spi_hz -- see "
+              "kf_panel_profile.h's own field comment");
+
 /* Rows per staging transfer on panels that need a byte swap. 240 x 40 x 2 =
  * 19,200 bytes, which is a comfortable DMA-capable internal-RAM allocation --
  * a full frame would be 153,600 and internal RAM is only 512KB in total. */
@@ -163,9 +194,10 @@ kf_display_caps g_caps = {
      * contract is that caps are only valid "after init" anyway. */
     true,
     /* link_bytes_per_second: the real, configured SPI clock, not an
-     * estimate -- this is the one figure the desktop backend has to fake
-     * by borrowing KF_DISPLAY_SPI_HZ from budget.h; here it is simply true. */
-    KF_DISPLAY_SPI_HZ / 8u,
+     * estimate -- this is the one figure the desktop backend has to fake by
+     * borrowing KF_DISPLAY_SPI_HZ from budget.h, which models the primary
+     * panel because it has no profile to read; here it is simply true. */
+    0u, /* set from kPanelSpiHz in kf_display_init() -- see that field */
 };
 
 /* Send a profile's init table straight down the command channel. Commands and
@@ -190,7 +222,7 @@ void send_init_table(const kf_panel_profile &panel) {
  * exactly the same known state regardless of which clock it was built at.
  *
  * The ONE place that creates g_io/g_panel: kf_display_init() below calls it
- * once, at KF_DISPLAY_SPI_HZ, for the normal write path. The KFDBG SCANLINE
+ * once, at kPanelSpiHz, for the normal write path. The KFDBG SCANLINE
  * probe (near the bottom of this file, under KF_DBG_BRIDGE_ENABLE) calls it
  * twice more, at a slow read clock and back, to get a genuinely slower read
  * without a second SPI device fighting over the shared CS pin -- see
@@ -366,20 +398,22 @@ kf_result kf_display_init(void) {
      * assumed). A non-native MISO therefore drops MOSI, SCLK and CS onto the
      * GPIO matrix too, not just MISO -- for the WHOLE bus, on every
      * ILI9341 + KF_DBG_BRIDGE_ENABLE=1 build, not only while a SCANLINE
-     * command is actually running. docs/hardware-bringup.md's measured
-     * 40MHz write ceiling was measured on the IOMUX path (CLK12/MOSI11/CS10
-     * are exactly SPI2's native pins) and has never been re-measured on the
-     * GPIO-matrix path this combination forces -- worth re-running that
-     * clock sweep once real ILI9341 + bridge-enabled hardware is back on the
-     * bench, rather than assuming 40MHz still holds. The ST7789 never pays
-     * this cost at all: has_read_line == false keeps miso_io_num at -1
-     * unconditionally for that profile, so its bus stays on the IOMUX fast
-     * path the 40MHz figure was measured on -- moving this decision into the
-     * panel profile is what hands the ST7789 back the fast path it would
-     * otherwise have lost to a diagnostic pin it has no wiring for at all.
-     * That is reasoning from ESP-IDF's own bus-matching rule, not a fresh
-     * clock measurement -- there is no ST7789 on hand this session to
-     * measure with.
+     * command is actually running. The ILI9341's 40MHz write ceiling
+     * (docs/hardware-bringup.md, and that profile's own spi_hz) was measured
+     * on the IOMUX path (CLK12/MOSI11/CS10 are exactly SPI2's native pins)
+     * and has never been re-measured on the GPIO-matrix path this
+     * combination forces -- worth re-running that clock sweep once real
+     * ILI9341 + bridge-enabled hardware is back on the bench, rather than
+     * assuming 40MHz still holds there. The ST7789 never pays this cost at
+     * all: has_read_line == false keeps miso_io_num at -1 unconditionally
+     * for that profile, so its bus stays on the IOMUX fast path that both
+     * panels' clocks were measured on -- moving this decision into the panel
+     * profile is what hands the ST7789 back the fast path it would otherwise
+     * have lost to a diagnostic pin it has no wiring for at all. That
+     * started as reasoning from ESP-IDF's own bus-matching rule with no
+     * ST7789 on hand, and the 2026-08-14 sweep then measured that panel at
+     * 80MHz on this path, which is the fast path holding up in practice
+     * rather than only on paper.
      *
      * max_transfer_sz covers a full frame, since the no-swap path issues
      * exactly one draw_bitmap() per frame. */
@@ -405,7 +439,8 @@ kf_result kf_display_init(void) {
      * panel's init table -- see rebuild_panel_io()'s own comment for why
      * this is the one function that does that, shared with the KFDBG
      * SCANLINE probe's temporary rebuild at a slow read clock and back. */
-    if (!rebuild_panel_io(KF_DISPLAY_SPI_HZ)) {
+    g_caps.link_bytes_per_second = kPanelSpiHz / 8u;
+    if (!rebuild_panel_io(kPanelSpiHz)) {
         return KF_ERR_IO;
     }
 
@@ -555,7 +590,7 @@ kf_result kf_display_init(void) {
 
     KF_LOGI(TAG, "%s up: %dx%d, %lu Hz SPI, RGB565, %s framebuffer, backlight %s",
             kPanel.name, KF_DISPLAY_WIDTH, KF_DISPLAY_HEIGHT,
-            static_cast<unsigned long>(KF_DISPLAY_SPI_HZ),
+            static_cast<unsigned long>(kPanelSpiHz),
             kPanel.big_endian_fb ? "byte-swapped" : "native-endian",
             own_backlight_pin ? "on" : "not owned by this build");
     return KF_OK;
@@ -625,8 +660,8 @@ namespace {
  * push_rect() only ever runs from kf_app_frame(), called after
  * kf_dbg_bridge_frame() returns each iteration (see app_main.cpp's loop) --
  * and kf_dbg_bridge_frame() is the only thing that can leave g_io at a
- * clock other than KF_DISPLAY_SPI_HZ (KFDBG SCANLINE's probe), and it
- * always restores KF_DISPLAY_SPI_HZ, synchronously, before returning (see
+ * clock other than kPanelSpiHz (KFDBG SCANLINE's probe), and it
+ * always restores kPanelSpiHz, synchronously, before returning (see
  * kf_esp_display_diag_end_probe()). So g_io is guaranteed to be at the
  * normal write clock every time push_rect() runs -- there is no rebuild to
  * do, and doing one here would cost far more than the read it is trying to
@@ -922,8 +957,11 @@ kf_result kf_display_present(const kf_color *framebuffer,
      * a moving boundary between the old contents and the identical new ones,
      * which reads to the eye as a pulsing band travelling down the screen.
      *
-     * It is also most of the frame budget: a full frame is ~31ms of wire time
-     * at the measured 40MHz (KF_DISPLAY_SPI_HZ), against a 33ms budget. A pet
+     * It is also the largest single item in the frame budget: a full frame is
+     * ~15ms of wire time at the default ST7789's measured 80MHz, or ~31ms at
+     * the ILI9341's 40MHz (kPanelSpiHz, from the active panel profile --
+     * kf/budget.h's KF_DISPLAY_SPI_HZ is the desktop model's figure and is
+     * not what this build clocks the bus at), against a 33ms budget. A pet
      * standing still should cost nothing at all, and now does. */
     if (dirty_rects == nullptr || dirty_rect_count <= 0) {
         return KF_OK;
@@ -1016,7 +1054,8 @@ bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
 /* Tears down the write panel IO/panel and rebuilds them at read_hz, so
  * kf_esp_display_diag_read_scanline() above reads at a clock the ILI9341's
  * ~150ns read cycle (about 6MHz max, per the datasheet) can actually keep
- * up with, instead of the 40MHz write clock every draw_bitmap() call uses --
+ * up with, instead of this panel's own 40MHz write clock, which is what
+ * every draw_bitmap() call on an ILI9341 build runs at --
  * 6-20x too fast, and the concrete, already-measured explanation for why the
  * first SCANLINE run at the write clock came back looking like noise (runs
  * of all-zero/all-one bytes jumping by exactly 127: the classic signature of
@@ -1040,7 +1079,7 @@ bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
  * rebuild_panel_io(), the SAME function kf_display_init() itself uses for
  * the normal write clock, so the two paths cannot drift apart -- at
  * read_hz instead. kf_esp_display_diag_end_probe() below rebuilds it back
- * at KF_DISPLAY_SPI_HZ once the probe is done. Both directions re-send the
+ * at kPanelSpiHz once the probe is done. Both directions re-send the
  * panel's full init table, so the controller is never left in a state
  * neither clock configured it for.
  *
@@ -1052,7 +1091,7 @@ bool kf_esp_display_diag_read_scanline(uint8_t *out_bytes, size_t byte_count) {
  * makes tearing them down here, synchronously, safe -- confirmed by reading
  * that file's comment, not assumed. The screen WILL visibly glitch for the
  * duration of a SCANLINE run: the panel is reset and re-initialised twice,
- * once at read_hz and once back at KF_DISPLAY_SPI_HZ. That is expected, not
+ * once at read_hz and once back at kPanelSpiHz. That is expected, not
  * a bug -- kf_dbg_bridge.cpp's handle_scanline() says as much in its own
  * reply text too, so it is not mistaken for a new one on the wire.
  *
@@ -1067,7 +1106,7 @@ bool kf_esp_display_diag_begin_probe(uint32_t read_hz) {
 }
 
 /* Restores normal operation after a SCANLINE probe: rebuilds g_io/g_panel
- * at KF_DISPLAY_SPI_HZ, the clock kf_display_present() and every other
+ * at kPanelSpiHz, the clock kf_display_present() and every other
  * frame's draw_bitmap() calls expect. Called unconditionally by handle_
  * scanline(), even when kf_esp_display_diag_begin_probe() itself failed, so
  * a probe that could not even get INTO its slow clock still gets a chance
@@ -1084,13 +1123,13 @@ bool kf_esp_display_diag_begin_probe(uint32_t read_hz) {
  * until the next boot," logged loudly here so it reads as a clear failure
  * rather than a silent hang -- never a crash. */
 void kf_esp_display_diag_end_probe(void) {
-    if (!rebuild_panel_io(KF_DISPLAY_SPI_HZ)) {
+    if (!rebuild_panel_io(kPanelSpiHz)) {
         KF_LOGE(TAG,
                 "SCANLINE: could not restore the display panel at %lu Hz after "
                 "the probe -- g_panel is now null, so every kf_display_present() "
                 "call will return KF_ERR_UNAVAILABLE (no crash, no hang, just no "
                 "more screen updates) until the device is reset",
-                static_cast<unsigned long>(KF_DISPLAY_SPI_HZ));
+                static_cast<unsigned long>(kPanelSpiHz));
     }
 }
 

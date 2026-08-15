@@ -621,8 +621,11 @@ void kf_app_log_budget_report(void) {
                            (s.over_budget_frames * 100ull) / s.frames)
                      : 0ull);
 
-    /* The number that most often explains a bad p99: a full-screen redraw at
-     * 40MHz costs about 30ms of wire time all by itself. */
+    /* The number that most often explains a bad p99: a full-screen redraw
+     * costs about 15ms of wire time all by itself on the default ST7789 at
+     * its measured 80MHz, and about 30ms on the ILI9341 at its 40MHz. This
+     * uses the link speed the backend reported, so it follows whichever
+     * panel this build is driving rather than any one constant. */
     const uint32_t full_frame_us =
         estimate_transfer_us(KF_FRAMEBUFFER_BYTES, caps->link_bytes_per_second);
     KF_LOGI(TAG, "  a FULL frame would cost %" PRIu32 " us of transfer alone",
