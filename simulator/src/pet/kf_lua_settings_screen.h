@@ -59,6 +59,9 @@ void kf_lua_settings_screen_frame(uint32_t dt_ms);
 int kf_lua_settings_screen_debug_field(void); /* 0=HOUR,1=MINUTE,2=AMPM,3=VOLUME,4=SAVE */
 int kf_lua_settings_screen_debug_hour12(void); /* 1..12 */
 int kf_lua_settings_screen_debug_minute(void); /* 0..59 */
-int kf_lua_settings_screen_debug_volume(void); /* 0..4, KF_VOLUME_OFF..KF_VOLUME_4 */
+int kf_lua_settings_screen_debug_volume(void); /* 0..4, OFF..KF_VOLUME_4 */
+/* 1..4. Note the different range from volume above -- brightness has no OFF
+ * position, deliberately; see kf/settings.h. */
+int kf_lua_settings_screen_debug_brightness(void);
 
 #endif /* KF_LUA_SETTINGS_SCREEN_H */

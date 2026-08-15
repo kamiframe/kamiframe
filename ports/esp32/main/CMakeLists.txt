@@ -122,6 +122,11 @@ set(KF_MAIN_REQUIRES
     esp_driver_i2c
     esp_driver_i2s
     esp_driver_uart
+    # esp_driver_ledc: the display backlight's PWM dimmer. Its own component
+    # in ESP-IDF v6 -- <driver/ledc.h> is not reachable via esp_driver_gpio
+    # the way it was when the drivers lived in one blob, so leaving this out
+    # fails at the #include, not at link time.
+    esp_driver_ledc
     esp_lcd
     esp_timer
     nvs_flash

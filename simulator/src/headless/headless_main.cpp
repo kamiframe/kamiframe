@@ -8734,7 +8734,7 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 54; /* +1: the Home clock;
+constexpr int kSettingsCheckExpectedObjectCount = 60; /* +1: the Home clock;
                                                          * +2: the sound-
                                                          * foundation follow-
                                                          * up's VOLUME label
@@ -8747,7 +8747,34 @@ constexpr int kSettingsCheckExpectedObjectCount = 54; /* +1: the Home clock;
                                                          * meter icon -- 4
                                                          * kf.box() bars plus
                                                          * the OFF/mute "X"
-                                                         * glyph (49 -> 54) */
+                                                         * glyph (49 -> 54);
+                                                         * +6: the BRIGHTNESS
+                                                         * row -- label, value
+                                                         * and 4 more bars, no
+                                                         * mute glyph since
+                                                         * brightness has no
+                                                         * OFF (54 -> 60).
+                                                         *
+                                                         * 60 OF 64. Four
+                                                         * slots left, and
+                                                         * this is the number
+                                                         * to look at before
+                                                         * adding another
+                                                         * Settings row: one
+                                                         * more of the same
+                                                         * shape costs 6 and
+                                                         * does not fit. The
+                                                         * ceiling is KF_SCENE
+                                                         * _MAX_OBJECTS (kf/
+                                                         * scene.h), and
+                                                         * raising it is a
+                                                         * real option -- it
+                                                         * costs fixed arena
+                                                         * bytes, not heap --
+                                                         * but it should be a
+                                                         * decision, not a
+                                                         * surprise at the
+                                                         * 65th kf.text(). */
 
 /* Task 4 of the screens/clock/sleep plan: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -8911,9 +8938,10 @@ end
     check(kf_lua_settings_screen_debug_hour12() == 3,
           "three UP presses on HOUR move 12 -> 1 -> 2 -> 3");
 
-    /* RIGHT x4: HOUR -> MINUTE -> AM/PM -> VOLUME -> SAVE, visiting every
-     * field the five-field cursor names (VOLUME appended before SAVE by
-     * the sound-foundation follow-up). */
+    /* RIGHT x5: HOUR -> MINUTE -> AM/PM -> VOLUME -> BRIGHTNESS -> SAVE,
+     * visiting every field the six-field cursor names (VOLUME appended
+     * before SAVE by the sound-foundation follow-up, BRIGHTNESS after it by
+     * the backlight-PWM one). */
     tap(KF_BTN_RIGHT);
     check(kf_lua_settings_screen_debug_field() == 1, "RIGHT moves to MINUTE");
     tap(KF_BTN_RIGHT);
@@ -8944,7 +8972,28 @@ end
           "volume yet -- only SAVE does that");
 
     tap(KF_BTN_RIGHT);
-    check(kf_lua_settings_screen_debug_field() == 4, "RIGHT moves to SAVE");
+    check(kf_lua_settings_screen_debug_field() == 4,
+          "RIGHT moves to BRIGHTNESS");
+    check(kf_lua_settings_screen_debug_brightness() ==
+              static_cast<int>(KF_SETTINGS_DEFAULT_BRIGHTNESS),
+          "BRIGHTNESS starts at the default on a device with no settings "
+          "save yet");
+
+    /* ---- 5b-ii. The brightness field wraps 1..4, NOT 0..4: it has no OFF
+     * position, deliberately (kf/settings.h). One UP from the default 4
+     * must therefore land on 1, never on 0 -- a zero here would be a black
+     * screen the owner cannot read the menu to undo, which is the entire
+     * reason the range differs from volume's. */
+    tap(KF_BTN_UP);
+    check(kf_lua_settings_screen_debug_brightness() ==
+              static_cast<int>(KF_SETTINGS_BRIGHTNESS_MIN),
+          "UP from 4 wraps to 1, NOT to 0 -- brightness has no OFF position");
+    check(kf_headless_backlight_level() == 255u,
+          "editing the BRIGHTNESS field did NOT touch the actual backlight "
+          "yet -- only SAVE does that, same as volume");
+
+    tap(KF_BTN_RIGHT);
+    check(kf_lua_settings_screen_debug_field() == 5, "RIGHT moves to SAVE");
 
     const int64_t before_save = kf_time_wall().epoch_seconds;
     tap(KF_BTN_A); /* A on SAVE commits */
@@ -8954,6 +9003,13 @@ end
           "and nothing else -- same date, same seconds field");
     check(kf_audio_get_volume() == KF_VOLUME_1,
           "saving also applied VOLUME=1 to the live audio HAL immediately");
+    check(kf_headless_backlight_level() ==
+              kf_settings_brightness_duty(
+                  static_cast<uint8_t>(KF_SETTINGS_BRIGHTNESS_MIN)),
+          "saving also applied BRIGHTNESS=1 to the live display HAL "
+          "immediately, as the level's DUTY (not the level itself) -- the "
+          "backlight takes 0..255, and mixing the two up would be a screen "
+          "at 1/255 rather than at the intended 10%");
 
     /* ---- 5c. The load-bearing persistence test: volume survives a PET
      * reset -- the whole requirement (owner's own words): "persist

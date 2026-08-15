@@ -41,7 +41,13 @@ kf_display_caps g_caps = {
      * claiming otherwise would let core believe partial updates are already
      * being honoured. */
     false,
-    /* has_backlight */ false,
+    /* has_backlight: TRUE, and honestly so -- kf_display_set_backlight()
+     * below really does dim this window, so a caller that checks this cap
+     * before offering a brightness control gets the right answer here for
+     * the same reason it does on the ST7789. Reporting false while the
+     * setter works would make the Settings screen hide a row that
+     * functions. */
+    true,
     /* link_bytes_per_second: deliberately the DEVICE's figure, not the
      * host's. The host has no meaningful link speed, and reporting zero would
      * silently switch off the transfer-cost estimate, which is the one number
@@ -109,8 +115,34 @@ kf_result kf_display_present(const kf_color *framebuffer,
 }
 
 kf_result kf_display_set_backlight(uint8_t level) {
-    (void)level;
-    return KF_ERR_UNAVAILABLE;
+    /* Really dims the window, via SDL's own texture colour modulation --
+     * this used to return KF_ERR_UNAVAILABLE and do nothing.
+     *
+     * "A desktop window has no backlight" is true and was the wrong
+     * conclusion. The point of this simulator is that it IS the firmware
+     * with a different bottom layer (CLAUDE.md's first non-negotiable), so a
+     * brightness setting that only exists on hardware would be a setting
+     * nobody can develop against, and the Settings screen would have a row
+     * that silently does nothing on the only build most work happens in.
+     *
+     * Modulation multiplies each channel by level/255, which is exactly
+     * what a PWM backlight does to the light reaching your eye, so the
+     * simulated result and the device result agree to within the panel's
+     * own gamma. Free -- it is a parameter on the blit the GPU is doing
+     * anyway, not a pass over the framebuffer.
+     *
+     * NOT applied to kf_fb_pixels(): the framebuffer Core rendered is
+     * untouched, and every golden-checksum test therefore sees identical
+     * bytes whatever the brightness. Dimming is a property of the display,
+     * not of the frame -- the same split the real hardware has. */
+    if (g_state.texture == nullptr) {
+        return KF_ERR_UNAVAILABLE;
+    }
+    if (!SDL_SetTextureColorMod(g_state.texture, level, level, level)) {
+        KF_LOGE(TAG, "SDL_SetTextureColorMod failed: %s", SDL_GetError());
+        return KF_ERR_IO;
+    }
+    return KF_OK;
 }
 
 void kf_display_shutdown(void) {

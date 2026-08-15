@@ -336,6 +336,20 @@ void kf_app_init(kf_demo_mode mode) {
         kf_settings settings = kf_settings_default();
         (void)kf_settings_load(&settings);
         kf_audio_set_volume(static_cast<kf_volume_level>(settings.volume));
+        /* And the brightness, from the same load. Safe here because
+         * kf_display_init() is the FIRST of these inits, several lines
+         * above -- the panel and its PWM channel are already up, so this is
+         * a real restore rather than a no-op that looks like one.
+         *
+         * Return deliberately ignored: KF_ERR_UNAVAILABLE is the correct,
+         * expected answer on a panel whose backlight is not
+         * software-controllable (the ILI9341's LED pin is soldered to 3V3),
+         * and treating a device preference as unappliable there would be
+         * wrong -- it is stored for whatever panel comes next. See
+         * kf_lua_port_apply_brightness() for the same reasoning at the
+         * write end. */
+        (void)kf_display_set_backlight(
+            kf_settings_brightness_duty(settings.brightness));
     }
     /* Before kf_demo_init() below: the demo looks up sprites by name via
      * kf_assets_get(), so the pack must already be mounted and parsed. */

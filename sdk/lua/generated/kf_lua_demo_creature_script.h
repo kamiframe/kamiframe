@@ -1018,7 +1018,31 @@ end
 local volume_mute = settings_label("X", kVolumeIconX, 130)
 volume_mute:hide()
 
-local save_row = settings_label("SAVE", 16, 160)
+-- BRIGHTNESS, laid out to mirror VOLUME exactly one block below it: same
+-- label/value/meter arrangement, same bar geometry, same lit/dim colours.
+-- Deliberately identical rather than merely similar -- these two are the
+-- same KIND of control (a small ordered set of levels, edited with UP/DOWN,
+-- committed on SAVE), and a player who has learned one has learned the
+-- other.
+--
+-- The ONE difference is that there is no OFF position and therefore no "X"
+-- glyph: brightness runs 1..4. See kf/settings.h for why a zero-brightness
+-- position would be a device that looks broken with no way to show you the
+-- menu that would fix it.
+settings_label("BRIGHTNESS", 16, 160)
+local brightness_value = settings_label("", 16, 180)
+
+local kBrightBarBottomY = 188 -- bottom-aligned with the value text at y=180
+local brightness_bars = {}
+for i = 1, 4 do
+    local h = kVolumeBarHeights[i]
+    local b = settings_screen:box(kVolumeBarW, h, kVolumeBarDim)
+    b:move(kVolumeIconX + (i - 1) * (kVolumeBarW + kVolumeBarGap),
+           kBrightBarBottomY - h)
+    brightness_bars[i] = b
+end
+
+local save_row = settings_label("SAVE", 16, 215)
 settings_label("B: CANCEL", 16, 280)
 
 -- Minutes read "05", not "5" -- hours do not: kf.time()'s own "9:05 AM"
@@ -1061,6 +1085,19 @@ local kVolumeLabel = {
 kf_settings_debug_volume_label = ""
 kf_settings_debug_volume_bars = ""
 
+-- Brightness percentages, matching kf_settings_brightness_duty()'s own
+-- curve (hakoniwaos/src/settings.cpp) rather than being evenly spaced
+-- numbers that happen to look tidy: those duties are 26/64/140/255, which
+-- ARE these percentages. Perceptual spacing, for the same reason the volume
+-- gain curve is -- see kf/settings.h. If that curve changes, these change
+-- with it; they are two spellings of one set of numbers.
+local kBrightnessLabel = {
+    [1] = "10%", [2] = "25%", [3] = "55%", [4] = "100%",
+}
+
+kf_settings_debug_brightness_label = ""
+kf_settings_debug_brightness_bars = ""
+
 -- Draws the bar-meter icon for the CURRENT (unsaved) volume field value --
 -- called from on_settings_frame() below, every frame, the same "idempotent,
 -- safe to call regardless of whether anything actually changed" contract
@@ -1071,6 +1108,23 @@ kf_settings_debug_volume_bars = ""
 -- :size() or :move() -- so a level that repeats frame to frame declares
 -- nothing different and the retained scene's own diff drops it before it
 -- ever becomes a dirty rectangle.
+-- Brightness's own meter. Same contract as paint_volume_meter() below and
+-- the same reason it only touches :color() -- see that function's comment.
+-- Simpler because there is no OFF case to special-case.
+local function paint_brightness_meter(level)
+    local bits = {}
+    for i = 1, 4 do
+        if i <= level then
+            brightness_bars[i]:color(kVolumeBarLit)
+            bits[i] = "1"
+        else
+            brightness_bars[i]:color(kVolumeBarDim)
+            bits[i] = "0"
+        end
+    end
+    kf_settings_debug_brightness_bars = table.concat(bits)
+end
+
 local function paint_volume_meter(level)
     if level <= 0 then
         for i = 1, 4 do
@@ -1102,7 +1156,8 @@ end
 -- another screen's objects. `saved` is nil (no save attempted since this
 -- screen was opened), true, or false -- ONE result covering both the clock
 -- and the volume (kf_lua_settings_screen.cpp's own commit_save()).
-function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume)
+function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume,
+                            brightness)
     hour_value:set("" .. hour)
     min_value:set(pad2(minute))
     ampm_value:set(ampm)
@@ -1110,6 +1165,10 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume)
     volume_value:set(volume_label)
     kf_settings_debug_volume_label = volume_label
     paint_volume_meter(volume)
+    local brightness_label = kBrightnessLabel[brightness] or "?"
+    brightness_value:set(brightness_label)
+    kf_settings_debug_brightness_label = brightness_label
+    paint_brightness_meter(brightness)
 
     if saved == true then
         save_row:set("SAVED")
@@ -1133,6 +1192,7 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume)
     paint(min_value, "minute")
     paint(ampm_value, "ampm")
     paint(volume_value, "volume")
+    paint(brightness_value, "brightness")
     paint(save_row, "save")
 end
 

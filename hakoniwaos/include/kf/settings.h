@@ -48,8 +48,20 @@ extern "C" {
  * include kf/hal/audio.h just to name one field's type. The mapping is
  * exact (hakoniwaos/src/settings.cpp's unpack() validates it against that
  * enum's own range), not merely similar. */
+/* Brightness, 1..4. Stored the same way and for the same reasons as volume
+ * above: a plain byte, not a HAL type.
+ *
+ * FOUR LEVELS, NOT FIVE, and the asymmetry with volume is deliberate rather
+ * than an oversight. Volume's fifth position is OFF, which is a thing a
+ * person genuinely wants: a silent pet is still a pet. A screen at zero
+ * brightness is not a dim screen, it is a device that looks broken and has
+ * no way to tell you it is not -- you cannot read the menu you would need in
+ * order to turn it back up. So the range starts at 1, and "off" is what the
+ * sleep path does on its own schedule, where the device knows how to undo
+ * it. */
 typedef struct {
     uint8_t volume;
+    uint8_t brightness;
 } kf_settings;
 
 /* KF_VOLUME_4 (kf/hal/audio.h) -- loudest, non-off -- closest to this
@@ -60,11 +72,31 @@ typedef struct {
  * codebase. */
 #define KF_SETTINGS_DEFAULT_VOLUME 4u
 
+/* Full brightness, matching the pre-existing behaviour for a device that has
+ * never stored this setting: the backlight was a plain on/off GPIO until
+ * 2026-08-14 and "on" meant full. FEEL, Chris's to tune on the board -- the
+ * same status as the volume default above. */
+#define KF_SETTINGS_BRIGHTNESS_MIN 1u
+#define KF_SETTINGS_BRIGHTNESS_MAX 4u
+#define KF_SETTINGS_DEFAULT_BRIGHTNESS 4u
+
+/* The 0..255 duty kf_display_set_backlight() wants, for a 1..4 level.
+ *
+ * PERCEPTUAL, not linear, for exactly the reason the volume curve is (ADR
+ * 0057): eyes respond roughly logarithmically to light, so evenly-spaced
+ * duty values read as "bright, bright, bright, slightly less bright". These
+ * four are spaced to look evenly stepped instead. The bottom one is 10%
+ * rather than something smaller because an OLED-style near-black is not
+ * useful on a transmissive LCD -- below about this the backlight stops
+ * lighting the panel usefully and the screen just looks broken, which is the
+ * same failure the missing OFF position above avoids. */
+uint8_t kf_settings_brightness_duty(uint8_t level);
+
 /* Every field at its documented default. */
 kf_settings kf_settings_default(void);
 
 #define KF_SETTINGS_SAVE_KEY "settings"
-#define KF_SETTINGS_SAVE_BYTES 2u /* version byte + volume byte -- see
+#define KF_SETTINGS_SAVE_BYTES 3u /* version + volume + brightness -- see
                                     * hakoniwaos/src/settings.cpp's pack()/
                                     * unpack() for the exact layout */
 

@@ -18,6 +18,13 @@ uint64_t kf_headless_checksum(void);
 
 uint64_t kf_headless_frames(void);
 
+/* The last level handed to kf_display_set_backlight(), 0..255, so a test can
+ * assert what the brightness setting ACTUALLY applied rather than only that
+ * it stored a number. Starts at 255 -- the pre-existing "backlight on means
+ * full" behaviour -- so a test that never sets it reads the same value the
+ * hardware would have. */
+uint8_t kf_headless_backlight_level(void);
+
 /* Total pixels reported as dirty across the run. Guards against a change that
  * quietly starts redrawing the whole screen every frame: that would still
  * look correct, and would still be a regression, because on the device it is

@@ -13,6 +13,7 @@
 #include "kf/app.h"
 #include "kf/clock.h"
 #include "kf/hal/audio.h"
+#include "kf/hal/display.h" /* kf_display_set_backlight -- brightness */
 #include "kf/hal/entropy.h"
 #include "kf/hal/log.h"
 #include "kf/hal/time.h"
@@ -557,6 +558,29 @@ int lua_kf_set_volume(lua_State *L) {
     return 1;
 }
 
+/* kf.brightness()/kf.set_brightness() -- the screen's own version of the two
+ * above, 1..4 with deliberately no OFF (kf/settings.h explains why).
+ *
+ * Reads from the persisted setting rather than from the display, because
+ * there is nothing to read back from a backlight: kf_display_set_backlight()
+ * is write-only in every HAL backend, which is the honest shape for a PWM
+ * duty. So the stored level IS the answer to "what is the brightness", and
+ * kf_lua_port_apply_brightness() is what keeps that true by writing both
+ * together. */
+int lua_kf_brightness(lua_State *L) {
+    kf_settings settings = kf_settings_default();
+    (void)kf_settings_load(&settings);
+    lua_pushinteger(L, static_cast<lua_Integer>(settings.brightness));
+    return 1;
+}
+
+int lua_kf_set_brightness(lua_State *L) {
+    const lua_Integer level = luaL_checkinteger(L, 1);
+    lua_pushboolean(
+        L, kf_lua_port_apply_brightness(static_cast<int>(level)) ? 1 : 0);
+    return 1;
+}
+
 const luaL_Reg kKfFuncs[] = {
     {"log", lua_kf_log},
     {"report", lua_kf_report},
@@ -572,6 +596,8 @@ const luaL_Reg kKfFuncs[] = {
     {"melody", lua_kf_melody},
     {"volume", lua_kf_volume},
     {"set_volume", lua_kf_set_volume},
+    {"brightness", lua_kf_brightness},
+    {"set_brightness", lua_kf_set_brightness},
     {nullptr, nullptr},
 };
 
@@ -1277,7 +1303,8 @@ void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms) {
 
 void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
                                  const char *field, int hour, int minute,
-                                 bool is_pm, int save_result, int volume) {
+                                 bool is_pm, int save_result, int volume,
+                                 int brightness) {
     if (!g.ready || g.disabled_after_error) {
         return;
     }
@@ -1314,7 +1341,8 @@ void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
         lua_pushboolean(g.L, save_result != 0);
     }
     lua_pushinteger(g.L, volume);
-    if (lua_pcall(g.L, 7, 0, 0) != LUA_OK) {
+    lua_pushinteger(g.L, brightness);
+    if (lua_pcall(g.L, 8, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(g.L, -1);
         KF_LOGE(TAG,
                 "on_settings_frame raised an error, disabling further calls "
@@ -1373,14 +1401,50 @@ bool kf_lua_port_apply_volume(int level) {
      * Settings screen's C++ path call so the two can never disagree about
      * what "the volume is N" means. */
     kf_audio_set_volume(static_cast<kf_volume_level>(clamped));
-    /* kf_settings has exactly one field today, so starting from the default
-     * and overwriting it is equivalent to a read-modify-write -- the day a
-     * second field lands (kf/settings.h's own "sized to hold whatever the
-     * next global preference turns out to be"), THIS must become an actual
-     * kf_settings_load()-then-modify-then-save, or saving the volume here
-     * would silently reset that other field to its default. */
+    /* READ-MODIFY-WRITE, and this is the day the previous version of this
+     * comment warned about. It used to start from kf_settings_default() and
+     * overwrite volume, which was exactly equivalent while kf_settings had
+     * one field -- and it said, in as many words, that the day a second
+     * field landed this had to become a real load-modify-save or "saving the
+     * volume here would silently reset that other field to its default".
+     *
+     * Brightness is that second field. Without this change, touching the
+     * volume would have quietly reset the screen to full brightness, which
+     * is the sort of bug that gets reported as "the brightness setting
+     * doesn't stick" and investigated in entirely the wrong file. */
     kf_settings settings = kf_settings_default();
+    (void)kf_settings_load(&settings); /* falls back to defaults on its own */
     settings.volume = static_cast<uint8_t>(clamped);
+    return kf_settings_save(&settings) == KF_OK;
+}
+
+bool kf_lua_port_apply_brightness(int level) {
+    int clamped = level;
+    if (clamped < static_cast<int>(KF_SETTINGS_BRIGHTNESS_MIN)) {
+        clamped = static_cast<int>(KF_SETTINGS_BRIGHTNESS_MIN);
+    } else if (clamped > static_cast<int>(KF_SETTINGS_BRIGHTNESS_MAX)) {
+        clamped = static_cast<int>(KF_SETTINGS_BRIGHTNESS_MAX);
+    }
+    /* Same shape as apply_volume above, and the same reason for existing:
+     * one function that both the Lua binding and the Settings screen's C++
+     * path call, so the two can never disagree about what "the brightness is
+     * N" means.
+     *
+     * Applies to the panel FIRST, then persists. If the display cannot dim
+     * (kf_display_set_backlight() reports KF_ERR_UNAVAILABLE -- the ILI9341
+     * with the debug bridge on, whose LED pin is soldered to 3V3) the level
+     * is still stored, deliberately: the setting is a device preference, not
+     * a property of whichever panel happens to be attached, and it should
+     * survive being moved to a panel that can honour it. */
+    const kf_result applied = kf_display_set_backlight(
+        kf_settings_brightness_duty(static_cast<uint8_t>(clamped)));
+    if (applied != KF_OK && applied != KF_ERR_UNAVAILABLE) {
+        return false;
+    }
+
+    kf_settings settings = kf_settings_default();
+    (void)kf_settings_load(&settings);
+    settings.brightness = static_cast<uint8_t>(clamped);
     return kf_settings_save(&settings) == KF_OK;
 }
 

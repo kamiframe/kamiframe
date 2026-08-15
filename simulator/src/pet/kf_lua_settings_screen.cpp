@@ -74,10 +74,11 @@ constexpr int kFieldHour = 0;
 constexpr int kFieldMinute = 1;
 constexpr int kFieldAmPm = 2;
 constexpr int kFieldVolume = 3;
-constexpr int kFieldSave = 4;
+constexpr int kFieldBrightness = 4;
+constexpr int kFieldSave = 5;
 
-constexpr const char *kFieldNames[5] = {"hour", "minute", "ampm", "volume",
-                                         "save"};
+constexpr const char *kFieldNames[6] = {"hour",   "minute",     "ampm",
+                                         "volume", "brightness", "save"};
 
 /* Feel constants named in the plan's own answer to "what does the button
  * map look like": repeat starts ~400ms after UP/DOWN is first held, then
@@ -99,6 +100,9 @@ struct SettingsEdit {
     bool is_pm = false;
     int minute = 0; /* 0..59 */
     int volume = static_cast<int>(KF_SETTINGS_DEFAULT_VOLUME); /* 0..4 */
+    /* 1..4, with no OFF -- see kf/settings.h for why the two ranges differ
+     * rather than both being 0..4. */
+    int brightness = static_cast<int>(KF_SETTINGS_DEFAULT_BRIGHTNESS);
     uint32_t up_held_ms = 0;
     uint32_t down_held_ms = 0;
     /* -1: no save attempted since the screen was last entered. 0/1: the
@@ -158,6 +162,19 @@ void change_value(int delta) {
             g_edit.volume = static_cast<int>(KF_VOLUME_4);
         }
         break;
+    case kFieldBrightness:
+        /* Wraps 1..4, NOT 0..4. The missing OFF is deliberate and is
+         * explained in kf/settings.h: a screen at zero is not a dim screen,
+         * it is a device that looks broken with no way to show you the menu
+         * that would fix it. Local-only until SAVE, same as volume. */
+        g_edit.brightness += delta;
+        if (g_edit.brightness > static_cast<int>(KF_SETTINGS_BRIGHTNESS_MAX)) {
+            g_edit.brightness = static_cast<int>(KF_SETTINGS_BRIGHTNESS_MIN);
+        } else if (g_edit.brightness <
+                   static_cast<int>(KF_SETTINGS_BRIGHTNESS_MIN)) {
+            g_edit.brightness = static_cast<int>(KF_SETTINGS_BRIGHTNESS_MAX);
+        }
+        break;
     default: /* kFieldSave -- nothing to change */
         break;
     }
@@ -207,7 +224,9 @@ void commit_save() {
     }
     const bool clock_ok = kf_lua_port_apply_clock(hour24, g_edit.minute);
     const bool volume_ok = kf_lua_port_apply_volume(g_edit.volume);
-    g_edit.save_result = (clock_ok && volume_ok) ? 1 : 0;
+    const bool brightness_ok =
+        kf_lua_port_apply_brightness(g_edit.brightness);
+    g_edit.save_result = (clock_ok && volume_ok && brightness_ok) ? 1 : 0;
 }
 
 } // namespace
@@ -234,6 +253,17 @@ void kf_lua_settings_screen_enter(void) {
      * the same "what the fields should currently show" contract HOUR/
      * MINUTE/AM-PM already have from the wall clock above. */
     g_edit.volume = static_cast<int>(kf_audio_get_volume());
+    /* Brightness comes from STORAGE, not from a live getter, because there
+     * is no live getter to have: kf_display_set_backlight() is write-only in
+     * every HAL backend, which is the honest shape for a PWM duty. The
+     * stored level is therefore the authoritative answer to "what is the
+     * brightness", kept true by kf_lua_port_apply_brightness() writing the
+     * panel and the store together. */
+    {
+        kf_settings stored = kf_settings_default();
+        (void)kf_settings_load(&stored);
+        g_edit.brightness = static_cast<int>(stored.brightness);
+    }
     g_edit.up_held_ms = 0;
     g_edit.down_held_ms = 0;
     g_edit.save_result = -1;
@@ -274,7 +304,8 @@ void kf_lua_settings_screen_frame(uint32_t dt_ms) {
 
     kf_lua_port_settings_frame(dt_ms, kFieldNames[g_edit.field],
                                 g_edit.hour12, g_edit.minute, g_edit.is_pm,
-                                g_edit.save_result, g_edit.volume);
+                                g_edit.save_result, g_edit.volume,
+                                g_edit.brightness);
     kf_error_banner_update(g_error_banner_id);
     if (kf_lua_scene_declared_anything()) {
         kf_scene_commit();
@@ -285,3 +316,4 @@ int kf_lua_settings_screen_debug_field(void) { return g_edit.field; }
 int kf_lua_settings_screen_debug_hour12(void) { return g_edit.hour12; }
 int kf_lua_settings_screen_debug_minute(void) { return g_edit.minute; }
 int kf_lua_settings_screen_debug_volume(void) { return g_edit.volume; }
+int kf_lua_settings_screen_debug_brightness(void) { return g_edit.brightness; }

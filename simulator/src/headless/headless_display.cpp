@@ -33,7 +33,11 @@ kf_display_caps g_caps = {
     KF_DISPLAY_HEIGHT,
     KF_PIXFMT_RGB565,
     /* supports_partial_update */ true,
-    /* has_backlight */ false,
+    /* has_backlight: true. kf_display_set_backlight() below records the
+     * level rather than refusing, so a caller gating a brightness control on
+     * this cap behaves the same here as on the ST7789 and in the SDL
+     * window. */
+    true,
     /* Same device figure as the SDL backend, so the transfer estimate in the
      * budget report means the same thing in CI as it does on your desk. */
     KF_DISPLAY_SPI_HZ / 8u,
@@ -42,6 +46,11 @@ kf_display_caps g_caps = {
 uint64_t g_checksum = 1469598103934665603ull; /* FNV-1a 64 offset basis */
 uint64_t g_frames = 0;
 uint64_t g_dirty_pixels_total = 0;
+
+/* 255, not 0: the pre-existing behaviour was a backlight that was simply on,
+ * and "on" meant full. A test that never touches brightness should read what
+ * the hardware would have shown, not a value that implies someone set it. */
+uint8_t g_backlight_level = 255u;
 
 } // namespace
 
@@ -79,11 +88,23 @@ kf_result kf_display_present(const kf_color *framebuffer,
 }
 
 kf_result kf_display_set_backlight(uint8_t level) {
-    (void)level;
-    return KF_ERR_UNAVAILABLE;
+    /* Records rather than refuses, so a test can assert what brightness
+     * actually applied, not merely what it stored. There is nothing to
+     * light here, but "nothing to light" and "the call did not happen" are
+     * different failures and a test should be able to tell them apart.
+     *
+     * Deliberately does NOT touch the framebuffer or the checksum: dimming
+     * is a property of the display, not of the frame Core rendered, so
+     * every golden checksum sees identical bytes at any brightness. Same
+     * split the real hardware has, and the same one sdl_display.cpp makes
+     * by modulating the texture instead of the pixels. */
+    g_backlight_level = level;
+    return KF_OK;
 }
 
 void kf_display_shutdown(void) {}
+
+uint8_t kf_headless_backlight_level(void) { return g_backlight_level; }
 
 uint64_t kf_headless_checksum(void) { return g_checksum; }
 uint64_t kf_headless_frames(void) { return g_frames; }

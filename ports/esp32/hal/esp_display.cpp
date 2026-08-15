@@ -35,20 +35,25 @@
  *    pass over the frame. See kf_display_present() for the reasoning and
  *    what it costs; kf_panel_profile.h explains why the panels differ.
  *
- * 3. Backlight is a plain GPIO on/off, not PWM. kf_display_set_backlight()
- *    treats any level > 0 as "on" -- there is no LEDC channel wired up here,
- *    so dimming is not implemented. Adding it later is a self-contained
- *    change to one function. has_backlight (g_caps) reflects whether THIS
- *    build actually owns GPIO6 for it, which depends on the active panel
- *    profile -- see kf_display_init() and ADR 0039. kf_display_init() calls
- *    kf_display_set_backlight() itself, once, right at the end, but ONLY
- *    when it owns GPIO6 (own_backlight_pin) -- false for the default build
- *    (ILI9341 + KF_DBG_BRIDGE_ENABLE=1, where GPIO6 is reserved for the
- *    scanline read line instead). See kf_display_init()'s own comment,
- *    right above that call, for why skipping it there is safe: on the
- *    ILI9341 the LED pin is soldered straight to 3V3 regardless. On a
- *    profile that DOES own the pin (the ST7789) and skips this call
- *    anyway, the result is a black panel with a perfectly healthy log.
+ * 3. Backlight is a real PWM dimmer, on an LEDC channel. It was a plain
+ *    on/off GPIO until 2026-08-14; that entry used to say "adding it later
+ *    is a self-contained change to one function", and it was. `level` maps
+ *    straight to duty because the channel is configured 8-bit, matching
+ *    kf/hal/display.h's 0..255 contract with no scaling in between.
+ *
+ *    has_backlight (g_caps) reflects whether THIS build both owns GPIO6 and
+ *    successfully configured the PWM. Ownership depends on the active panel
+ *    profile -- see kf_display_init() and ADR 0039 -- and is false for the
+ *    ILI9341 + KF_DBG_BRIDGE_ENABLE=1 combination, where GPIO6 is the
+ *    scanline read line instead. That is not a regression on that panel:
+ *    its LED pin is soldered straight to 3V3 (kf_esp_pins.h), so its
+ *    brightness was never software-controllable on any code path. The
+ *    ST7789 owns the pin unconditionally and is where dimming is real.
+ *
+ *    kf_display_set_backlight() now RETURNS KF_ERR_UNAVAILABLE when it
+ *    cannot act, rather than KF_OK. A brightness control that silently does
+ *    nothing is worse than one visibly greyed out, and that return is how a
+ *    settings screen knows which to draw.
  */
 
 #include "kf/hal/display.h"
@@ -63,6 +68,7 @@
 #include "kf_panel_profile.h"
 
 #include "driver/gpio.h"
+#include "driver/ledc.h" /* backlight PWM -- see kBacklightPwmHz below */
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
@@ -78,6 +84,29 @@ namespace {
 constexpr const char *TAG = "display";
 
 constexpr spi_host_device_t kSpiHost = SPI2_HOST;
+
+/* Backlight PWM. 5kHz is above the flicker anyone or any phone camera will
+ * see, and below where the panel's LED driver starts acting like a filter.
+ * 8-bit resolution matches kf_display_set_backlight()'s 0..255 contract
+ * exactly, so a level IS a duty -- no scaling, no rounding to explain.
+ *
+ * LOW_SPEED_MODE because the ESP32-S3 has no high-speed LEDC at all; naming
+ * it explicitly rather than relying on the enum's zero value keeps this
+ * readable next to the other two ports. Timer and channel 0 are free:
+ * nothing else in this firmware uses LEDC (the buzzer went to I2S instead,
+ * ADR 0055), so there is no allocation to coordinate -- if that changes,
+ * this is the constant to move, not the code. */
+constexpr ledc_mode_t kBacklightPwmMode = LEDC_LOW_SPEED_MODE;
+constexpr ledc_timer_t kBacklightPwmTimer = LEDC_TIMER_0;
+constexpr ledc_channel_t kBacklightPwmChannel = LEDC_CHANNEL_0;
+constexpr uint32_t kBacklightPwmHz = 5000u;
+
+/* False until ledc_timer_config()/ledc_channel_config() have both
+ * succeeded. Separate from g_caps.has_backlight so the "we own the pin"
+ * question and the "the hardware is actually configured" question stay
+ * distinct -- they used to be the same question because the pin was a plain
+ * GPIO that could not fail to be set up. */
+bool g_backlight_pwm_ready = false;
 
 /* The panel this build drives. One line, resolved at compile time. */
 const kf_panel_profile &kPanel = KF_PANEL_PROFILE;
@@ -446,16 +475,56 @@ kf_result kf_display_init(void) {
      * below, once the panel is fully brought up. */
     const bool own_backlight_pin = !reserve_miso_for_read_line;
     if (own_backlight_pin) {
-        gpio_config_t bl_config{};
-        bl_config.pin_bit_mask = (1ULL << KF_ESP_PIN_LCD_BL);
-        bl_config.mode = GPIO_MODE_OUTPUT;
-        bl_config.pull_up_en = GPIO_PULLUP_DISABLE;
-        bl_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-        bl_config.intr_type = GPIO_INTR_DISABLE;
-        gpio_config(&bl_config);
-        gpio_set_level(KF_ESP_PIN_LCD_BL, 0);
+        /* An LEDC PWM channel, not a plain output, so the backlight can be
+         * DIMMED rather than only switched. See kf_display_set_backlight().
+         *
+         * kBacklightPwmHz is 5kHz: well above anything an eye or a phone
+         * camera will see as flicker, and far below the point where the
+         * panel's own LED driver starts behaving like a filter. 8-bit
+         * resolution is chosen to match the HAL's 0..255 contract exactly,
+         * so a level maps to a duty with no scaling arithmetic and no
+         * rounding to explain.
+         *
+         * Starts at duty 0, matching what the plain-GPIO version did and
+         * the reason it did it: nothing has been presented to the panel
+         * yet, so lighting it now would show power-on noise. The explicit
+         * turn-on happens below, once the panel is fully configured. */
+        ledc_timer_config_t bl_timer{};
+        bl_timer.speed_mode = kBacklightPwmMode;
+        bl_timer.duty_resolution = LEDC_TIMER_8_BIT;
+        bl_timer.timer_num = kBacklightPwmTimer;
+        bl_timer.freq_hz = kBacklightPwmHz;
+        bl_timer.clk_cfg = LEDC_AUTO_CLK;
+        esp_err_t bl_err = ledc_timer_config(&bl_timer);
+
+        if (bl_err == ESP_OK) {
+            ledc_channel_config_t bl_channel{};
+            bl_channel.gpio_num = KF_ESP_PIN_LCD_BL;
+            bl_channel.speed_mode = kBacklightPwmMode;
+            bl_channel.channel = kBacklightPwmChannel;
+            bl_channel.timer_sel = kBacklightPwmTimer;
+            bl_channel.duty = 0;
+            bl_channel.hpoint = 0;
+            bl_err = ledc_channel_config(&bl_channel);
+        }
+
+        if (bl_err != ESP_OK) {
+            /* Degrade to "no backlight control" rather than to a dark
+             * screen: has_backlight false makes kf_display_set_backlight()
+             * report KF_ERR_UNAVAILABLE honestly, and the settings screen
+             * can then say so instead of offering a slider that does
+             * nothing. Logged loudly because on the ST7789 this means a
+             * panel nothing will ever light. */
+            KF_LOGE(TAG, "backlight PWM setup failed (%s) -- brightness "
+                          "control unavailable and this panel may stay dark",
+                    esp_err_to_name(bl_err));
+            g_caps.has_backlight = false;
+            g_backlight_pwm_ready = false;
+        } else {
+            g_backlight_pwm_ready = true;
+        }
     }
-    g_caps.has_backlight = own_backlight_pin;
+    g_caps.has_backlight = own_backlight_pin && g_backlight_pwm_ready;
 
     /* Turn the backlight on, now that the panel is fully brought up: the
      * init table has run and rebuild_panel_io() above has already called
@@ -872,32 +941,37 @@ kf_result kf_display_present(const kf_color *framebuffer,
 }
 
 kf_result kf_display_set_backlight(uint8_t level) {
-    /* On/off only -- see this file's header comment.
+    /* Real dimming, via the LEDC PWM channel kf_display_init() set up. The
+     * HAL contract is 0 = off, 255 = full (kf/hal/display.h), and the
+     * channel is configured 8-bit specifically so that `level` IS the duty
+     * -- no scaling, no rounding, nothing to get subtly wrong between the
+     * number a settings screen shows and the light the panel emits.
      *
-     * kf_display_init() is this function's only caller today (right at the
-     * end of bring-up, once the panel is initialised -- see that function's
-     * "THIS IS THE CALL" comment for why calling it there, and calling it
-     * at all, is the point of this whole task). It gates the call on
-     * own_backlight_pin, so this body does not need to re-derive that here
-     * -- but a future second caller (a settings screen, a sleep/wake path)
-     * would reach this same gpio_set_level() unconditionally, so the
-     * degraded case is worth documenting on the function itself, not just
-     * at its one call site.
+     * REPORTS FAILURE NOW, where the on/off version returned KF_OK
+     * unconditionally. That old behaviour was defensible when the only
+     * caller was kf_display_init(), which gated itself on
+     * own_backlight_pin. It stops being defensible the moment a settings
+     * screen calls this: a brightness control that silently does nothing is
+     * worse than one that is visibly greyed out, and KF_ERR_UNAVAILABLE is
+     * how the screen learns which to show.
      *
-     * A genuine no-op on the one profile/flag combination where this GPIO
-     * was claimed for something else: ILI9341 + KF_DBG_BRIDGE_ENABLE=1 (see
-     * kf_panel_profile.h's has_read_line and kf_display_init()'s MISO
-     * comment). In that configuration the pin is never put into
-     * GPIO_MODE_OUTPUT, so this call still compiles and still returns
-     * KF_OK, but the level it writes has no electrical effect -- ESP-IDF
-     * does not drive a pin's output register onto the pad unless the pin's
-     * mode says to. Not a bug in that specific case either: that module's
-     * LED pin is soldered straight to 3V3 regardless (kf_esp_pins.h), so
-     * there is nothing this call could have done there that it is now
-     * failing to do. Every other profile/flag combination -- which as of
-     * ADR 0039 includes the ST7789 unconditionally -- owns this pin for
-     * real and this call has a real, visible effect. */
-    gpio_set_level(KF_ESP_PIN_LCD_BL, level > 0 ? 1 : 0);
+     * The configuration that lands here: ILI9341 + KF_DBG_BRIDGE_ENABLE=1,
+     * where GPIO6 is the scanline read line rather than a backlight (ADR
+     * 0039). Not a defect -- that module's LED pin is soldered straight to
+     * 3V3 (kf_esp_pins.h), so its backlight was never software-controllable
+     * on any code path. The ST7789 owns this pin unconditionally and is the
+     * profile where brightness is real. */
+    if (!g_caps.has_backlight || !g_backlight_pwm_ready) {
+        return KF_ERR_UNAVAILABLE;
+    }
+
+    if (ledc_set_duty(kBacklightPwmMode, kBacklightPwmChannel,
+                      static_cast<uint32_t>(level)) != ESP_OK) {
+        return KF_ERR_IO;
+    }
+    if (ledc_update_duty(kBacklightPwmMode, kBacklightPwmChannel) != ESP_OK) {
+        return KF_ERR_IO;
+    }
     return KF_OK;
 }
 

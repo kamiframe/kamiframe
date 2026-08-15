@@ -156,7 +156,8 @@ void kf_lua_port_info_frame(uint32_t synthetic_frame_delta_ms);
  * is active (and vice versa). */
 void kf_lua_port_settings_frame(uint32_t synthetic_frame_delta_ms,
                                  const char *field, int hour, int minute,
-                                 bool is_pm, int save_result, int volume);
+                                 bool is_pm, int save_result, int volume,
+                                 int brightness);
 
 /* Shared by kf.set_clock() (the Lua binding, sdk/lua/kf_lua_port.cpp) and
  * the Settings screen's own SAVE action (kf_lua_settings_screen.cpp) -- both
@@ -184,6 +185,16 @@ bool kf_lua_port_apply_clock(int hour, int minute);
  * Settings screen shows "SAVE FAILED" rather than silently doing
  * nothing. */
 bool kf_lua_port_apply_volume(int level);
+
+/* Clamps to 1..4 (no OFF -- see kf/settings.h), applies it to the panel, and
+ * persists it. The one path both kf.set_brightness() and the Settings
+ * screen's C++ commit use, for the same "the two can never disagree" reason
+ * kf_lua_port_apply_volume() exists.
+ *
+ * Returns true when the setting was stored. A display that cannot dim is NOT
+ * a failure: the level still persists, because this is a device preference
+ * rather than a property of the attached panel. */
+bool kf_lua_port_apply_brightness(int level);
 
 void kf_lua_port_shutdown();
 
