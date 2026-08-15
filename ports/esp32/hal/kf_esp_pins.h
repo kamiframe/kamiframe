@@ -6,6 +6,28 @@
  * changing a pin because the real layout wants something else means editing
  * exactly one file.
  *
+ * ============================================================================
+ *  THIS FILE IS THE ESP32-S3-DevKitC-1's PINOUT, and it is deliberately not
+ *  named that yet.
+ *
+ *  A ProS3 (Unexpected Maker) was ordered 2026-08-14 and has not arrived. It
+ *  is the same silicon with a completely different header, so it will need
+ *  its own table -- and the DevKitC boards stay in service for software
+ *  testing, so BOTH have to work. That makes this a build-time profile
+ *  problem, the same shape kf_panel_profile.h already solves for panels:
+ *  expect KF_BOARD with `devkitc` and `pros3` values when it lands.
+ *
+ *  DO NOT overwrite the numbers below with a ProS3's. They are measured
+ *  (see the banner further down), they are the only pinout any hardware has
+ *  ever been proven against, and losing them costs a bring-up. Add a second
+ *  table; do not edit this one.
+ *
+ *  docs/hardware-bringup.md's "The ProS3 board" section has the full list of
+ *  what changes -- including the microSD card gaining the ability to share
+ *  the display's SPI bus (its new breakout has no buffer chip), and the
+ *  buttons moving to an MCP23017 over I2C.
+ * ============================================================================
+ *
  * The human-readable version of this file, with wiring diagrams and an
  * assembly order, is docs/hardware-bringup.md. If you change a pin here,
  * change it there too -- that doc is what someone has open while holding a

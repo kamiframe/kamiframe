@@ -105,7 +105,87 @@ the software is still unproven. Run off USB until every stage below passes.
 
 ---
 
+## The ProS3 board — ordered 2026-08-14, not yet in hand
+
+Everything below this section describes the **ESP32-S3-DevKitC-1**, and will
+keep describing it until a ProS3 has been wired and proven. Nothing here is
+speculative work done in advance; this section exists so that when the board
+arrives, the changes it forces are already written down rather than
+rediscovered.
+
+**The DevKitC config is not being replaced.** The clone boards stay in
+service for software testing, so both boards have to work. That makes this
+the same shape as the panel problem (ADR 0029/0039): a build-time profile,
+selecting a pinout the way `KF_PANEL` selects a panel. When it is
+implemented, expect `KF_BOARD` with `devkitc` and `pros3` values, and
+`kf_esp_pins.h` splitting into one table per board. Until then this file's
+pin numbers ARE the DevKitC's, and that header says so at the top.
+
+### What the ProS3 solves outright
+
+| Problem | How |
+|---|---|
+| USB-C charging while running | Onboard LiPo charger and **USB-C with back-feed protection** — the thing the DevKitC lacks, and the reason the section above warns never to have USB and external power connected at once |
+| Battery voltage on screen | A dedicated **VBAT sense** pin. No I²C fuel gauge, no ADC pin sacrificed |
+| Flash and PSRAM | 16MB / 8MB — the same N16R8 the spec targets |
+
+So the TP4056, the 5V boost module and any power-path board are **no longer
+needed**. Do not buy them.
+
+The battery connector is **PicoBlade, 1.25mm pitch**, which is what the
+1.25mm 2-pin cable ordered alongside it matches.
+
+**Meter the battery polarity before the first connection.** JST-style
+connector polarity is not standardised between vendors, an identical-looking
+plug can be wired either way round, and reversing a LiPo into a charger can
+destroy the board and damage the cell — which is the failure mode that
+actually catches fire. Check the cell's own leads against the board
+silkscreen once, with a multimeter, before it ever goes in.
+
+### What changes, and what does not
+
+**Changes:**
+
+- **The pinout.** The ProS3 is the same silicon but a completely different
+  header layout, with 27 GPIO broken out rather than the DevKitC's 44-minus-
+  everything-unusable. The exact list is in Unexpected Maker's own pinout
+  reference, not in either retailer's product page — read it from the source
+  before assigning anything.
+- **The microSD card can share the display's SPI bus.** The current layout
+  gives it a second bus for one specific reason, explained under "Pin
+  allocation" below: level-shifted breakout modules do not reliably release
+  MISO when deselected, which corrupts display traffic intermittently. The
+  **Adafruit 3V-only breakout has no buffer chip**, so that hazard is gone
+  and three pins come back.
+- **Buttons move to the MCP23017** over I²C (STEMMA QT / Qwiic, on the same
+  two wires as the DS3231). Seven GPIO become one interrupt line. Reads cost
+  roughly 100µs at 400kHz against a 33ms frame budget, so the cost is real
+  but nowhere near binding. This is the change with actual firmware work
+  behind it — `esp_input.cpp` gains an expander path behind the same HAL.
+
+**Does not change:**
+
+- The chip's own unusable pins. Same ESP32-S3, so the flash and octal-PSRAM
+  lines are still off limits wherever they surface.
+- The panel wiring logic, `KF_PANEL`, and everything in `kf_panel_profile.h`.
+- Every HAL contract. That is the point of the HAL: a new board is a new
+  bottom layer, not a new firmware.
+
+### Suggested order when it arrives
+
+Wire and prove the ProS3 on a hand-edited pinout **first**, then do the
+`KF_BOARD` profile refactor once the numbers are known to be right. Doing the
+refactor first means writing a table of guessed pin numbers and then
+debugging the abstraction and the wiring at the same time — the exact
+situation this document's own "add one thing at a time" advice exists to
+prevent.
+
+---
+
 ## Pin allocation, and the reasoning
+
+**This section is the ESP32-S3-DevKitC-1's**, and stays authoritative until a
+ProS3 is proven on the bench — see the section above.
 
 The ESP32-S3-DevKitC-1 breaks out 44 pins. After removing everything that
 cannot be used, **23 are available**, and this layout spends 19 of them.
