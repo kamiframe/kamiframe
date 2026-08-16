@@ -100,6 +100,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+/* <cmath> for std::sin in the --stress3d camera orbit. Explicit because
+ * libc++ (macOS/clang, where this was written) drags it in transitively via
+ * another header and libstdc++ (Linux/gcc, where CI builds) does not -- so
+ * omitting it compiles perfectly here and fails there with "'sin' is not a
+ * member of 'std'". A local build being green says nothing about a header
+ * another standard library happens to include for you. */
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
