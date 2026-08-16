@@ -199,8 +199,21 @@ struct ButtonEntry {
     const char *name;
     kf_button bit;
 };
+/* Every kf_button, by the name a Lua script uses in kf.on_button("name").
+ * Lowercase and obvious -- these are what a creator types, so "l1" beats
+ * "shoulder_left" and "select" beats "back".
+ *
+ * The static_assert below is the whole safety net: add a button to
+ * kf/types.h without adding it here and the build stops, naming this table.
+ * That is deliberate -- a button Core knows about but no script can bind to
+ * would be invisible until someone wondered why their handler never fired. */
 constexpr ButtonEntry kButtonTable[] = {
-    {"a", KF_BTN_A},         {"b", KF_BTN_B},     {"menu", KF_BTN_MENU},
+    {"a", KF_BTN_A},         {"b", KF_BTN_B},
+    {"x", KF_BTN_X},         {"y", KF_BTN_Y},
+    {"l1", KF_BTN_L1},       {"l2", KF_BTN_L2},
+    {"r1", KF_BTN_R1},       {"r2", KF_BTN_R2},
+    {"start", KF_BTN_START}, {"select", KF_BTN_SELECT},
+    {"menu", KF_BTN_MENU},   {"power", KF_BTN_POWER},
     {"up", KF_BTN_UP},       {"down", KF_BTN_DOWN},
     {"left", KF_BTN_LEFT},   {"right", KF_BTN_RIGHT},
 };
@@ -821,10 +834,25 @@ int lua_kf_on_button(lua_State *L) {
     luaL_checktype(L, 2, LUA_TFUNCTION);
     const int index = find_button_index(name);
     if (index < 0) {
-        return luaL_error(L,
-                           "kf.on_button: unknown button '%s' (expected "
-                           "a, b, menu, up, down, left, right)",
-                           name);
+        /* Lists the valid names by WALKING kButtonTable rather than
+         * repeating them in this string. The hardcoded list this replaced
+         * said "a, b, menu, up, down, left, right" and went stale the moment
+         * nine more buttons landed -- an error message that lies about what
+         * is allowed is worse than one that just says "no", because it sends
+         * the reader off to check something that is already correct. */
+        char valid[256];
+        size_t used = 0;
+        for (int i = 0; i < kButtonCount; ++i) {
+            const int n = std::snprintf(valid + used, sizeof(valid) - used,
+                                        "%s%s", i == 0 ? "" : ", ",
+                                        kButtonTable[i].name);
+            if (n <= 0 || static_cast<size_t>(n) >= sizeof(valid) - used) {
+                break;
+            }
+            used += static_cast<size_t>(n);
+        }
+        return luaL_error(L, "kf.on_button: unknown button '%s' (expected %s)",
+                           name, valid);
     }
     if (g_button_ref[index] != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, g_button_ref[index]);

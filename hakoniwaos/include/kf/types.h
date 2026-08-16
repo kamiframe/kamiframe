@@ -61,6 +61,35 @@ typedef struct {
 /* Buttons, as a bitmask. The HAL reports raw levels only. Debounce, repeat,
  * edge detection and chords are core's job, so the device and the simulator
  * feel identical. */
+/* SIXTEEN, as of 2026-08-14. The first seven are the buttons the bring-up
+ * board physically has; the other nine are the handheld layout the demo unit
+ * is being built towards -- a d-pad, ABXY, two shoulders a side, start,
+ * select, menu and power.
+ *
+ * DEFINED BEFORE THE HARDWARE EXISTS, on purpose. The device's seven GPIO
+ * buttons become sixteen on an I2C expander (MCP23017: 16 pins, one
+ * interrupt line, no more GPIO spent), and games are being written on the
+ * desktop simulator NOW against a gamepad that already has all sixteen. A
+ * Core that only knew seven would mean every game written in the meantime
+ * needed revisiting, which is a worse trade than nine unused enumerators.
+ *
+ * BIT POSITIONS 0-6 ARE UNCHANGED and must stay that way: KFDBG BTN takes a
+ * decimal mask over the wire (ports/esp32/main/kf_dbg_bridge.cpp), so
+ * renumbering would silently change the meaning of every mask in the docs,
+ * the tests and anyone's saved scripts. New buttons append.
+ *
+ * A button being defined here does NOT mean a backend reports it. The ESP32
+ * input backend wires seven pins today and simply never sets the other nine;
+ * the SDL backend maps all sixteen from a gamepad and from the keyboard. That
+ * asymmetry is honest -- it is the difference between the hardware that
+ * exists and the hardware being built -- and it costs nothing, because a
+ * button nobody presses reads as a button nobody pressed.
+ *
+ * POWER is the odd one. On the real device it must wake the chip from deep
+ * sleep, so it cannot live on the I2C expander (which is unreadable while
+ * asleep) and has to stay on a real GPIO. Nothing acts on it yet in either
+ * backend; it is here so games and menus can be written against a device
+ * that has one. */
 typedef enum {
     KF_BTN_UP = 1u << 0,
     KF_BTN_DOWN = 1u << 1,
@@ -68,10 +97,19 @@ typedef enum {
     KF_BTN_RIGHT = 1u << 3,
     KF_BTN_A = 1u << 4,
     KF_BTN_B = 1u << 5,
-    KF_BTN_MENU = 1u << 6
+    KF_BTN_MENU = 1u << 6,
+    KF_BTN_X = 1u << 7,
+    KF_BTN_Y = 1u << 8,
+    KF_BTN_L1 = 1u << 9,
+    KF_BTN_L2 = 1u << 10,
+    KF_BTN_R1 = 1u << 11,
+    KF_BTN_R2 = 1u << 12,
+    KF_BTN_START = 1u << 13,
+    KF_BTN_SELECT = 1u << 14,
+    KF_BTN_POWER = 1u << 15
 } kf_button;
 
-#define KF_BUTTON_COUNT 7
+#define KF_BUTTON_COUNT 16
 
 /* How a sprite's pixels are stored. A property of the DATA, not a request
  * from the caller -- which is why it lives on the sprite rather than being

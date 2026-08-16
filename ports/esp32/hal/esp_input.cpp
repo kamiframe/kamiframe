@@ -48,6 +48,28 @@ struct Binding {
     kf_button button;
 };
 
+/* SEVEN OF KF_BUTTON_COUNT'S SIXTEEN, and that is not an omission.
+ *
+ * kf/types.h gained X, Y, L1, L2, R1, R2, START, SELECT and POWER on
+ * 2026-08-14, ahead of the hardware, so games could be written against the
+ * handheld layout on the desktop simulator with a real gamepad. This board
+ * has seven physical buttons on seven GPIOs, and there are no pins left --
+ * see kf_esp_pins.h's "19 of 23 assigned" accounting.
+ *
+ * The nine unmapped buttons simply never appear in the mask this backend
+ * returns, which reads to everything above as "nobody pressed them". No
+ * branch anywhere needs to know the difference.
+ *
+ * WHAT CHANGES WHEN THE MCP23017 ARRIVES: fifteen of the sixteen move onto
+ * the expander over I2C, costing one interrupt GPIO and freeing the seven
+ * this table uses. POWER stays on a real GPIO regardless, because it has to
+ * wake the chip from deep sleep and I2C is unreadable while asleep. That is
+ * a rewrite of this table and a read path, not a change to anything above
+ * the HAL -- which is the entire point of the HAL.
+ *
+ * Meanwhile KFDBG BTN can already inject any of the sixteen (its mask is a
+ * plain uint32_t), so a script bound to kf.on_button("x") IS testable on
+ * this board today over the debug bridge, with no button to press. */
 constexpr Binding kBindings[] = {
     {KF_ESP_PIN_BTN_UP, KF_BTN_UP},     {KF_ESP_PIN_BTN_DOWN, KF_BTN_DOWN},
     {KF_ESP_PIN_BTN_LEFT, KF_BTN_LEFT}, {KF_ESP_PIN_BTN_RIGHT, KF_BTN_RIGHT},

@@ -68,6 +68,28 @@ constexpr Binding kBindings[] = {
     {SDL_SCANCODE_5, KF_BTN_RIGHT},
     {SDL_SCANCODE_X, KF_BTN_B},         {SDL_SCANCODE_K, KF_BTN_B},
     {SDL_SCANCODE_RETURN, KF_BTN_MENU}, {SDL_SCANCODE_ESCAPE, KF_BTN_MENU},
+
+    /* The nine handheld-layout buttons on the keyboard too, so a game using
+     * them is still testable with no pad plugged in -- which is the whole
+     * reason the keyboard bindings exist at all.
+     *
+     * Arrow keys join the d-pad here: 2-5 stay as they were because they
+     * double as the care actions (see this file's header), but nobody
+     * playing a side-scroller wants to steer with the number row.
+     *
+     * WASD-adjacent letters for the face buttons, the bracket keys for the
+     * shoulders (they sit in a row, like shoulders do), and Tab/Backspace for
+     * select/power -- deliberately awkward for power, since it is not
+     * something to hit by accident. */
+    {SDL_SCANCODE_UP, KF_BTN_UP},       {SDL_SCANCODE_DOWN, KF_BTN_DOWN},
+    {SDL_SCANCODE_LEFT, KF_BTN_LEFT},   {SDL_SCANCODE_RIGHT, KF_BTN_RIGHT},
+    {SDL_SCANCODE_Z, KF_BTN_A},         {SDL_SCANCODE_C, KF_BTN_X},
+    {SDL_SCANCODE_V, KF_BTN_Y},
+    {SDL_SCANCODE_Q, KF_BTN_L1},        {SDL_SCANCODE_E, KF_BTN_R1},
+    {SDL_SCANCODE_LEFTBRACKET, KF_BTN_L2},
+    {SDL_SCANCODE_RIGHTBRACKET, KF_BTN_R2},
+    {SDL_SCANCODE_SPACE, KF_BTN_START}, {SDL_SCANCODE_TAB, KF_BTN_SELECT},
+    {SDL_SCANCODE_BACKSPACE, KF_BTN_POWER},
 };
 
 /* GAMEPAD BINDINGS, alongside the keyboard rather than instead of it.
@@ -103,17 +125,42 @@ constexpr PadBinding kPadBindings[] = {
     {SDL_GAMEPAD_BUTTON_DPAD_LEFT, KF_BTN_LEFT},
     {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, KF_BTN_RIGHT},
 
-    /* SOUTH and EAST both reach A and B respectively -- see the note above
-     * on layout conventions. */
+    /* FACE BUTTONS BY POSITION, which is what SDL reports and what a player
+     * actually feels under their thumb.
+     *
+     * SDL names them SOUTH/EAST/WEST/NORTH rather than A/B/X/Y precisely
+     * because the letters move: an Xbox pad reads A,B,X,Y clockwise from the
+     * bottom, a Nintendo-layout pad -- which the 8BitDo Ultimate is in Switch
+     * mode -- has A and B swapped and X and Y swapped against that. Binding
+     * by POSITION means the bottom button is always the device's A on every
+     * pad, which is the thing a player's muscle memory is actually attached
+     * to. The alternative, honouring printed letters, would put "A" in a
+     * different physical place depending on the controller. */
     {SDL_GAMEPAD_BUTTON_SOUTH, KF_BTN_A},
     {SDL_GAMEPAD_BUTTON_EAST, KF_BTN_B},
-    {SDL_GAMEPAD_BUTTON_WEST, KF_BTN_B},
+    {SDL_GAMEPAD_BUTTON_WEST, KF_BTN_X},
+    {SDL_GAMEPAD_BUTTON_NORTH, KF_BTN_Y},
 
-    /* Start and the guide/menu key both reach MENU: on a pad the "open the
-     * menu" affordance is Start, and Back/Select is the nearest thing to a
-     * second one. */
-    {SDL_GAMEPAD_BUTTON_START, KF_BTN_MENU},
-    {SDL_GAMEPAD_BUTTON_BACK, KF_BTN_MENU},
+    /* Shoulders. L2/R2 are ANALOGUE triggers on most pads including this
+     * one, so they are handled as axes below rather than here -- SDL only
+     * reports them as buttons on pads that have digital ones. Both paths set
+     * the same bit, so a pad with either kind works. */
+    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, KF_BTN_L1},
+    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, KF_BTN_R1},
+
+    {SDL_GAMEPAD_BUTTON_START, KF_BTN_START},
+    {SDL_GAMEPAD_BUTTON_BACK, KF_BTN_SELECT},
+
+    /* The pad's home/guide key is the closest thing to a power button, and
+     * mapping it there means a game can be written against POWER on desktop.
+     * Note the real device's power button is a wake pin on its own GPIO, not
+     * on the button expander -- see kf/types.h. */
+    {SDL_GAMEPAD_BUTTON_GUIDE, KF_BTN_POWER},
+
+    /* MENU has no dedicated pad control -- a physical pad has Start and
+     * Select and that is it. Clicking the left stick is an unused, easily
+     * reachable third option, and Enter/Esc still work on the keyboard. */
+    {SDL_GAMEPAD_BUTTON_LEFT_STICK, KF_BTN_MENU},
 };
 
 /* The first connected pad, or nullptr. One is enough: the device has one
@@ -154,6 +201,19 @@ uint32_t pad_mask() {
         mask |= static_cast<uint32_t>(KF_BTN_UP);
     } else if (ly >= kStickThreshold) {
         mask |= static_cast<uint32_t>(KF_BTN_DOWN);
+    }
+
+    /* Analogue triggers as digital L2/R2. SDL reports these on 0..32767
+     * (they only travel one way), and half-pull is the conventional point to
+     * call a trigger pressed. The device will have plain switches here, so
+     * flattening to on/off is not a simplification -- it is the behaviour. */
+    if (SDL_GetGamepadAxis(g_pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) >=
+        kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_L2);
+    }
+    if (SDL_GetGamepadAxis(g_pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) >=
+        kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_R2);
     }
     return mask;
 }
@@ -234,8 +294,9 @@ bool kf_sdl_mouse_relative_to(SDL_Window *window, int32_t *x, int32_t *y,
 }
 
 kf_result kf_input_init(void) {
-    KF_LOGI(TAG, "keyboard: 1-5 = feed/play/rest/bath/flush, X/K = B, "
-                 "Enter/Esc = menu");
+    KF_LOGI(TAG, "keyboard: 1-5 = feed/play/rest/bath/flush, arrows = d-pad, "
+                 "Z=A X/K=B C=X V=Y, Q=L1 E=R1 [=L2 ]=R2, Space=start "
+                 "Tab=select Enter/Esc=menu Backspace=power");
     /* Not fatal if it fails: a simulator with no gamepad subsystem is a
      * simulator with a keyboard, which is how every session before this one
      * worked. Says so rather than failing silently. */
