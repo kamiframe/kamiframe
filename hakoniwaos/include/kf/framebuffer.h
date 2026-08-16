@@ -34,14 +34,43 @@ kf_color *kf_fb_pixels(void);
  * gives up and falls back to a single bounding box -- the behaviour the
  * very first version of this file always used.
  *
- * 8 is enough for a fixed UI element (a HUD, a name tag) plus a handful of
- * independently-moving things without ever falling back in the cases that
- * exist today. Past that, KF_DISPLAY_RECT_OVERHEAD_BYTES in kf/budget.h
- * means the per-rectangle addressing cost is already eating into whatever
- * the extra rectangles would have saved, so falling back stops being a
- * compromise and starts being the right answer anyway. See
- * docs/architecture/adr-0011-dirty-rect-list.md. */
-#define KF_MAX_DIRTY_RECTS 8
+ * RAISED FROM 8 TO 32 on 2026-08-14, before it bound rather than after,
+ * because the way it fails is unusually confusing: everything works, then
+ * one more moving object makes the whole screen redraw and the frame gets
+ * several times more expensive, with no visible cause. Measured on the
+ * desktop model at the old limit: 8 moving sprites cost 2,403us, and 16 cost
+ * 12,372us -- a 5x jump for 2x the sprites, entirely because the list
+ * collapsed to one bounding box covering 57,763 pixels.
+ *
+ * 8 was a fair number when the only screen was a pet standing still. It is
+ * the wrong number for a game with a dozen moving things, which is what this
+ * platform is for.
+ *
+ * WHAT 32 COSTS. The array is kf_rect (8 bytes) x 32 = 256 bytes of static
+ * storage, against 153,600 for the framebuffer itself -- immaterial. On the
+ * wire, KF_DISPLAY_RECT_OVERHEAD_BYTES (kf/budget.h) is 11 bytes of
+ * addressing per rectangle, so a worst-case 32-rectangle frame spends 352
+ * bytes on overhead where 8 spent 88. Both are noise beside a 153,600-byte
+ * full frame, and the point of not collapsing is to avoid sending most of
+ * those 153,600 bytes at all.
+ *
+ * THE OLD REASONING WAS NOT WRONG, it was answering a different question.
+ * It said that past 8 rectangles the addressing cost eats what the extra
+ * rectangles save -- true when the alternative is a slightly larger union,
+ * false when the alternative is the ENTIRE SCREEN. The coalescer
+ * (hakoniwaos/src/scene.cpp) already merges pairs whenever merging is
+ * genuinely cheaper, so a frame only reaches 32 rectangles when 32 is
+ * actually the economical answer; this constant sets where "and now give up
+ * completely" begins, not where merging starts.
+ *
+ * Matches KF_SCENE_MAX_DIRTY_CANDIDATES (kf/scene.h), which is also 32 --
+ * the scene's coalescer works within that many candidates before handing the
+ * result here, so a smaller number on this side would have thrown away work
+ * it had already done. They are not required to be equal, but 8 against 32
+ * meant the coalescer's careful merging was routinely discarded one step
+ * later. See docs/architecture/adr-0011-dirty-rect-list.md for the original
+ * decision. */
+#define KF_MAX_DIRTY_RECTS 32
 
 typedef struct {
     kf_rect rects[KF_MAX_DIRTY_RECTS];

@@ -70,6 +70,94 @@ constexpr Binding kBindings[] = {
     {SDL_SCANCODE_RETURN, KF_BTN_MENU}, {SDL_SCANCODE_ESCAPE, KF_BTN_MENU},
 };
 
+/* GAMEPAD BINDINGS, alongside the keyboard rather than instead of it.
+ *
+ * SDL's GAMEPAD api, not its raw joystick one, and that choice is the whole
+ * reason this is short: SDL ships a controller database and reports every
+ * recognised pad through one abstract layout, so an 8BitDo, an Xbox pad and a
+ * DualSense all arrive here as the same buttons without a line of
+ * per-controller code. A raw joystick would hand us numbered buttons whose
+ * meaning differs per device, which is how projects end up with a mapping
+ * screen nobody wanted to write.
+ *
+ * The device has 7 buttons today and a real handheld layout is coming (a
+ * d-pad, ABXY, shoulders, start/select/menu -- 16 of them, on an I2C
+ * expander). These bindings deliberately map the pad's OWN d-pad and face
+ * buttons onto the 7 that exist, so the mapping stays obvious when the rest
+ * arrive rather than needing rethinking.
+ *
+ * BOTH FACE-BUTTON CONVENTIONS ARE ACCEPTED for menu confirm/cancel: SDL
+ * reports positions, and Nintendo-layout pads (which the 8BitDo Ultimate is,
+ * in Switch mode) have A and B physically swapped relative to Xbox ones. A
+ * simulator that only honoured one would feel broken on the other, and the
+ * distinction does not exist on the real hardware at all. */
+struct PadBinding {
+    SDL_GamepadButton pad;
+    kf_button button;
+};
+
+constexpr PadBinding kPadBindings[] = {
+    /* D-pad straight through. */
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, KF_BTN_UP},
+    {SDL_GAMEPAD_BUTTON_DPAD_DOWN, KF_BTN_DOWN},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, KF_BTN_LEFT},
+    {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, KF_BTN_RIGHT},
+
+    /* SOUTH and EAST both reach A and B respectively -- see the note above
+     * on layout conventions. */
+    {SDL_GAMEPAD_BUTTON_SOUTH, KF_BTN_A},
+    {SDL_GAMEPAD_BUTTON_EAST, KF_BTN_B},
+    {SDL_GAMEPAD_BUTTON_WEST, KF_BTN_B},
+
+    /* Start and the guide/menu key both reach MENU: on a pad the "open the
+     * menu" affordance is Start, and Back/Select is the nearest thing to a
+     * second one. */
+    {SDL_GAMEPAD_BUTTON_START, KF_BTN_MENU},
+    {SDL_GAMEPAD_BUTTON_BACK, KF_BTN_MENU},
+};
+
+/* The first connected pad, or nullptr. One is enough: the device has one
+ * player and no notion of a second. Opened and closed by the ADDED/REMOVED
+ * events below rather than polled for, so hot-plugging works -- plugging a
+ * controller in after the simulator started is the normal case, not the
+ * exception. */
+SDL_Gamepad *g_pad = nullptr;
+
+/* Left stick as a d-pad, because a stick that does nothing feels broken even
+ * when the d-pad works. The threshold is deliberately high (about 50% of
+ * full deflection): this is a digital device with no analogue input
+ * anywhere, so a low threshold would turn a resting thumb into held
+ * directions. Hall-effect sticks like the 8BitDo Ultimate's barely drift,
+ * but plenty of pads do, and the whole point of a simulator is that it
+ * behaves like the hardware rather than like whatever is plugged into the
+ * PC. */
+constexpr int16_t kStickThreshold = 16000;
+
+uint32_t pad_mask() {
+    if (g_pad == nullptr) {
+        return 0u;
+    }
+    uint32_t mask = 0u;
+    for (const PadBinding &b : kPadBindings) {
+        if (SDL_GetGamepadButton(g_pad, b.pad)) {
+            mask |= static_cast<uint32_t>(b.button);
+        }
+    }
+    const int16_t lx = SDL_GetGamepadAxis(g_pad, SDL_GAMEPAD_AXIS_LEFTX);
+    const int16_t ly = SDL_GetGamepadAxis(g_pad, SDL_GAMEPAD_AXIS_LEFTY);
+    if (lx <= -kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_LEFT);
+    } else if (lx >= kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_RIGHT);
+    }
+    if (ly <= -kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_UP);
+    } else if (ly >= kStickThreshold) {
+        mask |= static_cast<uint32_t>(KF_BTN_DOWN);
+    }
+    return mask;
+}
+
 } // namespace
 
 void kf_sdl_pump_events(void) {
@@ -77,6 +165,31 @@ void kf_sdl_pump_events(void) {
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
             kf_sdl_state().quit_requested = true;
+        } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+            /* Take the first pad and ignore the rest. Logged by name because
+             * "my controller does nothing" is otherwise indistinguishable
+             * from "SDL never recognised it", and those need different
+             * fixes. */
+            if (g_pad == nullptr) {
+                g_pad = SDL_OpenGamepad(event.gdevice.which);
+                if (g_pad != nullptr) {
+                    const char *name = SDL_GetGamepadName(g_pad);
+                    KF_LOGI(TAG, "gamepad connected: %s -- d-pad/left stick "
+                                 "= directions, A/B = A, B/X = B, "
+                                 "Start/Back = menu",
+                            name != nullptr ? name : "(unnamed)");
+                } else {
+                    KF_LOGW(TAG, "a gamepad was connected but SDL could not "
+                                 "open it: %s", SDL_GetError());
+                }
+            }
+        } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+            if (g_pad != nullptr &&
+                event.gdevice.which == SDL_GetGamepadID(g_pad)) {
+                SDL_CloseGamepad(g_pad);
+                g_pad = nullptr;
+                KF_LOGI(TAG, "gamepad disconnected -- keyboard still works");
+            }
         } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
             /* Two windows can exist now (sdl_debug_window.cpp) -- tell
              * their close buttons apart by SDL_WindowID rather than
@@ -123,6 +236,31 @@ bool kf_sdl_mouse_relative_to(SDL_Window *window, int32_t *x, int32_t *y,
 kf_result kf_input_init(void) {
     KF_LOGI(TAG, "keyboard: 1-5 = feed/play/rest/bath/flush, X/K = B, "
                  "Enter/Esc = menu");
+    /* Not fatal if it fails: a simulator with no gamepad subsystem is a
+     * simulator with a keyboard, which is how every session before this one
+     * worked. Says so rather than failing silently. */
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        KF_LOGW(TAG, "gamepad support unavailable (%s) -- keyboard only",
+                SDL_GetError());
+        return KF_OK;
+    }
+    /* Pads already plugged in at startup do not generate ADDED events, so
+     * they have to be found once here. Everything after this arrives as an
+     * event. */
+    int count = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&count);
+    if (ids != nullptr) {
+        for (int i = 0; i < count && g_pad == nullptr; ++i) {
+            g_pad = SDL_OpenGamepad(ids[i]);
+            if (g_pad != nullptr) {
+                const char *name = SDL_GetGamepadName(g_pad);
+                KF_LOGI(TAG, "gamepad: %s -- d-pad/left stick = directions, "
+                             "A/B = A, B/X = B, Start/Back = menu",
+                        name != nullptr ? name : "(unnamed)");
+            }
+        }
+        SDL_free(ids);
+    }
     return KF_OK;
 }
 
@@ -144,13 +282,24 @@ kf_result kf_input_poll(kf_input_raw *out) {
         }
     }
 
+    /* Keyboard OR gamepad, not one instead of the other -- both feed the
+     * same mask, so a game cannot tell which was used and neither can the
+     * pet. That is the point: this is the same kf_input_raw the real
+     * buttons produce on device. */
+    mask |= pad_mask();
+
     out->buttons = mask;
     out->sampled_at_us = kf_time_mono_us();
     out->quit_requested = kf_sdl_state().quit_requested;
     return KF_OK;
 }
 
-void kf_input_shutdown(void) {}
+void kf_input_shutdown(void) {
+    if (g_pad != nullptr) {
+        SDL_CloseGamepad(g_pad);
+        g_pad = nullptr;
+    }
+}
 
 /* kf_lvgl_pointer.cpp's other half -- see that file's header comment. Not
  * part of kf/hal/input.h: a mouse pointer is not one of the real device's
