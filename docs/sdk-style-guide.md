@@ -85,6 +85,30 @@ cartridge/public-SDK effort actually starts (see the platform notes' "Still
 open" list), not before -- building tutorial-grade polish for an audience
 that cannot reach it yet would be work with nowhere to land.
 
+## Your screen's object budget is yours alone
+
+`KF_SCENE_MAX_OBJECTS` (64, `kf/scene.h`) is the number of sprites, text
+objects and boxes that can exist at once. It is a **per-screen** budget,
+not one shared across your whole game: a `kf.screen()` whose objects are
+not on the panel holds none of it, and gets them all back when the player
+navigates to it (ADR 0061). So a game with five screens of forty objects
+each is fine; one screen wanting sixty-five is not.
+
+Two consequences worth knowing:
+
+- **Declare freely, at the top of your script, in the obvious place.** A
+  screen nobody has looked at yet has not taken a slot. You do not need to
+  create objects lazily or tear them down by hand — handles you hold stay
+  valid across navigation whether or not the screen is showing, and a
+  setter called on a screen that is currently off-panel takes effect the
+  next time it comes up.
+- **Objects created with bare `kf.sprite()`/`kf.text()`/`kf.box()`, rather
+  than through a `kf.screen()`, belong to no screen and are never
+  released.** That is the right choice for something that must survive
+  navigation — an error banner, a global overlay — and the wrong one for
+  anything belonging to a single screen, which should be declared through
+  that screen so it can hand its slots back.
+
 ## The one button that is not the game's
 
 `kf.on_button("menu", ...)` compiles and looks like every other button

@@ -1219,12 +1219,16 @@ end
 -- why. It now opens THIS screen instead: Quick play (the identical care
 -- action, unchanged, via pet.quick_play()) or Nibble.
 --
--- ONE text object, not two separate "Quick play"/"Nibble" lines: see
--- nibble.lua's own object-budget comment (examples/creature_demo/
--- nibble.lua) for why -- creature.lua's existing Home/Info/Settings
--- objects already hold the retained scene close to KF_SCENE_MAX_OBJECTS
--- (64), and this screen has exactly as little room to spend as Nibble
--- did.
+-- ONE text object, which is why its label is the cramped "L:QUICKPLAY
+-- R:NIBBLE B12 S3" rather than two readable lines. That was forced: when
+-- this screen was written, every screen in the cartridge held its scene
+-- objects at once and Home/Info/Settings already sat at 60 of the 64, so
+-- this picker and Nibble were splitting four slots between them. ADR
+-- 0061 removed that constraint -- a screen that is not showing now holds
+-- nothing, so this screen has the whole scene to itself while it is up.
+-- The single line is left as it is only because nobody has redesigned
+-- the picker since; it is no longer a budget decision, and splitting it
+-- into a real two-option menu costs nothing now.
 --
 -- Declared here, not inside the Home-only `do ... end` block above:
 -- that block's locals (raw_asleep, care_sound, `home` itself) are not

@@ -511,15 +511,37 @@ void create_object_metatable(lua_State *L) {
  * risking the two drifting apart. Each raises via luaL_error (never
  * returns) on a full scene, so a caller only ever sees the id on success;
  * marks the scene declared; and leaves the new object's userdata on top
- * of the Lua stack, same as every kf.* creator always has. */
+ * of the Lua stack, same as every kf.* creator always has.
+ *
+ * `materialise` false means DECLARE WITHOUT TAKING A SCENE SLOT (ADR
+ * 0061): the userdata and its shadow state are built exactly as always,
+ * but no kf_scene_add_*() runs and the object's id stays 0 until the
+ * screen it belongs to is actually shown, at which point restore_group()
+ * creates it from that shadow. Only screen:sprite()/_text()/_box() on a
+ * group that is not the active screen passes false -- a bare kf.sprite()
+ * belongs to no screen and is always materialised immediately.
+ *
+ * WHY THAT MATTERS AND IS NOT JUST AN OPTIMISATION. A cartridge declares
+ * every one of its screens in its top-level code, one after another. If
+ * each one took its slots as it was declared, the peak would be the SUM of
+ * every screen in the cartridge -- which is exactly how creature.lua came
+ * to sit at 61 of 64 with the player looking at one screen holding 28 of
+ * them, and why nibble.lua had to cut its score and round readouts down to
+ * three objects to load at all. Deferring means the peak is the largest
+ * SINGLE screen instead, and the 64 becomes a per-screen budget rather
+ * than one shared between every screen a cartridge will ever show. */
 
-kf_scene_id add_sprite_and_push(lua_State *L, const char *name) {
-    const kf_scene_id id = kf_scene_add_sprite(name);
-    if (id == 0) {
-        luaL_error(L,
-                   "the scene already holds %d objects (the "
-                   "maximum) -- cannot create sprite '%s'",
-                   KF_SCENE_MAX_OBJECTS, name);
+kf_scene_id add_sprite_and_push(lua_State *L, const char *name,
+                                 bool materialise) {
+    kf_scene_id id = 0;
+    if (materialise) {
+        id = kf_scene_add_sprite(name);
+        if (id == 0) {
+            luaL_error(L,
+                       "the scene already holds %d objects (the "
+                       "maximum) -- cannot create sprite '%s'",
+                       KF_SCENE_MAX_OBJECTS, name);
+        }
     }
     LuaSceneObject *obj = push_new_object(L, LuaObjKind::kSprite, id);
     std::snprintf(obj->sprite_name, sizeof(obj->sprite_name), "%s", name);
@@ -527,16 +549,20 @@ kf_scene_id add_sprite_and_push(lua_State *L, const char *name) {
     return id;
 }
 
-kf_scene_id add_text_and_push(lua_State *L, const char *str) {
+kf_scene_id add_text_and_push(lua_State *L, const char *str,
+                               bool materialise) {
     char work[kTextWorkBufSize];
     char shadow[KF_SCENE_TEXT_MAX + 1];
     prepare_text(str, work, sizeof(work), shadow, sizeof(shadow));
-    const kf_scene_id id = kf_scene_add_text(work);
-    if (id == 0) {
-        luaL_error(L,
-                   "the scene already holds %d objects (the "
-                   "maximum) -- cannot create a text object",
-                   KF_SCENE_MAX_OBJECTS);
+    kf_scene_id id = 0;
+    if (materialise) {
+        id = kf_scene_add_text(work);
+        if (id == 0) {
+            luaL_error(L,
+                       "the scene already holds %d objects (the "
+                       "maximum) -- cannot create a text object",
+                       KF_SCENE_MAX_OBJECTS);
+        }
     }
     LuaSceneObject *obj = push_new_object(L, LuaObjKind::kText, id);
     std::strcpy(obj->text, shadow);
@@ -544,13 +570,17 @@ kf_scene_id add_text_and_push(lua_State *L, const char *str) {
     return id;
 }
 
-kf_scene_id add_box_and_push(lua_State *L, int16_t w, int16_t h, kf_color c) {
-    const kf_scene_id id = kf_scene_add_box(w, h, c);
-    if (id == 0) {
-        luaL_error(L,
-                   "the scene already holds %d objects (the "
-                   "maximum) -- cannot create a box object",
-                   KF_SCENE_MAX_OBJECTS);
+kf_scene_id add_box_and_push(lua_State *L, int16_t w, int16_t h, kf_color c,
+                              bool materialise) {
+    kf_scene_id id = 0;
+    if (materialise) {
+        id = kf_scene_add_box(w, h, c);
+        if (id == 0) {
+            luaL_error(L,
+                       "the scene already holds %d objects (the "
+                       "maximum) -- cannot create a box object",
+                       KF_SCENE_MAX_OBJECTS);
+        }
     }
     LuaSceneObject *obj = push_new_object(L, LuaObjKind::kBox, id);
     obj->w = w < 0 ? static_cast<int16_t>(0) : w;
@@ -590,13 +620,37 @@ struct LuaScreenGroup {
      * see kf_lua_scene_activate_screen()'s own comment for why a group
      * that never set one must not force a colour on activation. */
     bool bg_set = false;
-    /* Every kf_scene_id created through THIS group, in declaration order.
-     * Capped at KF_SCENE_MAX_OBJECTS (not some smaller per-screen budget):
-     * the whole scene shares that many slots, so no single group could
-     * ever legitimately hold more -- this can never be the binding that
-     * overflows first. */
-    kf_scene_id ids[KF_SCENE_MAX_OBJECTS] = {};
-    int id_count = 0;
+    /* ADR 0061. A Lua registry ref to a plain array table holding the
+     * USERDATA of every object created through this group, in declaration
+     * order -- not the kf_scene_ids it used to hold, and not a C array.
+     *
+     * WHY THE USERDATA AND NOT THE ID. A released screen's objects no
+     * longer exist in the scene at all, so an id is exactly the thing that
+     * stops being meaningful across a release; the userdata is what
+     * survives it, because it carries the full shadow copy of the object's
+     * declared state (LuaSceneObject above) that this binding has always
+     * kept for the no-arg reads. Restoring a screen is therefore "re-add
+     * from the shadow and write the new id back into the same userdata" --
+     * which is why a script's own handles keep working across navigation
+     * without the script knowing any of this happened.
+     *
+     * WHY A LUA TABLE AND NOT A C ARRAY. Two reasons, one of them the
+     * whole point. First, it is what PINS the userdata: a script that
+     * discards the return of screen:text() (every caption on Info and
+     * Settings does) would otherwise have its only reference collected,
+     * and the shadow with it. Second, the array this replaced was
+     * KF_SCENE_MAX_OBJECTS entries in every one of kMaxLuaScreens groups
+     * whether or not they existed -- 1 KB of .bss for a total that now
+     * legitimately EXCEEDS 64 across all screens, since only the active
+     * screen's objects hold scene slots. The table grows to what is
+     * actually declared, and it lives in the Lua arena (PSRAM), which is
+     * the pool with room, rather than internal RAM, which is not. */
+    int objs_ref = LUA_NOREF;
+    /* False while this group's objects are released -- see release_group()
+     * below. Every group starts live: objects are created in the scene the
+     * moment a script declares them, and only the first navigation after
+     * that releases whichever groups are not showing. */
+    bool live = true;
 };
 
 LuaScreenGroup g_lua_screens[kMaxLuaScreens];
@@ -641,6 +695,19 @@ int g_active_registry_index = 0;
 kf_screen_nav_register_fn g_screen_register = nullptr;
 kf_screen_nav_show_fn g_screen_show = nullptr;
 
+/* The one lua_State this binding is registered against, captured by
+ * kf_lua_scene_register() below. Releasing and restoring a screen's
+ * objects (ADR 0061) has to walk that screen's object table, which lives
+ * in this state's registry -- and the two entry points that do it,
+ * kf_lua_scene_activate_screen() and _hide_other_screens(), are called
+ * from kf_screen_nav.cpp, which has no lua_State to pass and must not gain
+ * one (it is reached from a raw button edge, not from inside a Lua call).
+ * Null before the first kf_lua_port_init() and again after
+ * kf_lua_port_shutdown() -- set_active_group() checks it rather than
+ * assuming, because a screen switch after shutdown is reachable (the
+ * simulator's debug window can advance screens with no script loaded). */
+lua_State *g_L = nullptr;
+
 LuaScreenGroup *find_group_by_name(const char *name) {
     for (int i = 0; i < g_lua_screen_count; ++i) {
         if (std::strcmp(g_lua_screens[i].name, name) == 0) {
@@ -659,15 +726,162 @@ LuaScreenGroup *find_group_by_registry_index(int index) {
     return nullptr;
 }
 
-/* No-op on a null group (defensive only -- every call site below always
- * has a real one) or one already holding KF_SCENE_MAX_OBJECTS ids, which
- * -- see LuaScreenGroup's own comment -- kf_scene's own 64-object ceiling
- * makes unreachable in practice. */
-void group_add_id(LuaScreenGroup *group, kf_scene_id id) {
-    if (group == nullptr || group->id_count >= KF_SCENE_MAX_OBJECTS) {
+/* Pushes `group`'s object table onto the stack, creating and ref'ing it on
+ * first use. Returns its length. */
+int push_group_objects(lua_State *L, LuaScreenGroup *group) {
+    if (group->objs_ref == LUA_NOREF) {
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        group->objs_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, group->objs_ref);
+    }
+    return static_cast<int>(lua_rawlen(L, -1));
+}
+
+/* Appends the object whose userdata is on top of the stack to `group`,
+ * leaving the stack exactly as it found it -- every call site below has
+ * just had add_*_and_push() leave that userdata there as its own return
+ * value, and must not disturb it. No-op on a null group (defensive only;
+ * every call site always has a real one). */
+void group_add_object(lua_State *L, LuaScreenGroup *group) {
+    if (group == nullptr) {
         return;
     }
-    group->ids[group->id_count++] = id;
+    const int n = push_group_objects(L, group); /* stack: obj, table */
+    lua_pushvalue(L, -2);                        /* stack: obj, table, obj */
+    lua_rawseti(L, -2, n + 1);                   /* stack: obj, table */
+    lua_pop(L, 1);                               /* stack: obj */
+}
+
+/* The userdata at index `i` (1-based) of an object table already on top of
+ * the stack, or nullptr if that slot does not hold one. Pops nothing. */
+LuaSceneObject *group_object_at(lua_State *L, int i) {
+    lua_rawgeti(L, -1, i);
+    LuaSceneObject *obj =
+        static_cast<LuaSceneObject *>(luaL_testudata(L, -1, kObjMeta));
+    lua_pop(L, 1);
+    return obj;
+}
+
+/* Hands every one of `group`'s objects back to the scene: their slots stop
+ * being spent on a screen nobody is looking at, which is the entire point
+ * of ADR 0061. The userdata survives untouched apart from its id, which
+ * becomes 0 -- and 0 is the value every kf_scene_* setter already treats
+ * as a safe no-op, so a script that keeps poking a released screen's
+ * objects updates their shadow state harmlessly and sees it applied for
+ * real the next time that screen comes back.
+ *
+ * Does NOT call kf_scene_discard_removed(): the slots are not actually
+ * free until it runs, and the caller releases several groups before
+ * restoring one, so that call belongs once at the end of the batch rather
+ * than once per group here. */
+void release_group(lua_State *L, LuaScreenGroup *group) {
+    if (!group->live) {
+        return;
+    }
+    if (group->objs_ref == LUA_NOREF) {
+        group->live = false;
+        return;
+    }
+    const int n = push_group_objects(L, group);
+    for (int i = 1; i <= n; ++i) {
+        LuaSceneObject *obj = group_object_at(L, i);
+        if (obj == nullptr || obj->removed) {
+            continue;
+        }
+        kf_scene_remove(obj->id);
+        obj->id = 0;
+    }
+    lua_pop(L, 1);
+    group->live = false;
+}
+
+/* Re-creates one released object from the shadow copy the userdata has
+ * carried all along, and returns its NEW id (0 if the scene had no slot
+ * left, which the caller logs). Every field is replayed, not just the ones
+ * the constructor takes: an object's position, layer, visibility and
+ * colours are all set AFTER creation in normal use, so a restore that
+ * replayed only the constructor arguments would put every object back at
+ * (0,0), layer 0, visible. */
+kf_scene_id recreate_object(const LuaSceneObject *obj) {
+    kf_scene_id id = 0;
+    switch (obj->kind) {
+    case LuaObjKind::kSprite:
+        id = kf_scene_add_sprite(obj->sprite_name);
+        break;
+    case LuaObjKind::kText:
+        /* obj->text is already uppercased and already truncated to
+         * KF_SCENE_TEXT_MAX (prepare_text() did both when the script first
+         * set it), so this deliberately skips prepare_text() -- running it
+         * again would be a no-op on the text and would only risk a second
+         * round of "no glyph for this character" warnings for characters
+         * the script was already told about once. */
+        id = kf_scene_add_text(obj->text);
+        break;
+    case LuaObjKind::kBox:
+        id = kf_scene_add_box(obj->w, obj->h, obj->fg);
+        break;
+    }
+    if (id == 0) {
+        return 0;
+    }
+    kf_scene_set_pos(id, obj->x, obj->y);
+    kf_scene_set_layer(id, obj->layer);
+    kf_scene_set_visible(id, obj->visible);
+    if (obj->kind == LuaObjKind::kSprite) {
+        kf_scene_set_frame(id, obj->frame);
+        kf_scene_set_mirrored(id, obj->mirrored);
+    } else {
+        /* Text uses both; box ignores bg (kf_scene_set_colors()'s own
+         * contract) and already took fg through kf_scene_add_box() above --
+         * setting it a second time costs nothing and keeps this branch
+         * from needing a third case. */
+        kf_scene_set_colors(id, obj->fg, obj->bg);
+    }
+    return id;
+}
+
+/* The inverse of release_group(), in declaration order -- which matters:
+ * creation order is kf_scene_commit()'s paint-order tie-break between
+ * objects sharing a layer (kf/scene.h), so restoring out of order would
+ * silently change which of two overlapping objects wins. */
+void restore_group(lua_State *L, LuaScreenGroup *group) {
+    if (group->live) {
+        return;
+    }
+    group->live = true;
+    if (group->objs_ref == LUA_NOREF) {
+        return;
+    }
+    const int n = push_group_objects(L, group);
+    int failed = 0;
+    for (int i = 1; i <= n; ++i) {
+        LuaSceneObject *obj = group_object_at(L, i);
+        if (obj == nullptr || obj->removed || obj->id != 0) {
+            continue;
+        }
+        const kf_scene_id id = recreate_object(obj);
+        if (id == 0) {
+            ++failed;
+            continue;
+        }
+        obj->id = id;
+    }
+    lua_pop(L, 1);
+    if (failed > 0) {
+        /* Cannot raise here: this runs from a screen switch, which is
+         * reachable from a C-side button edge with no Lua call frame to
+         * unwind into. Naming the screen and the count is what turns "some
+         * of this screen is missing" into something findable -- the same
+         * "fails with a number, not a silent gap" rule the scene's own
+         * full-scene log follows. */
+        KF_LOGE(TAG,
+                "screen '%s': %d of %d objects could not be restored -- the "
+                "scene is full (%d slots). Something outside this screen is "
+                "holding slots it should have released.",
+                group->name, failed, n, KF_SCENE_MAX_OBJECTS);
+    }
 }
 
 constexpr const char *kScreenMeta = "kf.Screen";
@@ -732,6 +946,13 @@ int lua_kf_screen(lua_State *L) {
     grp = LuaScreenGroup{};
     std::snprintf(grp.name, sizeof(grp.name), "%s", name);
     grp.registry_index = registry_index;
+    /* ADR 0061: only the screen actually showing takes scene slots as it
+     * declares. Every other screen in the cartridge declares into its
+     * shadow state alone and materialises on its first :show() -- see
+     * add_sprite_and_push()'s own comment for why the peak this avoids is
+     * the difference between "64 slots per screen" and "64 slots shared
+     * between every screen a cartridge has". */
+    grp.live = (registry_index == g_active_registry_index);
     push_screen_handle(L, group_index);
     return 1;
 }
@@ -739,16 +960,16 @@ int lua_kf_screen(lua_State *L) {
 int screen_sprite(lua_State *L) {
     LuaScreenGroup &grp = group_of(L, 1);
     const char *name = luaL_checkstring(L, 2);
-    const kf_scene_id id = add_sprite_and_push(L, name);
-    group_add_id(&grp, id);
+    add_sprite_and_push(L, name, grp.live);
+    group_add_object(L, &grp);
     return 1;
 }
 
 int screen_text(lua_State *L) {
     LuaScreenGroup &grp = group_of(L, 1);
     const char *str = luaL_checkstring(L, 2);
-    const kf_scene_id id = add_text_and_push(L, str);
-    group_add_id(&grp, id);
+    add_text_and_push(L, str, grp.live);
+    group_add_object(L, &grp);
     return 1;
 }
 
@@ -757,8 +978,8 @@ int screen_box(lua_State *L) {
     const int16_t w = clamp_i16(luaL_checkinteger(L, 2));
     const int16_t h = clamp_i16(luaL_checkinteger(L, 3));
     const kf_color c = clamp_color(luaL_checkinteger(L, 4));
-    const kf_scene_id id = add_box_and_push(L, w, h, c);
-    group_add_id(&grp, id);
+    add_box_and_push(L, w, h, c, grp.live);
+    group_add_object(L, &grp);
     return 1;
 }
 
@@ -775,7 +996,14 @@ int screen_background(lua_State *L) {
     const kf_color c = clamp_color(luaL_checkinteger(L, 2));
     grp.bg = c;
     grp.bg_set = true;
-    kf_scene_set_background_color(c);
+    /* Only the screen actually showing owns the ONE scene-wide background
+     * slot; a screen declaring itself in the background would otherwise
+     * paint its colour over whatever the active screen had set, until the
+     * next navigation put it back. set_active_group() re-applies this
+     * exact value on the way in, so nothing is lost by waiting. */
+    if (grp.live) {
+        kf_scene_set_background_color(c);
+    }
     mark_declared();
     return 0;
 }
@@ -823,13 +1051,13 @@ void create_screen_metatable(lua_State *L) {
 
 int lua_kf_sprite(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
-    add_sprite_and_push(L, name);
+    add_sprite_and_push(L, name, true);
     return 1;
 }
 
 int lua_kf_text(lua_State *L) {
     const char *str = luaL_checkstring(L, 1);
-    add_text_and_push(L, str);
+    add_text_and_push(L, str, true);
     return 1;
 }
 
@@ -837,7 +1065,7 @@ int lua_kf_box(lua_State *L) {
     const int16_t w = clamp_i16(luaL_checkinteger(L, 1));
     const int16_t h = clamp_i16(luaL_checkinteger(L, 2));
     const kf_color c = clamp_color(luaL_checkinteger(L, 3));
-    add_box_and_push(L, w, h, c);
+    add_box_and_push(L, w, h, c, true);
     return 1;
 }
 
@@ -971,6 +1199,17 @@ void kf_lua_scene_register(lua_State *L) {
     g_lua_screen_count = 0;
     g_active_screen_name[0] = '\0';
     g_active_registry_index = 0;
+    /* Each group's object-table ref (ADR 0061) belonged to the PREVIOUS
+     * lua_State, which kf_lua_port_shutdown() has already closed -- its
+     * whole registry went with it, so there is nothing to luaL_unref here
+     * and doing so would be an access into a freed state. Clearing the
+     * refs is enough; lua_kf_screen() re-initialises each group in full
+     * (`grp = LuaScreenGroup{}`) as it hands it out again anyway. */
+    for (int i = 0; i < kMaxLuaScreens; ++i) {
+        g_lua_screens[i].objs_ref = LUA_NOREF;
+        g_lua_screens[i].live = true;
+    }
+    g_L = L;
 
     create_object_metatable(L);
     create_screen_metatable(L);
@@ -1010,51 +1249,99 @@ void kf_lua_scene_dispatch_buttons(lua_State *L) {
 
 bool kf_lua_scene_declared_anything() { return g_declared_anything; }
 
+void kf_lua_scene_unregister(void) { g_L = nullptr; }
+
 void kf_lua_scene_set_screen_nav(kf_screen_nav_register_fn register_fn,
                                   kf_screen_nav_show_fn show_fn) {
     g_screen_register = register_fn;
     g_screen_show = show_fn;
 }
 
-/* The visibility half of activating a screen, split out of kf_lua_scene_
+/* The scene-object half of activating a screen, split out of kf_lua_scene_
  * activate_screen() below so kf_lua_scene_hide_other_screens() (ADR 0045)
  * can reuse it WITHOUT the repaint/commit that follows it there -- see
  * that function's own comment for why the two must not always travel
- * together. Returns false (and touches nothing) if no group is registered
- * under `index`. */
-static bool set_active_visibility(int index) {
+ * together. Returns false if no group is registered under `index`.
+ *
+ * ADR 0061 CHANGED WHAT "INACTIVE" COSTS. This used to set every other
+ * group's objects invisible and leave them holding their scene slots
+ * forever, which is how Home, Info, Settings and the play picker came to
+ * hold 61 of the 64 slots between them while the player was looking at
+ * exactly one of them. Now the screens being left RELEASE their objects
+ * and the screen being entered gets them back, so the scene only ever
+ * holds what is actually on the panel.
+ *
+ * ORDER MATTERS AND IS NOT OBVIOUS: release every outgoing group, then
+ * kf_scene_discard_removed() to actually free the slots, and only then
+ * restore the incoming one. kf_scene_remove() alone does not free a slot
+ * until the next commit (see kf/scene.h), so restoring before that call
+ * would hit the 64-object ceiling against slots that are removed but not
+ * yet reclaimed -- and the incoming screen would come up with objects
+ * missing rather than with a visible error. */
+static bool set_active_group(int index) {
+    if (g_L == nullptr) {
+        return false;
+    }
     LuaScreenGroup *target = find_group_by_registry_index(index);
+
+    /* Released FIRST, and released whether or not a group is registered
+     * under `index` -- under KF_HOME_SCREEN=cpp, Home is a real registered
+     * screen with no kf.screen() group of its own, and navigating back to
+     * it still has to hand Info's and Settings' slots back. */
+    bool released_any = false;
+    for (int i = 0; i < g_lua_screen_count; ++i) {
+        LuaScreenGroup &g = g_lua_screens[i];
+        if (&g == target || !g.live) {
+            continue;
+        }
+        release_group(g_L, &g);
+        released_any = true;
+    }
+    if (released_any) {
+        kf_scene_discard_removed();
+    }
+
     if (target == nullptr) {
         return false;
     }
-    for (int i = 0; i < g_lua_screen_count; ++i) {
-        LuaScreenGroup &g = g_lua_screens[i];
-        const bool is_target = (&g == target);
-        for (int j = 0; j < g.id_count; ++j) {
-            kf_scene_set_visible(g.ids[j], is_target);
-        }
-    }
+    restore_group(g_L, target);
     if (target->bg_set) {
         kf_scene_set_background_color(target->bg);
     }
-    std::snprintf(g_active_screen_name, sizeof(g_active_screen_name), "%s",
-                  target->name);
     g_active_registry_index = index;
     return true;
 }
 
-void kf_lua_scene_activate_screen(int index) {
-    /* No kf.screen() group is registered under this index: nothing about
-     * the retained scene changes -- kf_screen_nav_show() handles that
-     * index's own screen (an LVGL one, under -DKF_ENABLE_LVGL=ON) through
-     * its own path, not this one. */
-    if (!set_active_visibility(index)) {
+void kf_lua_scene_activate_screen(int index, const char *name) {
+    /* The name is recorded FIRST and unconditionally, before the early
+     * return below -- it is the registry's name for this index, not a
+     * kf.screen() group's, and those are not the same set. Under
+     * KF_HOME_SCREEN=cpp, Home is a registered screen with no Lua group,
+     * so a version of this that only recorded the name on a group match
+     * (which is what this did before ADR 0061) left kf.active_screen()
+     * reporting whichever OTHER screen was last activated the whole time
+     * the player was looking at Home. That is not cosmetic: the play
+     * picker opens on `kf.active_screen() == "home"`, so under that build
+     * UP on Home did nothing at all and PLAY was a dead button. */
+    std::snprintf(g_active_screen_name, sizeof(g_active_screen_name), "%s",
+                  name != nullptr ? name : "");
+
+    /* No kf.screen() group is registered under this index: whatever slots
+     * needed releasing have been released above, but there is nothing to
+     * restore and nothing here to repaint -- kf_screen_nav_show() handles
+     * that index's own screen (the C++ Home under KF_HOME_SCREEN=cpp, or
+     * an LVGL one under -DKF_ENABLE_LVGL=ON) through its own path. */
+    if (!set_active_group(index)) {
         return;
     }
     kf_scene_force_repaint();
     if (kf_lua_scene_declared_anything()) {
         kf_scene_commit();
     }
+}
+
+const char *kf_lua_scene_active_screen_name(void) {
+    return g_active_screen_name;
 }
 
 int kf_lua_scene_active_registry_index() { return g_active_registry_index; }
@@ -1075,6 +1362,14 @@ void kf_lua_scene_hide_other_screens(int active_index) {
      * commit -- whenever a caller that does have a framebuffer makes it --
      * already repaints everything from these correct flags with no
      * special-casing needed here. See kf_lua_port_init()'s own call site
-     * for the actual bug this exists to close (Task 2, ADR 0045). */
-    set_active_visibility(active_index);
+     * for the actual bug this exists to close (Task 2, ADR 0045).
+     *
+     * Since ADR 0061 this also does the real work of the release: a script
+     * whose top-level code declared four screens has all four live in the
+     * scene at the moment it finishes, and this is what hands back the
+     * three the player is not looking at. That is why it runs after the
+     * top-level code rather than as part of kf.screen(), which has no way
+     * to know a script has finished declaring. Nothing here draws, so it
+     * stays safe to call with no framebuffer up. */
+    set_active_group(active_index);
 }

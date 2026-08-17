@@ -39,6 +39,14 @@ struct lua_State;
  * kf_lua_port_init(). */
 void kf_lua_scene_register(lua_State *L);
 
+/* Drops this file's reference to the lua_State kf_lua_scene_register()
+ * captured. Call from kf_lua_port_shutdown() BEFORE lua_close(), so a
+ * screen switch that lands between the shutdown and the next
+ * kf_lua_port_init() -- the simulator's debug window can advance screens
+ * with no script loaded at all -- finds a null state and does nothing,
+ * rather than walking a closed one's registry. */
+void kf_lua_scene_unregister(void);
+
 /* Reads kf_app_buttons_pressed() (hakoniwaos/src/app.cpp:496, the same
  * debounced press-edge mask kf_screen_nav_frame() and
  * kf_home_screen_handle_care_buttons() already read -- this is what keeps
@@ -101,37 +109,64 @@ void kf_lua_scene_set_screen_nav(kf_screen_nav_register_fn register_fn,
 
 /* Called by kf_screen_nav_show() (the allowed direction) as ITS first
  * step, for every switch, whether triggered by MENU/B or by a script's own
- * screen:show(). If a kf.screen() group is registered under `index`: hides
- * every OTHER group's objects, shows this group's, re-applies its stored
+ * screen:show().
+ *
+ * RELEASES every kf.screen() group that is not `index` -- their scene
+ * objects are handed back and their slots freed (ADR 0061) -- and then, if
+ * a group IS registered under `index`, RESTORES that group's objects from
+ * the shadow state its userdata has always carried, re-applies its stored
  * background colour if it ever called screen:background() (a no-op
- * otherwise -- see kf_lua_scene.h's "the trap is two owners" discussion in
- * ADR 0044 for why a screen that never set one inherits whatever is
- * already there rather than a new default), then kf_scene_force_repaint()
- * and, if anything has ever been declared, an immediate kf_scene_commit()
- * so a caller that inspects the panel right after the switch -- screen_
- * nav_check does exactly this -- sees the result without waiting for a
- * frame. A no-op, changing nothing, if no group is registered under
- * `index` -- every screen this build can show is a kf.screen() group as of
- * ADR 0045, except an LVGL screen under -DKF_ENABLE_LVGL=ON, which
- * kf_screen_nav_show() handles through its own, separate path. */
-void kf_lua_scene_activate_screen(int index);
+ * otherwise -- see ADR 0044's "the trap is two owners" discussion for why
+ * a screen that never set one inherits whatever is already there rather
+ * than a new default), then kf_scene_force_repaint() and, if anything has
+ * ever been declared, an immediate kf_scene_commit() so a caller that
+ * inspects the panel right after the switch -- screen_nav_check does
+ * exactly this -- sees the result without waiting for a frame.
+ *
+ * `name` is the NAVIGATION REGISTRY's name for this index (kf_screen_nav_
+ * name()), which is what kf.active_screen() reports from here on. It is
+ * recorded even when no kf.screen() group is registered under `index`,
+ * which is the case that matters: under KF_HOME_SCREEN=cpp Home is a real
+ * screen with no Lua group, and a kf.active_screen() that could never
+ * answer "home" is what made the play picker's UP a dead button in that
+ * build. The release pass runs in that case too -- the outgoing screen's
+ * slots have to come back whether or not the incoming one wants them. */
+void kf_lua_scene_activate_screen(int index, const char *name);
 
 /* Called once by kf_lua_port_init() (sdk/lua/kf_lua_port.cpp), right after
  * a script's top-level code finishes running -- i.e., right after every
  * kf.screen() call that script will ever make has already created its
- * group. Sets ONLY the `visible` flags (hiding every group except
- * `active_index`'s), the exact same bookkeeping kf_lua_scene_activate_
- * screen() does -- deliberately WITHOUT that function's own kf_scene_
- * force_repaint()/kf_scene_commit(), because kf_lua_port_init() has no
- * guarantee a framebuffer exists yet (several headless checks exercise
- * pet.* / on_frame logic with none at all, and kf_scene_commit() asserts
- * one). See this function's own definition for the bug this closes: a
- * script with two or more kf.screen() groups (Home and Info, since Task 2
- * of the screens/clock/sleep plan) would
- * otherwise leave every group's objects visible-by-default and
- * overlapping until the first real screen switch. No-op if no group is
- * registered under `active_index`. */
+ * group. Does the SAME release-and-restore bookkeeping kf_lua_scene_
+ * activate_screen() does -- deliberately WITHOUT that function's own
+ * kf_scene_force_repaint()/kf_scene_commit(), because kf_lua_port_init()
+ * has no guarantee a framebuffer exists yet (several headless checks
+ * exercise pet.* / on_frame logic with none at all, and kf_scene_commit()
+ * asserts one). Nothing it does draws, so that is safe.
+ *
+ * See this function's own definition for the bug this closes: a script
+ * with two or more kf.screen() groups (Home and Info, since Task 2 of the
+ * screens/clock/sleep plan) would otherwise leave every group's objects
+ * overlapping on screen until the first real switch. Since ADR 0061 it
+ * carries the extra weight of being where a cartridge's non-showing
+ * screens actually hand their scene slots back after the top-level code
+ * that declared them has run. Releases even when no group is registered
+ * under `active_index` -- under KF_HOME_SCREEN=cpp, Home is a real screen
+ * with no Lua group, and the screens it replaced still have to let go. */
 void kf_lua_scene_hide_other_screens(int active_index);
+
+/* Exactly what kf.active_screen() returns to a script -- the navigation
+ * registry's name for whichever screen is showing, or "" before anything
+ * has ever been activated (never null, so a caller can strcmp it without
+ * a guard, matching what the Lua side already promises).
+ *
+ * Written for the regression test that pins ADR 0061's other half: this
+ * name must be right even for a registered screen that has NO kf.screen()
+ * group, because that is what Home is under KF_HOME_SCREEN=cpp, and a
+ * version of this that could only ever name a Lua group is what made the
+ * play picker's UP a dead button in that build. No CI job builds
+ * KF_HOME_SCREEN=cpp, so the test reproduces the shape instead -- see
+ * run_screen_group_check(). */
+const char *kf_lua_scene_active_screen_name(void);
 
 /* The registry index last passed to kf_lua_scene_activate_screen() or
  * kf_lua_scene_hide_other_screens() that actually matched a registered

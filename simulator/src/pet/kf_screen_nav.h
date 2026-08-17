@@ -23,13 +23,17 @@
  * inside some OTHER, still-LVGL screen currently has keypad focus.
  *
  * ADR 0044: A REGISTRY, NOT A SCENE-PER-SCREEN. There is one retained scene
- * (kf/scene.h, KF_SCENE_MAX_OBJECTS slots) shared by every screen; a Lua
- * screen (sdk/lua/kf_lua_scene.cpp's "kf.Screen" group) is a NAME plus the
- * list of scene object ids declared through it, not a scene of its own.
- * This file owns exactly one thing about that: WHICH name is showing. It
- * does not know which kf_scene_ids belong to which name -- that bookkeeping
- * lives in kf_lua_scene.cpp, on the other side of a function-pointer
- * boundary (kf_screen_nav_install_lua_hooks() below) rather than a #include,
+ * (kf/scene.h, KF_SCENE_MAX_OBJECTS slots), and a Lua screen (sdk/lua/
+ * kf_lua_scene.cpp's "kf.Screen" group) is a NAME plus the objects declared
+ * through it, not a scene of its own. Since ADR 0061 the scene is not
+ * SHARED between screens so much as LENT to whichever one is showing: the
+ * others release their objects on the way out and get them back on the way
+ * in, so KF_SCENE_MAX_OBJECTS bounds the largest single screen rather than
+ * the whole cartridge. This file owns exactly one thing about any of that:
+ * WHICH name is showing. It does not know which objects belong to which
+ * name -- that bookkeeping lives in kf_lua_scene.cpp, on the other side of
+ * a function-pointer boundary (kf_screen_nav_install_lua_hooks() below)
+ * rather than a #include,
  * because kamiframe_lua_port must not link against whatever library holds
  * this file (simulator/CMakeLists.txt's own comment on that link direction
  * -- a hard dependency direction, not a preference) while kf.screen(name)
@@ -137,10 +141,13 @@ void kf_screen_nav_frame(uint32_t dt_ms);
  * than by convention.
  *
  * Does two things, in order, for any valid index: (1) tells the Lua scene
- * binding this index is now active, so it can hide every OTHER
- * kf.screen() group's objects and show this one's, applying its stored
- * background colour if it ever set one (a no-op if no Lua group is
- * registered under this index); (2) if this is Home, runs Home's own
+ * binding this index and its NAME are now active, so it can release every
+ * OTHER kf.screen() group's objects back to the scene and re-create this
+ * one's from the shadow state the binding keeps (ADR 0061 -- before that
+ * it merely toggled visibility and every screen held its slots forever),
+ * applying its stored background colour if it ever set one (all a no-op
+ * if no Lua group is registered under this index); (2) if this is Home,
+ * runs Home's own
  * screen-specific entry hook (kf_creature_screen_enter() or
  * kf_lua_home_screen_enter(), matching this build's KF_HOME_SCREEN) for
  * whatever it does beyond scene-group bookkeeping -- the error banner,

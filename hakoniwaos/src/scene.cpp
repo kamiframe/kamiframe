@@ -613,6 +613,25 @@ void kf_scene_remove(kf_scene_id id) {
     obj->removed = true;
 }
 
+void kf_scene_discard_removed(void) {
+    bool any = false;
+    for (auto &obj : g_objects) {
+        if (obj.in_use && obj.removed) {
+            obj = SceneObject{};
+            any = true;
+        }
+    }
+    if (!any) {
+        return;
+    }
+    /* These objects' last painted pixels are now unreachable -- their
+     * `presented` rectangles went with the slot, so the ordinary diff can
+     * no longer contribute them as dirty candidates and nothing would ever
+     * erase them. A full repaint is the only correct answer; see this
+     * function's own comment in kf/scene.h. */
+    g_force_full_redraw = true;
+}
+
 void kf_scene_set_pos(kf_scene_id id, int16_t x, int16_t y) {
     SceneObject *obj = find(id);
     if (obj == nullptr) {

@@ -1677,6 +1677,11 @@ void kf_lua_port_shutdown() {
     }
     KF_LOGI(TAG, "shutting down after %u frame(s)",
             static_cast<unsigned>(g.frame_count));
+    /* Before lua_close(), not after: the scene binding holds this state to
+     * release and restore screen groups (ADR 0061), and a screen switch
+     * between here and the next kf_lua_port_init() must find that pointer
+     * already null rather than pointing into a closed state. */
+    kf_lua_scene_unregister();
     lua_close(g.L);
     g.L = nullptr;
     g.ready = false;

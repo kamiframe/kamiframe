@@ -104,12 +104,24 @@ typedef uint16_t kf_scene_id;
  * into those fixed slots, hence larger unioned dirty rects and more SPI
  * transfer; static UI declares nothing new and never reaches that path.
  *
- * Occupancy today is 60 of 64 (Home + Info + Settings together, asserted by
- * run_settings_screen_check()). One more Settings row of the usual shape
- * costs 6 and does not fit. See kf_scene_add_sprite()'s own comment for what
- * happens past this limit -- and note that in a Lua cartridge declaring its
- * objects at module scope, that failure takes the WHOLE script down at load,
- * not just the screen that overflowed. */
+ * SINCE ADR 0061 THIS IS A PER-SCREEN BUDGET, NOT A SHARED ONE. It used to
+ * be shared: every kf.screen() group held its objects for the life of the
+ * process, so Home, Info, Settings and the play picker together sat at 61
+ * of these 64 while the player was looking at exactly one of them, and the
+ * first minigame had three slots to build itself out of. A screen that is
+ * not showing now holds none: its objects are released on the way out and
+ * re-created from the binding's own shadow copy on the way back in
+ * (sdk/lua/kf_lua_scene.cpp), and a screen that has never been shown has
+ * not taken a slot yet at all. So what this constant limits is the largest
+ * SINGLE screen, and the assertion in run_settings_screen_check() counts
+ * Home alone rather than every screen at once.
+ *
+ * See kf_scene_add_sprite()'s own comment for what happens past this limit.
+ * The failure mode moved with the budget: overflowing used to take the
+ * WHOLE cartridge down at load, because every screen declared into the same
+ * 64 at module scope; now a script only overflows if one screen alone wants
+ * more than 64, and restore_group() logs the shortfall by screen name
+ * rather than raising. */
 #define KF_SCENE_MAX_OBJECTS 64
 
 /* Working set for the coalescer kf_scene_commit() runs before it marks
@@ -197,6 +209,28 @@ kf_scene_id kf_scene_add_box(int16_t w, int16_t h, kf_color c);
  * stray calls through it land here harmlessly instead of chasing every call
  * site. */
 void kf_scene_remove(kf_scene_id id);
+
+/* Frees every already-removed object's slot RIGHT NOW, instead of at the
+ * next kf_scene_commit() -- and, because nothing will now ever erase the
+ * pixels those objects last painted, forces that next commit to repaint
+ * the whole screen exactly as kf_scene_force_repaint() does.
+ *
+ * WHY THIS EXISTS. kf_scene_remove() cannot free a slot on the spot: the
+ * commit that erases the object's last painted area still needs its
+ * `presented` rectangle to know what to erase (see that function's own
+ * comment). That is the right default everywhere except one case -- a
+ * screen handing its slots over to the screen replacing it, in the SAME
+ * call, with no commit in between. Without this, releasing 28 of Home's
+ * objects and immediately declaring the incoming screen's 30 would run
+ * into the KF_SCENE_MAX_OBJECTS ceiling against slots that are removed
+ * but not yet freed, and the adds would return 0. See ADR 0061 and
+ * sdk/lua/kf_lua_scene.cpp's set_active_visibility().
+ *
+ * Safe to call with nothing removed (it then does nothing at all, NOT
+ * even the force-repaint -- a caller that releases conditionally does not
+ * have to guard this call, but also does not pay a full repaint for a
+ * switch that released nothing). */
+void kf_scene_discard_removed(void);
 
 /* Every setter below is a no-op on an id that does not currently name a
  * live object, and a no-op when called on the wrong kind of object for the

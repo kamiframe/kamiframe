@@ -101,6 +101,10 @@
 #include "../pet/kf_lua_settings_screen.h"
 #include "../pet/kf_pet_session.h"
 #include "../pet/kf_screen_nav.h"
+/* For kf_lua_scene_active_screen_name() -- run_screen_group_check()'s
+ * KF_HOME_SCREEN=cpp regression assertion reads it directly, since
+ * kf.active_screen() is otherwise only reachable from inside a script. */
+#include "../../../sdk/lua/kf_lua_scene.h"
 #include "../pet/kf_soft3d.h"
 #include "headless_probe.h"
 
@@ -6672,11 +6676,24 @@ int run_screen_nav_check(unsigned long long expect_checksum,
     return ok ? 0 : 1;
 }
 
-/* Live scene-object count once both of run_screen_group_check()'s screens
- * have declared everything they ever will -- one text object per screen.
+/* Live scene-object count while ONE of run_screen_group_check()'s small
+ * screens is showing -- its own single text object, and nothing belonging
+ * to any of the other three screens in the same script. ONE, not the four
+ * this used to be one per screen: since ADR 0061 a screen that is not
+ * showing holds no scene slots at all, which is the entire point.
  * Named per this file's own "fails with a number, not a scene-full log
  * nobody reads" convention (see ADR 0044's risk 5). */
-constexpr int kScreenGroupCheckExpectedObjectCount = 2;
+constexpr int kScreenGroupCheckExpectedObjectCount = 1;
+
+/* How many objects each of the two DELIBERATELY OVERSIZED screens in that
+ * same script declares. 40 is chosen against KF_SCENE_MAX_OBJECTS (64) so
+ * that the arithmetic itself is the assertion: two of them plus the two
+ * small screens is 82 declared objects in one script, comfortably past the
+ * 64-slot ceiling, so a build where screens still shared one budget could
+ * not even LOAD this script -- kf.box() would raise "the scene already
+ * holds 64 objects" partway through the second big screen. It loads
+ * because only the showing screen's objects exist. */
+constexpr int kScreenGroupCheckBigScreenObjectCount = 40;
 
 /* ADR 0044, Task 1 of the screens/clock/sleep plan: kf.screen() groups over
  * the ONE shared retained scene, and the anti-two-owners property that is
@@ -6730,6 +6747,22 @@ b:background(kf.color(40, 40, 200))
 local tb = b:text("SCREEN B")
 tb:move(20, 200)
 
+-- ADR 0061: two screens that each declare 40 objects. 40 + 40 + a's one +
+-- b's one is 82, well past the 64-slot scene ceiling -- this script
+-- loading AT ALL is the proof that a screen nobody is looking at holds no
+-- slots, and the object-count assertions below are the proof that showing
+-- one of them costs exactly its own 40 and nothing else's.
+local big1 = kf.screen("big1")
+big1:background(kf.color(10, 90, 10))
+local big2 = kf.screen("big2")
+big2:background(kf.color(90, 10, 90))
+for i = 1, 40 do
+    local o1 = big1:box(4, 4, kf.WHITE)
+    o1:move((i - 1) * 5, 40)
+    local o2 = big2:box(4, 4, kf.WHITE)
+    o2:move((i - 1) * 5, 60)
+end
+
 local frame = 0
 function on_frame(dt_ms)
     frame = frame + 1
@@ -6738,6 +6771,12 @@ function on_frame(dt_ms)
     elseif frame == 2 then
         b:show()
     elseif frame == 3 then
+        a:show()
+    elseif frame == 4 then
+        big1:show()
+    elseif frame == 5 then
+        big2:show()
+    elseif frame == 6 then
         a:show()
     end
 end
@@ -6751,13 +6790,24 @@ end
      * here by name, not just by the hashes below: "a" registered first
      * (index 0), "b" second (index 1), and an index nobody registered
      * reads "?" rather than crashing or reading garbage. */
-    check(kf_screen_nav_count() == 2, "exactly 2 screens are registered");
+    check(kf_screen_nav_count() == 4, "exactly 4 screens are registered");
     check(std::strcmp(kf_screen_nav_name(0), "a") == 0,
           "screen 0 is named 'a' -- it registered first");
     check(std::strcmp(kf_screen_nav_name(1), "b") == 0,
           "screen 1 is named 'b' -- it registered second");
-    check(std::strcmp(kf_screen_nav_name(2), "?") == 0,
+    check(std::strcmp(kf_screen_nav_name(4), "?") == 0,
           "an index nobody registered reads '?'");
+
+    /* The load itself already proved the headline property (see kScreen
+     * GroupCheckBigScreenObjectCount's own comment: 82 declared objects in
+     * a 64-slot scene), but only if the load is what actually ran the
+     * declarations. Asserting the live count HERE, before any screen has
+     * been shown, is what makes that non-vacuous: 1, because "a" is the
+     * active screen from the registry's point of view and the other three
+     * screens' 81 objects exist only as shadow state. */
+    check(kf_scene_live_object_count() == kScreenGroupCheckExpectedObjectCount,
+          "only the active screen's objects hold scene slots after a script "
+          "declaring 82 objects across four screens finishes loading");
 
     constexpr uint32_t kFixedDtMs =
         static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
@@ -6839,14 +6889,72 @@ end
           "kf_screen_nav_debug_home() (the B edge) reproduces the exact "
           "framebuffer screen:show() produced when switching back to 'a'");
 
-    /* ---- 6. The 64-object scene ceiling (risk 5): two screens, one text
-     * object each, is exactly 2 live objects -- asserted against a named
-     * constant so a regression here fails with a number, not a "scene is
-     * full" log nobody reads until a THIRD screen quietly runs out of
-     * room. ---- */
+    /* ---- 6. ADR 0061: the 64-object ceiling is now a PER-SCREEN budget,
+     * not one shared between every screen a cartridge declares. Frames 4
+     * and 5 show the two 40-object screens in turn; each must cost exactly
+     * its own 40 -- if the screen being left had held on to its objects
+     * the way it did before ADR 0061, showing the second one would have
+     * needed 80 slots and come up with half its boxes missing. Frame 6
+     * returns to "a" and the count must fall all the way back to 1. ---- */
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    check(kf_scene_live_object_count() == kScreenGroupCheckBigScreenObjectCount,
+          "showing the first 40-object screen costs exactly its own 40 "
+          "slots -- the screen it replaced released every one of its own");
+
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
+    check(kf_scene_live_object_count() == kScreenGroupCheckBigScreenObjectCount,
+          "showing the second 40-object screen also costs exactly 40 -- two "
+          "screens whose objects could never coexist in one 64-slot scene "
+          "both display in full, one at a time");
+
+    kf_lua_port_frame(kFixedDtMs);
+    kf_scene_commit();
     check(kf_scene_live_object_count() == kScreenGroupCheckExpectedObjectCount,
-          "exactly 2 scene objects are live once both screens have "
-          "declared everything they ever will");
+          "returning to a one-object screen frees all 40 again");
+
+    /* Restoring a screen must be faithful down to the pixel, not merely
+     * the object count -- the shadow state each object's userdata carries
+     * is the ONLY record of where it was and what colour it is once its
+     * scene slot has been handed back. A hash equal to the very first time
+     * "a" was shown, now with two 40-object screens' worth of
+     * release/restore churn in between, is what proves that record is
+     * complete rather than nearly complete. */
+    check(hash_framebuffer() == hash_a_first,
+          "screen 'a' comes back byte-for-byte identical after its objects "
+          "have been released and re-created twice over");
+
+    /* ---- 7. THE KF_HOME_SCREEN=cpp REGRESSION, reproduced in the default
+     * build. Under that build flag Home is a screen the navigation
+     * registry knows about with NO kf.screen() group behind it, and
+     * kf.active_screen() used to be written only when a switch matched a
+     * group -- so it could never answer "home" there, kept reporting
+     * whichever OTHER screen was activated last, and the play picker
+     * (which opens on `kf.active_screen() == "home"`) made UP a dead
+     * button for the whole build.
+     *
+     * No CI job compiles KF_HOME_SCREEN=cpp, so rather than assert nothing
+     * this registers a screen with no group of its own -- the identical
+     * shape -- and pins both halves of the fix: the registry's name is
+     * what gets reported, and the outgoing screen still releases its
+     * objects even though the incoming one has none to restore. ---- */
+    check(std::strcmp(kf_lua_scene_active_screen_name(), "a") == 0,
+          "kf.active_screen() reports 'a' while 'a' is showing");
+
+    const int group_less_index = kf_screen_nav_register("cponly", nullptr);
+    check(group_less_index >= 0,
+          "a screen with no kf.screen() group of its own registers fine");
+    kf_screen_nav_show(group_less_index);
+    kf_scene_commit();
+    check(std::strcmp(kf_lua_scene_active_screen_name(), "cponly") == 0,
+          "kf.active_screen() reports a registered screen that has NO "
+          "kf.screen() group -- the KF_HOME_SCREEN=cpp shape, where "
+          "reporting the previous screen's name instead made the play "
+          "picker's UP a dead button");
+    check(kf_scene_live_object_count() == 0,
+          "switching to a screen with no group still releases the outgoing "
+          "screen's objects -- nothing is left holding slots");
 
     kf_lua_port_shutdown();
     kf_scene_reset();
@@ -8927,120 +9035,33 @@ int run_clock_check(void) {
     return ok ? 0 : 1;
 }
 
-/* Live scene-object count once Home, Info AND Settings have all declared
- * everything they ever will, in the real interactive app -- not the
- * synthetic two-screen fixture run_screen_group_check() uses. Closes risk
- * 5 (ADR 0044/ the plan's own risk table): "the 65th kf.text() returns 0
- * and raises -- nobody had measured the count before this." Measured, not
+/* Live scene-object count with the SHOWING screen's objects declared and
+ * every other screen's released, in the real interactive app -- not the
+ * synthetic fixture run_screen_group_check() uses. Closes risk 5 (ADR
+ * 0044/the plan's own risk table): "the 65th kf.text() returns 0 and
+ * raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
- * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 61; /* +1: Task 5 of the
-                                                         * Nibble-and-the-
-                                                         * game-session
-                                                         * plan's play
-                                                         * picker -- ONE
-                                                         * kf.screen(
-                                                         * "play_menu")
-                                                         * text object
-                                                         * (60 -> 61). This
-                                                         * was the exact
-                                                         * moment "four
-                                                         * slots left"
-                                                         * below stopped
-                                                         * being true --
-                                                         * see nibble.lua's
-                                                         * own object-
-                                                         * budget comment
-                                                         * for the other
-                                                         * half: it had to
-                                                         * give up one of
-                                                         * its own four
-                                                         * objects to make
-                                                         * room for this
-                                                         * one, and the
-                                                         * combined total
-                                                         * (61 + 3) now
-                                                         * sits at exactly
-                                                         * 64 -- ZERO slots
-                                                         * left. The next
-                                                         * new object
-                                                         * anywhere in this
-                                                         * cartridge needs
-                                                         * either a
-                                                         * reduction
-                                                         * somewhere else
-                                                         * first or raising
-                                                         * KF_SCENE_MAX_
-                                                         * OBJECTS itself,
-                                                         * not a "just add
-                                                         * it" change.
-                                                         * +1: the Home clock;
-                                                         * +2: the sound-
-                                                         * foundation follow-
-                                                         * up's VOLUME label
-                                                         * and value text on
-                                                         * the Settings
-                                                         * screen (47 -> 49);
-                                                         * +5: this
-                                                         * presentation
-                                                         * follow-up's volume
-                                                         * meter icon -- 4
-                                                         * kf.box() bars plus
-                                                         * the OFF/mute "X"
-                                                         * glyph (49 -> 54);
-                                                         * +6: the BRIGHTNESS
-                                                         * row -- label, value
-                                                         * and 4 more bars, no
-                                                         * mute glyph since
-                                                         * brightness has no
-                                                         * OFF (54 -> 60).
-                                                         *
-                                                         * 61 OF 64, measured
-                                                         * by THIS check
-                                                         * (Home+Info+
-                                                         * Settings+
-                                                         * play_menu; it
-                                                         * never loads
-                                                         * nibble.lua).
-                                                         * Nibble itself
-                                                         * (examples/
-                                                         * creature_demo/
-                                                         * nibble.lua) adds
-                                                         * 3 more when it is
-                                                         * ALSO loaded, the
-                                                         * real interactive
-                                                         * app's own
-                                                         * configuration --
-                                                         * see run_verify_
-                                                         * nibble()'s own
-                                                         * comment. 61 + 3 =
-                                                         * 64: ZERO slots
-                                                         * left, not four --
-                                                         * this is the
-                                                         * number to look at
-                                                         * before adding
-                                                         * another Settings
-                                                         * row, another
-                                                         * screen, or
-                                                         * another game: the
-                                                         * budget is fully
-                                                         * spent, and
-                                                         * anything new
-                                                         * needs a
-                                                         * reduction
-                                                         * somewhere else
-                                                         * first. The
-                                                         * ceiling is KF_SCENE
-                                                         * _MAX_OBJECTS (kf/
-                                                         * scene.h), and
-                                                         * raising it is a
-                                                         * real option -- it
-                                                         * costs fixed arena
-                                                         * bytes, not heap --
-                                                         * but it should be a
-                                                         * decision, not a
-                                                         * surprise at the
-                                                         * 65th kf.text(). */
+ * site, which prints the number it got when this constant is wrong.
+ *
+ * 30, NOT THE 61 THIS WAS BEFORE ADR 0061. The old number was Home, Info,
+ * Settings and the play picker ALL holding their objects at once, because
+ * an inactive screen used to keep its scene slots and merely go invisible.
+ * 61 of 64 left three slots for everything else in the cartridge, which is
+ * why nibble.lua shipped with no on-screen score. Now only the screen
+ * being looked at holds anything, and this check measures it on Home:
+ *
+ *   28  Home's own kf.screen("home") group (creature.lua)
+ *  + 2  the two error banners, which belong to NO screen group -- one
+ *       created by kf_lua_home_screen_init(), one by kf_lua_settings_
+ *       screen_init(), both bare kf_scene_add_text() calls that are
+ *       deliberately never released, because an error banner that
+ *       vanished on navigation would take the error with it
+ *  = 30
+ *
+ * The 2 are the reason this number is not simply "Home's object count":
+ * an ungrouped object is exactly what ADR 0061 does NOT release, and this
+ * assertion is where that stays visible. */
+constexpr int kSettingsCheckExpectedObjectCount = 30;
 
 /* Task 4 of the screens/clock/sleep plan: the
  * Lua time API (kf.time/hour/minute/clock_set/set_clock) and the Settings
@@ -9145,6 +9166,19 @@ end
     kf_host_time_set_wall_fixed(1767225600); /* 2026-01-01T00:00:00Z, midnight */
 
 #ifdef KF_HOME_SCREEN_LUA
+    /* Splits kSettingsCheckExpectedObjectCount's 30 into the two halves
+     * its own comment claims, instead of leaving that decomposition as an
+     * unverified assertion in prose. NOTHING from any script has been
+     * declared yet at this point -- kf_lua_port_init() below is what runs
+     * creature.lua's top-level code -- so whatever is live now is exactly
+     * the ungrouped objects the C++ screen init functions created: the two
+     * error banners, which ADR 0061 deliberately never releases. If this
+     * ever reads something other than 2, the 28 in that comment is wrong
+     * too and both need re-measuring together. */
+    check(kf_scene_live_object_count() == 2,
+          "before any script runs, the only live scene objects are the two "
+          "ungrouped error banners");
+
     check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
                             kKfLuaDemoCreatureScriptChunkName),
           "the demo creature script loads under KF_HOME_SCREEN=lua");
@@ -9177,9 +9211,19 @@ end
         kf_pet_session_frame(kFixedDtMs);
         kf_screen_nav_frame(kFixedDtMs);
     }
+    if (kf_scene_live_object_count() != kSettingsCheckExpectedObjectCount) {
+        /* Prints the number, per this file's own "fails with a number, not
+         * a scene-full log nobody reads" rule -- this constant was set
+         * from this line's own output in the first place, and a bare
+         * pass/fail would make re-measuring it after a deliberate layout
+         * change guesswork. */
+        KF_LOGE(TAG, "live scene objects: got %d, expected %d",
+                kf_scene_live_object_count(),
+                kSettingsCheckExpectedObjectCount);
+    }
     check(kf_scene_live_object_count() == kSettingsCheckExpectedObjectCount,
-          "Home + Info + Settings together declare exactly the measured "
-          "number of live scene objects (well under the 64-slot ceiling)");
+          "the screen that is SHOWING declares exactly the measured number "
+          "of live scene objects, and no other screen holds any");
 
     /* ---- 5. Drive the editor: Home -> Info -> Settings (two MENU edges,
      * the same kf_screen_nav_debug_advance() screen_nav_check already
