@@ -23,6 +23,7 @@
 #include "../lvgl/kf_lvgl_port.h"
 #endif
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
+#include "../../../sdk/lua/generated/kf_lua_nibble_script.h"
 #include "../../../sdk/lua/kf_lua_port.h"
 #include "../pet/kf_frame_loop.h"
 #include "../pet/kf_pet_session.h"
@@ -175,8 +176,25 @@ int main(int argc, char *argv[]) {
      * C required. A script that fails to load is not fatal to the rest of
      * the simulator; it just runs with no Lua this session, logged loudly
      * by kf_lua_port_init(). */
-    kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
-                      kKfLuaDemoCreatureScriptChunkName);
+    const bool demo_script_loaded =
+        kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                          kKfLuaDemoCreatureScriptChunkName);
+
+    /* Task 4 of the Nibble-and-the-game-session plan: Nibble as a SECOND
+     * chunk in the same Lua state -- not required(), not a module, see
+     * kf_lua_port_load()'s own header comment (sdk/lua/kf_lua_port.h) for
+     * why. Only reachable if creature.lua's own kf_lua_port_init() call
+     * just above actually succeeded -- kf_lua_port_load() asserts that,
+     * the same host-wiring-order contract every other *_init()-gated call
+     * in this codebase uses, so this must not run unconditionally. A
+     * script that fails to load here is not fatal to the rest of the
+     * simulator either, matching the comment on the call above: it just
+     * means Home's PLAY picker offers a game that never actually starts,
+     * logged loudly by kf_lua_port_load(). */
+    if (demo_script_loaded) {
+        kf_lua_port_load(kKfLuaNibbleScriptSource,
+                          kKfLuaNibbleScriptChunkName);
+    }
 
     /* The debug window (sdl_debug_window.h) -- after the pet window (up
      * since kf_app_init()) and the pet session (up since kf_pet_session_

@@ -602,6 +602,36 @@ struct LuaScreenGroup {
 LuaScreenGroup g_lua_screens[kMaxLuaScreens];
 int g_lua_screen_count = 0;
 
+/* The name of whichever kf.screen() group is CURRENTLY showing -- kept
+ * for kf.active_screen() (Task 4 of the Nibble-and-the-game-session
+ * plan). Written in exactly one place, set_active_visibility() below,
+ * which is itself reached only through kf_lua_scene_activate_screen()/
+ * _hide_other_screens() -- and THOSE are called from kf_screen_nav.cpp's
+ * one single choke point for switching screens (see kf_screen_nav.h's own
+ * "THE single place that switches which screen is showing" comment on
+ * kf_screen_nav_show()), covering every real way a screen ever changes:
+ * screen:show(), a MENU-cycle edge, and a B-jumps-home edge. That last one
+ * is the whole reason this exists as a C-tracked value rather than
+ * something Nibble/the picker try to track for themselves in Lua: B
+ * always jumps home at the C level (kf_screen_nav.cpp's own go_home()),
+ * entirely bypassing Lua, so a script-side "which screen am I on" flag
+ * updated only by the script's OWN :show() calls would silently go stale
+ * the instant a player pressed B mid-round -- Nibble would keep running
+ * its per-frame round logic against a screen the player had already left.
+ * "" (empty) until the first real activation -- kf.active_screen() reports
+ * that as "" too, never nil, so a script can use == comparisons without a
+ * nil-guard. */
+char g_active_screen_name[kScreenNameMax + 1] = {};
+
+/* The registry index behind g_active_screen_name above -- see kf_lua_
+ * scene_active_registry_index()'s own header comment (kf_lua_scene.h) for
+ * why this exists: kf_lua_port_load() needs to re-hide newly declared
+ * groups against whichever screen is CURRENTLY active, not assume it is
+ * always Home (index 0). Starts at 0 to match Home's own "registers
+ * first" convention, the same default g_active_screen_name effectively
+ * has before anything real has activated. */
+int g_active_registry_index = 0;
+
 /* Set once by kf_screen_nav_install_lua_hooks() (kf_screen_nav.cpp),
  * before any script that might call kf.screen() runs -- see kf_lua_
  * scene.h's own comment on why this is a function pointer and not a
@@ -862,6 +892,26 @@ int lua_kf_on_button(lua_State *L) {
     return 0;
 }
 
+/* kf.active_screen() -- Task 4 of the Nibble-and-the-game-session plan.
+ * The name of whichever kf.screen() group is showing RIGHT NOW, kept
+ * current across every real way a screen can change (see g_active_
+ * screen_name's own comment above for why this has to be C-tracked rather
+ * than something Nibble/the picker maintain for themselves). Added so a
+ * SECOND script loaded via kf_lua_port_load() (Nibble, the play picker)
+ * can gate its own per-frame logic inside the one shared on_frame()
+ * every script's top-level code shares -- without this, Nibble would
+ * have no way to tell it is not the screen currently showing, and would
+ * keep advancing its round (and consuming kf_rng draws for the food's
+ * drift) while the player is looking at Home or Info instead, exactly
+ * the class of bug ADR 0042/0043 already found and fixed for Home's own
+ * creature/poop/shrine objects before on_home_frame() existed as a
+ * separate entry point. "" (never nil) before any screen has activated
+ * yet, matching g_active_screen_name's own default. */
+int lua_kf_active_screen(lua_State *L) {
+    lua_pushstring(L, g_active_screen_name);
+    return 1;
+}
+
 int lua_kf_width(lua_State *L) {
     lua_pushinteger(L, KF_DISPLAY_WIDTH);
     return 1;
@@ -894,6 +944,7 @@ const luaL_Reg kKfSceneFuncs[] = {
     {"background", lua_kf_background},
     {"color", lua_kf_color},
     {"on_button", lua_kf_on_button},
+    {"active_screen", lua_kf_active_screen},
     {"width", lua_kf_width},
     {"height", lua_kf_height},
     {"sprites", lua_kf_sprites},
@@ -918,6 +969,8 @@ void kf_lua_scene_register(lua_State *L) {
      * or-fetch specifically so a script reloaded later still finds the
      * same "home"). */
     g_lua_screen_count = 0;
+    g_active_screen_name[0] = '\0';
+    g_active_registry_index = 0;
 
     create_object_metatable(L);
     create_screen_metatable(L);
@@ -984,6 +1037,9 @@ static bool set_active_visibility(int index) {
     if (target->bg_set) {
         kf_scene_set_background_color(target->bg);
     }
+    std::snprintf(g_active_screen_name, sizeof(g_active_screen_name), "%s",
+                  target->name);
+    g_active_registry_index = index;
     return true;
 }
 
@@ -1000,6 +1056,8 @@ void kf_lua_scene_activate_screen(int index) {
         kf_scene_commit();
     }
 }
+
+int kf_lua_scene_active_registry_index() { return g_active_registry_index; }
 
 void kf_lua_scene_hide_other_screens(int active_index) {
     /* Visibility only -- deliberately no kf_scene_force_repaint() or

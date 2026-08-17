@@ -1168,6 +1168,16 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_verify_game_binding().
     add_test(NAME game_binding_check
              COMMAND kamiframe-headless --verify-game-binding)
+
+    # Task 4 of the Nibble-and-the-game-session plan: Nibble itself
+    # (examples/creature_demo/nibble.lua) driven through the real screen
+    # system with scripted A-presses (kf_app_debug_set_buttons()) --
+    # 3 perfect + 3 good + 2 miss across all eight rounds, the persisted
+    # record, and the round-5 strike-zone-hidden pixel check ("the
+    # assertion most likely to rot", the plan's own words). See
+    # headless_main.cpp's run_verify_nibble().
+    add_test(NAME nibble_check
+             COMMAND kamiframe-headless --verify-nibble)
 endif()
 
 # ---------------------------------------------------------------------------

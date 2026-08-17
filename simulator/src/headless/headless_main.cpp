@@ -50,6 +50,7 @@
  *     kamiframe-headless --verify-game-record
  *     kamiframe-headless --verify-game-session
  *     kamiframe-headless --verify-game-binding
+ *     kamiframe-headless --verify-nibble
  *     kamiframe-headless --stress3d [2d|2.5d|3d|all] [--frames N]
  *
  * Exit codes:
@@ -86,6 +87,7 @@
 #include "../lvgl/kf_pet_screen.h"
 #endif
 #include "../../../sdk/lua/generated/kf_lua_demo_creature_script.h"
+#include "../../../sdk/lua/generated/kf_lua_nibble_script.h"
 #include "../../../sdk/lua/kf_lua_alloc.h"
 #include "../../../sdk/lua/kf_lua_port.h"
 #include "../lua/kf_lua_pet_proof_script.h"
@@ -12940,6 +12942,185 @@ assert(miss_tier == "miss", "an unscored session should be a miss")
     return ok ? 0 : 1;
 }
 
+/* Task 4 of the Nibble-and-the-game-session plan: Nibble itself
+ * (examples/creature_demo/nibble.lua), driven through the REAL screen
+ * system -- kf_screen_nav_init(), creature.lua loaded first, Nibble
+ * loaded as a second chunk (Task 3's kf_lua_port_load()), navigated to
+ * exactly the way the picker will (Task 5) via screen:show(). Button
+ * presses are injected with kf_app_debug_set_buttons() (kf/app.h) --
+ * "same effect as a real press, just callable without one," the
+ * documented test-only escape hatch every debug lever in this codebase
+ * uses (see that function's own header comment) -- one frame per
+ * simulated press, cleared immediately after so it does not bleed into
+ * the next frame's read.
+ *
+ * The scripted sequence: 3 perfect hits, 3 good hits, 1 wrongly-timed
+ * miss, 1 timeout miss -- 3*15 + 3*8 = 69 points, which lands GOOD (>=40)
+ * but not GREAT (<75) against Nibble's own good=40/great=75 thresholds --
+ * a mixed, away-from-either-boundary result, not a trivially-true
+ * always-GREAT one (see this file's own Task 3 non-vacuity note on why
+ * that trap matters). */
+int run_verify_nibble() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-nibble-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    kf_arena_init_all();
+    kf_fb_init();
+    kf_fb_clear_dirty();
+    kf_scene_reset();
+
+    kf_pet_session_init();
+    kf_screen_nav_init();
+
+    check(kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                            kKfLuaDemoCreatureScriptChunkName),
+          "creature.lua loads first, the same order sdl_main.cpp/"
+          "app_main.cpp use");
+    check(kf_lua_port_load(kKfLuaNibbleScriptSource,
+                            kKfLuaNibbleScriptChunkName),
+          "nibble.lua loads as a second chunk in the same VM");
+
+    /* Navigates to Nibble exactly the way the picker (Task 5) will:
+     * kf.screen("nibble") FETCHES the group nibble.lua's own top-level
+     * code already created (create-or-fetch, kf.screen()'s own
+     * contract), so this creates nothing new -- only :show() actually
+     * does anything. */
+    constexpr const char *kShowNibbleScript = R"lua(
+kf.screen("nibble"):show()
+)lua";
+    check(kf_lua_port_load(kShowNibbleScript, "=nibble_check_show"),
+          "navigating to the nibble screen succeeds");
+    check(std::strcmp(kf_screen_nav_name(kf_screen_nav_debug_index()),
+                       "nibble") == 0,
+          "the nibble screen is now active");
+
+    constexpr uint32_t kFixedDtMs =
+        static_cast<uint32_t>(KF_FRAME_BUDGET_US / 1000u);
+
+    /* Nibble's own timing constants -- BASE_LEAD_TIME_MS/BASE_GOOD_WINDOW_
+     * MS/ROUND_SETTLE_MS, examples/creature_demo/nibble.lua -- duplicated
+     * here by hand, the same "cheaper to keep in sync by inspection than
+     * export a shared header for a Lua script's own tuning constants"
+     * call kf_pet_session.cpp's compute_death_driver_mask() already makes
+     * for an analogous case. If nibble.lua's numbers ever change, this
+     * test's frame counts have to change with them by hand -- there is no
+     * compiler to catch drift.
+     *
+     * EVERY round takes EXACTLY 60 frames to advance, and this is exact,
+     * not approximate: round_elapsed_ms only ever grows in kFixedDtMs
+     * (33ms) steps, nibble.lua's own advance condition is `round_elapsed_
+     * ms > 1400+220+350` (1970), and 59*33=1947 <= 1970 < 1980=60*33 --
+     * so frame 60 is the first frame in EVERY round, regardless of when
+     * (or whether) that round was resolved, that crosses the threshold.
+     * This is what lets the test address rounds by a plain GLOBAL frame
+     * index instead of tracking round boundaries by hand. */
+    constexpr uint32_t kLeadTimeMs = 1400u;
+    constexpr int kFramesPerRound = 60;
+
+    auto run_frame = [&](bool press_a) {
+        if (press_a) {
+            kf_app_debug_set_buttons(KF_BTN_A, KF_BTN_A);
+        }
+        kf_pet_session_frame(kFixedDtMs);
+        kf_screen_nav_frame(kFixedDtMs);
+        kf_lua_port_frame(kFixedDtMs);
+        if (press_a) {
+            kf_app_debug_set_buttons(0u, 0u);
+        }
+    };
+
+    /* Frame-within-round (1-based) to press A on, chosen for a target
+     * |elapsed - lead|: perfect lands well inside the 90ms perfect
+     * window, good well inside the 220ms good window but outside the
+     * perfect one, and the "wrong" press lands nowhere near either. 0
+     * means "never press -- let the round time out". */
+    constexpr int kPerfectFrame =
+        static_cast<int>(kLeadTimeMs / kFixedDtMs); /* 42 (~1386ms) */
+    constexpr int kGoodFrame =
+        static_cast<int>((kLeadTimeMs + 150u) / kFixedDtMs); /* 47 (~1551ms) */
+    constexpr int kWrongFrame = 5; /* ~165ms elapsed -- nowhere near lead */
+
+    /* perfect, perfect, perfect, good, good, good, wrong-timed miss,
+     * timeout miss -- see this function's own header comment for the
+     * expected total (69, a GOOD result). */
+    constexpr int kPressFrame[8] = {kPerfectFrame, kPerfectFrame,
+                                     kPerfectFrame, kGoodFrame,
+                                     kGoodFrame,    kGoodFrame,
+                                     kWrongFrame,   0};
+
+    for (int round = 1; round <= 8; ++round) {
+        const int press_on = kPressFrame[round - 1];
+        for (int f = 1; f <= kFramesPerRound; ++f) {
+            run_frame(f == press_on);
+
+            /* THE TWIST, and the assertion most likely to rot (the
+             * plan's own words): the strike zone is drawn for rounds
+             * 1-3 and invisible from round 4 on. Sampled right at the
+             * start of round 5 specifically -- one frame into it, so
+             * the food (which ends round 4 sitting exactly on the
+             * strike point) has already moved back off it and cannot
+             * produce a false "something is there" positive. Position
+             * and colours are nibble.lua's own STRIKE_X/FIELD_Y/
+             * STRIKE_MARKER_SIZE/FOOD_SIZE and the marker's/background's
+             * kf.color() calls, duplicated here by hand for the same
+             * reason kFramesPerRound above is. */
+            if (round == 5 && f == 1) {
+                kf_scene_commit();
+                constexpr int16_t kMarkerCenterX = 157;
+                constexpr int16_t kMarkerCenterY = 127;
+                const kf_color sampled =
+                    kf_fb_pixels()[static_cast<size_t>(kMarkerCenterY) *
+                                       KF_DISPLAY_WIDTH +
+                                   static_cast<size_t>(kMarkerCenterX)];
+                constexpr kf_color kMarkerColor = KF_RGB(70, 90, 70);
+                constexpr kf_color kBackgroundColor = KF_RGB(18, 22, 26);
+                check(sampled != kMarkerColor,
+                      "no strike-zone object is drawn during round 5 "
+                      "(sampled pixel is not the marker's own colour)");
+                check(sampled == kBackgroundColor,
+                      "the pixel where the strike zone would be is "
+                      "plain background during round 5, confirming the "
+                      "marker is actually hidden rather than merely "
+                      "not-yet-repainted");
+            }
+        }
+    }
+
+    kf_game_record record{};
+    check(kf_game_session_record("nibble", &record),
+          "nibble's record persisted after a full eight-round session");
+    check(record.plays == 1u, "exactly one session was played");
+    check(record.last_score == 69u,
+          "the scripted sequence (3 perfect + 3 good + 2 miss) totals "
+          "exactly 69 points");
+    check(record.perfect_count == 3u,
+          "three perfect events were recorded");
+
+    kf_lua_port_shutdown();
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -13004,6 +13185,7 @@ int main(int argc, char *argv[]) {
     bool verify_game_record = false;
     bool verify_game_session = false;
     bool verify_game_binding = false;
+    bool verify_nibble = false;
     /* --stress3d [2d|2.5d|3d|all]: the 3D feasibility instrument. A flag on
      * this binary like every other mode here, with an optional value because
      * "all" -- run the three and print one comparison table -- is what it is
@@ -13158,6 +13340,8 @@ int main(int argc, char *argv[]) {
             verify_game_session = true;
         } else if (std::strcmp(argv[i], "--verify-game-binding") == 0) {
             verify_game_binding = true;
+        } else if (std::strcmp(argv[i], "--verify-nibble") == 0) {
+            verify_nibble = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -13481,6 +13665,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_game_binding) {
         return run_verify_game_binding();
+    }
+
+    if (verify_nibble) {
+        return run_verify_nibble();
     }
 
     kf_app_init(mode);

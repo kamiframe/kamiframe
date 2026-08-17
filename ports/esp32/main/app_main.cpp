@@ -105,6 +105,7 @@
 #include "kf_dbg_bridge.h"
 #include "kf_frame_loop.h"
 #include "kf_lua_demo_creature_script.h"
+#include "kf_lua_nibble_script.h"
 #include "kf_lua_port.h"
 #ifdef KF_ENABLE_LVGL
 #include "kf_lvgl_port.h"
@@ -409,8 +410,20 @@ extern "C" void app_main(void) {
      * already initialised above -- including the screen -- keeps working.
      * That is the failure mode you want on a first flash. */
     KF_LOGI(TAG, "starting kf_lua_port_init (real demo creature script)");
-    kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
-                      kKfLuaDemoCreatureScriptChunkName);
+    const bool demo_script_loaded =
+        kf_lua_port_init(kKfLuaDemoCreatureScriptSource,
+                          kKfLuaDemoCreatureScriptChunkName);
+
+    /* Task 4 of the Nibble-and-the-game-session plan: Nibble as a second
+     * chunk in the same Lua state -- see sdl_main.cpp's identical call for
+     * the full reasoning (kf_lua_port_load()'s own header comment,
+     * sdk/lua/kf_lua_port.h, has the rest). Gated on the demo script
+     * having actually loaded, matching that same call. */
+    if (demo_script_loaded) {
+        KF_LOGI(TAG, "starting kf_lua_port_load (nibble)");
+        kf_lua_port_load(kKfLuaNibbleScriptSource,
+                          kKfLuaNibbleScriptChunkName);
+    }
 
     /* Last of all the *_init() calls, and deliberately so: STATE's reply
      * reads kf_pet_session_state(), SHOT reads kf_fb_pixels() (up since

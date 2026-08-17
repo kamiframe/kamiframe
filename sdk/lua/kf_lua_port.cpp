@@ -1342,11 +1342,24 @@ bool kf_lua_port_load(const char *source, const char *chunk_name) {
      * hidden them yet -- see kf_lua_port_init()'s own comment on this
      * exact call, a few lines above, for the full reasoning. Safe to call
      * again: it is pure visibility bookkeeping against whichever groups
-     * exist NOW (existing ones included), not a one-shot. Index 0, the
-     * same "Home registers first" convention -- kf_lua_port_load() is a
-     * boot-time call, before the interactive loop ever runs, so Home
-     * genuinely is still the active screen every time this executes. */
-    kf_lua_scene_hide_other_screens(0);
+     * exist NOW (existing ones included), not a one-shot.
+     *
+     * kf_lua_scene_active_registry_index(), NOT a hardcoded 0 -- this WAS
+     * hardcoded to 0 ("Home is still active, kf_lua_port_load() is a
+     * boot-time call before the interactive loop runs"), which is true
+     * for the ordinary case (loading a second script immediately after
+     * kf_lua_port_init(), nothing has navigated anywhere yet) but false
+     * the instant ANY navigation has already happened before this call --
+     * a real bug, found by this game session's own headless check
+     * (run_verify_nibble(), which loads a driver chunk that calls
+     * screen:show() before loading anything else): hardcoding 0 here
+     * silently reactivated Home and undid that navigation, because this
+     * function is exactly as capable of re-asserting "screen 0 is active"
+     * as kf_screen_nav_show() itself is, just via a different path.
+     * Reading back whichever index actually last activated (kf_lua_
+     * scene.h's own comment on why kf_lua_scene.cpp is the right place to
+     * track that) fixes it for every caller, not just this test. */
+    kf_lua_scene_hide_other_screens(kf_lua_scene_active_registry_index());
 
     KF_LOGI(TAG, "script '%s' loaded", chunk_name);
     return true;

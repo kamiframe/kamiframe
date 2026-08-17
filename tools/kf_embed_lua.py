@@ -65,6 +65,14 @@ SCRIPTS = [
         "sdk/lua/generated/kf_lua_demo_creature_script.h",
         "demo_creature",
     ),
+    (
+        # Task 4 of the Nibble-and-the-game-session plan: Nibble is its
+        # own file, not folded into creature.lua -- loaded as a second
+        # chunk via kf_lua_port_load() (Task 3), never require()'d.
+        "examples/creature_demo/nibble.lua",
+        "sdk/lua/generated/kf_lua_nibble_script.h",
+        "nibble",
+    ),
 ]
 
 

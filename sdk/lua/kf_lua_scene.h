@@ -133,4 +133,23 @@ void kf_lua_scene_activate_screen(int index);
  * registered under `active_index`. */
 void kf_lua_scene_hide_other_screens(int active_index);
 
+/* The registry index last passed to kf_lua_scene_activate_screen() or
+ * kf_lua_scene_hide_other_screens() that actually matched a registered
+ * group -- i.e. whichever screen is genuinely active right now, from
+ * this file's own point of view. 0 (Home) before either has ever been
+ * called, matching kf_screen_nav_init()'s own "Home is index 0" starting
+ * point.
+ *
+ * Added for kf_lua_port_load() (Task 3 of the Nibble-and-the-game-session
+ * plan): a SECOND (or later) script loaded into an already-running VM
+ * needs to re-run kf_lua_scene_hide_other_screens() for the identical
+ * "newly declared groups start visible" reason kf_lua_port_init() already
+ * does for the first one -- but by the time a later chunk loads, Home is
+ * not necessarily still the active screen, and hardcoding 0 there was a
+ * real bug: it silently re-activated Home, undoing whatever a chunk
+ * loaded after a real navigation had just done. This getter is what lets
+ * kf_lua_port_load() pass the CURRENT active index instead of assuming
+ * it is always 0. */
+int kf_lua_scene_active_registry_index(void);
+
 #endif /* KF_LUA_SCENE_H */
