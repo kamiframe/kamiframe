@@ -4,9 +4,20 @@
 
 #include "kf_screen_nav.h"
 
-#ifdef KF_HOME_SCREEN_LUA
+/* kf_lua_home_screen.h is included UNCONDITIONALLY, not only under
+ * KF_HOME_SCREEN_LUA, even though only the lua build calls its Home
+ * entry points: it also declares kf_lua_info_screen_frame(), which
+ * kf_screen_nav_init() below registers for Info in BOTH builds. Info has
+ * been Lua-declared regardless of which Home is compiled in since ADR
+ * 0045, and kf_lua_home_screen.cpp is in this library's source list
+ * unconditionally (simulator/CMakeLists.txt), so the definition was
+ * always there -- only the declaration was hidden. Guarding this include
+ * is what made KF_HOME_SCREEN=cpp stop compiling at all
+ * ("'kf_lua_info_screen_frame': undeclared identifier"), unnoticed
+ * because no CI job builds that flag. */
 #include "kf_lua_home_screen.h"
-#else
+
+#ifndef KF_HOME_SCREEN_LUA
 #include "kf_creature_screen.h"
 #endif
 
@@ -71,15 +82,20 @@ int g_settings_index = kSettingsIndexUnset;
 void show(size_t index) {
     g_active = index;
 
-    /* Hides every OTHER kf.screen() group's objects, shows this index's
-     * group (if one is registered under it) and re-applies its stored
-     * background colour, then force-repaints the retained scene and
-     * commits if anything has ever been declared. A no-op, changing
-     * nothing, if no group is registered under `index` -- nothing today
-     * registers a screen index without also registering a matching
-     * kf.screen() group, but a future C-only screen could. See kf_lua_
-     * scene.h's own comment on kf_lua_scene_activate_screen(). */
-    kf_lua_scene_activate_screen(static_cast<int>(index));
+    /* Releases every OTHER kf.screen() group's objects back to the scene,
+     * restores this index's group (if one is registered under it) and
+     * re-applies its stored background colour, then force-repaints the
+     * retained scene and commits if anything has ever been declared. See
+     * kf_lua_scene.h's own comment on kf_lua_scene_activate_screen().
+     *
+     * The NAME goes with the index, and this is the only place that knows
+     * it: a screen registered here without a matching kf.screen() group
+     * (the C++ Home under KF_HOME_SCREEN=cpp) is invisible to the Lua
+     * binding's own bookkeeping, so kf.active_screen() can only be right
+     * in both builds if the registry tells it the name rather than the
+     * binding inferring one. */
+    kf_lua_scene_activate_screen(static_cast<int>(index),
+                                 g_screens[index].name);
 
     if (index == 0u) {
         /* Home is still special beyond the scene-group bookkeeping above:
@@ -239,6 +255,16 @@ void kf_screen_nav_init(void) {
         kf_screen_nav_register("settings", kf_lua_settings_screen_frame);
 
     g_active = 0;
+    /* Home is active from this moment, but nothing has gone through
+     * show() to say so, and under KF_HOME_SCREEN=cpp nothing ever will
+     * until the player navigates away and back -- Home has no kf.screen()
+     * group in that build for a later activation to name. Recording the
+     * name here is what makes kf.active_screen() answer "home" from boot
+     * in BOTH builds, which is what the play picker's own UP gate reads.
+     * Safe this early: no group is registered yet (creature.lua's top-
+     * level code has not run), so this records the name, finds nothing to
+     * release or restore, and returns without touching a pixel. */
+    kf_lua_scene_activate_screen(0, g_screens[0].name);
     KF_LOGI(TAG, "%d screens ready, starting on Home", kf_screen_nav_count());
 }
 
