@@ -41,6 +41,32 @@
  * codebase. */
 bool kf_lua_port_init(const char *script_source, const char *chunk_name);
 
+/* Task 3 of the Nibble-and-the-game-session plan: runs `source` as an
+ * ADDITIONAL top-level chunk in the SAME Lua state kf_lua_port_init()
+ * already brought up -- deliberately not a module system. The cartridge
+ * boundary this slice needs is "a game is its own file"
+ * (examples/creature_demo/nibble.lua, kept separate from creature.lua
+ * rather than folded into it); a loader/registry that resolves names,
+ * versions or dependencies between multiple such chunks can come later,
+ * when a second game actually exists to justify one -- see the design's
+ * section 4.2.
+ *
+ * Must be called AFTER kf_lua_port_init() has already succeeded (asserts
+ * otherwise, the same "host wiring order, not user input" contract every
+ * other *_init()-gated call in this codebase uses) -- `game`/`pet`/`kf`
+ * and every other global the first chunk saw are already in scope for
+ * this one too, since it is the same lua_State, not a new one.
+ *
+ * Returns false, logging why, on either a compile error or a runtime
+ * error from the chunk's own top-level code -- reported through the SAME
+ * script-error path kf_lua_port_init() itself uses (kf_log, never a C++
+ * exception, since core builds with exceptions off). UNLIKE kf_lua_port_
+ * init()'s own failure path, a false return here does NOT tear the VM
+ * down: this is loading a SECOND chunk into an already-working VM, and a
+ * cartridge that fails to load must not take the one that already
+ * succeeded down with it. */
+bool kf_lua_port_load(const char *source, const char *chunk_name);
+
 /* Calls the script's global on_frame(dt_ms) function, if it defined one, in
  * a protected call (lua_pcall) -- a script error here cannot bring down the
  * process, only be logged and reported. GENERIC and screen-agnostic: the

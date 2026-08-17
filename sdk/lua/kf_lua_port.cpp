@@ -8,6 +8,7 @@
 #include "kf_lua_scene.h"
 
 #include "../pet/kf_creature_presenter.h"
+#include "../pet/kf_game_session.h"
 #include "../pet/kf_pet_session.h"
 
 #include "kf/app.h"
@@ -1035,6 +1036,165 @@ void register_creature_bindings(lua_State *L) {
     lua_setglobal(L, "creature");
 }
 
+/* game.* -- Task 3 of the Nibble-and-the-game-session plan. Thin wrappers
+ * over kf_game_session.h (simulator/src/pet/), the same "read/act on the
+ * one live session" shape pet.* already has over kf_pet_session.h. */
+
+/* "hunger"/"happiness"/"energy" -> kf_pet_need (kf_pet_session.h), the
+ * three real needs a game's manifest can declare as its `reward.need`.
+ * Anything else -- including "" (no third argument to game.begin(), the
+ * common case for a game with no secondary need at all) -- is KF_PET_
+ * NEED_NONE. Deliberately case-sensitive, plain std::strcmp: this project
+ * has no portable case-insensitive compare (see this file's own top-of-
+ * file comment on why strncasecmp is gone), and a manifest's own field
+ * value is content the person writing it controls, not user input that
+ * needs forgiving matching. */
+kf_pet_need need_from_name(const char *name) {
+    if (std::strcmp(name, "hunger") == 0) {
+        return KF_PET_NEED_HUNGER;
+    }
+    if (std::strcmp(name, "happiness") == 0) {
+        return KF_PET_NEED_HAPPINESS;
+    }
+    if (std::strcmp(name, "energy") == 0) {
+        return KF_PET_NEED_ENERGY;
+    }
+    return KF_PET_NEED_NONE;
+}
+
+/* game.begin(id, energy_cost_mp[, need[, need_fraction_percent]]) -- the
+ * last two are OPTIONAL, exactly the design's documented two-argument
+ * shape for a game with no secondary need (an empty `reward.need`); a
+ * game that DOES declare one (Nibble's `reward.need = "hunger"`) passes
+ * them, matching kf_game_session_begin()'s own extended signature (see
+ * that function's header comment in kf_game_session.h for why the plan's
+ * original 3-arg C signature had no channel for this and had to grow
+ * two). Returns a table of {energy_mp, stage, trait, handicap}, or nil if
+ * the session refused (dead or asleep pet, or an id rejected for length --
+ * kf_game_session_begin()'s own two refusal cases). */
+int lua_game_begin(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    const lua_Integer energy_cost_mp = luaL_checkinteger(L, 2);
+    const char *need_name = luaL_optstring(L, 3, "");
+    const lua_Integer need_fraction_percent = luaL_optinteger(L, 4, 0);
+
+    const kf_pet_need need = need_from_name(need_name);
+    const uint32_t energy_cost =
+        energy_cost_mp < 0 ? 0u : static_cast<uint32_t>(energy_cost_mp);
+    const uint32_t fraction_percent = need_fraction_percent < 0
+                                           ? 0u
+                                           : static_cast<uint32_t>(
+                                                 need_fraction_percent);
+
+    kf_game_session_context ctx{};
+    if (!kf_game_session_begin(id, energy_cost, need, fraction_percent,
+                                &ctx)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_newtable(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(ctx.energy_mp));
+    lua_setfield(L, -2, "energy_mp");
+    lua_pushinteger(L, static_cast<lua_Integer>(ctx.stage));
+    lua_setfield(L, -2, "stage");
+    lua_pushinteger(L, static_cast<lua_Integer>(ctx.base_trait));
+    lua_setfield(L, -2, "trait");
+    lua_pushinteger(L, static_cast<lua_Integer>(ctx.handicap_percent));
+    lua_setfield(L, -2, "handicap");
+    return 1;
+}
+
+/* game.score(points) -- accumulates; the session owns the running total.
+ * A negative points value (a script bug, Lua has no unsigned type) clamps
+ * to 0 rather than reaching for a two's-complement reinterpretation that
+ * would silently add a huge number instead. */
+int lua_game_score(lua_State *L) {
+    const lua_Integer points = luaL_checkinteger(L, 1);
+    kf_game_session_score(points < 0 ? 0u : static_cast<uint32_t>(points));
+    return 0;
+}
+
+/* game.event(name) -- see kf_game_session_event()'s own header comment
+ * (kf_game_session.h) for which names do anything ("perfect" only, right
+ * now) and why every other one, known or not, is silently ignored rather
+ * than an error. */
+int lua_game_event(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    kf_game_session_event(name);
+    return 0;
+}
+
+const char *game_tier_name(kf_game_tier tier) {
+    switch (tier) {
+    case KF_GAME_TIER_GOOD:
+        return "good";
+    case KF_GAME_TIER_GREAT:
+        return "great";
+    case KF_GAME_TIER_MISS:
+    default:
+        return "miss";
+    }
+}
+
+/* game.finish(good_threshold, great_threshold) -> "miss"/"good"/"great".
+ * Takes NO score argument -- the session already owns the running total
+ * (game.score() above), the same reason kf_game_session_end() itself
+ * takes only the two thresholds. */
+int lua_game_finish(lua_State *L) {
+    const lua_Integer good = luaL_checkinteger(L, 1);
+    const lua_Integer great = luaL_checkinteger(L, 2);
+    const uint32_t good_threshold =
+        good < 0 ? 0u : static_cast<uint32_t>(good);
+    const uint32_t great_threshold =
+        great < 0 ? 0u : static_cast<uint32_t>(great);
+    const kf_game_tier tier =
+        kf_game_session_end(good_threshold, great_threshold);
+    lua_pushstring(L, game_tier_name(tier));
+    return 1;
+}
+
+/* game.record(id) -> a table of {plays, best, last, total, streak,
+ * perfects}, or nil if this game has never been played (or its record
+ * could not be read back at all -- kf_game_session_record()'s own
+ * "missing and corrupt degrade identically" contract). For a picker
+ * screen (Task 5) to show a game's best score and streak before the
+ * player has chosen to play it. */
+int lua_game_record(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    kf_game_record record{};
+    if (!kf_game_session_record(id, &record)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_newtable(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(record.plays));
+    lua_setfield(L, -2, "plays");
+    lua_pushinteger(L, static_cast<lua_Integer>(record.best_score));
+    lua_setfield(L, -2, "best");
+    lua_pushinteger(L, static_cast<lua_Integer>(record.last_score));
+    lua_setfield(L, -2, "last");
+    lua_pushinteger(L, static_cast<lua_Integer>(record.total_score));
+    lua_setfield(L, -2, "total");
+    lua_pushinteger(L, static_cast<lua_Integer>(record.streak_days));
+    lua_setfield(L, -2, "streak");
+    lua_pushinteger(L, static_cast<lua_Integer>(record.perfect_count));
+    lua_setfield(L, -2, "perfects");
+    return 1;
+}
+
+const luaL_Reg kKfGameFuncs[] = {
+    {"begin", lua_game_begin}, {"score", lua_game_score},
+    {"event", lua_game_event}, {"finish", lua_game_finish},
+    {"record", lua_game_record}, {nullptr, nullptr},
+};
+
+void register_game_bindings(lua_State *L) {
+    luaL_newlib(L, kKfGameFuncs);
+    lua_setglobal(L, "game");
+}
+
 } // namespace
 
 bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
@@ -1092,6 +1252,7 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
     register_bindings(g.L);
     register_pet_bindings(g.L);
     register_creature_bindings(g.L);
+    register_game_bindings(g.L);
     /* Task 3 of the Lua game layer plan: the drawing surface over kf/
      * scene.h. Runs after register_bindings() on purpose -- it adds to the
      * `kf` table that call just created, rather than creating its own. */
@@ -1155,6 +1316,39 @@ bool kf_lua_port_init(const char *script_source, const char *chunk_name) {
     KF_LOGI(TAG, "Lua " LUA_VERSION_MAJOR "." LUA_VERSION_MINOR "."
                  LUA_VERSION_RELEASE " ready, script '%s' loaded",
             chunk_name);
+    return true;
+}
+
+bool kf_lua_port_load(const char *source, const char *chunk_name) {
+    KF_ASSERT(g.ready, "kf_lua_port_load called before kf_lua_port_init");
+
+    if (luaL_loadbuffer(g.L, source, std::strlen(source), chunk_name) !=
+        LUA_OK) {
+        KF_LOGE(TAG, "script failed to load: %s", lua_tostring(g.L, -1));
+        lua_pop(g.L, 1);
+        return false;
+    }
+    if (lua_pcall(g.L, 0, 0, 0) != LUA_OK) {
+        KF_LOGE(TAG, "script's top-level code raised an error: %s",
+                lua_tostring(g.L, -1));
+        lua_pop(g.L, 1);
+        return false;
+    }
+
+    /* Same gap kf_lua_port_init() closes for the FIRST script, reopened by
+     * every chunk after it: this chunk's own top-level kf.screen() calls
+     * just created every NEW group's objects visible-by-default (kf/
+     * scene.h's "a new object starts visible" rule), and nothing has
+     * hidden them yet -- see kf_lua_port_init()'s own comment on this
+     * exact call, a few lines above, for the full reasoning. Safe to call
+     * again: it is pure visibility bookkeeping against whichever groups
+     * exist NOW (existing ones included), not a one-shot. Index 0, the
+     * same "Home registers first" convention -- kf_lua_port_load() is a
+     * boot-time call, before the interactive loop ever runs, so Home
+     * genuinely is still the active screen every time this executes. */
+    kf_lua_scene_hide_other_screens(0);
+
+    KF_LOGI(TAG, "script '%s' loaded", chunk_name);
     return true;
 }
 

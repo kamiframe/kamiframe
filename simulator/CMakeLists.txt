@@ -1159,6 +1159,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # headless_main.cpp's run_verify_game_session().
     add_test(NAME game_session_check
              COMMAND kamiframe-headless --verify-game-session)
+
+    # Task 3 of the Nibble-and-the-game-session plan: the game.* Lua
+    # binding (sdk/lua/kf_lua_port.cpp) -- begin/score/event/finish/record
+    # against a real session, both via in-script assert() and via a
+    # kf.report() value cross-checked against kf_game_session_record()
+    # read directly from C. See headless_main.cpp's
+    # run_verify_game_binding().
+    add_test(NAME game_binding_check
+             COMMAND kamiframe-headless --verify-game-binding)
 endif()
 
 # ---------------------------------------------------------------------------

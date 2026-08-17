@@ -49,6 +49,7 @@
  *     kamiframe-headless --verify-frame-loop-multiplier
  *     kamiframe-headless --verify-game-record
  *     kamiframe-headless --verify-game-session
+ *     kamiframe-headless --verify-game-binding
  *     kamiframe-headless --stress3d [2d|2.5d|3d|all] [--frames N]
  *
  * Exit codes:
@@ -12826,6 +12827,119 @@ int run_verify_game_session() {
     return ok ? 0 : 1;
 }
 
+/* Task 3 of the Nibble-and-the-game-session plan: the game.* Lua binding
+ * (sdk/lua/kf_lua_port.cpp), proven the same two-layer way run_lua_pet_
+ * binding_check() and friends already prove pet.*: assert() inside the
+ * script for simple invariants (any failure there makes kf_lua_port_init()
+ * itself return false, logging why), plus a packed value through
+ * kf.report() so the C++ side can compare Lua's OWN reading of the
+ * session against what kf_game_session_record() reads directly -- proof
+ * the BINDING round-trips real numbers, not just that the script's
+ * internal logic is self-consistent. */
+int run_verify_game_binding() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* kf_lua_port_init() draws the Lua state from the arena system
+     * (kf_lua_alloc_init() -> kf_arena_alloc(), hakoniwaos/src/arena.cpp)
+     * -- every other check in this file that calls kf_lua_port_init()
+     * without going through kf_app_init() brings the arenas up itself
+     * first (run_lua_draw_check() and friends), and this one needs the
+     * identical setup or kf_arena_alloc() panics before kf_lua_alloc_init()
+     * -- kf_arena_alloc before kf_arena_init_all -- rather than degrading. */
+    kf_arena_init_all();
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-game-binding-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_pet_session_init();
+
+    /* A fresh pet is comfortably healthy (full energy, not asleep), so
+     * game.begin() below is expected to succeed. Score 100 against
+     * good=40/great=75 is GREAT; one game.event("perfect") should show up
+     * as record.perfects == 1. The 14-character id at the end exercises
+     * the OTHER refusal path (kf_game_session_begin()'s length check, not
+     * the dead/asleep one this script never triggers). */
+    constexpr const char *kGameBindingScript = R"lua(
+local ctx = game.begin("gbtest", 6000)
+assert(ctx ~= nil, "game.begin should succeed against a fresh, healthy pet")
+assert(ctx.handicap == 0, "a fresh pet at full energy has no handicap")
+
+game.score(100)
+game.event("perfect")
+local tier = game.finish(40, 75)
+assert(tier == "great", "a score of 100 against good=40/great=75 should be great")
+
+local record = game.record("gbtest")
+assert(record ~= nil, "game.record should find the just-played record")
+assert(record.plays == 1, "one session played")
+assert(record.last == 100, "last score should be 100")
+assert(record.perfects == 1, "one perfect event recorded")
+
+local tier_code = 0
+if tier == "good" then tier_code = 1 elseif tier == "great" then tier_code = 2 end
+kf.report(tier_code * 1000000 + record.plays * 10000 + record.last * 10 +
+          record.perfects)
+
+local refused = game.begin("aaaaaaaaaaaaaa", 6000)
+assert(refused == nil, "a 14-character id should be refused, not error")
+
+-- A SECOND session, scored 0 -- comfortably a MISS against the same
+-- thresholds. Without this, a broken game.finish() that always returned
+-- "great" would still pass every assertion above (the first session
+-- really IS great), which is exactly the non-vacuous-test trap this
+-- second session exists to close.
+local ctx2 = game.begin("gbtest2", 6000)
+assert(ctx2 ~= nil, "game.begin should succeed for a second game id")
+local miss_tier = game.finish(40, 75)
+assert(miss_tier == "miss", "an unscored session should be a miss")
+)lua";
+
+    check(kf_lua_port_init(kGameBindingScript, "=game_binding_check"),
+          "the game-binding script loads and its top-level code runs -- "
+          "any assert() failure inside it makes this false");
+
+    constexpr int64_t kExpectedPacked =
+        2 * 1000000 + 1 * 10000 + 100 * 10 + 1;
+    check(kf_lua_port_last_report() == kExpectedPacked,
+          "kf.report() packed the tier/plays/last/perfects Lua actually "
+          "read, matching what a great-tier, one-play, one-perfect "
+          "session should report");
+
+    /* Independent of what the script itself claimed: read the SAME
+     * record directly from C, through kf_game_session_record() rather
+     * than through Lua at all, and confirm it agrees. */
+    kf_game_record record{};
+    check(kf_game_session_record("gbtest", &record),
+          "the record the script just persisted is readable directly "
+          "from C too");
+    check(record.plays == 1u && record.last_score == 100u &&
+              record.perfect_count == 1u,
+          "the record read directly from C matches what the Lua binding "
+          "reported -- the binding round-trips real numbers, not just "
+          "self-consistent Lua state");
+
+    kf_lua_port_shutdown();
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -12889,6 +13003,7 @@ int main(int argc, char *argv[]) {
     bool verify_frame_loop_multiplier = false;
     bool verify_game_record = false;
     bool verify_game_session = false;
+    bool verify_game_binding = false;
     /* --stress3d [2d|2.5d|3d|all]: the 3D feasibility instrument. A flag on
      * this binary like every other mode here, with an optional value because
      * "all" -- run the three and print one comparison table -- is what it is
@@ -13041,6 +13156,8 @@ int main(int argc, char *argv[]) {
             verify_game_record = true;
         } else if (std::strcmp(argv[i], "--verify-game-session") == 0) {
             verify_game_session = true;
+        } else if (std::strcmp(argv[i], "--verify-game-binding") == 0) {
+            verify_game_binding = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -13360,6 +13477,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_game_session) {
         return run_verify_game_session();
+    }
+
+    if (verify_game_binding) {
+        return run_verify_game_binding();
     }
 
     kf_app_init(mode);
