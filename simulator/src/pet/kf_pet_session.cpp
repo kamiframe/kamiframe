@@ -6,6 +6,7 @@
 
 #include "kf/clock.h"
 #include "kf/hal/log.h"
+#include "kf/hal/storage.h"
 #include "kf/hal/time.h"
 
 #include <cstdint>
@@ -157,6 +158,14 @@ struct Session {
      * counter nothing but a desktop test ever reads. */
     uint32_t debug_save_attempts = 0;
 
+    /* The last death's cause -- see kf_pet_session.h's own comment on
+     * kf_pet_death_cause for why this is read from its own store key
+     * rather than living on kf_pet_state. Populated once at init (from
+     * whatever is on disk, if anything) and kept current in memory by
+     * note_death_if_new() below; never touched by kf_pet_session_frame()'s
+     * ordinary decay path unless a death actually happens this call. */
+    kf_pet_death_cause death_cause{};
+
 #if KF_PET_SESSION_ENABLE_DEBUG_TOOLS
     /* Debug-only: the timeline snapshot ring, gated on TOOLS specifically
      * (not CONTROLS -- see kf_pet_session.h's "DEBUG ONLY" section).
@@ -215,6 +224,128 @@ void debug_snapshot_reset() {}
 
 #endif // KF_PET_SESSION_ENABLE_DEBUG_TOOLS
 
+/* Death-cause recording. Everything below reads only PUBLIC kf_pet_state/
+ * kf_pet_config fields -- is_neglected() itself (hakoniwaos/src/pet.cpp) is
+ * file-local to Core and this file has no way to call it, so its five-way
+ * predicate is re-derived here by hand, the exact same "cheaper to keep in
+ * sync by inspection than a shared export" call sdl_debug_window.cpp's own
+ * describe_neglect_driver() already makes for the identical predicate, on
+ * the identical reasoning: four lines, not worth widening Core's surface
+ * for. If is_neglected() ever changes, both copies have to change with it,
+ * by hand -- there is no compiler to catch drift between them. */
+
+/* Version byte for KF_PET_DEATH_CAUSE_KEY's 2-byte record: [version,
+ * bitmask]. Bumping this the moment the bitmask's meaning ever changes is
+ * what lets an old record be told apart from a new one that happens to be
+ * the same size -- load_death_cause() below refuses anything with a
+ * mismatched version rather than guessing at what an old bit pattern
+ * meant, the same "refuse rather than misread" call kf_pet_load_and_
+ * advance() already makes for the pet's own save (kf/pet.h's
+ * KF_PET_SAVE_BYTES comment). */
+constexpr uint8_t kDeathCauseRecordVersion = 1u;
+
+constexpr uint8_t kDeathBitHunger = 0x01u;
+constexpr uint8_t kDeathBitHappiness = 0x02u;
+constexpr uint8_t kDeathBitEnergy = 0x04u;
+constexpr uint8_t kDeathBitPoopCount = 0x08u;
+constexpr uint8_t kDeathBitDirtiness = 0x10u;
+
+uint8_t compute_death_driver_mask(const kf_pet_state &state,
+                                   const kf_pet_config &config) {
+    uint8_t mask = 0u;
+    if (state.hunger_mp <= config.neglect_need_mp) {
+        mask |= kDeathBitHunger;
+    }
+    if (state.happiness_mp <= config.neglect_need_mp) {
+        mask |= kDeathBitHappiness;
+    }
+    if (state.energy_mp <= config.neglect_need_mp) {
+        mask |= kDeathBitEnergy;
+    }
+    if (state.poop_count > config.neglect_poop_count) {
+        mask |= kDeathBitPoopCount;
+    }
+    if (state.dirtiness_mp >= config.neglect_dirtiness_mp) {
+        mask |= kDeathBitDirtiness;
+    }
+    return mask;
+}
+
+void death_cause_from_mask(uint8_t mask, kf_pet_death_cause *out) {
+    out->known = true;
+    out->hunger = (mask & kDeathBitHunger) != 0u;
+    out->happiness = (mask & kDeathBitHappiness) != 0u;
+    out->energy = (mask & kDeathBitEnergy) != 0u;
+    out->poop_count = (mask & kDeathBitPoopCount) != 0u;
+    out->dirtiness = (mask & kDeathBitDirtiness) != 0u;
+}
+
+/* Reads whatever is under KF_PET_DEATH_CAUSE_KEY, if anything, into
+ * g.death_cause. Called once from kf_pet_session_init() -- this file
+ * already requires kf_store_init() to be up by then (see this file's own
+ * header comment in kf_pet_session.h), the same requirement the pet's own
+ * save already has.
+ *
+ * EVERY failure mode degrades to `known = false` and returns, never
+ * asserts, never blocks boot: a fresh save directory (KF_ERR_UNAVAILABLE,
+ * the ordinary "never died here yet" case), a record written by a future
+ * version this build does not understand, a record whose size does not
+ * match what this build expects, or any other backend error. This is the
+ * exact contract kf_pet_load_and_advance() already gives the pet's own
+ * save for an unreadable value -- fall back, do not fail -- deliberately
+ * extended here rather than re-invented, because a death-cause record is
+ * even less essential to get right than the pet's own save: losing it
+ * costs a blank readout line, not a lost creature. */
+void load_death_cause() {
+    uint8_t buf[2] = {0u, 0u};
+    size_t out_bytes = 0u;
+    const kf_result result =
+        kf_store_read(KF_PET_DEATH_CAUSE_KEY, buf, sizeof(buf), &out_bytes);
+    if (result != KF_OK || out_bytes != sizeof(buf) ||
+        buf[0] != kDeathCauseRecordVersion) {
+        g.death_cause = kf_pet_death_cause{};
+        return;
+    }
+    death_cause_from_mask(buf[1], &g.death_cause);
+}
+
+/* Computes the current driver mask from `g.state`/`g.config` and writes it
+ * under KF_PET_DEATH_CAUSE_KEY, updating `g.death_cause` in memory at the
+ * same time so a reader never has to round-trip through storage to see a
+ * death that just happened. A failed write is logged, not fatal -- see
+ * kf_pet_session_save()'s own identical treatment of a failed pet-save
+ * write for the reasoning (a full store should be visible in the log, not
+ * crash the device), and the in-memory copy is already correct for the
+ * rest of THIS run regardless of whether the write lands. */
+void record_death_cause() {
+    const uint8_t mask = compute_death_driver_mask(g.state, g.config);
+    death_cause_from_mask(mask, &g.death_cause);
+    const uint8_t buf[2] = {kDeathCauseRecordVersion, mask};
+    const kf_result result =
+        kf_store_write(KF_PET_DEATH_CAUSE_KEY, buf, sizeof(buf));
+    if (result != KF_OK) {
+        KF_LOGE(TAG,
+                "kf_store_write(%s) failed (%d) -- this run still knows "
+                "what killed it, only a FUTURE boot would lose the record",
+                KF_PET_DEATH_CAUSE_KEY, static_cast<int>(result));
+    }
+}
+
+/* Call after any kf_pet_advance() (or kf_pet_load_and_advance()) that could
+ * have just killed the pet, passing whether `g.state.dead` was already
+ * true going INTO that call. Records only on the alive -> dead EDGE, not
+ * on every call against an already-dead pet: kf_pet_advance() is a
+ * verified no-op once `dead` is true (hakoniwaos/src/pet.cpp's leading
+ * `if (state->dead) return;`), so the state this would compute a mask
+ * from never changes again after the real moment of death, and re-writing
+ * the identical record on every subsequent flush would be pure waste. */
+void note_death_if_new(bool was_dead) {
+    if (was_dead || !g.state.dead) {
+        return;
+    }
+    record_death_cause();
+}
+
 } // namespace
 
 void kf_pet_session_init(void) {
@@ -250,6 +381,31 @@ void kf_pet_session_init(void) {
         static_cast<uint64_t>(KF_PET_SESSION_PERIODIC_SAVE_SECONDS) *
             1000000ull;
     g.debug_save_attempts = 0;
+
+    /* Read whatever death-cause record already exists BEFORE deciding
+     * whether this boot needs to write a fresh one -- see the check just
+     * below. */
+    load_death_cause();
+
+    /* Not note_death_if_new(): that helper wants a "was dead going INTO
+     * this call" flag, which does not exist here -- kf_pet_load_and_
+     * advance() both loads a save AND fast-forwards it in one call, so
+     * there is no separate "before" moment to read `dead` from without
+     * re-implementing the load. Instead: if the pet came back dead and
+     * there is no record for it yet (`!g.death_cause.known`), record one
+     * now. This is the one call site where "no record yet" does not mean
+     * "never died" -- it can also mean "died on an EARLIER boot, before
+     * this feature existed, or before this key was ever written", and
+     * either way the state this pet loaded with is frozen (a dead pet's
+     * fields never change again, see note_death_if_new()'s own comment),
+     * so computing the mask from it now is exactly as correct as
+     * computing it at the real moment of death would have been. Skipped
+     * entirely once a record already exists, so a pet that was already
+     * dead on a PREVIOUS boot of this same build does not rewrite an
+     * identical record on every subsequent boot. */
+    if (g.state.dead && !g.death_cause.known) {
+        record_death_cause();
+    }
 
     g.ready = true;
     debug_snapshot_reset();
@@ -288,6 +444,7 @@ void kf_pet_session_frame(uint32_t synthetic_frame_delta_ms) {
         kf_pet_advance(&g.state, &g.config, whole_seconds);
         g.pending_ms = g.pending_ms % 1000ull;
         debug_snapshot_push();
+        note_death_if_new(was_dead);
 
         /* ADR 0056's dirty flag. `!was_dead`, not `!g.state.dead` --
          * kf_pet_advance() itself is a verified no-op for an
@@ -429,6 +586,12 @@ kf_pet_want kf_pet_session_wants(void) {
     return g.last_want;
 }
 
+const kf_pet_death_cause *kf_pet_session_last_death_cause(void) {
+    KF_ASSERT(g.ready, "kf_pet_session_last_death_cause called before "
+                        "kf_pet_session_init");
+    return &g.death_cause;
+}
+
 void kf_pet_session_save(void) {
     KF_ASSERT(g.ready,
               "kf_pet_session_save called before kf_pet_session_init");
@@ -502,8 +665,10 @@ void kf_pet_session_debug_advance(uint32_t seconds) {
         kf_time_set_wall(before.epoch_seconds + static_cast<int64_t>(seconds));
     }
 
+    const bool was_dead = g.state.dead;
     kf_pet_advance(&g.state, &g.config, seconds);
     debug_snapshot_push();
+    note_death_if_new(was_dead);
 }
 
 int64_t kf_pet_session_debug_clock_target(kf_pet_debug_clock_point point) {
@@ -567,8 +732,10 @@ void kf_pet_session_debug_set_clock(int64_t epoch_seconds) {
      * the smallest advance that re-evaluates it, and is deliberately the
      * only ageing this function does -- see the header comment on why
      * travelling the real distance is the wrong behaviour here. */
+    const bool was_dead = g.state.dead;
     kf_pet_advance(&g.state, &g.config, 1u);
     debug_snapshot_push();
+    note_death_if_new(was_dead);
 }
 
 void kf_pet_session_debug_reset(void) {

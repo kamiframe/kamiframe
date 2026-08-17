@@ -2591,6 +2591,170 @@ int run_pet_death_check(void) {
     return ok ? 0 : 1;
 }
 
+/* The "last died of" record (kf_pet_death_cause, kf_pet_session.h), added
+ * after Chris's pet died and the SDL debug window had no way to say why --
+ * see that struct's own header comment for the full reasoning on why this
+ * lives under its OWN store key (KF_PET_DEATH_CAUSE_KEY) rather than as a
+ * new kf_pet_state field: growing kf_pet_state's save format is exactly
+ * the failure this project hit for real (a 2026-08-04 build reading a
+ * 109-byte save, kf_store_read() returning KF_ERR_INVALID, and
+ * kf_pet_session_init() hard-panicking at boot). Three things checked:
+ * that a fresh death is recorded with the right driver bits, that the
+ * record survives a session restart via the separate key (the entire
+ * point of writing it to storage rather than a plain in-memory struct),
+ * and that a record this build cannot parse degrades to "unknown" rather
+ * than asserting or blocking boot -- the same contract kf_pet_load_and_
+ * advance() already gives the pet's own save for an unreadable value. */
+int run_pet_death_cause_check(void) {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-death-cause-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec); /* in case a prior run crashed */
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+
+    const kf_pet_config config = kf_pet_default_config();
+
+    /* 1. A fresh save directory has no history -- no death, no record. */
+    {
+        kf_pet_session_init();
+        check(!kf_pet_session_last_death_cause()->known,
+              "a fresh save directory has never had a death -- the record "
+              "must read as unknown, not a false hunger/happiness/energy/"
+              "poop/dirtiness guess");
+        kf_pet_session_shutdown();
+    }
+    kf_store_erase("pet");
+
+    /* 2. Force a fresh death driven by hunger ALONE (happiness/energy full,
+     * no poop, no dirtiness) via kf_pet_session_state_mutable_for_test(),
+     * the same direct-mutation shape run_pet_save_checkpoints_check() above
+     * already uses, then advance by a couple of seconds through the
+     * session's own debug path (kf_pet_session_debug_advance()) -- not
+     * apply_stage_segment_for_test() directly, because the whole point of
+     * this check is the SESSION layer's note_death_if_new() noticing the
+     * transition, which only that path exercises. The wall clock is
+     * deliberately left unset for this whole check, so `have_clock` is
+     * false throughout and the raw, unscaled sickness_death_seconds is
+     * exactly what neglect_seconds is compared against -- one fewer moving
+     * part in an already-precise setup. */
+    {
+        kf_pet_session_init();
+        kf_pet_state *mutable_state = kf_pet_session_state_mutable_for_test();
+        mutable_state->stage = KF_PET_STAGE_CHILD;
+        mutable_state->hunger_mp = 5000u;      /* well under neglect_need_mp */
+        mutable_state->happiness_mp = 100000u; /* full -- not a driver */
+        mutable_state->energy_mp = 100000u;    /* full -- not a driver */
+        mutable_state->poop_count = 0u;        /* not a driver */
+        mutable_state->dirtiness_mp = 0u;      /* not a driver */
+        mutable_state->neglect_seconds = config.sickness_death_seconds - 1u;
+
+        kf_pet_session_debug_advance(2u);
+
+        check(kf_pet_session_state()->dead,
+              "checkpoint 2 setup: the forced neglect_seconds actually "
+              "crossed the death threshold");
+        const kf_pet_death_cause *cause = kf_pet_session_last_death_cause();
+        check(cause->known, "a fresh death is recorded, not left unknown");
+        check(cause->hunger, "hunger was the condition past its line");
+        check(!cause->happiness && !cause->energy && !cause->poop_count &&
+                  !cause->dirtiness,
+              "and NONE of the other four conditions were true -- a record "
+              "that flagged them anyway would send the owner to fix "
+              "problems the creature did not actually have");
+
+        kf_pet_session_shutdown();
+    }
+
+    /* 3. Persistence: reload the session (a fresh process would do exactly
+     * this) and confirm the SAME record comes back from the separate key,
+     * without re-deriving it from the pet's own (now-dead, frozen) state --
+     * this is the entire reason the record is written to storage instead
+     * of staying a plain Session field, which a restart would lose.
+     *
+     * The pet's own save is erased FIRST, deliberately -- leaving it in
+     * place would reload the same still-dead pet from checkpoint 2, and
+     * kf_pet_session_init()'s own self-heal (see its header comment) would
+     * then RE-DERIVE an identical-looking record from that pet's frozen
+     * state on every boot regardless of whether the store write actually
+     * persisted anything. That masks exactly the bug this checkpoint
+     * exists to catch -- a first version of this check did exactly that,
+     * passed even with kf_store_write() in record_death_cause() replaced
+     * by a no-op, and was rewritten once that was noticed. Erasing "pet"
+     * (but NOT KF_PET_DEATH_CAUSE_KEY) reloads a fresh, ALIVE pet, so
+     * self-heal cannot fire and whatever last_death_cause() reports has to
+     * have come from storage. */
+    kf_store_erase("pet");
+    {
+        kf_pet_session_init();
+        check(!kf_pet_session_state()->dead,
+              "checkpoint 3 setup: this boot's pet is alive, so init()'s "
+              "own dead-pet self-heal cannot mask what this checkpoint "
+              "checks");
+        const kf_pet_death_cause *cause = kf_pet_session_last_death_cause();
+        check(cause->known && cause->hunger && !cause->happiness &&
+                  !cause->energy && !cause->poop_count && !cause->dirtiness,
+              "the death cause survives a session restart, read back from "
+              "its own store key");
+        kf_pet_session_shutdown();
+    }
+
+    /* 4. A record this build cannot parse -- wrong size, in this case --
+     * must degrade to unknown, exactly like an unreadable pet save falls
+     * back to a fresh pet rather than failing kf_pet_session_init(). This
+     * is the specific failure mode a growing-the-pet-save approach would
+     * NOT have had a fallback for at all; a separate key gets one for
+     * free, but only if this path is actually exercised.
+     *
+     * The pet's own save is erased FIRST, so this boots a fresh, ALIVE
+     * pet -- deliberately, not the still-dead one checkpoints 2/3 left
+     * behind. kf_pet_session_init()'s own self-heal (see its header
+     * comment: "no record yet" also covers a save from before this
+     * feature existed) only fires while `g.state.dead` is true, and would
+     * otherwise silently RE-RECORD a correct cause from the still-dead
+     * pet's frozen fields, overwriting the garbage this checkpoint just
+     * wrote before load_death_cause() even runs -- which would make this
+     * checkpoint pass for the wrong reason (self-heal, not the unknown
+     * fallback this checkpoint exists to prove) or not at all depending on
+     * ordering. An alive pet takes that self-heal branch out of play
+     * entirely, so what is actually being tested is isolated. */
+    kf_store_erase("pet");
+    {
+        const uint8_t garbage[3] = {0xFFu, 0xFFu, 0xFFu};
+        check(kf_store_write(KF_PET_DEATH_CAUSE_KEY, garbage,
+                              sizeof(garbage)) == KF_OK,
+              "checkpoint 4 setup: write an unparseable record directly");
+
+        kf_pet_session_init();
+        check(!kf_pet_session_state()->dead,
+              "checkpoint 4 setup: this boot's pet is alive, so init()'s "
+              "own dead-pet self-heal cannot mask what this checkpoint "
+              "checks");
+        check(!kf_pet_session_last_death_cause()->known,
+              "an unparseable death-cause record degrades to unknown rather "
+              "than asserting or blocking boot");
+        kf_pet_session_shutdown();
+    }
+
+    kf_store_erase("pet");
+    kf_store_erase(KF_PET_DEATH_CAUSE_KEY);
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 /* Sleep (the core care-loop design spec's
  * "Sleep, settled", the screens/clock/sleep plan's
  * Task 6, ADR 0048). run_pet_check() (--verify-pet) already proves
@@ -12359,6 +12523,7 @@ int main(int argc, char *argv[]) {
     bool verify_dirtiness = false;
     bool verify_pet_sickness = false;
     bool verify_pet_death = false;
+    bool verify_pet_death_cause = false;
     bool verify_pet_preferences = false;
     bool verify_pet_care_variation = false;
     bool verify_pet_adult_reachability = false;
@@ -12446,6 +12611,8 @@ int main(int argc, char *argv[]) {
             verify_pet_sickness = true;
         } else if (std::strcmp(argv[i], "--verify-pet-death") == 0) {
             verify_pet_death = true;
+        } else if (std::strcmp(argv[i], "--verify-pet-death-cause") == 0) {
+            verify_pet_death_cause = true;
         } else if (std::strcmp(argv[i], "--verify-pet-preferences") == 0) {
             verify_pet_preferences = true;
         } else if (std::strcmp(argv[i], "--verify-pet-care-variation") == 0) {
@@ -12560,6 +12727,7 @@ int main(int argc, char *argv[]) {
                         "kamiframe-headless --verify-dirtiness\n"
                         "kamiframe-headless --verify-pet-sickness\n"
                         "kamiframe-headless --verify-pet-death\n"
+                        "kamiframe-headless --verify-pet-death-cause\n"
                         "kamiframe-headless --verify-pet-preferences\n"
                         "kamiframe-headless --verify-pet-care-variation\n"
                         "kamiframe-headless --verify-pet-adult-reachability\n"
@@ -12691,6 +12859,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_pet_death) {
         return run_pet_death_check();
+    }
+
+    if (verify_pet_death_cause) {
+        return run_pet_death_cause_check();
     }
 
     if (verify_pet_preferences) {

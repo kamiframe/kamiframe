@@ -571,6 +571,19 @@ if(KAMIFRAME_BUILD_HEADLESS)
     add_test(NAME pet_death_check
              COMMAND kamiframe-headless --verify-pet-death)
 
+    # Proves the "last died of" record (kf_pet_death_cause,
+    # kf_pet_session.h), added after Chris's pet died and the SDL debug
+    # window had nothing to explain it with: a fresh death is recorded
+    # under KF_PET_DEATH_CAUSE_KEY with exactly the right driver bits, the
+    # record survives a session restart (reads back from the SEPARATE
+    # store key, not re-derived from kf_pet_state), and a record this build
+    # cannot parse degrades to "unknown" rather than asserting or blocking
+    # boot -- proving the "do not grow the pet save" constraint actually
+    # bought the fallback behaviour it was meant to. See headless_main.cpp's
+    # run_pet_death_cause_check().
+    add_test(NAME pet_death_cause_check
+             COMMAND kamiframe-headless --verify-pet-death-cause)
+
     # Proves sleep (the core care-loop design spec's "Sleep, settled", the
     # screens/clock/sleep plan's Task 6, ADR 0048): state->asleep tracks
     # the 22:00-07:00 night window live as the clock crosses it, an egg

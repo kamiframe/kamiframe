@@ -161,6 +161,57 @@ void kf_pet_session_tuck_in(void);
  * the debug snapshot ring. */
 kf_pet_want kf_pet_session_wants(void);
 
+/* Where the LAST death's cause is stored -- see kf_pet_death_cause and
+ * kf_pet_session_last_death_cause() below for why this is not a field on
+ * kf_pet_state. <= KF_STORE_MAX_KEY_LEN (15, kf/budget.h) and restricted to
+ * [A-Za-z0-9_] (kf/hal/storage.h's own kf_store_write() contract). */
+#define KF_PET_DEATH_CAUSE_KEY "pet_death"
+
+/* Which of is_neglected()'s conditions (hakoniwaos/src/pet.cpp) was true
+ * the moment the active pet died -- "why", not just "that". `known` is
+ * false when the creature has never died on this save directory, or the
+ * stored record could not be read back (wrong size, wrong version, or a
+ * backend error) -- every other field is meaningless in that case, and a
+ * caller must treat it exactly like a missing pet save: fall back to
+ * "unknown", never fail or assert. See kf_pet_session_last_death_cause()'s
+ * own comment for why this is read from a SEPARATE store key rather than
+ * kf_pet_state itself. */
+typedef struct {
+    bool known;
+    bool hunger;
+    bool happiness;
+    bool energy;
+    bool poop_count;
+    bool dirtiness;
+} kf_pet_death_cause;
+
+/* The cause recorded the moment the active pet's `dead` flag last flipped
+ * true -- deliberately NOT a new kf_pet_state field. kf_pet_state's own
+ * save format (KF_PET_SAVE_BYTES, kf/pet.h) is versioned and every backend
+ * that has ever read one has to agree on its exact byte layout; a build
+ * from before this field existed reading a save written by one that has it
+ * (or vice versa) is precisely the failure this project hit for real --
+ * kf_store_read() returning KF_ERR_INVALID and kf_pet_session_init()
+ * hard-panicking at boot on a value that no longer fit its own buffer.
+ * Recording the cause under its OWN key (KF_PET_DEATH_CAUSE_KEY) instead
+ * means a build that predates this feature, or one that cannot parse the
+ * record for any other reason, just sees `known == false` and carries on
+ * -- the same reasoning 17-minigame-design-space.md gives for keeping game
+ * records out of the pet save entirely: "so game data never forces a pet
+ * save-format migration and a corrupt score table cannot kill a
+ * creature." A corrupt or missing death-cause record cannot kill, or even
+ * touch, the pet's own save.
+ *
+ * Read once at kf_pet_session_init() (this file already requires
+ * kf_store_init() to be up by then, same as the pet's own save) and
+ * refreshed in memory the instant a fresh death is detected -- see
+ * kf_pet_session.cpp's note_death_if_new(). Persists across a debug
+ * reset/stage-jump on purpose: those fabricate a NEW, living pet
+ * (kf_pet_init() always clears `dead`), but the record is a memorial for
+ * whichever pet died last, not a property of the current one, so reviving
+ * the session does not erase what killed the last life. */
+const kf_pet_death_cause *kf_pet_session_last_death_cause(void);
+
 /* Persists the active pet's state now, via kf_pet_save(). Exposed here for
  * manual checkpoints (the SDL debug window's Save button, and Lua's
  * pet.save() binding), but -- since docs/architecture/adr-0056-pet-save-

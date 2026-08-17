@@ -44,7 +44,19 @@ constexpr int kWindowW = kLeftColumnW + kRightColumnW;
  * down by one 40px row each. Those three positions move together; changing
  * one without the others overlaps the timeline with either the buttons
  * above it or the readout below. */
-constexpr int kWindowH = 710;
+/* 710 -> 830 for the neglect/sickness/death diagnostics, including the
+ * "last died of" history line (Chris's pet died and this window could not
+ * say why -- see the new block at the bottom of the text readout, below
+ * hunger/happy/energy). This growth is DIFFERENT
+ * in kind from every bump above it: those all pushed kTimelineBar and the
+ * readout's own starting `y` DOWN because they added button rows ABOVE the
+ * timeline. This one adds lines to the BOTTOM of the readout instead, so
+ * kTimelineBar and the readout's starting y (440, below) are UNCHANGED --
+ * only the window has to grow, to stop the new lines drawing past its
+ * bottom edge. Read this comment before assuming every kWindowH change
+ * means moving the timeline too; it only does when the new content sits
+ * above it. */
+constexpr int kWindowH = 830;
 constexpr float kRightColumnX = static_cast<float>(kLeftColumnW) + 16.0f;
 
 enum class DebugAction {
@@ -807,6 +819,169 @@ void draw_engine_diagnostics(void) {
     }
 }
 
+/* Added after Chris's pet died and this window could not say why -- the
+ * whole reason for this file's death-diagnostics block below. What Core
+ * actually compares `state->neglect_seconds` against is NOT
+ * config.sickness_onset_seconds/sickness_death_seconds directly: nights
+ * (22:00-07:00) do not accrue neglect, so once a wall clock exists,
+ * apply_stage_segment() (hakoniwaos/src/pet.cpp) reads each threshold
+ * through a 15/24 "waking fraction" compression first -- a day's worth of
+ * neglect-worthy time is only about 15 of its 24 hours, so the thresholds
+ * are shrunk to match, and a readout that skipped this step would show a
+ * death threshold roughly 60% too generous. This is NOT a life-stage
+ * scaling -- kf_pet_config has no per-stage table for either threshold,
+ * only stage_rates (the three needs' decay rates) does -- so this window
+ * does not attempt to show "the value for the current stage" the way the
+ * timeline's stage_duration_seconds() above does; there is nothing
+ * stage-shaped to show here, only this one clock-dependent compression.
+ *
+ * `have_clock` mirrors apply_stage_segment()'s own local of the same name
+ * exactly: `state->last_advanced.valid` at the moment a segment is
+ * evaluated. With no wall clock ever established there is no day/night
+ * overlap to compute at all, so Core falls back to the raw, uncompressed
+ * config values, and so does this.
+ *
+ * The 15/24 duplicated here rather than exported from kf/pet.h or
+ * hakoniwaos/src/pet.cpp -- kWakingFractionNumerator/Denominator there are
+ * anonymous-namespace locals, not part of Core's public surface, and four
+ * lines of integer arithmetic is not worth widening that surface for. Same
+ * "cheaper to keep in sync by inspection" call this file already made three
+ * times over for stage_name()/stage_duration_seconds()/
+ * timeline_tick_seconds() above: if pet.cpp's compression ever changes,
+ * this has to change by hand, with no compiler to catch the drift. */
+uint32_t effective_sickness_seconds(uint32_t raw_seconds, bool have_clock) {
+    constexpr uint32_t kWakingFractionNumerator = 15u;
+    constexpr uint32_t kWakingFractionDenominator = 24u;
+    if (!have_clock) {
+        return raw_seconds;
+    }
+    return static_cast<uint32_t>((static_cast<uint64_t>(raw_seconds) *
+                                   kWakingFractionNumerator) /
+                                  kWakingFractionDenominator);
+}
+
+/* Formats a duration as "%uh%02um" -- e.g. "4h12m", "15h00m" -- for the
+ * neglect ratio and time-to-death lines below. A bare second count
+ * (`10800s`) is exactly the "tells the owner nothing about how much
+ * runway is left" complaint that prompted this whole block: nobody reads
+ * seconds-since-boot as a felt duration, and the mental division into
+ * hours/minutes is the entire missing piece. Not shared with the h/m-free
+ * formatting the rest of this window already uses elsewhere (age, stage
+ * time) -- those are deliberately raw seconds against a raw axis for the
+ * timeline's own scrubbing math, a different job from "how worried should
+ * I be right now". */
+void format_hm(uint32_t total_seconds, char *out, size_t out_size) {
+    const uint32_t hours = total_seconds / 3600u;
+    const uint32_t minutes = (total_seconds % 3600u) / 60u;
+    std::snprintf(out, out_size, "%uh%02um", static_cast<unsigned>(hours),
+                  static_cast<unsigned>(minutes));
+}
+
+/* Which of is_neglected()'s five conditions (hakoniwaos/src/pet.cpp) is
+ * ACTUALLY responsible for the creature's neglect clock climbing right
+ * now, written out in words -- "neglected" on its own leaves the owner
+ * guessing which of five things to go fix. is_neglected() itself is
+ * file-local to Core (an anonymous-namespace helper, not declared in
+ * kf/pet.h) and this window has no way to call it, so its predicate is
+ * re-derived here from the same public state/config fields it reads --
+ * again the stage_name()-style duplication call, not a new Core accessor,
+ * for the same "four lines, not worth exporting" reasoning as the function
+ * above.
+ *
+ * Reports EVERY condition currently past its line, not only the first: a
+ * creature that is both starving and filthy is two separate mistakes, and
+ * naming just one would send the owner to fix the wrong thing first and
+ * report back confused when the pet was still dying afterwards. */
+void describe_neglect_driver(char *out, size_t out_size,
+                              const kf_pet_state *state,
+                              const kf_pet_config *config) {
+    const char *conditions[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t count = 0u;
+    if (state->hunger_mp <= config->neglect_need_mp) {
+        conditions[count++] = "hunger";
+    }
+    if (state->happiness_mp <= config->neglect_need_mp) {
+        conditions[count++] = "happiness";
+    }
+    if (state->energy_mp <= config->neglect_need_mp) {
+        conditions[count++] = "energy";
+    }
+    if (state->poop_count > config->neglect_poop_count) {
+        conditions[count++] = "poop count";
+    }
+    if (state->dirtiness_mp >= config->neglect_dirtiness_mp) {
+        conditions[count++] = "dirtiness";
+    }
+
+    if (count == 0u) {
+        std::snprintf(out, out_size, "none (currently cared for)");
+        return;
+    }
+    size_t offset = 0u;
+    for (size_t i = 0u; i < count && offset < out_size; ++i) {
+        const int written =
+            std::snprintf(out + offset, out_size - offset, "%s%s",
+                           i == 0u ? "" : ", ", conditions[i]);
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+        }
+    }
+}
+
+/* The other half of the death chain: not what is happening NOW
+ * (describe_neglect_driver(), above) but what killed the pet LAST time, if
+ * it ever has -- kf_pet_session_last_death_cause() (kf_pet_session.h),
+ * read from its own store key rather than kf_pet_state so a corrupt or
+ * missing record can never take a save down with it. Same "list every
+ * condition, not just the first" shape as describe_neglect_driver() above,
+ * and the same reason: a creature that died with three separate needs
+ * empty at once is not usefully summarised by naming only one of them. */
+void describe_death_cause(char *out, size_t out_size,
+                           const kf_pet_death_cause *cause) {
+    if (!cause->known) {
+        std::snprintf(out, out_size, "unknown (no record yet)");
+        return;
+    }
+    const char *conditions[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t count = 0u;
+    if (cause->hunger) {
+        conditions[count++] = "hunger";
+    }
+    if (cause->happiness) {
+        conditions[count++] = "happiness";
+    }
+    if (cause->energy) {
+        conditions[count++] = "energy";
+    }
+    if (cause->poop_count) {
+        conditions[count++] = "poop count";
+    }
+    if (cause->dirtiness) {
+        conditions[count++] = "dirtiness";
+    }
+    if (count == 0u) {
+        /* Reachable only if a record exists but every bit is clear -- not
+         * expected from record_death_cause() (kf_pet_session.cpp), which
+         * only ever writes a fresh record on a genuine `dead` edge and
+         * is_neglected()'s five-way OR guarantees at least one condition
+         * was true for that edge to have fired at all, but shown as
+         * something other than a silent blank line if it ever happens,
+         * rather than asserting a desktop diagnostics window down over a
+         * display-only inconsistency. */
+        std::snprintf(out, out_size, "recorded, but no condition flagged");
+        return;
+    }
+    size_t offset = 0u;
+    for (size_t i = 0u; i < count && offset < out_size; ++i) {
+        const int written =
+            std::snprintf(out + offset, out_size - offset, "%s%s",
+                           i == 0u ? "" : ", ", conditions[i]);
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+        }
+    }
+}
+
 } // namespace
 
 void kf_sdl_debug_window_init(void) {
@@ -965,7 +1140,20 @@ void kf_sdl_debug_window_frame(void) {
     SDL_RenderDebugText(g.renderer, 16, y, line);
     y += kLineHeight;
 
-    std::snprintf(line, sizeof(line), "stage: %s", stage_name(state->stage));
+    /* "(asleep)" suffix: cheap, and worth having here rather than a line of
+     * its own, because it is the answer to a question the neglect block
+     * below otherwise invites -- "why hasn't neglect moved in a while?"
+     * apply_stage_segment() (hakoniwaos/src/pet.cpp) pauses the neglect
+     * clock for whatever part of a segment falls both neglected AND inside
+     * the 22:00-07:00 night window, so a neglect_seconds reading that looks
+     * frozen while the creature is visibly asleep is expected behaviour,
+     * not a stuck counter. */
+    if (state->asleep) {
+        std::snprintf(line, sizeof(line), "stage: %s (asleep)",
+                      stage_name(state->stage));
+    } else {
+        std::snprintf(line, sizeof(line), "stage: %s", stage_name(state->stage));
+    }
     SDL_RenderDebugText(g.renderer, 16, y, line);
     y += kLineHeight;
 
@@ -1026,6 +1214,130 @@ void kf_sdl_debug_window_frame(void) {
 
     std::snprintf(line, sizeof(line), "energy:   %u.%u%%",
                   state->energy_mp / 1000u, (state->energy_mp / 100u) % 10u);
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    /* Dirtiness and poop count: two of is_neglected()'s five inputs
+     * (hakoniwaos/src/pet.cpp), and until now invisible on this window
+     * entirely -- hunger/happy/energy were readable above, but a creature
+     * could be marched into neglect purely through mess and this window
+     * would show nothing that explained it. Shown against the SAME
+     * threshold is_neglected() actually compares poop_count to
+     * (neglect_poop_count), the same "value against what it is racing
+     * toward" shape the age/stage-time lines above already use. Dirtiness's
+     * own threshold (neglect_dirtiness_mp) is not repeated here the same
+     * way -- it is always KF_PET_DIRTY_STINK_MP by default (kf/pet.h), the
+     * same point the screen's own stink lines appear at, so a player who
+     * has seen the stink lines already knows the line this bar is racing
+     * toward. */
+    std::snprintf(line, sizeof(line), "dirtiness: %u.%u%%   poops: %u/%u",
+                  state->dirtiness_mp / 1000u,
+                  (state->dirtiness_mp / 100u) % 10u,
+                  static_cast<unsigned>(state->poop_count),
+                  static_cast<unsigned>(config.neglect_poop_count));
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight * 1.5f;
+
+    /* The death chain, made visible -- added after Chris's pet died and
+     * this window gave him nothing to explain it with. Four lines: how much
+     * neglect has accumulated and what it is racing toward (effective, not
+     * raw -- see effective_sickness_seconds()'s own header comment for why
+     * the raw config numbers alone would lie), WHICH of the five neglect
+     * conditions is actually responsible right now, and the creature's
+     * overall status with a concrete time-to-death when it applies. This is
+     * everything a person watching this window needs to answer "why is my
+     * pet dying, and how long have I got" without reading hakoniwaos/src/
+     * pet.cpp themselves. */
+    SDL_RenderDebugText(g.renderer, 16, y, "-- neglect & sickness --");
+    y += kLineHeight;
+
+    const bool have_clock = state->last_advanced.valid;
+    const uint32_t effective_onset =
+        effective_sickness_seconds(config.sickness_onset_seconds, have_clock);
+    /* sickness_death_seconds == 0 is a documented sentinel (kf/pet.h) for
+     * "this creature never dies of neglect" -- checked against the RAW
+     * config value, exactly as apply_stage_segment() itself checks it
+     * (pet.cpp), so a nonzero raw value that happens to compress to 0
+     * cannot be misread as the sentinel by this window either. */
+    const bool death_enabled = config.sickness_death_seconds > 0u;
+    const uint32_t effective_death =
+        effective_sickness_seconds(config.sickness_death_seconds, have_clock);
+
+    /* A ratio, not a bare accumulating number -- Chris's own complaint
+     * after the fact was that a raw neglect_seconds figure says nothing
+     * about how much runway is left. `current/max` against the EFFECTIVE
+     * death threshold (not the raw config value -- see this block's own
+     * header comment on why the raw number would lie), both in h/m rather
+     * than seconds, is the same "value against what it is racing toward"
+     * shape the age/stage-time lines already use above, made legible as a
+     * FELT duration instead of a number nobody can place. The onset point
+     * gets the identical h/m treatment for the same reason: a mix of
+     * "3h00m" and "10800s" on the same line would make the reader convert
+     * one of them just to compare. */
+    char neglect_hm[16];
+    char onset_hm[16];
+    format_hm(state->neglect_seconds, neglect_hm, sizeof(neglect_hm));
+    format_hm(effective_onset, onset_hm, sizeof(onset_hm));
+    if (death_enabled) {
+        char death_hm[16];
+        format_hm(effective_death, death_hm, sizeof(death_hm));
+        std::snprintf(line, sizeof(line), "neglect %s / %s  (onset %s)%s",
+                      neglect_hm, death_hm, onset_hm,
+                      have_clock ? "" : "  (raw -- clock not set)");
+    } else {
+        std::snprintf(line, sizeof(line),
+                      "neglect %s  (onset %s, death: never)%s", neglect_hm,
+                      onset_hm, have_clock ? "" : "  (raw -- clock not set)");
+    }
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    char driver[96];
+    describe_neglect_driver(driver, sizeof(driver), state, &config);
+    std::snprintf(line, sizeof(line), "neglect driver: %s", driver);
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    if (state->dead) {
+        std::snprintf(line, sizeof(line), "status: DEAD");
+    } else if (state->sick) {
+        if (!death_enabled) {
+            std::snprintf(line, sizeof(line),
+                          "status: SICK -- death disabled (never)");
+        } else if (state->neglect_seconds >= effective_death) {
+            /* Reachable for exactly one frame: kf_pet_advance() sets `dead`
+             * true the same segment neglect_seconds first reaches the
+             * threshold (pet.cpp), so this window should show DEAD, above,
+             * on the very next redraw. Kept as a real branch rather than
+             * assumed unreachable -- see this codebase's own operator
+             * rule about verifying "impossible" claims before relying on
+             * them; a stale timing assumption here would show "SICK" on a
+             * pet that is, functionally, already gone. */
+            std::snprintf(line, sizeof(line),
+                          "status: SICK -- time to death: 0h00m (this frame)");
+        } else {
+            const uint32_t remaining = effective_death - state->neglect_seconds;
+            char remaining_hm[16];
+            format_hm(remaining, remaining_hm, sizeof(remaining_hm));
+            std::snprintf(line, sizeof(line),
+                          "status: SICK -- time to death: %s", remaining_hm);
+        }
+    } else {
+        std::snprintf(line, sizeof(line), "status: OK");
+    }
+    SDL_RenderDebugText(g.renderer, 16, y, line);
+    y += kLineHeight;
+
+    /* History, not the present moment -- what killed the pet LAST time
+     * (across every life this save directory has ever had), so the owner
+     * does not need to catch the exact frame of death to find out why it
+     * happened. Read from its own store key, never kf_pet_state -- see
+     * kf_pet_death_cause's own header comment (kf_pet_session.h) for why
+     * growing the pet save was rejected for this. */
+    char last_died_of[96];
+    describe_death_cause(last_died_of, sizeof(last_died_of),
+                         kf_pet_session_last_death_cause());
+    std::snprintf(line, sizeof(line), "last died of: %s", last_died_of);
     SDL_RenderDebugText(g.renderer, 16, y, line);
     y += kLineHeight * 1.5f;
 
