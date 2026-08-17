@@ -169,18 +169,23 @@ local function nibble_sprite_name(pose)
 end
 
 ----------------------------------------------------------------------
--- Scene: the field, the food, the creature, the strike-zone marker, and
--- ONE status line -- four objects. Deliberately not six (a round
--- counter, a score readout and a result line as three separate text
--- objects, the original shape): creature.lua's own Home/Info/Settings
--- screens already hold the retained scene close to KF_SCENE_MAX_OBJECTS
--- (64) between them -- found the hard way, loading nibble.lua as a
--- second chunk over creature.lua overflowed it with SIX objects, well
--- under 64 in isolation but not once creature.lua's own budget is
--- already spent. One status_label, reused for "ROUND x/8  SCORE y"
--- during play and the result line once finished, buys back two objects
--- of headroom for nothing a player would notice -- both were always
--- read one at a time, never side by side.
+-- Scene: the field, the food, and the strike-zone marker -- THREE
+-- objects, not the six an earlier version of this file had (a round
+-- counter, a score readout and a result line as separate text objects,
+-- plus the creature as a fourth). creature.lua's own Home/Info/Settings
+-- screens already hold the retained scene at almost exactly
+-- KF_SCENE_MAX_OBJECTS (64) between them -- found the hard way, twice:
+-- loading nibble.lua as a second chunk over creature.lua first
+-- overflowed it with six objects, and again with four once the play
+-- picker (Task 5) needed its own single object and there was no headroom
+-- left at all. Round/score/result feedback goes through kf.log()
+-- instead of on-screen text below (see report_status()) -- a real
+-- reduction in on-screen polish, not a free one, but the alternative
+-- was cutting the picker's own instructions instead, and a first-time
+-- player has no way to discover what LEFT/RIGHT do on that screen
+-- without them. Swapping this back for a real status line is a
+-- straightforward follow-up once something else's object budget frees
+-- up, not a design decision this file is trying to make permanently.
 ----------------------------------------------------------------------
 local screen = kf.screen("nibble")
 screen:background(kf.color(18, 22, 26))
@@ -203,15 +208,19 @@ strike_marker:move(STRIKE_X - (STRIKE_MARKER_SIZE - FOOD_SIZE) // 2, FIELD_Y -
                         (STRIKE_MARKER_SIZE - FOOD_SIZE) // 2)
 strike_marker:layer(-1) -- behind the food, so the food is never hidden by it
 
-local status_label = screen:text("ROUND 1/" .. ROUNDS .. "  SCORE 0")
-status_label:move(8, 8)
-status_label:color(kf.WHITE, kf.color(18, 22, 26))
+-- kf.log() stand-in for the on-screen status line the object budget has
+-- no room for right now -- see this section's own header comment. One
+-- function so every call site below reads the same either way this ever
+-- gets a real text object back.
+local function report_status(text)
+    kf.log("nibble: " .. text)
+end
 
 ----------------------------------------------------------------------
 -- Round state. `active` mirrors "did game.begin() succeed" -- a dead or
 -- asleep pet (kf_game_session_begin()'s own two refusal cases) means
 -- Nibble is entered but there is no session to play; the field still
--- draws, nothing scores, and status_label explains why.
+-- draws, nothing scores, and report_status() explains why.
 ----------------------------------------------------------------------
 local was_showing = false
 local active = false
@@ -246,7 +255,7 @@ local function start_round()
     round_elapsed_ms = 0
     round_resolved = false
     strike_marker:visible(round <= 3)
-    status_label:set("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
+    report_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
                           total_score)
 end
 
@@ -264,7 +273,7 @@ local function enter_nibble()
                             manifest.reward.need_fraction_percent)
     if ctx == nil then
         active = false
-        status_label:set("TOO TIRED TO PLAY -- PRESS B")
+        report_status("TOO TIRED TO PLAY -- PRESS B")
         strike_marker:visible(false)
         return
     end
@@ -295,7 +304,7 @@ local function judge_press()
     -- costs only the energy already spent" decision, already paid at
     -- game.begin() above.
     round_resolved = true
-    status_label:set("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
+    report_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
                           total_score)
 end
 
@@ -305,7 +314,7 @@ local function finish_session()
     local record = game.record(manifest.id)
     local streak = record ~= nil and record.streak or 0
     local best = record ~= nil and record.best or total_score
-    status_label:set(string.upper(tier) .. "!  BEST " .. best .. "  STREAK " ..
+    report_status(string.upper(tier) .. "!  BEST " .. best .. "  STREAK " ..
                           streak .. " -- PRESS B")
     strike_marker:visible(false)
     creature_obj:sprite(nibble_sprite_name("neutral"))

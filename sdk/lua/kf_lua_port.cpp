@@ -9,6 +9,7 @@
 
 #include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_game_session.h"
+#include "../pet/kf_home_screen_input.h"
 #include "../pet/kf_pet_session.h"
 
 #include "kf/app.h"
@@ -681,6 +682,20 @@ int lua_pet_flush(lua_State *L) {
     return 0;
 }
 
+/* pet.quick_play() -- Task 5 of the Nibble-and-the-game-session plan: the
+ * play picker's "Quick play" choice, the exact care action UP used to
+ * trigger directly before the picker existed (kf_home_screen_quick_
+ * play(), kf_home_screen_input.h -- see that header's own top-of-file
+ * comment for the full move). Takes no argument, unlike pet.play(): the
+ * variation cycling that used to live behind a raw button edge lives
+ * inside kf_home_screen_quick_play() itself now, not here, so this
+ * binding has nothing of its own to pass through. */
+int lua_pet_quick_play(lua_State *L) {
+    (void)L;
+    kf_home_screen_quick_play();
+    return 0;
+}
+
 /* pet.wake() -- Task 7 (the screens/clock/sleep plan): wakes a sleeping
  * creature deliberately. Costs happiness (kf/ pet.h's kf_pet_wake(),
  * config->wake_happiness_cost_mp) and is a no-op if the creature is already
@@ -945,6 +960,7 @@ const luaL_Reg kKfPetFuncs[] = {
     {"rest", lua_pet_rest},
     {"bath", lua_pet_bath},
     {"flush", lua_pet_flush},
+    {"quick_play", lua_pet_quick_play},
     {"wake", lua_pet_wake},
     {"poops", lua_pet_poops},
     {"dirtiness", lua_pet_dirtiness},

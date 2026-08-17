@@ -57,14 +57,6 @@ void kf_home_screen_handle_care_buttons(const kf_pet_state *pet,
         KF_LOGI(TAG, "feed variation=%u reaction=%s", variation,
                 reaction_name(pet->last_reaction));
     }
-    if (pressed & KF_BTN_UP) {
-        const uint8_t variation = g_play_variation;
-        g_play_variation = static_cast<uint8_t>(
-            (variation + 1u) % KF_PET_CARE_VARIATION_COUNT);
-        kf_pet_session_play(variation);
-        KF_LOGI(TAG, "play variation=%u reaction=%s", variation,
-                reaction_name(pet->last_reaction));
-    }
     if (pressed & KF_BTN_DOWN) {
         const uint8_t variation = g_rest_variation;
         g_rest_variation = static_cast<uint8_t>(
@@ -85,6 +77,25 @@ void kf_home_screen_handle_care_buttons(const kf_pet_state *pet,
         kf_pet_session_flush();
         KF_LOGI(TAG, "flush");
     }
+}
+
+void kf_home_screen_quick_play(void) {
+    const kf_pet_state *pet = kf_pet_session_state();
+    if (pet->asleep) {
+        /* Matches kf_home_screen_handle_care_buttons()'s own leading
+         * guard exactly -- UP used to be gated behind that same check
+         * before this task moved it out, and "nothing about the existing
+         * home screen input changes except what the 2 key opens" (the
+         * plan's own words) means this no-op has to survive the move
+         * unchanged, not just the variation cycling and the log line. */
+        return;
+    }
+    const uint8_t variation = g_play_variation;
+    g_play_variation = static_cast<uint8_t>((variation + 1u) %
+                                             KF_PET_CARE_VARIATION_COUNT);
+    kf_pet_session_play(variation);
+    KF_LOGI(TAG, "play variation=%u reaction=%s", variation,
+            reaction_name(kf_pet_session_state()->last_reaction));
 }
 
 void kf_home_screen_input_reset_variations_for_test(void) {

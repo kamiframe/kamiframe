@@ -4858,9 +4858,28 @@ static int run_creature_screen_input_check(void) {
      * shared one counter instead of each owning its own, this Play press
      * would land on variation 2 (Feed's next value) instead of Play's own
      * fresh 0 -- this is what actually distinguishes "per-action counters"
-     * from "one shared counter" rather than merely exercising both. */
-    press_and_check(KF_BTN_UP, KF_PET_CARE_PLAY, 0u,
-                     "play press (independent variation counter)");
+     * from "one shared counter" rather than merely exercising both.
+     *
+     * kf_home_screen_quick_play(), NOT press_and_check(KF_BTN_UP, ...):
+     * Task 5 of the Nibble-and-the-game-session plan moved UP's care
+     * action out of kf_home_screen_handle_care_buttons() entirely (see
+     * kf_home_screen_input.h's own top-of-file comment) -- UP now opens
+     * the play picker instead, and Quick play calls this function
+     * directly rather than going through a button edge. Same variation
+     * counter, same kf_pet_session_play() call underneath, just a
+     * different trigger -- this is the read-only equivalent of press_
+     * and_check() for that one call, not a fundamentally different
+     * assertion. */
+    kf_home_screen_quick_play();
+    check(pet->care_actions_taken == care_actions_before + 1u,
+          "quick play: care_actions_taken did not increment by one");
+    care_actions_before = pet->care_actions_taken;
+    check(pet->last_care_action == static_cast<uint8_t>(KF_PET_CARE_PLAY),
+          "quick play: last_care_action does not match PLAY");
+    check(pet->last_reaction ==
+              kf_pet_reaction_to(pet->base_trait, KF_PET_CARE_PLAY, 0u),
+          "quick play: last_reaction does not match variation 0 (PLAY's "
+          "own counter starts fresh, independent of FEED's)");
 
     /* Finish Feed's cycle: variation 2, then wrap back to 0. */
     press_and_check(KF_BTN_A, KF_PET_CARE_FEED, 2u, "feed press 3 (variation 2)");
@@ -8915,7 +8934,47 @@ int run_clock_check(void) {
  * and raises -- nobody had measured the count before this." Measured, not
  * assumed -- see run_settings_screen_check()'s own comment at the assert
  * site for how. */
-constexpr int kSettingsCheckExpectedObjectCount = 60; /* +1: the Home clock;
+constexpr int kSettingsCheckExpectedObjectCount = 61; /* +1: Task 5 of the
+                                                         * Nibble-and-the-
+                                                         * game-session
+                                                         * plan's play
+                                                         * picker -- ONE
+                                                         * kf.screen(
+                                                         * "play_menu")
+                                                         * text object
+                                                         * (60 -> 61). This
+                                                         * was the exact
+                                                         * moment "four
+                                                         * slots left"
+                                                         * below stopped
+                                                         * being true --
+                                                         * see nibble.lua's
+                                                         * own object-
+                                                         * budget comment
+                                                         * for the other
+                                                         * half: it had to
+                                                         * give up one of
+                                                         * its own four
+                                                         * objects to make
+                                                         * room for this
+                                                         * one, and the
+                                                         * combined total
+                                                         * (61 + 3) now
+                                                         * sits at exactly
+                                                         * 64 -- ZERO slots
+                                                         * left. The next
+                                                         * new object
+                                                         * anywhere in this
+                                                         * cartridge needs
+                                                         * either a
+                                                         * reduction
+                                                         * somewhere else
+                                                         * first or raising
+                                                         * KF_SCENE_MAX_
+                                                         * OBJECTS itself,
+                                                         * not a "just add
+                                                         * it" change.
+                                                         * +1: the Home clock;
                                                          * +2: the sound-
                                                          * foundation follow-
                                                          * up's VOLUME label
@@ -8936,15 +8995,41 @@ constexpr int kSettingsCheckExpectedObjectCount = 60; /* +1: the Home clock;
                                                          * brightness has no
                                                          * OFF (54 -> 60).
                                                          *
-                                                         * 60 OF 64. Four
-                                                         * slots left, and
-                                                         * this is the number
-                                                         * to look at before
-                                                         * adding another
-                                                         * Settings row: one
-                                                         * more of the same
-                                                         * shape costs 6 and
-                                                         * does not fit. The
+                                                         * 61 OF 64, measured
+                                                         * by THIS check
+                                                         * (Home+Info+
+                                                         * Settings+
+                                                         * play_menu; it
+                                                         * never loads
+                                                         * nibble.lua).
+                                                         * Nibble itself
+                                                         * (examples/
+                                                         * creature_demo/
+                                                         * nibble.lua) adds
+                                                         * 3 more when it is
+                                                         * ALSO loaded, the
+                                                         * real interactive
+                                                         * app's own
+                                                         * configuration --
+                                                         * see run_verify_
+                                                         * nibble()'s own
+                                                         * comment. 61 + 3 =
+                                                         * 64: ZERO slots
+                                                         * left, not four --
+                                                         * this is the
+                                                         * number to look at
+                                                         * before adding
+                                                         * another Settings
+                                                         * row, another
+                                                         * screen, or
+                                                         * another game: the
+                                                         * budget is fully
+                                                         * spent, and
+                                                         * anything new
+                                                         * needs a
+                                                         * reduction
+                                                         * somewhere else
+                                                         * first. The
                                                          * ceiling is KF_SCENE
                                                          * _MAX_OBJECTS (kf/
                                                          * scene.h), and
@@ -9067,14 +9152,20 @@ end
 
     check(kf_screen_nav_debug_index() == 0,
           "Home is active immediately after kf_screen_nav_init()");
-    check(kf_screen_nav_count() == 3, "exactly 3 screens are registered");
+    /* 4, not 3, since Task 5 of the Nibble-and-the-game-session plan:
+     * creature.lua's own top-level code now also declares kf.screen(
+     * "play_menu") (the play picker), registered fourth -- MENU now
+     * cycles through it too, between Settings and back to Home. */
+    check(kf_screen_nav_count() == 4, "exactly 4 screens are registered");
     check(std::strcmp(kf_screen_nav_name(0), "home") == 0,
           "screen 0 is named 'home'");
     check(std::strcmp(kf_screen_nav_name(1), "info") == 0,
           "screen 1 is named 'info'");
     check(std::strcmp(kf_screen_nav_name(2), "settings") == 0,
           "screen 2 is named 'settings' -- registered third, so MENU "
-          "cycles HOME -> INFO -> SETTINGS -> HOME");
+          "cycles HOME -> INFO -> SETTINGS -> PLAY_MENU -> HOME");
+    check(std::strcmp(kf_screen_nav_name(3), "play_menu") == 0,
+          "screen 3 is named 'play_menu', registered fourth");
 
     /* ---- 4. Risk 5 (ADR 0044): the 64-object scene ceiling, measured for
      * real now that Home, Info AND Settings all exist together, after a
@@ -13110,6 +13201,95 @@ kf.screen("nibble"):show()
           "exactly 69 points");
     check(record.perfect_count == 3u,
           "three perfect events were recorded");
+
+    /* Task 5 of the Nibble-and-the-game-session plan: the play picker.
+     * Continues in the SAME session, deliberately -- these assertions
+     * only care about DELTAS, not starting values, so a pet that already
+     * played one Nibble session above is a fine starting point. Still a
+     * fresh EGG throughout (eggs never sleep -- kf/pet.h's own words --
+     * and the ~16 simulated seconds the round test above spent are
+     * nowhere near EGG's default 1-hour duration), so `not pet.asleep()`
+     * never blocks anything below. */
+    {
+        auto tap = [&](uint32_t button) {
+            kf_app_debug_set_buttons(button, button);
+            kf_pet_session_frame(kFixedDtMs);
+            kf_screen_nav_frame(kFixedDtMs);
+            kf_lua_port_frame(kFixedDtMs);
+            kf_app_debug_set_buttons(0u, 0u);
+        };
+
+        /* Home first -- the round test above left Nibble on its own
+         * finished/result screen. */
+        tap(KF_BTN_B);
+        check(kf_screen_nav_debug_index() == 0,
+              "B returns to Home from Nibble's finished screen");
+
+        /* Headroom so Quick play's happiness reward is actually
+         * observable below, not silently clamped away: the round test
+         * above already scored GOOD, which pays happiness -- but this
+         * pet started at max happiness, so that reward was a clamped
+         * no-op and happiness is still sitting at the ceiling. Without
+         * this, PATH A and PATH B below would both land back at the
+         * SAME ceiling value regardless of whether the underlying
+         * reward computation actually agreed -- exactly the kind of
+         * vacuous comparison this project's own non-vacuity rule warns
+         * about, caught here before it shipped. */
+        kf_pet_session_state_mutable_for_test()->happiness_mp = 50000u;
+
+        /* PATH A: kf_home_screen_quick_play() called directly, on a
+         * snapshot of the current pet state, then restored -- "the
+         * direct care action" the plan's own words refer to: the exact
+         * function UP used to reach through kf_home_screen_handle_care_
+         * buttons() before this task (see kf_home_screen_input.h's own
+         * top-of-file comment), now reachable only through the picker. */
+        const kf_pet_state baseline = *kf_pet_session_state();
+        kf_home_screen_input_reset_variations_for_test();
+        kf_home_screen_quick_play();
+        const kf_pet_state after_direct = *kf_pet_session_state();
+        *kf_pet_session_state_mutable_for_test() = baseline;
+        kf_home_screen_input_reset_variations_for_test();
+
+        /* PATH B: through the real UI -- UP opens the picker (creature.
+         * lua's own on_frame()), then LEFT chooses Quick play (the
+         * picker's own block in that same on_frame()). */
+        check(kf_screen_nav_debug_index() == 0,
+              "still on Home before opening the picker");
+        tap(KF_BTN_UP);
+        check(std::strcmp(kf_screen_nav_name(kf_screen_nav_debug_index()),
+                           "play_menu") == 0,
+              "pressing UP (2) on Home opens the play picker");
+
+        tap(KF_BTN_LEFT);
+        const kf_pet_state after_ui = *kf_pet_session_state();
+
+        check(after_direct.happiness_mp == after_ui.happiness_mp &&
+                  after_direct.hunger_mp == after_ui.hunger_mp &&
+                  after_direct.energy_mp == after_ui.energy_mp &&
+                  after_direct.care_actions_taken ==
+                      after_ui.care_actions_taken &&
+                  after_direct.last_reaction == after_ui.last_reaction,
+              "choosing Quick play through the picker produces the exact "
+              "same pet-state delta as calling kf_home_screen_quick_play() "
+              "directly -- the picker only changes what triggers the "
+              "action, not what the action does");
+
+        /* creature.lua's own on_frame() calls kf.screen("home"):show()
+         * immediately after pet.quick_play() -- confirmed here as real
+         * behaviour, not assumed. */
+        check(kf_screen_nav_debug_index() == 0,
+              "Quick play returns to Home automatically");
+
+        /* B from the picker also returns Home: open it again, then press
+         * B instead of choosing anything. */
+        tap(KF_BTN_UP);
+        check(std::strcmp(kf_screen_nav_name(kf_screen_nav_debug_index()),
+                           "play_menu") == 0,
+              "the picker opens a second time");
+        tap(KF_BTN_B);
+        check(kf_screen_nav_debug_index() == 0,
+              "B returns to Home from the picker");
+    }
 
     kf_lua_port_shutdown();
     kf_pet_session_shutdown();

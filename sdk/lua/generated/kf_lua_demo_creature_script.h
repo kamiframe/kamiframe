@@ -667,12 +667,22 @@ if kf.home_screen_active() then
             -- Sound foundation, part 2: care-response sounds, edge-
             -- detected via the SAME debounced button press kf_home_screen_
             -- input.cpp (called earlier this frame, before this script's
-            -- on_home_frame) already used to decide whether to feed/play/
-            -- rest/bath/flush -- kf.button() here reads the identical bit,
-            -- and pet.last_reaction() already reflects the JUST-applied
-            -- result of that same press by the time this runs, not a
-            -- stale one from an earlier frame. Gated on `raw_asleep`, NOT
-            -- `asleep` -- see that local's own comment above for why.
+            -- on_home_frame) already used to decide whether to feed/rest/
+            -- bath/flush -- kf.button() here reads the identical bit, and
+            -- pet.last_reaction() already reflects the JUST-applied result
+            -- of that same press by the time this runs, not a stale one
+            -- from an earlier frame. Gated on `raw_asleep`, NOT `asleep`
+            -- -- see that local's own comment above for why.
+            --
+            -- UP/"care_play" is the one exception: since Task 5 of the
+            -- Nibble-and-the-game-session plan, UP no longer triggers a
+            -- care action here at all (kf_home_screen_input.cpp's own UP
+            -- branch moved out -- see that header's own top-of-file
+            -- comment) -- it opens the play picker instead (this file's
+            -- own on_frame(), below). The SAME sound still plays on the
+            -- SAME press, now as feedback for opening the picker rather
+            -- than for a play action that already happened -- input
+            -- feedback for the button, not a claim about what it did.
             if not raw_asleep then
                 if kf.button("a") then care_sound("care_feed") end
                 if kf.button("up") then care_sound("care_play") end
@@ -1218,6 +1228,36 @@ function on_settings_frame(dt_ms, field, hour, minute, ampm, saved, volume,
     paint(save_row, "save")
 end
 
+----------------------------------------------------------------------
+-- Task 5 of the Nibble-and-the-game-session plan: the play picker.
+-- Home's 2:PLAY (UP) used to call pet.play() directly -- see kf_home_
+-- screen_input.h's own top-of-file comment for exactly what moved and
+-- why. It now opens THIS screen instead: Quick play (the identical care
+-- action, unchanged, via pet.quick_play()) or Nibble.
+--
+-- ONE text object, not two separate "Quick play"/"Nibble" lines: see
+-- nibble.lua's own object-budget comment (examples/creature_demo/
+-- nibble.lua) for why -- creature.lua's existing Home/Info/Settings
+-- objects already hold the retained scene close to KF_SCENE_MAX_OBJECTS
+-- (64), and this screen has exactly as little room to spend as Nibble
+-- did.
+--
+-- Declared here, not inside the Home-only `do ... end` block above:
+-- that block's locals (raw_asleep, care_sound, `home` itself) are not
+-- visible outside their own scope, and this screen's own logic (below,
+-- inside on_frame()) needs none of them -- kf.screen(name) is
+-- create-or-fetch, so re-fetching "home"/"nibble" by name here is the
+-- same call every OTHER cross-screen reference in this codebase already
+-- makes rather than threading a local through.
+----------------------------------------------------------------------
+local play_menu = kf.screen("play_menu")
+play_menu:background(kf.color(18, 22, 26))
+local play_menu_label = play_menu:text("")
+play_menu_label:move(8, 8)
+play_menu_label:color(kf.WHITE, kf.color(18, 22, 26))
+
+local play_menu_was_showing = false
+
 -- Screen-agnostic: the main loop (sdl_main.cpp/app_main.cpp) calls this
 -- unconditionally, every real frame, regardless of which screen is active
 -- -- these three announcements are pet-state observations, not any one
@@ -1226,6 +1266,14 @@ end
 -- OWN entry point instead (on_home_frame/on_info_frame/on_settings_frame
 -- above) -- see kf_lua_port.h's own comment on kf_lua_port_home_frame()
 -- for why Home's drawing used to live here, and what that cost.
+--
+-- The play picker's own logic lives here too, at the bottom, for the
+-- identical reason Nibble's does (examples/creature_demo/nibble.lua's own
+-- header comment): a kf.screen()-declared screen with no C-side update
+-- function has no dedicated per-frame entry point of its own, only this
+-- shared one -- gated on kf.active_screen() so none of it runs, and
+-- nothing it reads (pet.asleep(), kf.button()) is even evaluated, while
+-- some OTHER screen is the one actually showing.
 function on_frame(dt_ms)
     announce_stage()
     announce_death()
@@ -1244,6 +1292,55 @@ function on_frame(dt_ms)
         low = "getting a little tired",
         full = "fully rested!",
     })
+
+    -- Opens the picker on UP, from Home only -- gated on `not pet.
+    -- asleep()`, matching exactly what kf_home_screen_input.cpp's own
+    -- leading guard used to block the direct play action on, before this
+    -- task moved it out (kf_home_screen_quick_play()'s own header
+    -- comment says the same thing from the other side).
+    if kf.active_screen() == "home" and not pet.asleep() and
+        kf.button("up") then
+        play_menu:show()
+    end
+
+    local showing_menu = kf.active_screen() == "play_menu"
+    if showing_menu then
+        if not play_menu_was_showing then
+            -- Entered just this frame: refresh Nibble's best/streak --
+            -- game.record() (Task 3), nil if Nibble has never been
+            -- played, matching game.record()'s own documented contract.
+            --
+            -- KEPT DELIBERATELY SHORT: KF_SCENE_TEXT_MAX (kf/scene.h) is
+            -- 40 characters, and a longer string is silently truncated,
+            -- not rejected -- an earlier version of this line ran to 52
+            -- and lost its own streak number off the end without any
+            -- error, only a log line nobody watching the panel would
+            -- see. This format stays under 40 even at record.best's
+            -- worst case (a full 10-digit uint32) and record.streak's
+            -- (3-digit, capped at 255 -- kf/game.h's own streak_days).
+            local record = game.record("nibble")
+            local best = record ~= nil and record.best or 0
+            local streak = record ~= nil and record.streak or 0
+            play_menu_label:set("L:QUICKPLAY R:NIBBLE B" .. best .. " S" ..
+                                     streak)
+        end
+        -- Quick play returns to Home immediately -- the whole point of
+        -- Chris's "a player with ten seconds still has a way to meet the
+        -- play need" decision is that this is the FAST path, not a second
+        -- menu to navigate out of by hand. Nibble instead stays on its
+        -- own screen, exactly like choosing it is meant to.
+        if kf.button("left") then
+            pet.quick_play()
+            kf.screen("home"):show()
+        elseif kf.button("right") then
+            kf.screen("nibble"):show()
+        end
+        -- B returns Home from the picker too, for free -- kf_screen_nav_
+        -- frame() (simulator/src/pet/kf_screen_nav.cpp) already jumps to
+        -- Home on a B edge from ANY screen, before this function ever
+        -- runs this same frame; nothing here needs to special-case it.
+    end
+    play_menu_was_showing = showing_menu
 end
 
 kf.log("the creature stirs")
