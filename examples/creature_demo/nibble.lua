@@ -153,26 +153,25 @@ local function nibble_sprite_name(pose)
 end
 
 ----------------------------------------------------------------------
--- Scene: the field, the food, and the strike-zone marker -- THREE
--- objects, not the six an earlier version of this file had (a round
--- counter, a score readout and a result line as separate text objects,
--- plus the creature as a fourth). creature.lua's own Home/Info/Settings
--- screens already hold the retained scene at almost exactly
--- KF_SCENE_MAX_OBJECTS (64) between them -- found the hard way, twice:
--- loading nibble.lua as a second chunk over creature.lua first
--- overflowed it with six objects, and again with four once the play
--- picker (Task 5) needed its own single object and there was no headroom
--- left at all. Round/score/result feedback goes through kf.log()
--- instead of on-screen text below (see report_status()) -- a real
--- reduction in on-screen polish, not a free one, but the alternative
--- was cutting the picker's own instructions instead, and a first-time
--- player has no way to discover what LEFT/RIGHT do on that screen
--- without them. Swapping this back for a real status line is a
--- straightforward follow-up once something else's object budget frees
--- up, not a design decision this file is trying to make permanently.
+-- Scene: the field, the food, the strike-zone marker, and the two text
+-- lines that tell the player what is happening.
+--
+-- THE THREE-OBJECT VERSION OF THIS FILE IS WHY ADR 0061 EXISTS. Before
+-- it, every screen in the cartridge held its scene objects for the life
+-- of the process whether or not anyone was looking at it, so
+-- creature.lua's Home, Info, Settings and play picker sat at 61 of the
+-- 64 slots between them and this file had exactly three to spend -- on a
+-- creature, a piece of food and a target. Round, score and result had to
+-- go out through kf.log() instead, which meant a scoring game that never
+-- showed the player a number. ADR 0061 made the 64 a PER-SCREEN budget:
+-- a screen that is not showing holds nothing, so Nibble now has the
+-- whole scene to itself while it is the active screen and these two text
+-- objects cost nothing that any other screen wanted.
 ----------------------------------------------------------------------
+local SCREEN_BG = kf.color(18, 22, 26)
+
 local screen = kf.screen("nibble")
-screen:background(kf.color(18, 22, 26))
+screen:background(SCREEN_BG)
 
 local creature_obj = screen:sprite(nibble_sprite_name("neutral"))
 creature_obj:move(CREATURE_BASE_X, CREATURE_Y)
@@ -192,11 +191,35 @@ strike_marker:move(STRIKE_X - (STRIKE_MARKER_SIZE - FOOD_SIZE) // 2, FIELD_Y -
                         (STRIKE_MARKER_SIZE - FOOD_SIZE) // 2)
 strike_marker:layer(-1) -- behind the food, so the food is never hidden by it
 
--- kf.log() stand-in for the on-screen status line the object budget has
--- no room for right now -- see this section's own header comment. One
--- function so every call site below reads the same either way this ever
--- gets a real text object back.
+-- The persistent line: which round this is and what the score is. Top-
+-- left, clear of the field (FIELD_Y = 120) and of the creature.
+local status_line = screen:text("")
+status_line:move(8, 8)
+status_line:color(kf.WHITE, SCREEN_BG)
+
+-- The transient line: what just happened, or what to press. Bottom of
+-- the panel, well below the field, so a result never lands on top of the
+-- thing the player is watching.
+local result_line = screen:text("")
+result_line:move(8, 292)
+result_line:color(kf.WHITE, SCREEN_BG)
+
+-- Both lines stay under KF_SCENE_TEXT_MAX (kf/scene.h) -- 40 characters,
+-- silently truncated past that, which is exactly the failure the play
+-- picker's own label hit and had to be shortened for. The longest string
+-- either of these is ever handed is finish_session()'s tier line, and
+-- that is why the tier and the record are on separate lines rather than
+-- one: together they ran past 40.
+local function set_status(text)
+    status_line:set(text)
+end
+
+-- Still logs, exactly as it did when the log WAS the status line: the
+-- headless checks and anything watching a device over the debug bridge
+-- read these, and an on-screen line the player can see is an addition to
+-- that, not a replacement for it.
 local function report_status(text)
+    result_line:set(text)
     kf.log("nibble: " .. text)
 end
 
@@ -239,8 +262,12 @@ local function start_round()
     round_elapsed_ms = 0
     round_resolved = false
     strike_marker:visible(round <= 3)
-    report_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
-                          total_score)
+    set_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
+                    total_score)
+    -- Clears last round's verdict as the new one starts, so PERFECT from
+    -- three rounds ago is never still sitting there while the player is
+    -- waiting to see what this press did.
+    report_status("")
 end
 
 -- Called once, the instant Nibble becomes the active screen (the
@@ -257,6 +284,7 @@ local function enter_nibble()
                             manifest.reward.need_fraction_percent)
     if ctx == nil then
         active = false
+        set_status("NIBBLE")
         report_status("TOO TIRED TO PLAY -- PRESS B")
         strike_marker:visible(false)
         return
@@ -276,20 +304,26 @@ local function judge_press()
     if delta < 0 then
         delta = -delta
     end
+    local verdict
     if delta <= perfect_window_ms() then
         total_score = total_score + POINTS_PERFECT
         game.score(POINTS_PERFECT)
         game.event("perfect")
+        verdict = "PERFECT!"
     elseif delta <= good_window_ms() then
         total_score = total_score + POINTS_GOOD
         game.score(POINTS_GOOD)
+        verdict = "GOOD"
+    else
+        -- Outside the good window: a miss, worth nothing -- Chris's
+        -- "losing costs only the energy already spent" decision, already
+        -- paid at game.begin() above.
+        verdict = "MISS"
     end
-    -- Outside the good window: a miss, worth nothing -- Chris's "losing
-    -- costs only the energy already spent" decision, already paid at
-    -- game.begin() above.
     round_resolved = true
-    report_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
-                          total_score)
+    set_status("ROUND " .. round .. "/" .. ROUNDS .. "  SCORE " ..
+                    total_score)
+    report_status(verdict)
 end
 
 local function finish_session()
@@ -298,8 +332,9 @@ local function finish_session()
     local record = game.record(manifest.id)
     local streak = record ~= nil and record.streak or 0
     local best = record ~= nil and record.best or total_score
-    report_status(string.upper(tier) .. "!  BEST " .. best .. "  STREAK " ..
-                          streak .. " -- PRESS B")
+    set_status("SCORE " .. total_score .. "  BEST " .. best .. "  STREAK " ..
+                    streak)
+    report_status(string.upper(tier) .. "! -- PRESS B")
     strike_marker:visible(false)
     creature_obj:sprite(nibble_sprite_name("neutral"))
     creature_obj:move(CREATURE_BASE_X, CREATURE_Y)
