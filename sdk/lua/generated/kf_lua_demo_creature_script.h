@@ -399,6 +399,17 @@ if kf.home_screen_active() then
     local kZzzVisibleMs = 2000
     local zzz_elapsed_ms = 0
 
+    -- The ZZZ's top edge may never enter the clock's row. Both places that
+    -- position it derive from the creature's own position, which the wander
+    -- can carry to the top of the field, and both used to clamp at 0 --
+    -- putting the ZZZ underneath the clock, where layer 0 loses to the
+    -- clock's layer 2 and it renders as a smear behind the digits.
+    -- Derived, not chosen: the clock sits at y=2 (clock:move above) and a
+    -- glyph cell is KF_FONT_CELL_H = 8 tall (kf/font.h), so it occupies
+    -- rows 2..9; 10 is the first clear row and 12 leaves two spare. Raise
+    -- the clock or grow the font and this needs to move with it.
+    local kZzzMinY = 12
+
     -- 2026-08-11 bedtime-behaviour extension (ADR 0052): "extend the
     -- 'drowsy' timeframe to start 10 minutes before actual bedtime" --
     -- pet.drowsy() now answers this directly from Core (kf/pet.h's
@@ -745,7 +756,7 @@ if kf.home_screen_active() then
                 else
                     zzz:hide()
                 end
-                zzz:move(bed_x + 30, math.max(0, bed_y - 10))
+                zzz:move(bed_x + 30, math.max(kZzzMinY, bed_y - 10))
 
                 -- Nothing to want while the bedding is out -- pet.wants()
                 -- already reads nil the instant Core's own asleep actually
@@ -758,6 +769,17 @@ if kf.home_screen_active() then
                 paint_guide(nil)
             else
                 futon:hide()
+                -- The ZZZ is the futon's companion and is hidden with it,
+                -- here, rather than in each of the awake branches below.
+                -- It used to be hidden only inside the `if want` else-branch
+                -- (the nodding-off loop), which meant a want arriving while
+                -- the creature was mid-nod-pose stranded a visible ZZZ:
+                -- every hide it could reach had just become unreachable, so
+                -- it stayed frozen on screen -- behind the clock, on layer
+                -- 0 -- until the want was satisfied. Clearing it on the way
+                -- out of the bed state holds no matter which branch runs
+                -- next; the nodding-off loop re-shows it on its own frames.
+                zzz:hide()
                 local want = pet.wants()
                 if want then
                     -- Task 8: the attention signal. The creature stops
@@ -838,7 +860,7 @@ if kf.home_screen_active() then
                             body:frame(0) -- the sleeping art is single-frame
                             body:move(nod_x, nod_y)
                             zzz:show()
-                            zzz:move(nod_x + 30, math.max(0, nod_y - 10))
+                            zzz:move(nod_x + 30, math.max(kZzzMinY, nod_y - 10))
                         else
                             body:sprite(creature.sprite())
                             body:flip(creature.mirrored())

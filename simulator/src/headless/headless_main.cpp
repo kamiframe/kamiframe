@@ -9699,6 +9699,45 @@ end
           "drowsy window");
     const kf_color home_bg = kf_fb_pixels()[0];
 
+    /* The strip of Home above everything that is permanently positioned:
+     * want_bang is y=196, the want pose y=212, poops y=232, the stat rows
+     * y=262+, the guide y=300, and the clock is excluded by starting at
+     * creature.lua's own kZzzMinY. So the only things that can ever put ink
+     * in here are the wandering creature and the ZZZ -- which is what makes
+     * it a usable probe for both C4b and C4c below. Both paint whichever
+     * pack is mounted: the ZZZ is a text object drawn from the built-in
+     * font, and a body sprite missing from the pack still draws a
+     * kPlaceholderColor box the same size (scene.cpp), so the default
+     * hello_sprite pack puts a rectangle in the band exactly where the
+     * creature pack puts art. */
+    constexpr int16_t kBandTop = 12;     /* creature.lua's kZzzMinY */
+    constexpr int16_t kBandBottom = 190; /* clear of want_bang (196) */
+    auto band_ink = [&]() -> int {
+        int ink = 0;
+        for (int16_t y = kBandTop; y < kBandBottom; ++y) {
+            for (int16_t x = 0; x < KF_DISPLAY_WIDTH; ++x) {
+                if (kf_fb_pixels()[static_cast<size_t>(y) * KF_DISPLAY_WIDTH +
+                                   static_cast<size_t>(x)] != home_bg) {
+                    ++ink;
+                }
+            }
+        }
+        return ink;
+    };
+
+    /* Nothing outstanding, so pet.wants() reads nil and the script can
+     * actually reach its drowsy branch. C2 above leaves poop_count at 3,
+     * which alone pins kf_pet_wants() to FLUSH forever -- see C4b's own
+     * note on what that used to do to the measurement below. */
+    constexpr kf_pet_millipercent kFullNeed = 100000u;
+    auto quiet_every_want = [&]() {
+        pet2->hunger_mp = kFullNeed;
+        pet2->energy_mp = kFullNeed;
+        pet2->happiness_mp = kFullNeed;
+        pet2->dirtiness_mp = 0u;
+        pet2->poop_count = 0u;
+    };
+
     /* ---- C4b: the worst-case dirty-rect count DURING the nodding-off
      * loop itself, drowsy but NOT yet tucked in -- the shape the task's
      * own brief asks to be measured by name: "alternates a moving creature
@@ -9710,10 +9749,23 @@ end
      * cheap non-vacuity guard on ITS OWN measurement: a loop that silently
      * froze (e.g. the nod cycle wired up but never actually driven by
      * dt_ms) would still report a worst-case of 0, well under budget, and
-     * pass this check for the wrong reason. ---- */
+     * pass this check for the wrong reason.
+     *
+     * That guard was not strong enough, and this measurement spent from
+     * 2026-08-11 to 2026-08-16 reporting an idle screen. C2 above sets
+     * poop_count = 3 and never clears it, so kf_pet_wants() returned FLUSH
+     * on every frame here; the script took its objecting branch and never
+     * reached the nodding-off loop at all. total_dirty_bytes_drowsy > 0
+     * still passed -- off the 1 Hz "!" blink, which has nothing to do with
+     * nodding off -- and the reported worst case of 1 rect was an idle
+     * Home. Hence quiet_every_want() below, and a guard that pins the
+     * specific thing being claimed: the ZZZ appearing AND disappearing in
+     * the band, not merely some pixel somewhere changing. ---- */
     {
+        quiet_every_want();
         size_t worst_rects_drowsy = 0;
-        uint64_t total_dirty_bytes_drowsy = 0u;
+        int min_band_ink = -1;
+        int max_band_ink = 0;
         for (int i = 0; i < 900; ++i) {
             kf_fb_clear_dirty();
             drive_frame(kFixedDtMs);
@@ -9722,19 +9774,118 @@ end
             if (count > worst_rects_drowsy) {
                 worst_rects_drowsy = count;
             }
-            total_dirty_bytes_drowsy += kf_fb_dirty_bytes();
+            const int ink = band_ink();
+            if (min_band_ink < 0 || ink < min_band_ink) {
+                min_band_ink = ink;
+            }
+            if (ink > max_band_ink) {
+                max_band_ink = ink;
+            }
         }
         KF_LOGI(TAG,
                 "sleep-screen: worst-case dirty rects during the drowsy "
-                "nodding-off loop = %zu (KF_MAX_DIRTY_RECTS = %d)",
-                worst_rects_drowsy, KF_MAX_DIRTY_RECTS);
+                "nodding-off loop = %zu (KF_MAX_DIRTY_RECTS = %d), band ink "
+                "%d..%d px",
+                worst_rects_drowsy, KF_MAX_DIRTY_RECTS, min_band_ink,
+                max_band_ink);
         check(worst_rects_drowsy <= KF_MAX_DIRTY_RECTS,
               "the drowsy nodding-off loop stays within the dirty-rect "
               "budget");
-        check(total_dirty_bytes_drowsy > 0u,
-              "the drowsy nodding-off loop is genuinely animating over "
-              "this span (wander + the ZZZ appearing/disappearing), not "
-              "silently frozen");
+        /* Two separate claims, so a regression in either one is named.
+         * max > 0: the loop reached the band at all -- a permanent want
+         * (the 2026-08-16 defect) leaves this flat 0. max != min: what is
+         * in the band changed across the span -- the creature wandering and
+         * the ZZZ blinking on and off -- rather than one frozen frame held
+         * for 900 frames. */
+        check(max_band_ink > 0,
+              "the drowsy nodding-off loop actually runs -- the ZZZ reaches "
+              "the band above the want pose, so this measurement is of the "
+              "nodding-off loop and not of an idle Home screen");
+        /* Deliberately not claiming this pins the ZZZ specifically: the
+         * body paints in the band too, so a wandering creature alone
+         * satisfies it. It proves the span is not frozen, which is what
+         * the dirty-rect figure above needs to mean anything. C4c is where
+         * the ZZZ's own behaviour is pinned. */
+        check(max_band_ink != min_band_ink,
+              "the drowsy nodding-off loop is genuinely animating over this "
+              "span (the creature wandering, the ZZZ blinking), not one "
+              "frozen frame held for 900 frames");
+    }
+
+    /* ---- C4c: a want arriving mid-nod must not strand the ZZZ.
+     *
+     * The regression this pins: creature.lua used to hide the ZZZ only
+     * inside the `else` arm of `if want then`, i.e. only within the
+     * nodding-off loop itself. A want appearing while the creature was
+     * mid-nod-pose therefore switched the script into the objecting branch,
+     * where every zzz:hide() it could reach had just become unreachable --
+     * so the ZZZ stayed frozen on screen, on layer 0 behind the layer-2
+     * clock, until the want was satisfied. Chris hit this on 2026-08-16.
+     *
+     * Asserted as an INVARIANT rather than by hunting for the glyph: while
+     * a want is active the creature is parked at the front-centre want pose
+     * (kWantPoseY = 212) and nothing else on Home is positioned above it --
+     * want_bang is y=196, poops y=232, the stat rows y=262+, the guide
+     * y=300, and the clock is excluded by starting the band at kZzzMinY.
+     * So the whole band is background, and a stranded ZZZ anywhere in the
+     * wander field (KF_CREATURE_PRESENTER_FIELD is y=[0,260), so a ZZZ at
+     * nod_y-10 lands somewhere in [12, 202]) shows up as ink in it.
+     *
+     * Swept across the nod cycle instead of timed against it: the script's
+     * nod phase is not observable from here, and arithmetic against
+     * kNodWanderMs/kNodPoseMs would silently stop covering the pose half
+     * the day either constant moves. Stepping ~1000ms per iteration for
+     * more than one full 14000ms cycle guarantees at least one iteration
+     * forces the want during a ZZZ-visible pose, whatever the phase. ---- */
+    {
+        constexpr kf_pet_millipercent kWantingHunger = 10000u; /* under 25% */
+
+        int worst_stranded_ink = 0;
+        int nod_ink_seen = 0;
+        for (int step = 0; step < 15; ++step) {
+            /* Let the nod cycle advance ~1000ms with nothing wanted, so
+             * successive iterations enter the want at successive phases. */
+            quiet_every_want();
+            for (int i = 0; i < 30; ++i) {
+                drive_frame(kFixedDtMs);
+            }
+            nod_ink_seen += band_ink(); /* non-vacuity: see the check below */
+
+            /* Now a want arrives, exactly as it would from ordinary decay. */
+            pet2->hunger_mp = kWantingHunger;
+            for (int i = 0; i < 3; ++i) {
+                drive_frame(kFixedDtMs);
+            }
+            const int stranded = band_ink();
+            if (stranded > worst_stranded_ink) {
+                worst_stranded_ink = stranded;
+            }
+        }
+        /* Hand the following sections a creature with nothing outstanding,
+         * rather than half-restoring the 3 poops C2 left behind: the
+         * tuck-in checks below read the bedding at the creature's own
+         * position, which the poop band (y=232) never touches, and the
+         * later grid-sampling section clears poop_count itself anyway. */
+        quiet_every_want();
+        for (int i = 0; i < 3; ++i) {
+            drive_frame(kFixedDtMs);
+        }
+
+        /* The sweep is only meaningful if the nodding-off loop was actually
+         * drawing into this band between the want edges -- a script that
+         * never showed the creature or the ZZZ up there at all would report
+         * a clean band below and pass for entirely the wrong reason. */
+        check(nod_ink_seen > 0,
+              "sanity: the nodding-off loop does paint inside the band this "
+              "check watches, so a clean band after a want means something");
+        KF_LOGI(TAG,
+                "sleep-screen: worst band ink with a want active = %d px "
+                "(band y=[%d,%d))",
+                worst_stranded_ink, kBandTop, kBandBottom);
+        check(worst_stranded_ink == 0,
+              "a want arriving mid-nod clears the ZZZ instead of stranding "
+              "it on screen -- nothing paints above the want pose while the "
+              "creature is objecting, at any point in the nod cycle");
     }
 
     kf_app_debug_set_buttons(KF_BTN_B, KF_BTN_B);
