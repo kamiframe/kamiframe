@@ -108,6 +108,16 @@ display, `kamiframe-sim` will exit with an SDL error about no video device.
 `kamiframe-headless` needs no display at all and still runs the real firmware,
 so it is always available as a fallback.
 
+**3. Gamepads do not reach a WSL2 build.** SDL finds controllers on Linux by
+reading evdev out of `/dev/input`, and WSL2 does not populate that directory —
+there is usually no `/dev/input` at all. So `sdl_input.cpp` never receives an
+`SDL_EVENT_GAMEPAD_ADDED`, never logs `gamepad connected: ...`, and the pad
+appears dead no matter how it is plugged in. Nothing is wrong with the build
+and there is no flag to enable: gamepad support is automatic wherever SDL can
+see the device. **Use the native Windows build for controller work** — SDL
+talks to XInput directly there and the same code picks the pad up. Keyboard
+input works everywhere and is unaffected.
+
 ### If configure fails on a missing X11 package
 
 `cmake/fetch_sdl.cmake` already switches off the X11 extensions this project
@@ -120,12 +130,40 @@ If your distribution is missing the base X11 headers as well, this covers it:
 sudo apt-get update
 sudo apt-get install -y build-essential cmake git \
   libx11-dev libxext-dev libxrandr-dev libxi-dev \
-  libxcursor-dev libxfixes-dev libxkbcommon-dev
+  libxcursor-dev libxfixes-dev libxkbcommon-dev \
+  libpulse-dev libasound2-dev
 ```
 
-Audio libraries are deliberately not in that list. SDL only *warns* when they
-are missing, and Kamiframe has no audio yet. Add `libasound2-dev` and
-`libpulse-dev` when the audio HAL lands and you want to hear it.
+### If the simulator runs but is silent
+
+The last two packages are the audio ones, and they have to be present **when
+SDL is configured**, not merely when you run. SDL compiles one backend per set
+of headers it finds; miss them and it builds with only its `dummy` driver,
+which accepts every sample and plays none. Nothing errors — `kf_audio_init()`
+opens the dummy device successfully and logs its usual `SDL3 audio: 48000 Hz
+mono`, so a silent build looks exactly like a working one.
+
+This bit Chris on 2026-08-16, because this page used to say audio libraries
+were deliberately omitted and to add them "when the audio HAL lands". It
+landed on 2026-08-12 (`f5c4714`) and the line was never updated.
+
+Runtime libraries are not enough on their own: SDL's `_DYNAMIC` backends
+`dlopen()` `libpulse.so.0` at runtime but still need its headers at build
+time to be compiled at all. To check what a build actually got:
+
+```
+grep SDL_AUDIO_DRIVER_PULSEAUDIO \
+  <build-dir>/_deps/sdl3-build/include-config-*/build_config/SDL_build_config.h
+```
+
+`#define ... 1` is what you want; `/* #undef ... */` means silence. If it is
+undefined, install the packages and then **delete the build directory** —
+SDL's probe results are cached in the top-level `CMakeCache.txt`, so
+reconfiguring in place will not re-detect them. Re-pass any `-D` options you
+were using, `KF_ASSET_PACK` included.
+
+On WSL2 the rest of the path is already in place: WSLg exposes a PulseAudio
+server at `/mnt/wslg/PulseServer` and sets `PULSE_SERVER` to match.
 
 ---
 

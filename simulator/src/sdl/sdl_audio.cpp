@@ -211,7 +211,34 @@ kf_result kf_audio_init(void) {
     if (!SDL_ResumeAudioStreamDevice(g_stream)) {
         KF_LOGW(TAG, "SDL_ResumeAudioStreamDevice failed: %s", SDL_GetError());
     }
-    KF_LOGI(TAG, "SDL3 audio: %d Hz mono", kSampleRateHz);
+
+    /* Which driver got picked, not just that opening one worked. SDL's
+     * "dummy" backend is a real, successful device that discards every
+     * sample -- so with no genuine backend compiled in, everything above
+     * returns success and the line below would report a healthy 48000 Hz
+     * mono device that cannot make a sound. SDL builds one backend per set
+     * of headers present when IT was configured, so a Linux box missing
+     * libpulse-dev/libasound2-dev silently gets dummy and nothing else.
+     * That cost an evening on 2026-08-16, diagnosed only by reading SDL's
+     * generated SDL_build_config.h by hand; naming the driver here is what
+     * makes the next occurrence self-evident from the log. BUILDING.md's
+     * "If the simulator runs but is silent" section is the fix. */
+    const char *driver = SDL_GetCurrentAudioDriver();
+    if (driver == nullptr) {
+        driver = "unknown";
+    }
+    if (SDL_strcasecmp(driver, "dummy") == 0 ||
+        SDL_strcasecmp(driver, "disk") == 0) {
+        KF_LOGW(TAG,
+                "SDL3 audio opened the \"%s\" driver -- this device accepts "
+                "samples and plays NOTHING. SDL was built with no real audio "
+                "backend; see BUILDING.md's \"If the simulator runs but is "
+                "silent\".",
+                driver);
+    } else {
+        KF_LOGI(TAG, "SDL3 audio: %d Hz mono via \"%s\"", kSampleRateHz,
+                driver);
+    }
     return KF_OK;
 }
 
