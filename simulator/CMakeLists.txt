@@ -109,6 +109,7 @@ target_compile_definitions(kamiframe_host_common PUBLIC
 # src/pet/kf_soft3d.h's own header comment.
 add_library(kamiframe_pet_port STATIC
     src/pet/kf_pet_session.cpp
+    src/pet/kf_game_session.cpp
     src/pet/kf_creature_screen.cpp
     src/pet/kf_creature_presenter.cpp
     src/pet/kf_home_screen_input.cpp
@@ -1147,6 +1148,17 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_verify_game_record().
     add_test(NAME game_record_check
              COMMAND kamiframe-headless --verify-game-record)
+
+    # Task 2 of the Nibble-and-the-game-session plan: the live session
+    # (simulator/src/pet/kf_game_session.cpp) -- storage round-trip,
+    # energy spent up front win or lose, happiness unchanged on MISS and
+    # raised on GREAT, an id rejected past the store-key length, the
+    # no-farming case, and above all the personality-safety assertion
+    # (care_actions_taken unchanged across a GREAT reward -- the design's
+    # section 2.1, and the entire reason this task exists). See
+    # headless_main.cpp's run_verify_game_session().
+    add_test(NAME game_session_check
+             COMMAND kamiframe-headless --verify-game-session)
 endif()
 
 # ---------------------------------------------------------------------------

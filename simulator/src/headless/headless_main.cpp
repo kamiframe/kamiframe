@@ -48,6 +48,7 @@
  *     kamiframe-headless --verify-audio
  *     kamiframe-headless --verify-frame-loop-multiplier
  *     kamiframe-headless --verify-game-record
+ *     kamiframe-headless --verify-game-session
  *     kamiframe-headless --stress3d [2d|2.5d|3d|all] [--frames N]
  *
  * Exit codes:
@@ -90,6 +91,7 @@
 #include "../lua/kf_lua_proof_script.h"
 #include "../pet/kf_creature_presenter.h"
 #include "../pet/kf_creature_screen.h"
+#include "../pet/kf_game_session.h"
 #include "../pet/kf_home_screen_input.h"
 #include "../pet/kf_lua_home_screen.h"
 #include "../pet/kf_frame_loop.h"
@@ -12643,6 +12645,187 @@ int run_verify_game_record() {
     return ok ? 0 : 1;
 }
 
+/* Task 2 of the Nibble-and-the-game-session plan: the live game session
+ * (simulator/src/pet/kf_game_session.cpp) -- storage, reward application,
+ * and above all the personality-safety guarantee that section 2.1 of the
+ * design exists to protect: a game reward must NEVER look like a care
+ * action to Core. Same isolated-per-PID storage directory trick as
+ * run_pet_check(), and a fresh kf_pet_session on top of it -- this is the
+ * layer directly above Task 1's pure maths, so it is the first place a
+ * real pet (not a bare kf_pet_state) and real storage are both involved
+ * at once. */
+int run_verify_game_session() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("kamiframe-headless-game-session-" + std::to_string(KF_GETPID()));
+    std::error_code rm_ec;
+    std::filesystem::remove_all(dir, rm_ec);
+    kf_host_storage_set_dir(dir.string().c_str());
+
+    check(kf_store_init() == KF_OK, "kf_store_init");
+    check(kf_power_init() == KF_OK, "kf_power_init");
+    kf_pet_session_init();
+
+    constexpr uint32_t kGood = 40u;
+    constexpr uint32_t kGreat = 75u;
+    constexpr uint32_t kEnergyCost = 6000u;
+
+    /* 1. A full begin -> score -> end run: the tier is right, and the
+     * persisted record round-trips through storage. */
+    {
+        kf_game_session_context ctx{};
+        check(kf_game_session_begin("t1", kEnergyCost, KF_PET_NEED_NONE, 0u,
+                                     &ctx),
+              "begin succeeds against a fresh, healthy pet");
+        check(ctx.energy_mp == KF_PET_MILLIPERCENT_MAX,
+              "context snapshots energy BEFORE the cost is spent (a fresh "
+              "pet starts full)");
+        check(ctx.handicap_percent == 0u,
+              "a fresh pet at full energy has no handicap");
+
+        kf_game_session_score(100u);
+        kf_game_session_event("perfect");
+        kf_game_session_event("perfect");
+        const kf_game_tier tier = kf_game_session_end(kGood, kGreat);
+        check(tier == KF_GAME_TIER_GREAT,
+              "a score of 100 against good=40/great=75 ends GREAT");
+
+        kf_game_record record{};
+        check(kf_game_session_record("t1", &record),
+              "the record persisted by _end() can be read back");
+        check(record.plays == 1u && record.last_score == 100u &&
+                  record.best_score == 100u && record.perfect_count == 2u,
+              "the persisted record reflects this session's score and "
+              "perfect count");
+    }
+
+    /* 2. Energy drops by EXACTLY the declared cost on a MISS -- spent up
+     * front, win or lose. */
+    {
+        const uint32_t energy_before = kf_pet_session_state()->energy_mp;
+        kf_game_session_context ctx{};
+        check(kf_game_session_begin("t2", kEnergyCost, KF_PET_NEED_NONE, 0u,
+                                     &ctx),
+              "begin succeeds for a second game id");
+        /* No score() call at all -- a score of 0 is comfortably a MISS
+         * against good=40. */
+        const kf_game_tier tier = kf_game_session_end(kGood, kGreat);
+        check(tier == KF_GAME_TIER_MISS, "an unscored session ends MISS");
+        const uint32_t energy_after = kf_pet_session_state()->energy_mp;
+        check(energy_before - energy_after == kEnergyCost,
+              "energy drops by exactly energy_cost_mp on a MISS");
+    }
+
+    /* 3. Happiness is UNCHANGED on a MISS -- the design's "losing costs "
+     * "only the energy already spent". */
+    {
+        const uint32_t happiness_before =
+            kf_pet_session_state()->happiness_mp;
+        kf_game_session_context ctx{};
+        check(kf_game_session_begin("t3", kEnergyCost, KF_PET_NEED_NONE, 0u,
+                                     &ctx),
+              "begin succeeds for a third game id");
+        const kf_game_tier tier = kf_game_session_end(kGood, kGreat);
+        check(tier == KF_GAME_TIER_MISS, "an unscored session ends MISS");
+        check(kf_pet_session_state()->happiness_mp == happiness_before,
+              "happiness is unchanged after a MISS");
+    }
+
+    /* 4. Happiness RISES on a GREAT -- lowered first via the TOOLS-only
+     * test accessor, since a fresh pet starts at the ceiling and a rise
+     * against an already-full need would be indistinguishable from no
+     * rise at all. */
+    {
+        kf_pet_state *mutable_state = kf_pet_session_state_mutable_for_test();
+        mutable_state->happiness_mp = 50000u;
+        const uint32_t happiness_before =
+            kf_pet_session_state()->happiness_mp;
+
+        kf_game_session_context ctx{};
+        check(kf_game_session_begin("t4", kEnergyCost, KF_PET_NEED_NONE, 0u,
+                                     &ctx),
+              "begin succeeds for a fourth game id");
+        kf_game_session_score(100u);
+        const kf_game_tier tier = kf_game_session_end(kGood, kGreat);
+        check(tier == KF_GAME_TIER_GREAT, "a score of 100 ends GREAT");
+        check(kf_pet_session_state()->happiness_mp > happiness_before,
+              "happiness rises after a GREAT");
+    }
+
+    /* 5. THE PERSONALITY-SAFETY ASSERTION: care_actions_taken is
+     * UNCHANGED across a GREAT reward. This is the entire reason Task 2
+     * exists (the design's section 2.1) -- a game reward routed through
+     * kf_pet_feed()/_play()/_rest() instead of kf_pet_session_reward_
+     * need() would increment this counter and quietly feed the ADR 0023
+     * personality accumulators, indistinguishable from the player
+     * performing the care action by hand. */
+    {
+        const uint32_t care_actions_before =
+            kf_pet_session_state()->care_actions_taken;
+        kf_game_session_context ctx{};
+        check(kf_game_session_begin("t5", kEnergyCost, KF_PET_NEED_HUNGER,
+                                     40u, &ctx),
+              "begin succeeds for a fifth game id, with a secondary need");
+        kf_game_session_score(100u);
+        const kf_game_tier tier = kf_game_session_end(kGood, kGreat);
+        check(tier == KF_GAME_TIER_GREAT, "a score of 100 ends GREAT");
+        check(kf_pet_session_state()->care_actions_taken ==
+                  care_actions_before,
+              "care_actions_taken is UNCHANGED across a GREAT reward -- a "
+              "game reward must never look like a care action to Core");
+    }
+
+    /* 6. An id of 14 characters is rejected (KF_STORE_MAX_KEY_LEN is 15;
+     * "g." + a 14-character id would be 16). */
+    {
+        kf_game_session_context ctx{};
+        check(!kf_game_session_begin("aaaaaaaaaaaaaa", kEnergyCost,
+                                      KF_PET_NEED_NONE, 0u, &ctx),
+              "a 14-character id is rejected");
+    }
+
+    /* 7. No-farming: repeated sessions drive energy to zero and
+     * kf_game_session_begin() still never refuses to start -- the
+     * handicap replaces a lockout, it does not become one. */
+    {
+        kf_pet_state *mutable_state = kf_pet_session_state_mutable_for_test();
+        mutable_state->energy_mp = KF_PET_MILLIPERCENT_MAX;
+        constexpr uint32_t kBigCost = 30000u;
+        bool ever_refused = false;
+        for (int i = 0; i < 6; ++i) {
+            kf_game_session_context ctx{};
+            if (!kf_game_session_begin("farm", kBigCost, KF_PET_NEED_NONE,
+                                        0u, &ctx)) {
+                ever_refused = true;
+                break;
+            }
+            kf_game_session_end(kGood, kGreat);
+        }
+        check(!ever_refused,
+              "kf_game_session_begin() never refuses for low energy, even "
+              "after repeated sessions drive it to zero");
+        check(kf_pet_session_state()->energy_mp == 0u,
+              "energy actually reached zero across those repeated "
+              "sessions -- proving the loop above tested something");
+    }
+
+    kf_pet_session_shutdown();
+    kf_power_shutdown();
+    kf_store_shutdown();
+    std::filesystem::remove_all(dir, rm_ec);
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -12705,6 +12888,7 @@ int main(int argc, char *argv[]) {
     bool verify_audio = false;
     bool verify_frame_loop_multiplier = false;
     bool verify_game_record = false;
+    bool verify_game_session = false;
     /* --stress3d [2d|2.5d|3d|all]: the 3D feasibility instrument. A flag on
      * this binary like every other mode here, with an optional value because
      * "all" -- run the three and print one comparison table -- is what it is
@@ -12855,6 +13039,8 @@ int main(int argc, char *argv[]) {
             verify_frame_loop_multiplier = true;
         } else if (std::strcmp(argv[i], "--verify-game-record") == 0) {
             verify_game_record = true;
+        } else if (std::strcmp(argv[i], "--verify-game-session") == 0) {
+            verify_game_session = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -13170,6 +13356,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_game_record) {
         return run_verify_game_record();
+    }
+
+    if (verify_game_session) {
+        return run_verify_game_session();
     }
 
     kf_app_init(mode);

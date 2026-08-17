@@ -136,6 +136,87 @@ void kf_pet_session_bath(uint8_t variation);
 /* Clears the waiting poops. No variation: see kf/pet.h's kf_pet_flush(). */
 void kf_pet_session_flush(void);
 
+/* Read-only access to the live pet's CONFIG -- decay rates, stage
+ * durations, and the care_boost_{liked,neutral,disliked}_mp table
+ * kf_pet_feed()/_play()/_rest() already use. Same shape as
+ * kf_pet_session_state() just above, added for the Nibble-and-the-game-
+ * session plan's Task 2: kf_game_session.cpp (simulator/src/pet/) needs
+ * "what is a full grant of this need worth" to compute a reward, and the
+ * only honest answer is "whatever config->care_boost_*_mp already says a
+ * real care action is worth" -- reusing it here is what keeps a game's
+ * reward and a hand-performed care action from quietly disagreeing about
+ * what an action is worth, rather than inventing a second, game-only
+ * tuning table nobody would remember to keep in step with the first. */
+const kf_pet_config *kf_pet_session_config(void);
+
+/* Selector for kf_pet_session_reward_need()/_spend_need() below --
+ * deliberately NOT in kf/pet.h (Core): the three real needs already exist
+ * as plain fields on kf_pet_state (hunger_mp/happiness_mp/energy_mp), and
+ * Core has never needed a name for "which one" because every Core
+ * function that touches a need already knows which one it is. This
+ * SESSION-layer enum exists purely to give the two functions below (and
+ * the Nibble-and-the-game-session plan's kf_game_session.cpp, which calls
+ * them) a typed parameter instead of three near-identical functions.
+ * KF_PET_NEED_NONE is the "no secondary need" placeholder a game with an
+ * empty `reward.need` in its manifest passes to kf_game_session_begin()
+ * (kf_game_session.h) -- both functions below treat it as a no-op, the
+ * same "meaningless value, not an error" contract KF_PET_WANT_NONE
+ * already has in kf/pet.h. */
+typedef enum {
+    KF_PET_NEED_NONE = 0,
+    KF_PET_NEED_HUNGER = 1,
+    KF_PET_NEED_HAPPINESS = 2,
+    KF_PET_NEED_ENERGY = 3,
+} kf_pet_need;
+
+/* Raises `need` by `amount_mp`, clamped at KF_PET_MILLIPERCENT_MAX -- read
+ * section 2.1 of the Nibble-and-the-game-session design before calling
+ * this. Routing a game's reward through kf_pet_feed()/_play()/_rest()
+ * instead of this function would increment care_actions_taken and feed
+ * the ADR 0023 care-derived personality integrals (apply_care_reaction(),
+ * hakoniwaos/src/pet.cpp) -- indistinguishable from the player performing
+ * the care action by hand, so eight rounds of a minigame would quietly
+ * rewrite the creature's personality for reasons nothing on screen
+ * explains. This function is the fix: it touches ONLY the raw need field,
+ * NEVER care_actions_taken and NEVER apply_care_reaction(), so a game
+ * reward and a care action stay the two different events they actually
+ * are.
+ *
+ * `amount_mp` is an ALREADY-COMPUTED millipercent, not a variation index --
+ * kf_pet_feed() grants whatever a full meal is worth and has no fractional
+ * form, which is the entire reason this function exists (kf_game_session_
+ * end() computes a fraction of a full grant, scaled by kf_pet_reaction_to()
+ * for the game's own id, and hands the RESULT here; this function itself
+ * does no scaling of its own). A no-op, matching every other care-adjacent
+ * function's own "dead pet, nothing happens" contract, if the pet is dead,
+ * `need` is KF_PET_NEED_NONE, or `amount_mp` is 0 -- the last case exists
+ * so a game with `need_fraction_percent == 0` (or no declared need at all)
+ * costs nothing to call this with 0 rather than requiring every caller to
+ * guard it themselves.
+ *
+ * Checkpoints immediately on a real change, the same "rare, human-paced
+ * event" reasoning kf_pet_session_feed() and friends already apply (see
+ * kf_pet_session.cpp's own comment on that block) -- a game session ending
+ * is exactly as rare and exactly as worth an immediate write. */
+void kf_pet_session_reward_need(kf_pet_need need, kf_pet_millipercent amount_mp);
+
+/* The mirror of kf_pet_session_reward_need() above: LOWERS `need` by
+ * `amount_mp`, clamped at 0, with the identical "touches neither
+ * care_actions_taken nor apply_care_reaction()" contract -- spending a
+ * game's energy cost is not a care action either, and must not look like
+ * one for the same reason a reward must not. Exists as a SEPARATE function
+ * rather than a signed amount on the one above because the Nibble-and-
+ * the-game-session plan and its non-vacuity test both refer to
+ * kf_pet_session_reward_need() by that exact name for the reward path
+ * specifically (kf_game_session.cpp's own non-vacuity proof replaces that
+ * exact call with kf_pet_session_feed() to prove the personality-safety
+ * assertion fires) -- overloading one direction-ambiguous function would
+ * have made that substitution, and the assertion it is meant to catch,
+ * harder to state precisely. kf_game_session_begin() (kf_game_session.h)
+ * is this function's only caller: spending the energy cost up front, win
+ * or lose, is what stops a player farming one game forever. */
+void kf_pet_session_spend_need(kf_pet_need need, kf_pet_millipercent amount_mp);
+
 /* Wakes the active pet deliberately, if it is currently asleep -- see kf/
  * pet.h's kf_pet_wake(). A no-op otherwise (already awake, or dead), same
  * as every other care action against a dead pet. Task 7 of the

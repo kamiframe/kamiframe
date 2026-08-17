@@ -172,6 +172,7 @@ idf_component_register(
         ../hal/esp_assets.cpp
         ../hal/esp_audio.cpp
         ../../../simulator/src/pet/kf_pet_session.cpp
+        ../../../simulator/src/pet/kf_game_session.cpp
         ../../../simulator/src/pet/kf_creature_screen.cpp
         ../../../simulator/src/pet/kf_creature_presenter.cpp
         ../../../simulator/src/pet/kf_home_screen_input.cpp

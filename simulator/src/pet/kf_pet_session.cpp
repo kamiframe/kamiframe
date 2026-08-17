@@ -484,6 +484,83 @@ const kf_pet_state *kf_pet_session_state(void) {
     return &g.state;
 }
 
+const kf_pet_config *kf_pet_session_config(void) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_config called before kf_pet_session_init");
+    return &g.config;
+}
+
+namespace {
+
+/* Same clamp-at-the-ceiling shape as pet.cpp's own file-local clamp_add()
+ * (hakoniwaos/src/pet.cpp) -- duplicated rather than exported for the
+ * identical "four lines, not worth widening a header's surface for"
+ * reasoning kf/game.h's own put_u16/get_u16 helpers already accept. This
+ * file is not Core (see its own top-of-file comment), so it cannot reach
+ * pet.cpp's file-local helper regardless. */
+kf_pet_millipercent clamp_need_up(kf_pet_millipercent value,
+                                   kf_pet_millipercent add) {
+    const uint64_t sum = static_cast<uint64_t>(value) + add;
+    return sum > KF_PET_MILLIPERCENT_MAX
+               ? KF_PET_MILLIPERCENT_MAX
+               : static_cast<kf_pet_millipercent>(sum);
+}
+
+kf_pet_millipercent clamp_need_down(kf_pet_millipercent value,
+                                     kf_pet_millipercent subtract) {
+    return subtract >= value ? 0u : value - subtract;
+}
+
+/* Shared by kf_pet_session_reward_need()/_spend_need() below: which raw
+ * field on g.state a kf_pet_need selects. Returns nullptr for
+ * KF_PET_NEED_NONE -- both callers already guard on that before reaching
+ * here, but a defensive nullptr (rather than, say, falling back to
+ * hunger_mp) means a future call site that forgets the guard gets a crash
+ * to notice, not a wrong need silently adjusted. */
+kf_pet_millipercent *need_field(kf_pet_need need) {
+    switch (need) {
+    case KF_PET_NEED_HUNGER:
+        return &g.state.hunger_mp;
+    case KF_PET_NEED_HAPPINESS:
+        return &g.state.happiness_mp;
+    case KF_PET_NEED_ENERGY:
+        return &g.state.energy_mp;
+    case KF_PET_NEED_NONE:
+    default:
+        return nullptr;
+    }
+}
+
+} // namespace
+
+void kf_pet_session_reward_need(kf_pet_need need, kf_pet_millipercent amount_mp) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_reward_need called before kf_pet_session_init");
+    kf_pet_millipercent *field = need_field(need);
+    const bool applies = !g.state.dead && field != nullptr && amount_mp != 0u;
+    if (applies) {
+        *field = clamp_need_up(*field, amount_mp);
+    }
+    debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
+}
+
+void kf_pet_session_spend_need(kf_pet_need need, kf_pet_millipercent amount_mp) {
+    KF_ASSERT(g.ready,
+              "kf_pet_session_spend_need called before kf_pet_session_init");
+    kf_pet_millipercent *field = need_field(need);
+    const bool applies = !g.state.dead && field != nullptr && amount_mp != 0u;
+    if (applies) {
+        *field = clamp_need_down(*field, amount_mp);
+    }
+    debug_snapshot_push();
+    if (applies) {
+        kf_pet_session_save();
+    }
+}
+
 /* Every care action below shares a shape: mutate, push a debug snapshot,
  * then kf_pet_session_save() -- checkpoint 1 of 3 (see that function's own
  * comment). These are rare, human-paced events (a button press), never a
