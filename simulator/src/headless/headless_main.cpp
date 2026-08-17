@@ -47,6 +47,7 @@
  *     kamiframe-headless --verify-clock
  *     kamiframe-headless --verify-audio
  *     kamiframe-headless --verify-frame-loop-multiplier
+ *     kamiframe-headless --verify-game-record
  *     kamiframe-headless --stress3d [2d|2.5d|3d|all] [--frames N]
  *
  * Exit codes:
@@ -63,6 +64,7 @@
 #include "kf/creature.h"
 #include "kf/font.h"
 #include "kf/framebuffer.h"
+#include "kf/game.h"
 #include "kf/hal/log.h"
 #include "kf/hal/audio.h"
 #include "kf/hal/display.h"
@@ -12502,6 +12504,145 @@ int run_stress3d(const char *mode, long frames) {
     return ok ? 0 : 1;
 }
 
+/* Task 1 of the Nibble-and-the-game-session plan: kf/game.h's pure record
+ * and tier maths, proven directly against Core with no session, no
+ * storage, and no pet involved at all -- the same isolation run_pet_
+ * check()'s early blocks give kf_pet_advance()/kf_pet_feed() before ever
+ * touching kf_pet_load_and_advance(). kf_game_session.cpp (Task 2) is what
+ * actually calls these against live storage; this check exists so a bug
+ * in the maths itself is caught here, not three layers up in a session
+ * test that would also be exercising storage, rewards and the pet at the
+ * same time. */
+int run_verify_game_record() {
+    bool ok = true;
+    auto check = [&ok](bool cond, const char *what) {
+        if (!cond) {
+            KF_LOGE(TAG, "FAILED: %s", what);
+            ok = false;
+        }
+    };
+
+    /* 1. Pack/unpack round trip, byte for byte -- every field distinct
+     * from every other so a swapped offset (e.g. last_played_day and
+     * streak_days landing in each other's slot) would not accidentally
+     * read back correct. */
+    {
+        kf_game_record r{};
+        r.plays = 4321u;
+        r.best_score = 0xAABBCCDDu;
+        r.last_score = 12345u;
+        r.total_score = 0x11223344u;
+        r.best_at = 1700000000u;
+        r.last_played_day = 999u;
+        r.streak_days = 200u;
+        r.perfect_count = 6789u;
+
+        uint8_t buf[KF_GAME_RECORD_BYTES];
+        kf_game_pack(&r, buf);
+
+        kf_game_record round_tripped{};
+        check(kf_game_unpack(buf, sizeof(buf), &round_tripped),
+              "unpack accepts a buffer of exactly KF_GAME_RECORD_BYTES");
+        check(round_tripped.plays == r.plays &&
+                  round_tripped.best_score == r.best_score &&
+                  round_tripped.last_score == r.last_score &&
+                  round_tripped.total_score == r.total_score &&
+                  round_tripped.best_at == r.best_at &&
+                  round_tripped.last_played_day == r.last_played_day &&
+                  round_tripped.streak_days == r.streak_days &&
+                  round_tripped.perfect_count == r.perfect_count,
+              "pack/unpack round trip is byte-for-byte identical");
+    }
+
+    /* 2. Unpack rejects a wrong length, and leaves `out` untouched. */
+    {
+        uint8_t short_buf[KF_GAME_RECORD_BYTES - 1] = {};
+        kf_game_record out{};
+        out.plays = 42u; /* sentinel -- must survive a rejected unpack */
+        check(!kf_game_unpack(short_buf, sizeof(short_buf), &out),
+              "unpack rejects a buffer shorter than KF_GAME_RECORD_BYTES");
+        check(out.plays == 42u,
+              "a rejected unpack leaves the output record untouched");
+
+        uint8_t long_buf[KF_GAME_RECORD_BYTES + 1] = {};
+        check(!kf_game_unpack(long_buf, sizeof(long_buf), &out),
+              "unpack rejects a buffer longer than KF_GAME_RECORD_BYTES");
+    }
+
+    /* 3. Tier boundaries: MISS one below good, GOOD at and above good but
+     * below great, GREAT at and above great -- "at or above" on both
+     * edges, not "strictly above". */
+    {
+        check(kf_game_tier_for(0u, 40u, 75u) == KF_GAME_TIER_MISS,
+              "tier: a score of 0 is a MISS");
+        check(kf_game_tier_for(39u, 40u, 75u) == KF_GAME_TIER_MISS,
+              "tier: one below the good threshold is a MISS");
+        check(kf_game_tier_for(40u, 40u, 75u) == KF_GAME_TIER_GOOD,
+              "tier: exactly the good threshold is GOOD");
+        check(kf_game_tier_for(74u, 40u, 75u) == KF_GAME_TIER_GOOD,
+              "tier: one below the great threshold is GOOD");
+        check(kf_game_tier_for(75u, 40u, 75u) == KF_GAME_TIER_GREAT,
+              "tier: exactly the great threshold is GREAT");
+        check(kf_game_tier_for(1000u, 40u, 75u) == KF_GAME_TIER_GREAT,
+              "tier: comfortably past the great threshold is GREAT");
+    }
+
+    /* 4. total_score saturates at UINT32_MAX instead of wrapping. */
+    {
+        kf_game_record r{};
+        r.plays = 1u; /* not the first play -- exercise the day-gap path,
+                       * not the first-play streak special case */
+        r.total_score = UINT32_MAX - 1u;
+        kf_game_record_apply(&r, 5u, 1000u, 10u);
+        check(r.total_score == UINT32_MAX,
+              "total_score saturates at UINT32_MAX rather than wrapping "
+              "past it");
+    }
+
+    /* 5. Streak transitions. */
+    {
+        /* plays == 0 sets streak_days to 1 regardless of day_index, even a
+         * deliberately large or zero one -- there is no previous day to
+         * compare against on a genuinely first play. */
+        kf_game_record r{};
+        kf_game_record_apply(&r, 10u, 1000u, 777u);
+        check(r.streak_days == 1u,
+              "streak: the very first play (plays == 0 going in) sets "
+              "streak_days to 1 regardless of day_index");
+        check(r.last_played_day == 777u,
+              "streak: last_played_day is set to the day_index passed in, "
+              "even on the first play");
+
+        /* Same day again: unchanged. */
+        kf_game_record_apply(&r, 10u, 2000u, 777u);
+        check(r.streak_days == 1u,
+              "streak: a second play on the SAME day_index leaves "
+              "streak_days unchanged");
+
+        /* Exactly one day later: increments. */
+        kf_game_record_apply(&r, 10u, 3000u, 778u);
+        check(r.streak_days == 2u,
+              "streak: exactly one day later increments streak_days");
+
+        /* A gap of two or more days: resets to 1. */
+        kf_game_record_apply(&r, 10u, 4000u, 781u);
+        check(r.streak_days == 1u,
+              "streak: a gap of more than one day resets streak_days to 1");
+
+        /* Saturates at 255 rather than wrapping. */
+        kf_game_record r2{};
+        r2.plays = 1u;
+        r2.streak_days = 255u;
+        r2.last_played_day = 50u;
+        kf_game_record_apply(&r2, 10u, 5000u, 51u);
+        check(r2.streak_days == 255u,
+              "streak: saturates at 255 rather than wrapping past it");
+    }
+
+    std::printf("%s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -12563,6 +12704,7 @@ int main(int argc, char *argv[]) {
     bool verify_home_clock = false;
     bool verify_audio = false;
     bool verify_frame_loop_multiplier = false;
+    bool verify_game_record = false;
     /* --stress3d [2d|2.5d|3d|all]: the 3D feasibility instrument. A flag on
      * this binary like every other mode here, with an optional value because
      * "all" -- run the three and print one comparison table -- is what it is
@@ -12711,6 +12853,8 @@ int main(int argc, char *argv[]) {
         } else if (std::strcmp(argv[i], "--verify-frame-loop-multiplier") ==
                    0) {
             verify_frame_loop_multiplier = true;
+        } else if (std::strcmp(argv[i], "--verify-game-record") == 0) {
+            verify_game_record = true;
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("kamiframe-headless [--frames N] [--seed N] "
                         "[--expect-checksum HEX] [--max-dirty-percent N] [--stress]\n"
@@ -13022,6 +13166,10 @@ int main(int argc, char *argv[]) {
 
     if (verify_frame_loop_multiplier) {
         return run_frame_loop_multiplier_check();
+    }
+
+    if (verify_game_record) {
+        return run_verify_game_record();
     }
 
     kf_app_init(mode);

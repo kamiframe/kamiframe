@@ -19,6 +19,7 @@ set(HAKONIWAOS_SRCS
     src/font.cpp
     src/rng.cpp
     src/pet.cpp
+    src/game.cpp
     src/settings.cpp
     src/creature.cpp
     src/assets.cpp

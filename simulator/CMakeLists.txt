@@ -1138,6 +1138,15 @@ if(KAMIFRAME_BUILD_HEADLESS)
     # run_frame_loop_multiplier_check().
     add_test(NAME frame_loop_multiplier_check
              COMMAND kamiframe-headless --verify-frame-loop-multiplier)
+
+    # Task 1 of the Nibble-and-the-game-session plan: kf/game.h's pure
+    # record and tier maths (pack/unpack round trip, tier boundaries at and
+    # either side of each threshold, total_score saturation, and every
+    # streak transition including the plays == 0 case) -- proven directly
+    # against Core, no session, no storage, no pet. See headless_main.cpp's
+    # run_verify_game_record().
+    add_test(NAME game_record_check
+             COMMAND kamiframe-headless --verify-game-record)
 endif()
 
 # ---------------------------------------------------------------------------
